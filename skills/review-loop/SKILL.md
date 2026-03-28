@@ -93,11 +93,73 @@ planning or coding yourself.
      If not found, tell the user and suggest `reviewer: subagent` as fallback.
    - If `reviewer: subagent`: no check needed (uses Agent tool). [TODO]
 
+### Step 0.5 — Initialize context file
+
+Generate a UUID for this session and create the context file:
+
+```bash
+uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+context_dir=".claude/review-loop-sessions"
+mkdir -p "${context_dir}"
+context_file="${context_dir}/${uuid}.md"
+```
+
+This file is the **single source of truth** for the loop. Both the Executor
+and Reviewer read it at the start of each round. The Orchestrator updates
+it after every round. This eliminates redundant context passing in prompts
+and gives agents instant project understanding without cold-start exploration.
+
+Session files are preserved in the project for traceability — useful for
+post-hoc review of which round introduced an issue and what the Reviewer
+caught or missed. Add `.claude/review-loop-sessions/` to `.gitignore` if
+you don't want them in version control.
+
+The context file structure:
+
+```markdown
+# Review Loop Context — {title}
+
+## Problem Description
+{problem_description}
+
+## Context
+{context}
+
+## Acceptance Criteria
+{acceptance_criteria}
+
+## Current Phase
+{planning | execution}
+
+## Approved Plan
+{empty during planning, populated after plan approval}
+
+## Review History
+{accumulated findings with severity and resolution status}
+
+## Files Changed
+{updated after each Executor round — files modified/created and why}
+
+## Key Related Files
+{files relevant to the task that were NOT changed but important for review context}
+```
+
+Tell the user the context file path so they can inspect it if needed:
+```
+Context file: {context_file}
+```
+
 ### Step 1 — Parse the work item
 
 Extract from the user's message:
 - **Title**: one-line summary
-- **Context**: any background info, file paths, constraints mentioned
+- **Problem Description**: a clear, self-contained description of the problem
+  to solve. Write this as if briefing a new engineer who has no prior context.
+  Include: what is broken or missing, why it matters, and what the desired
+  outcome looks like. This description is passed to every Executor and
+  Reviewer call throughout the entire loop — it is the shared understanding
+  of "what we are doing and why."
+- **Context**: any additional background info, file paths, constraints
 - **Acceptance criteria**: what "done" looks like (infer if not stated)
 
 If critical information is missing, ask ONE clarifying question before proceeding.
@@ -106,6 +168,7 @@ Display to the user:
 ```
 ── review-loop: Starting ──────────────────────────
 Work item: {title}
+Problem: {problem_description}
 Reviewer: {codex | subagent} ({reviewer_model})
 Mode: {interactive | handsfree}
 Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)
@@ -132,7 +195,12 @@ loop_state = {
 
 **Round loop:**
 
-1. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
+1. **Update context file** before calling agents:
+   - Write/update all sections in `{context_file}`
+   - Set `Current Phase: planning`
+   - After round 1+: update `Review History` with latest findings
+
+2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
    model: {executor_model}):
 
    Prompt template:
@@ -141,40 +209,27 @@ loop_state = {
 
    {contents of agents/executor.md body — the system prompt}
 
-   ## Work Item
-   {title}
-
-   ## Context
-   {context}
-
-   ## Acceptance Criteria
-   {acceptance_criteria}
+   Read the full context file first: {context_file}
 
    ## Your Task
-   Produce a detailed solution plan following the output format in your instructions.
+   Produce a detailed solution plan following the output format in your
+   instructions.
 
    {if round > 1:}
    ## Previous Reviewer Feedback (address each point)
-   {reviewer_feedback}
-
-   ## Previously Identified Issues (for reference)
-   {loop_state.pending_issues formatted as list}
+   {reviewer_feedback — this is the one thing passed directly, for immediacy}
    ```
 
-2. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
+3. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
 
    Prompt template:
    ```
    {contents of agents/reviewer.md body — the system prompt}
 
-   ## Work Item
-   {title}
+   Read the full context file first: {context_file}
 
    ## Solution Plan to Review
    {executor_plan}
-
-   ## Acceptance Criteria
-   {acceptance_criteria}
 
    {if round > 1:}
    ## Review History
@@ -244,7 +299,13 @@ loop_state.round = 0
 
 **Round loop:**
 
-1. **Call the Executor** (via Agent tool):
+1. **Update context file** before calling agents:
+   - Update `Current Phase: execution`
+   - Update `Approved Plan` (now populated)
+   - Update `Files Changed` and `Key Related Files` after each Executor round
+   - Update `Review History` with latest findings
+
+2. **Call the Executor** (via Agent tool):
 
    Prompt template:
    ```
@@ -252,75 +313,50 @@ loop_state.round = 0
 
    {contents of agents/executor.md body}
 
-   ## Approved Plan
-   {final_plan}
-
-   ## Work Item
-   {title}
+   Read the full context file first: {context_file}
 
    ## Your Task
-   Implement the approved plan. Make all necessary code changes. Follow the
-   execution mode output format in your instructions.
+   Implement the approved plan (see context file). Make all necessary code
+   changes. Follow the execution mode output format in your instructions.
+
+   When done, list all files you modified/created so the Orchestrator can
+   update the context file for the Reviewer.
 
    {if round > 1:}
    ## Code Review Feedback (address each point)
-   {reviewer_cr_feedback}
-
-   ## Previously Identified Issues (for reference)
-   {loop_state.pending_issues formatted as list}
+   {reviewer_cr_feedback — passed directly for immediacy}
    ```
 
-2. **Call the Reviewer** with:
+3. **Call the Reviewer** with:
 
    Prompt template:
    ```
    {contents of agents/reviewer.md body}
 
-   ## Work Item
-   {title}
-
-   ## Approved Plan
-   {final_plan}
+   Read the full context file first: {context_file}
+   It contains the problem description, approved plan, review history,
+   changed files, and related files. Use this to orient yourself quickly
+   before reading the actual code.
 
    ## Changes Made (summary from Executor)
    {executor_change_summary}
 
-   {if round > 1:}
-   ## Review History
-   You are reviewing round {round} of the execution phase. Here is what you
-   found in previous rounds. Verify that fixes are correct and complete —
-   don't just take the Executor's word for it, read the actual code.
-
-   {for each finding in loop_state.findings where phase == "execution":}
-   - Round {n}: [{severity}] {description} → {Executor claims fixed | Still pending | Accepted}
-
-   {also include unresolved findings from planning phase if any:}
-   Carried over from planning:
-   - [{severity}] {description} → {status}
-
-   ## Your Focus This Round
-   1. Verify previously flagged CRITICAL issues are actually resolved in code
-   2. Check whether the fixes introduced regressions or new issues
-   3. **Plan Conformance**: verify that the Executor's fix stays within the
-      scope of the approved plan. If the fix introduces new design decisions,
-      thresholds, trade-offs, or relaxations NOT authorized by the plan,
-      flag it as CRITICAL — the Executor should escalate design changes back
-      to the planning phase rather than making autonomous compromises during
-      execution. A fix that is "logically correct" but deviates from the
-      agreed approach is still a CRITICAL issue.
-   4. Review any new code not covered in previous rounds
-
-   {else (round == 1):}
    ## Your Task
-   This is the first code review. Review the implementation against the
-   approved plan above.
+   Review the code changes against the approved plan in the context file.
 
-   Check both correctness (does the code work?) AND conformance (does the
-   code match the plan's design decisions?). If the Executor deviated from
-   the plan — even if the code is technically correct — flag it as CRITICAL.
+   Check both **correctness** (does the code work?) AND **plan conformance**
+   (does the code match the plan's design decisions?). If the Executor
+   deviated from the plan — introduced new thresholds, relaxed constraints,
+   changed the agreed approach — flag it as CRITICAL even if the code is
+   technically correct.
 
-   You have read-only access to the project files — use it to verify the
-   changes, don't rely solely on the Executor's summary.
+   {if round > 1:}
+   The context file contains your previous findings. Verify that previously
+   flagged CRITICAL issues are actually resolved in code — read the actual
+   code, don't just take the Executor's word for it. Also check whether
+   fixes introduced regressions or new issues.
+
+   You have read-only access to the project files — use it.
 
    Return your structured verdict following the output format in your
    instructions above.
@@ -465,46 +501,23 @@ When the Executor raises a question (detected in its output), classify it:
 The Orchestrator must actively manage its own context to avoid triggering
 the AI's automatic compaction, which can lose critical information.
 
-### Pinned Context (NEVER compact or summarize these)
+The context file (`.claude/review-loop-sessions/{uuid}.md`) is the single source of
+truth for the entire loop. All critical state lives on disk, not in the
+Orchestrator's conversation context.
 
-The following must be retained verbatim in the Orchestrator's context at
-all times, from the moment they are created until the loop ends:
+**The Orchestrator's context stays minimal:**
+- The context file path
+- The latest Reviewer feedback (passed directly to the next Executor call)
+- Loop control state (current phase, round number)
 
-1. **Approved Plan** (`final_plan`) — the Reviewer needs this every round
-   to check Plan Conformance. If this is lost, the Reviewer cannot detect
-   Executor deviations. This is the single most important piece of context.
-2. **Accumulated Findings** (`loop_state.findings`) — the full list of
-   every issue found, its severity, and resolution status. This is what
-   makes the review loop valuable.
-3. **Work Item** (title, context, acceptance criteria) — the "why" behind
-   everything.
+**After each round**, update the context file with:
+- Latest findings and their resolution status
+- Updated file change list (from Executor output)
+- Any new related files discovered
+- Plan updates (if planning phase)
 
-### Compactable Context (actively compress after each round)
-
-4. Raw sub-agent outputs — after extracting the plan/summary/findings,
-   compress to a one-paragraph summary. Do NOT accumulate full responses.
-5. Raw Reviewer outputs — after parsing VERDICT and issues, discard the
-   full text. The extracted findings in `loop_state` are sufficient.
-6. Live Reports already displayed to the user — no need to retain.
-
-### Proactive Compaction Strategy
-
-Before each round, estimate whether the next Executor + Reviewer cycle
-will fit in context. If it's getting tight:
-
-1. First: compact all raw outputs from completed rounds (rule 4-6 above).
-2. If still tight: summarize the Executor's change descriptions from
-   earlier rounds, keeping only the latest round's details.
-3. **NEVER** summarize or drop the Approved Plan or Findings — if context
-   is so limited that these don't fit, stop the loop and deliver what you
-   have, noting "stopped due to context limits" in the delivery summary.
-
-### Note for users on context limits
-
-If you see context running low during a loop, you can manually compact
-the conversation. When you do, **prioritize preserving**:
-- The approved plan (this is what the Reviewer checks conformance against)
-- The accumulated findings and learnings
+Since all durable state is on disk, the Orchestrator's conversation context
+stays lean and compaction is unlikely to be an issue.
 
 ---
 
@@ -512,9 +525,9 @@ the conversation. When you do, **prioritize preserving**:
 
 - **Never do the work yourself** — delegate planning to the Executor sub-agent
   and reviewing to the Reviewer (codex or subagent).
-- **Pass full context to each call** — both Executor and Reviewer start fresh
-  each round. Include everything they need in the prompt; don't assume they
-  remember prior turns.
+- **Keep the context file up to date** — both Executor and Reviewer read it
+  at the start of each round. Update it after every round with latest
+  findings, file changes, and plan updates before calling the next agent.
 - **Preserve the Reviewer's VERDICT** — never override an `APPROVE` to keep
   iterating, and never skip a `REQUEST_CHANGES` to save time.
 - **Surface blockers immediately** — if the Executor reports it cannot proceed,

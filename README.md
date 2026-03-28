@@ -1,130 +1,132 @@
 # review-loop
 
 A Claude Code skill that automates the Plan → Review → Execute → CR loop
-using two specialized sub-agents. You describe a work item; the agents drive
-it to delivery.
+using an Executor sub-agent and an independent Reviewer. You describe a work
+item; the agents drive it to delivery — and you see every issue the Reviewer
+catches along the way.
+
+## Why review-loop?
+
+A single AI agent can plan and implement, but it won't catch its own blind
+spots. review-loop adds an independent Reviewer (a different AI) that
+critiques every plan and every code change before it ships. In practice,
+this catches design deviations, missed edge cases, and unauthorized
+compromises that a single agent would silently ship.
 
 ## How it works
 
 ```
-You: "run review-loop on: add rate limiting to the /api/upload endpoint"
+You: "/review-loop add rate limiting to the /api/upload endpoint"
 
 Orchestrator (Claude Code main session)
 │
+├── Context file: .claude/review-loop-sessions/{uuid}.md
+│   Single source of truth — both agents read it each round
+│
 ├── [Planning phase]
-│   ├── → Executor: draft solution plan
-│   ← Executor: returns plan
-│   ├── → Reviewer: review plan  
-│   ← Reviewer: APPROVE / REQUEST_CHANGES + feedback
-│   └── (iterate up to max_plan_iterations)
+│   ├── → Executor (sub-agent): draft solution plan
+│   ├── → Reviewer (codex exec): review plan
+│   ├── ← Live Report: what the Reviewer found
+│   └── (iterate until APPROVE or user stops)
 │
 ├── [Execution phase]
-│   ├── → Executor: implement approved plan
-│   ← Executor: returns change summary
-│   ├── → Reviewer: code review
-│   ← Reviewer: APPROVE / REQUEST_CHANGES + feedback
-│   └── (iterate up to max_exec_iterations)
+│   ├── → Executor (sub-agent): implement approved plan
+│   ├── → Reviewer (codex exec): code review + plan conformance check
+│   ├── ← Live Report: issues found, conformance violations
+│   └── (iterate until APPROVE or user stops)
 │
-└── Delivery: optional git commit + CHANGELOG update + summary to you
+└── Delivery: summary with full findings table + optional commit
 ```
-
----
 
 ## Installation
 
-### 1. Install the skill
-
 ```bash
-# Project-level (recommended — keeps it with your repo)
+# In your target project
 mkdir -p .claude/skills
-cp -r review-loop .claude/skills/
+cp -r /path/to/review-loop/skills/review-loop .claude/skills/
 
-# OR global (available in all your projects)
-mkdir -p ~/.claude/skills
-cp -r review-loop ~/.claude/skills/
+# Optional: create a project config
+cp /path/to/review-loop/review-loop-config.example.md .claude/review-loop-config.md
 ```
 
-### 2. Install the sub-agent definitions
-
-```bash
-# Project-level
-mkdir -p .claude/agents
-cp review-loop/agents/*.md .claude/agents/
-
-# OR global
-mkdir -p ~/.claude/agents
-cp review-loop/agents/*.md ~/.claude/agents/
-```
-
-### 3. (Optional) Create a project config
-
-```bash
-cp review-loop/review-loop-config.example.md .claude/review-loop-config.md
-# Edit to your preferences
-```
-
----
+Then restart Claude Code (or `claude --resume`) to load the skill.
 
 ## Usage
 
-Just describe what you want done:
+```bash
+# Slash command
+/review-loop add pagination to the user list endpoint
 
-```
-# Natural triggers
-run review-loop on: [your work item description]
-start agent loop for: [work item]
-let the agents handle: [work item]
+# Natural language (auto-triggers)
+run review-loop on: refactor the auth middleware to use JWT
 
-# Or just describe the task — the skill auto-triggers on relevant phrases
-Add pagination to the user list endpoint. 
-Acceptance criteria: page size default 20, max 100, returns total_count.
+# Fully autonomous mode — decision questions go to Reviewer, not you
+/review-loop add caching layer to the API --handsfree
 ```
 
-The Orchestrator will ask ONE clarifying question if needed, then start the loop
-autonomously. You'll get a status report when it's done (or if it hits a blocker).
+## Reviewer modes
 
----
+| Mode | Config | How it works |
+|------|--------|-------------|
+| **codex** (default) | `reviewer: codex` | Calls `codex exec -s read-only` — cross-AI review |
+| **subagent** | `reviewer: subagent` | Claude Code sub-agent with read-only tools (TODO) |
 
-## Configuration reference
+The codex mode gives you independent review from a different AI. The subagent
+mode is a fallback for users without a Codex subscription.
+
+## Configuration
 
 All options in `.claude/review-loop-config.md`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `max_plan_iterations` | 3 | Max Executor↔Reviewer rounds in planning phase |
-| `max_exec_iterations` | 3 | Max rounds in execution phase |
-| `executor_model` | inherit | `inherit` \| `sonnet` \| `opus` |
-| `reviewer_model` | inherit | `inherit` \| `sonnet` \| `opus` |
-| `reviewer_readonly` | true | Restrict Reviewer to read-only tools |
-| `auto_commit` | false | `git commit` after execution phase |
+| `reviewer` | codex | `"codex"` \| `"subagent"` |
+| `reviewer_model` | "" | codex: `-m` flag (empty = codex default); subagent: Agent model |
+| `executor_model` | inherit | `"inherit"` \| `"sonnet"` \| `"opus"` |
+| `soft_limit_plan` | 3 | After N rounds, ask user to continue if CRITICALs remain |
+| `soft_limit_exec` | 3 | Same for execution phase |
+| `auto_commit` | false | Stage changed files and commit after delivery |
 | `commit_message_prefix` | feat | Conventional commit type prefix |
 | `docs_file` | CHANGELOG.md | File to append delivery summary; `""` to skip |
+| `handsfree` | false | Make `--handsfree` the default |
 
-### Tips
-- **Use `opus` for the Reviewer** on complex changes where missing a subtle bug is costly
-- **Lower `max_plan_iterations` to 2** for well-scoped, familiar tasks
-- **Set `auto_commit: true`** only in projects with a solid test suite
-- **Set `docs_file: ""`** if you manage your changelog manually
+## Key design features
 
----
+**Live Reports** — after every review round, the Orchestrator shows you what
+the Reviewer found: CRITICAL issues, MINOR suggestions, and the verdict.
+You see the value of the review loop in real time.
 
-## Adapting for other AI providers
+**Plan Conformance** — the Reviewer checks that the Executor's implementation
+stays within the approved plan. If the Executor introduces unauthorized
+design decisions (new thresholds, relaxed constraints), it's flagged as
+CRITICAL even if the code is technically correct.
 
-The sub-agents are defined as plain markdown files in `.claude/agents/`. The
-`executor.md` and `reviewer.md` system prompts are provider-agnostic — you can
-adapt this pattern to any agent framework that supports custom agent definitions
-with scoped tool access.
+**Context file** — all loop state is persisted to
+`.claude/review-loop-sessions/{uuid}.md`. Both agents read it each round for
+instant context (no cold-start exploration). Session files are preserved for
+post-hoc traceability — you can review which round introduced an issue.
 
----
+**Soft iteration limits** — no hard cap on rounds. When the soft limit is
+reached and CRITICALs remain, the Orchestrator asks you whether to continue.
+Stuck detection stops the loop if the same issue recurs 3 rounds without
+progress.
 
 ## File structure
 
 ```
 review-loop/
-├── SKILL.md                        ← Orchestrator instructions (loaded by Claude Code)
+├── skills/
+│   └── review-loop/
+│       └── SKILL.md                ← Orchestrator instructions
 ├── agents/
 │   ├── executor.md                 ← Executor sub-agent definition
-│   └── reviewer.md                 ← Reviewer sub-agent definition (read-only tools)
-├── review-loop-config.example.md    ← Copy to .claude/ and customize
+│   └── reviewer.md                 ← Reviewer definition (also embedded in codex prompt)
+├── review-loop-config.example.md   ← Copy to .claude/ and customize
+├── .gitignore
+├── LICENSE                         ← Apache 2.0
 └── README.md                       ← This file
 ```
+
+## License
+
+Apache 2.0
