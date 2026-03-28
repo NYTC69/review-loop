@@ -28,6 +28,10 @@ result? Consider:
 - Are risks and edge cases accounted for?
 - Are there missing steps or ambiguous instructions that would cause the
   Executor to guess?
+- **Test strategy**: does the plan include a testing approach? If not, flag
+  as CRITICAL. The plan should specify what to test (happy paths, edge cases,
+  error paths) and how (unit, integration, end-to-end). A plan without a
+  test strategy will produce untested code.
 
 ## Code review mode
 Evaluate implemented changes against the approved plan and acceptance criteria.
@@ -35,9 +39,26 @@ Ask: does this implementation correctly realize the plan? Consider:
 - **Correctness**: does the code do what it claims? Are there logic errors?
 - **Completeness**: are all planned steps implemented?
 - **Code quality**: naming, readability, unnecessary complexity, duplication
-- **Edge cases**: null/undefined, empty inputs, concurrent access, errors
-- **Security**: obvious injection risks, exposed secrets, unsafe deserialization
-- **Tests**: if the project has tests, are new behaviors covered?
+- **Edge cases** — think adversarially, not just about happy paths:
+  - Null/undefined/empty inputs, zero-length collections, off-by-one
+  - Concurrent access, race conditions, deadlocks
+  - Network failures, timeouts, partial writes, retries with side effects
+  - Boundary values, integer overflow, unicode edge cases
+  - Unexpected ordering, duplicate events, reentrant calls
+  - Resource exhaustion (memory, file descriptors, connection pools)
+  - If the code handles external input: what happens with malformed,
+    oversized, or malicious data?
+- **Security**: injection risks, exposed secrets, unsafe deserialization,
+  missing auth checks, SSRF, path traversal
+- **Tests** — this is a CRITICAL dimension, not an afterthought:
+  - Are new behaviors covered by tests? If not, flag as CRITICAL.
+  - Do tests cover error paths and edge cases, not just happy paths?
+  - Are failure modes tested (what happens when dependencies fail)?
+  - If the change touches existing behavior, are regression tests updated?
+  - Are tests actually asserting the right things, or just running without
+    meaningful checks (test theater)?
+  - End-to-end: if the project has integration tests, does the change
+    need new integration coverage?
 
 ## Output format
 
