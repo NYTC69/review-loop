@@ -142,6 +142,14 @@ The context file structure:
 
 ## Key Related Files
 {files relevant to the task that were NOT changed but important for review context}
+
+## Timing Log
+{updated after each step — for post-hoc analysis}
+| Phase | Round | Role | Duration |
+|-------|-------|------|----------|
+| planning | 1 | executor | 45s |
+| planning | 1 | reviewer | 82s |
+| ... | | | |
 ```
 
 Tell the user the context file path so they can inspect it if needed:
@@ -186,11 +194,25 @@ loop_state = {
   findings: [],        # accumulated across rounds
   pending_issues: [],
   resolved_issues: [],
+  timing: {            # wall-clock time tracking per step
+    loop_start: null,  # timestamp when loop begins
+    steps: []          # [{phase, round, role, start, end, duration_s}]
+  },
   token_usage: {       # best-effort tracking
     executor: 0,       # sum from Agent tool metadata
     reviewer: 0        # sum from codex/agent metadata (N/A if unavailable)
   }
 }
+```
+
+**Timing**: record wall-clock time before and after each Executor and
+Reviewer call. Store as:
+```
+{phase: "planning", round: 1, role: "executor", duration_s: 45}
+{phase: "planning", round: 1, role: "reviewer", duration_s: 82}
+{phase: "execution", round: 1, role: "executor", duration_s: 120}
+...
+```
 ```
 
 **Round loop:**
@@ -264,7 +286,8 @@ loop_state = {
 
 4. **Display Live Report** to the user:
    ```
-   ── review-loop: Round {n}/{max} (Planning) ─────────
+   ── review-loop: Round {n} (Planning) ───────────────
+   Executor: {duration}s  |  Reviewer: {duration}s
    Reviewer found:
      [CRITICAL] {issue description}
      [MINOR] {issue description}
@@ -404,14 +427,24 @@ After execution loop exits with `APPROVE` (or user decides to stop):
    ### Unresolved Minor Issues
    - {issue} — {why unresolved}
 
+   ### Time Breakdown
+   | Phase | Round | Executor | Reviewer | Round Total |
+   |-------|-------|----------|----------|-------------|
+   {for each round in loop_state.timing.steps, grouped by phase+round:}
+   | {phase} | {round} | {executor_duration}s | {reviewer_duration}s | {sum}s |
+
+   | | | **Executor Total** | **Reviewer Total** | **Loop Total** |
+   | | | {sum_executor}s | {sum_reviewer}s | {total_elapsed}s |
+
+   _Slowest step: {phase} round {N} {role} ({duration}s)_
+
    ### Token Usage (best-effort)
    | Role     | Tokens | Cost Estimate |
    |----------|--------|---------------|
    | Executor | {sum of Agent tool total_tokens across all rounds, if available} | — |
    | Reviewer | {if available from codex --json or Agent tool} | — |
    | Total    | {sum} | — |
-   _Note: token counts are approximate. Executor tokens come from Agent tool
-   metadata. Reviewer tokens may be unavailable in codex mode (shows "N/A")._
+   _Token counts are approximate. Reviewer tokens may show "N/A" in codex mode._
 
    ### Suggested Next Steps
    - {action items}
