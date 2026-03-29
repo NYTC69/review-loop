@@ -1,0 +1,20 @@
+{
+  "name": "review-loop",
+  "version": "1.0.0",
+  "description": "Dual-agent Plan-Execute-Review workflow. An Orchestrator coordinates an Executor and independent Reviewer in iterative loops, surfacing every finding in real time.",
+  "author": {
+    "name": "NYTC69",
+    "url": "https://github.com/NYTC69"
+  },
+  "repository": "https://github.com/NYTC69/review-loop",
+  "license": "Apache-2.0",
+  "keywords": [
+    "review-loop",
+    "code-review",
+    "agents",
+    "planning",
+    "automation",
+    "dual-agent",
+    "agentic-coding"
+  ]
+}
