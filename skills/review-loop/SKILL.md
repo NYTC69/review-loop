@@ -172,6 +172,33 @@ Extract from the user's message:
 
 If critical information is missing, ask ONE clarifying question before proceeding.
 
+### Step 1.5 — Detect current work state
+
+Before starting from Step 2 (Planning), assess the conversation context and
+project state to determine if this task is already in progress:
+
+- **Plan already exists** (user says "review this", or there's an approved
+  plan in context, or code changes are already made): skip the Planning
+  phase entirely — jump directly to Step 3 (Execution/CR).
+- **Code already implemented**: the user explicitly asks for CR only, OR
+  git diff shows substantial changes that are clearly related to this task
+  (not just a few trivial or unrelated edits). Assess relevance by checking
+  whether the changed files and logic align with the task's problem
+  description. If the changes look unrelated or too minor to constitute
+  an implementation, fall back to Planning.
+- **Existing session context file** found in `.claude/review-loop-sessions/`
+  that matches this task: read it and resume from where it left off.
+- **No prior state**: start from Step 2 (Planning) as normal.
+
+Display the detected state to the user for confirmation:
+```
+Detected: {plan exists / code already implemented / fresh start}
+→ Starting from: {Planning / Execution / Code Review only}
+```
+
+If the user disagrees, they can override. The goal is to pick up where
+the work currently is, not force a rigid start-from-scratch sequence.
+
 Display to the user:
 ```
 ── review-loop: Starting ──────────────────────────
