@@ -269,7 +269,14 @@ Reviewer call. Store as:
    {reviewer_feedback — this is the one thing passed directly, for immediacy}
    ```
 
-3. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
+3. **Update context file with Executor's output** — BEFORE calling the
+   Reviewer. This is critical: the Reviewer reads the context file for
+   orientation. If the Executor produced a new/revised plan, write it
+   to the `Approved Plan` (or `Draft Plan`) section now. If the Executor
+   reported file changes, update `Files Changed`. The Reviewer must see
+   the latest state, not stale data from the previous round.
+
+4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
 
    Prompt template:
    ```
@@ -377,7 +384,12 @@ loop_state.round = 0
    {reviewer_cr_feedback — passed directly for immediacy}
    ```
 
-3. **Call the Reviewer** with:
+3. **Update context file with Executor's output** — BEFORE calling the
+   Reviewer. Write the Executor's change summary, updated file list, and
+   any deviations from the plan into the context file. The Reviewer will
+   read this file for orientation — stale data here means a wrong review.
+
+4. **Call the Reviewer** with:
 
    Prompt template:
    ```
