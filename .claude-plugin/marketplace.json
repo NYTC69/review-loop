@@ -1,0 +1,31 @@
+{
+  "name": "review-loop-marketplace",
+  "owner": {
+    "name": "NYTC69"
+  },
+  "metadata": {
+    "description": "Dual-agent Plan-Execute-Review workflow plugin for Claude Code",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "review-loop",
+      "source": "./",
+      "description": "Dual-agent Plan-Execute-Review workflow. An Orchestrator coordinates an Executor and independent Reviewer in iterative loops, surfacing every finding in real time.",
+      "version": "1.0.0",
+      "author": {
+        "name": "NYTC69"
+      },
+      "license": "Apache-2.0",
+      "keywords": [
+        "review-loop",
+        "code-review",
+        "agents",
+        "planning",
+        "automation",
+        "dual-agent",
+        "agentic-coding"
+      ]
+    }
+  ]
+}
