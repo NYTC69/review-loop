@@ -94,6 +94,7 @@ All options in `.claude/review-loop-config.md`:
 | `commit_message_prefix` | feat | Conventional commit type prefix |
 | `docs_file` | CHANGELOG.md | File to append delivery summary; `""` to skip |
 | `handsfree` | false | Make `--handsfree` the default |
+| `review_focus` | "" | Project-specific review priorities for code review (free text) |
 
 ## Key design features
 

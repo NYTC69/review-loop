@@ -11,3 +11,11 @@ auto_commit: false
 commit_message_prefix: "feat"
 docs_file: CHANGELOG.md
 handsfree: false
+
+# Project-specific review priorities for code review phase.
+# These are injected into the Reviewer's prompt as additional focus areas.
+# Plan review is intentionally generic — it focuses on problem understanding.
+# review_focus: |
+#   - Security: XSS, CSRF, input sanitization, auth state handling
+#   - Accessibility: WCAG compliance, keyboard navigation, screen reader
+#   - UX edge cases: loading states, empty states, error states

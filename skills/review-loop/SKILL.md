@@ -69,9 +69,21 @@ auto_commit: false              # commit after execution phase completes
 commit_message_prefix: "feat"   # conventional commit prefix
 docs_file: CHANGELOG.md         # file to append delivery summary to; "" to skip
 handsfree: false                # set true to make --handsfree the default
+review_focus: ""                # project-specific review priorities (see below)
 ```
 
 The `--handsfree` flag at invocation always overrides the config value.
+
+**`review_focus`**: free-text field injected into the Reviewer's code review
+prompt as additional focus areas. Only applies to code review, not plan review.
+Leave empty to use the default review checklist in `reviewer.md`. Example:
+
+```yaml
+review_focus: |
+  - Security: XSS, CSRF, input sanitization, auth state handling
+  - Accessibility: WCAG compliance, keyboard navigation, screen reader
+  - UX edge cases: loading states, empty states, error states
+```
 
 ---
 
@@ -411,6 +423,11 @@ loop_state.round = 0
    deviated from the plan — introduced new thresholds, relaxed constraints,
    changed the agreed approach — flag it as CRITICAL even if the code is
    technically correct.
+
+   {if review_focus is set:}
+   ## Project-Specific Review Priorities
+   In addition to the standard review checklist, pay special attention to:
+   {review_focus}
 
    {if round > 1:}
    The context file contains your previous findings. Verify that previously
