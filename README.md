@@ -47,8 +47,8 @@ In Claude Code, run:
 /plugin install review-loop@review-loop-marketplace
 ```
 
-Then `/reload-plugins` or restart the session. The `/review-loop` command
-is now available in all your projects.
+Then start a new session. The `/review-loop` command is now available in
+all your projects.
 
 **Optional**: create a project-level config to customize defaults:
 
@@ -68,9 +68,15 @@ run review-loop on: refactor the auth middleware to use JWT
 # Fully autonomous mode — decision questions go to Reviewer, not you
 /review-loop add caching layer to the API --handsfree
 
-# Show usage guide, configuration, and key features
+# Show usage guide — slash command or natural language both work
+/review-loop:guide
 show me the review-loop guide
 ```
+
+> **After updating the plugin** — Claude Code caches plugin paths at session
+> start. After running `/plugin update`, start a new session so it picks up
+> the latest version. Old sessions will keep using the version loaded at
+> startup.
 
 ## Reviewer modes
 

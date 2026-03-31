@@ -41,7 +41,14 @@ Orchestrator (this session)
 
 # If code is already written, it auto-detects and skips to CR
 /review-loop review the changes I just made to the parser
+
+# Show this guide — slash command or natural language
+/review-loop:guide
+show me the review-loop guide
 ```
+
+> **After updating the plugin**: start a new session so Claude Code picks up
+> the latest version. Old sessions keep using the version loaded at startup.
 
 ## Configuration
 

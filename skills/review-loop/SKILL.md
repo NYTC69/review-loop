@@ -510,6 +510,11 @@ After execution loop exits with `APPROVE` (or user decides to stop):
 3. **If `docs_file` is set**: append the delivery summary (without the box
    drawing borders) to that file.
 
+4. **Cleanup temp files**: delete all round output files for this session:
+   `rm -f .claude/review-loop-sessions/{session_id}-round-*.txt`
+   The context file (`.claude/review-loop-sessions/{session_id}.md`) is
+   kept as a permanent record.
+
 ---
 
 ## Reviewer Dispatch
@@ -524,7 +529,7 @@ Use Bash to invoke the Codex CLI in non-interactive, read-only mode:
 ```bash
 # If reviewer_model is empty, omit -m flag entirely (codex uses its default model)
 # If reviewer_model is set, pass it via -m
-codex exec -s read-only {if reviewer_model: -m {reviewer_model}} -o /tmp/review-loop-{session_id}-{round}.txt - <<'REVIEW_PROMPT'
+codex exec -s read-only {if reviewer_model: -m {reviewer_model}} -o .claude/review-loop-sessions/{session_id}-round-{round}.txt - <<'REVIEW_PROMPT'
 {reviewer_prompt}
 REVIEW_PROMPT
 ```
