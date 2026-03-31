@@ -69,7 +69,7 @@ run review-loop on: refactor the auth middleware to use JWT
 /review-loop add caching layer to the API --handsfree
 
 # Show usage guide, configuration, and key features
-/review-loop:guide
+show me the review-loop guide
 ```
 
 ## Reviewer modes
