@@ -67,6 +67,9 @@ run review-loop on: refactor the auth middleware to use JWT
 
 # Fully autonomous mode — decision questions go to Reviewer, not you
 /review-loop add caching layer to the API --handsfree
+
+# Show usage guide, configuration, and key features
+/review-loop:help
 ```
 
 ## Reviewer modes
