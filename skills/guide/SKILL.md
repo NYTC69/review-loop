@@ -3,7 +3,6 @@ name: guide
 description: >
   Show review-loop usage guide: how it works, commands, configuration,
   and key features. Use when the user asks for help with review-loop.
-disable-model-invocation: true
 ---
 
 Display the following guide to the user exactly as written:
