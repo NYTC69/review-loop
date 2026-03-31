@@ -1,5 +1,5 @@
 ---
-name: help
+name: guide
 description: >
   Show review-loop usage guide: how it works, commands, configuration,
   and key features. Use when the user asks for help with review-loop.
