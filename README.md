@@ -40,16 +40,21 @@ Orchestrator (Claude Code main session)
 
 ## Installation
 
-```bash
-# In your target project
-mkdir -p .claude/skills
-cp -r /path/to/review-loop/skills/review-loop .claude/skills/
+In Claude Code, run:
 
-# Optional: create a project config
-cp /path/to/review-loop/review-loop-config.example.md .claude/review-loop-config.md
+```
+/plugin marketplace add NYTC69/review-loop
+/plugin install review-loop@review-loop-marketplace
 ```
 
-Then restart Claude Code (or `claude --resume`) to load the skill.
+Then `/reload-plugins` or restart the session. The `/review-loop` command
+is now available in all your projects.
+
+**Optional**: create a project-level config to customize defaults:
+
+```bash
+cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .claude/review-loop-config.md
+```
 
 ## Usage
 
