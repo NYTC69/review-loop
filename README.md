@@ -117,6 +117,12 @@ reached and CRITICALs remain, the Orchestrator asks you whether to continue.
 Stuck detection stops the loop if the same issue recurs 3 rounds without
 progress.
 
+**Project-specific config** — customize the review loop per project via
+`.claude/review-loop-config.md`. Choose your Reviewer backend, set iteration
+limits, and define `review_focus` to tell the Reviewer what matters most for
+your project (security for web apps, concurrency for backend services,
+accessibility for frontend, etc.).
+
 ## File structure
 
 ```
