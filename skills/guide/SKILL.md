@@ -57,7 +57,7 @@ Create `.claude/review-loop-config.md` in your project to customize:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
-| `reviewer_model` | "" | codex: `-m` flag (empty = codex default) |
+| `reviewer_model` | "" | codex: `-m` flag; subagent: Agent model (empty = inherit) |
 | `executor_model` | inherit | `"inherit"` \| `"sonnet"` \| `"opus"` |
 | `soft_limit_plan` | 3 | Rounds before asking to continue |
 | `soft_limit_exec` | 3 | Same for execution phase |
@@ -90,6 +90,7 @@ review_focus: |
 - **Plan Conformance** — flags unauthorized Executor deviations as CRITICAL
 - **Context file** — persistent session for traceability and fast agent startup
 - **Soft limits + stuck detection** — no hard cap, smart stopping
+- **Subagent mode** — no Codex needed; uses a Claude Code sub-agent as Reviewer
 - **Project-specific config** — tailor review priorities per project
 
 ## More info

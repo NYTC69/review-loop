@@ -83,10 +83,12 @@ show me the review-loop guide
 | Mode | Config | How it works |
 |------|--------|-------------|
 | **codex** (default) | `reviewer: codex` | Calls `codex exec -s read-only` — cross-AI review |
-| **subagent** | `reviewer: subagent` | Claude Code sub-agent with read-only tools (TODO) |
+| **subagent** | `reviewer: subagent` | Claude Code sub-agent with read-only tools |
 
 The codex mode gives you independent review from a different AI. The subagent
-mode is a fallback for users without a Codex subscription.
+mode uses a Claude Code sub-agent with read-only tools as the Reviewer — no
+external CLI required. Set `reviewer_model` to control which model the
+Reviewer sub-agent uses (empty = same model as the Orchestrator).
 
 ## Configuration
 
@@ -95,7 +97,7 @@ All options in `.claude/review-loop-config.md`:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
-| `reviewer_model` | "" | codex: `-m` flag (empty = codex default); subagent: Agent model |
+| `reviewer_model` | "" | codex: `-m` flag (empty = codex default); subagent: Agent tool `model` param (empty = inherit Orchestrator model) |
 | `executor_model` | inherit | `"inherit"` \| `"sonnet"` \| `"opus"` |
 | `soft_limit_plan` | 3 | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | 3 | Same for execution phase |

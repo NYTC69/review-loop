@@ -23,7 +23,7 @@ You (Orchestrator — this session)
 ├── Executor sub-agent   — plans, refines, implements (runs in Agent thread)
 └── Reviewer             — reviews plans and code, returns structured verdict
     ├── mode: codex      — external CLI: codex exec -s read-only
-    └── mode: subagent   — Claude Code sub-agent (read-only tools) [TODO]
+    └── mode: subagent   — Claude Code sub-agent (read-only tools)
 ```
 
 Two phases, each with their own iteration loop:
@@ -61,7 +61,7 @@ Read from `.claude/review-loop-config.md` if present, else use defaults:
 ```yaml
 # .claude/review-loop-config.md  ← create this in your project to override defaults
 reviewer: codex                 # "codex" | "subagent"
-reviewer_model: ""              # codex: passed to -m flag (empty = codex default model); subagent: Agent tool model
+reviewer_model: ""              # codex: -m flag (empty = codex default); subagent: Agent model (empty = inherit Orchestrator)
 executor_model: inherit         # Executor sub-agent model ("inherit" | "sonnet" | "opus")
 soft_limit_plan: 3              # after N rounds, ask user whether to continue (if CRITICALs remain)
 soft_limit_exec: 3              # same for execution phase
@@ -103,7 +103,7 @@ planning or coding yourself.
 3. Confirm the Reviewer backend is available:
    - If `reviewer: codex`: verify `codex` CLI is in PATH by running `which codex`.
      If not found, tell the user and suggest `reviewer: subagent` as fallback.
-   - If `reviewer: subagent`: no check needed (uses Agent tool). [TODO]
+   - If `reviewer: subagent`: no check needed (uses Agent tool).
 
 ### Step 0.5 — Initialize context file
 
@@ -261,16 +261,18 @@ Reviewer call. Store as:
    - Set `Current Phase: planning`
    - After round 1+: update `Review History` with latest findings
 
-2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
-   model: {executor_model}):
+2. **Call the Executor** (via Agent tool, subagent_type: review-loop:executor,
+   model: {executor_model if not "inherit", else omit}):
+
+   The `review-loop:executor` agent type auto-loads `agents/executor.md` as
+   the system prompt and enforces `tools: all`. Do NOT re-include the
+   executor.md body in the prompt — only send task-specific content.
 
    Prompt template:
    ```
-   You are the Executor in a review-loop workflow.
-
-   {contents of agents/executor.md body — the system prompt}
-
-   Read the full context file first: {context_file}
+   Read the context file first: {context_file}
+   DO NOT modify the context file — return your output as described in
+   the output format in your instructions.
 
    ## Your Task
    Produce a detailed solution plan following the output format in your
@@ -290,11 +292,17 @@ Reviewer call. Store as:
 
 4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
 
-   Prompt template:
-   ```
-   {contents of agents/reviewer.md body — the system prompt}
+   The template below is the **review content** — what the Reviewer should
+   review. How it is delivered depends on the reviewer mode:
+   - **codex mode**: prepend `agents/reviewer.md` body to this template
+     (codex doesn't load agent definitions).
+   - **subagent mode**: send this template as-is — `reviewer.md` is
+     auto-loaded as the system prompt by the `review-loop:reviewer` agent.
 
-   Read the full context file first: {context_file}
+   Review content template:
+   ```
+   Read the context file first: {context_file}
+   DO NOT modify the context file.
 
    ## Solution Plan to Review
    {executor_plan}
@@ -374,15 +382,14 @@ loop_state.round = 0
    - Update `Files Changed` and `Key Related Files` after each Executor round
    - Update `Review History` with latest findings
 
-2. **Call the Executor** (via Agent tool):
+2. **Call the Executor** (via Agent tool, subagent_type: review-loop:executor,
+   model: {executor_model if not "inherit", else omit}):
 
    Prompt template:
    ```
-   You are the Executor in a review-loop workflow.
-
-   {contents of agents/executor.md body}
-
-   Read the full context file first: {context_file}
+   Read the context file first: {context_file}
+   DO NOT modify the context file — return your output as described in
+   the output format in your instructions.
 
    ## Your Task
    Implement the approved plan (see context file). Make all necessary code
@@ -401,16 +408,18 @@ loop_state.round = 0
    any deviations from the plan into the context file. The Reviewer will
    read this file for orientation — stale data here means a wrong review.
 
-4. **Call the Reviewer** with:
+4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
 
-   Prompt template:
+   The template below is the **review content**. Delivery depends on mode:
+   - **codex mode**: prepend `agents/reviewer.md` body to this template.
+   - **subagent mode**: send as-is — `reviewer.md` is auto-loaded.
+
+   Review content template:
    ```
-   {contents of agents/reviewer.md body}
-
-   Read the full context file first: {context_file}
+   Read the context file first: {context_file}
+   DO NOT modify the context file.
    It contains the problem description, approved plan, review history,
-   changed files, and related files. Use this to orient yourself quickly
-   before reading the actual code.
+   changed files, and related files.
 
    ## Changes Made (summary from Executor)
    {executor_change_summary}
@@ -430,7 +439,7 @@ loop_state.round = 0
    {review_focus}
 
    {if round > 1:}
-   The context file contains your previous findings. Verify that previously
+   The context above contains your previous findings. Verify that previously
    flagged CRITICAL issues are actually resolved in code — read the actual
    code, don't just take the Executor's word for it. Also check whether
    fixes introduced regressions or new issues.
@@ -546,6 +555,11 @@ Then read the output file to get the Reviewer's response.
 - Each review call is stateless (no session persistence between rounds).
   The Orchestrator compensates by including Review History in the prompt.
 
+**Prompt construction for codex mode**: prepend the full `agents/reviewer.md`
+body (everything below the frontmatter) to the review content template from
+Step 2.4 or Step 3.4. This is necessary because codex does not load Claude
+Code agent definitions.
+
 **Project conventions are loaded automatically**:
 - Codex loads the project's `codex.md` on every invocation, so the user's
   coding standards and project-specific rules apply during review.
@@ -554,11 +568,40 @@ Then read the output file to get the Reviewer's response.
   by the Orchestrator (to extract VERDICT and issues), not by the user
   directly. The user sees the Live Report summary instead.
 
-### Mode: `subagent` [TODO — Phase B]
+### Mode: `subagent`
 
-Use the Agent tool with subagent_type set to the reviewer agent name, with
-read-only tools. Prompt includes the full reviewer.md instructions + review
-content. To be implemented after codex mode is tested.
+Use the Agent tool to invoke the Reviewer as a Claude Code sub-agent:
+
+```
+Agent tool parameters:
+  subagent_type: review-loop:reviewer
+  model: {reviewer_model if set and not empty, else omit — inherits Orchestrator model}
+  prompt: {review_content — the review content template from Step 2.4 or Step 3.4}
+```
+
+The `review-loop:reviewer` agent type automatically:
+- Loads `agents/reviewer.md` body as the system prompt (review instructions,
+  output format, verdict rules, principles)
+- Enforces `tools: read-only` — the Reviewer can read project files but
+  cannot modify them
+
+**Prompt construction for subagent mode**: do NOT prepend the `reviewer.md`
+body — it is already loaded as the system prompt. Send only the review
+content template (context file content, the plan or code to review, review
+history, and task instructions).
+
+**Important behaviors**:
+- The sub-agent runs in the same project directory and can read all project
+  files via the Read tool (read-only sandbox).
+- Claude Code loads `CLAUDE.md` automatically, so project conventions apply.
+- The Agent tool returns the sub-agent's full response text. Parse it the
+  same way as codex output: extract VERDICT and issues.
+- If the Agent tool returns an error, report it to the user and ask whether
+  to retry or switch to codex mode.
+- Each review call is stateless (fresh sub-agent per call). The Orchestrator
+  compensates by including Review History in the prompt.
+- Token usage: the Agent tool metadata may include token counts. If
+  available, accumulate them in `loop_state.token_usage.reviewer`.
 
 ---
 
@@ -572,10 +615,10 @@ When the Executor raises a question (detected in its output), classify it:
 - **Decision-type** (architecture choice, approach trade-off, ambiguous
   requirement with multiple valid solutions):
   - **Default mode** → pause and ask the user.
-  - **`--handsfree` mode** → forward to Reviewer:
-    ```
-    {reviewer.md instructions}
+  - **`--handsfree` mode** → forward to Reviewer via the configured mode:
 
+    Decision prompt (review content only):
+    ```
     ## Decision Required
     The Executor encountered a decision point and needs guidance:
     {executor_question}
@@ -586,6 +629,11 @@ When the Executor raises a question (detected in its output), classify it:
     Please make a decision and provide brief reasoning.
     Return: DECISION: <your choice> \n REASON: <why>
     ```
+
+    **If codex mode**: prepend `reviewer.md` body, then pass to `codex exec`.
+    **If subagent mode**: pass as-is to Agent tool with
+    `subagent_type: review-loop:reviewer` (reviewer.md auto-loaded).
+
     Log the decision in `loop_state` under autonomous_decisions.
 
 ---
@@ -598,6 +646,12 @@ the AI's automatic compaction, which can lose critical information.
 The context file (`.claude/review-loop-sessions/{uuid}.md`) is the single source of
 truth for the entire loop. All critical state lives on disk, not in the
 Orchestrator's conversation context.
+
+**Sub-agent file access**: sub-agents read the context file from disk
+each round. They are explicitly told NOT to modify the context file —
+only the Orchestrator writes to it. This prevents sub-agents from
+accidentally editing the file (which can cause permission errors in
+`.claude/`).
 
 **The Orchestrator's context stays minimal:**
 - The context file path
