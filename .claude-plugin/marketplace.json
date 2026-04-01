@@ -4,15 +4,15 @@
     "name": "NYTC69"
   },
   "metadata": {
-    "description": "Dual-agent Plan-Execute-Review workflow plugin for Claude Code",
-    "version": "1.0.0"
+    "description": "Code review automation plugin for Claude Code",
+    "version": "2.0.0"
   },
   "plugins": [
     {
       "name": "review-loop",
       "source": "./",
-      "description": "Dual-agent Plan-Execute-Review workflow. An Orchestrator coordinates an Executor and independent Reviewer in iterative loops, surfacing every finding in real time.",
-      "version": "1.3.0",
+      "description": "Code review automation plugin: dual-agent Plan-Execute-Review orchestration, iterative code-quality review-fix loop, and standalone multi-agent code review — all self-contained with 9 bundled agents.",
+      "version": "2.0.0",
       "author": {
         "name": "NYTC69"
       },
