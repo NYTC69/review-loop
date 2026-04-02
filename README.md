@@ -1,76 +1,20 @@
 # review-loop
 
-A Claude Code skill that automates the Plan → Review → Execute → CR loop
-using an Executor sub-agent and an independent Reviewer. You describe a work
-item; the agents drive it to delivery — and you see every issue the Reviewer
-catches along the way.
+A Claude Code plugin for AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis.
 
-## Why review-loop?
-
-A single AI agent can plan and implement, but it won't catch its own blind
-spots. review-loop adds an independent Reviewer (a different AI) that
-critiques every plan and every code change before it ships. In practice,
-this catches design deviations, missed edge cases, and unauthorized
-compromises that a single agent would silently ship.
-
-## How it works
-
-```
-You: "/review-loop add rate limiting to the /api/upload endpoint"
-
-Orchestrator (Claude Code main session)
-│
-├── Context file: .claude/review-loop-sessions/{uuid}.md
-│   Single source of truth — both agents read it each round
-│
-├── [Planning phase]
-│   ├── → Executor (sub-agent): draft solution plan
-│   ├── → Reviewer (codex exec): review plan
-│   ├── ← Live Report: what the Reviewer found
-│   └── (iterate until APPROVE or user stops)
-│
-├── [Execution phase]
-│   ├── → Executor (sub-agent): implement approved plan
-│   ├── → Reviewer (codex exec): code review + plan conformance check
-│   ├── ← Live Report: issues found, conformance violations
-│   └── (iterate until APPROVE or user stops)
-│
-└── Delivery: summary with full findings table + optional commit
-```
-
-## Installation
-
-In Claude Code, run:
+## Quick Start
 
 ```
 /plugin marketplace add NYTC69/review-loop
 /plugin install review-loop@review-loop-marketplace
 ```
 
-Then start a new session. The `/review-loop` command is now available in
-all your projects.
+Start a new session. The `/review-loop` command is now available in all your projects.
 
-**Optional**: create a project-level config to customize defaults:
+**Optional** — copy the config template to customize per-project defaults:
 
 ```bash
 cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .claude/review-loop-config.md
-```
-
-## Usage
-
-```bash
-# Slash command
-/review-loop add pagination to the user list endpoint
-
-# Natural language (auto-triggers)
-run review-loop on: refactor the auth middleware to use JWT
-
-# Fully autonomous mode — decision questions go to Reviewer, not you
-/review-loop add caching layer to the API --handsfree
-
-# Show usage guide — slash command or natural language both work
-/review-loop:guide
-show me the review-loop guide
 ```
 
 > **After updating the plugin** — Claude Code caches plugin paths at session
@@ -78,76 +22,194 @@ show me the review-loop guide
 > the latest version. Old sessions will keep using the version loaded at
 > startup.
 
-## Reviewer modes
+## Workflow Overview
 
-| Mode | Config | How it works |
-|------|--------|-------------|
-| **codex** (default) | `reviewer: codex` | Calls `codex exec -s read-only` — cross-AI review |
-| **subagent** | `reviewer: subagent` | Claude Code sub-agent with read-only tools |
+```
+/review-loop <task>
+│
+├── Step 1 — Planning
+│   Executor drafts plan → Adversarial Reviewer critiques → iterate until APPROVE
+│
+├── Step 2 — Execution
+│   Executor implements → Adversarial Reviewer code-reviews → iterate until APPROVE
+│
+├── Step 3.5 — Quality Polish (automatic)
+│   Language-specific static analysis → code quality review →
+│   code simplification → test coverage check → comment analysis
+│
+└── Delivery
+    Findings table + quality summary + time breakdown
+```
 
-The codex mode gives you independent review from a different AI. The subagent
-mode uses a Claude Code sub-agent with read-only tools as the Reviewer — no
-external CLI required. Set `reviewer_model` to control which model the
-Reviewer sub-agent uses (empty = same model as the Orchestrator).
+Both the Executor and Reviewer operate independently — the Reviewer is a
+different AI (or an isolated sub-agent) that catches blind spots, design
+deviations, and unauthorized compromises the Executor would silently ship.
+
+## Example: Rust Repo
+
+```
+/review-loop add rate limiting to the upload endpoint using tower middleware
+```
+
+**Planning** — The Executor drafts a plan using `tower::limit::RateLimitLayer`.
+The Reviewer flags a missing per-IP bucket strategy and rates it CRITICAL.
+The Executor revises. The Reviewer approves on round 2.
+
+**Execution** — The Executor implements the plan. The Reviewer catches that the
+`RateLimitLayer` was applied globally instead of per-route and flags plan
+conformance violation. Fixed and approved on round 2.
+
+**Quality Polish** — `rust-reviewer` runs `cargo clippy`, `code-simplifier`
+removes a redundant `.clone()`, `pr-test-analyzer` notes missing test for
+the 429 response path.
+
+**Delivery** — Full findings table, quality summary, and time breakdown are
+shown. Optionally auto-commits the result.
+
+## Standalone Tools
+
+### `/review-loop:code-quality-loop`
+
+Run quality polish independently on existing code. Same agents as Step 3.5
+but triggered on demand — useful for cleaning up code that was written
+outside the review-loop workflow.
+
+### `/review-loop:review-pr [aspects]`
+
+Spot-check specific aspects of recent changes. Available aspects:
+
+| Aspect | Agent | What it checks |
+|--------|-------|---------------|
+| `code` | code-reviewer | Style, patterns, best practices |
+| `errors` | silent-failure-hunter | Swallowed errors, silent fallbacks |
+| `comments` | comment-analyzer | Comment accuracy, staleness |
+| `types` | type-design-analyzer | Type design, encapsulation |
+| `tests` | pr-test-analyzer | Test coverage, edge cases |
+| `simplify` | code-simplifier | Unnecessary complexity |
+
+```
+/review-loop:review-pr code errors tests
+```
+
+### `/review-loop:guide`
+
+Show the usage guide — how it works, commands, configuration, and key features.
 
 ## Configuration
 
-All options in `.claude/review-loop-config.md`:
+All options live in `.claude/review-loop-config.md`. Every field is optional.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `reviewer` | codex | `"codex"` \| `"subagent"` |
-| `reviewer_model` | "" | codex: `-m` flag (empty = codex default); subagent: Agent tool `model` param (empty = inherit Orchestrator model) |
-| `executor_model` | inherit | `"inherit"` \| `"sonnet"` \| `"opus"` |
-| `soft_limit_plan` | 3 | After N rounds, ask user to continue if CRITICALs remain |
-| `soft_limit_exec` | 3 | Same for execution phase |
-| `auto_commit` | false | Stage changed files and commit after delivery |
-| `commit_message_prefix` | feat | Conventional commit type prefix |
-| `docs_file` | CHANGELOG.md | File to append delivery summary; `""` to skip |
-| `handsfree` | false | Make `--handsfree` the default |
-| `review_focus` | "" | Project-specific review priorities for code review (free text) |
+| `reviewer` | `codex` | `"codex"` \| `"subagent"` — which backend reviews |
+| `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = default) |
+| `executor_model` | `inherit` | `"inherit"` \| `"sonnet"` \| `"opus"` |
+| `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
+| `soft_limit_exec` | `3` | Same for execution phase |
+| `auto_commit` | `false` | Stage changed files and commit after delivery |
+| `commit_message_prefix` | `feat` | Conventional commit type prefix |
+| `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
+| `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
+| `review_focus` | `""` | Project-specific review priorities (free text) |
+| `quality_focus` | `""` | What to prioritize in quality polish (free text) |
+| `review_style` | `""` | Tone and rules for all reviews (free text) |
+| `skip_quality_polish` | `false` | Skip Quality Polish (Step 3.5) entirely |
 
-## Key design features
+### Natural language config examples
 
-**Live Reports** — after every review round, the Orchestrator shows you what
+```yaml
+review_focus: |
+  - Security: auth checks, input validation, SQL injection
+  - Performance: N+1 queries, missing indexes
+
+quality_focus: "strict clippy lints, skip comment analysis"
+
+review_style: "be terse, flag any unwrap() as CRITICAL"
+```
+
+## Reviewer Modes
+
+| Mode | Config | How it works |
+|------|--------|-------------|
+| **codex** (default) | `reviewer: codex` | Calls `codex exec -s read-only` — cross-AI review from a different model |
+| **subagent** | `reviewer: subagent` | Claude Code sub-agent with read-only tools — no external CLI required |
+
+The codex mode gives you genuinely independent review from a different AI.
+The subagent mode uses a Claude Code sub-agent — convenient when you don't
+have Codex installed. Set `reviewer_model` to control which model the
+Reviewer uses.
+
+## Included Agents
+
+| Agent | Role |
+|-------|------|
+| `executor` | Implements plans and code changes as a sub-agent |
+| `reviewer` | Independent adversarial reviewer (plan + code review) |
+| `code-reviewer` | Style, patterns, and best-practice checks |
+| `code-simplifier` | Removes unnecessary complexity while preserving behavior |
+| `silent-failure-hunter` | Finds swallowed errors, silent fallbacks, inadequate error handling |
+| `pr-test-analyzer` | Reviews test coverage quality and completeness |
+| `comment-analyzer` | Checks comment accuracy, staleness, and maintainability |
+| `type-design-analyzer` | Analyzes type design — encapsulation, invariants, usefulness |
+| `go-reviewer` | Go static analysis (`go vet`, `staticcheck`, etc.) |
+| `rust-reviewer` | Rust static analysis (`cargo clippy`, etc.) |
+| `python-reviewer` | Python static analysis (`ruff`, `mypy`, etc.) |
+| `frontend-security-reviewer` | Frontend security: XSS, CSRF, auth state, dependency risks |
+
+## Key Design Features
+
+**Live Reports** — After every review round, the Orchestrator shows you what
 the Reviewer found: CRITICAL issues, MINOR suggestions, and the verdict.
 You see the value of the review loop in real time.
 
-**Plan Conformance** — the Reviewer checks that the Executor's implementation
-stays within the approved plan. If the Executor introduces unauthorized
-design decisions (new thresholds, relaxed constraints), it's flagged as
+**Plan Conformance** — The Reviewer checks that the Executor's implementation
+stays within the approved plan. Unauthorized design decisions are flagged as
 CRITICAL even if the code is technically correct.
 
-**Context file** — all loop state is persisted to
-`.claude/review-loop-sessions/{uuid}.md`. Both agents read it each round for
-instant context (no cold-start exploration). Session files are preserved for
-post-hoc traceability — you can review which round introduced an issue.
+**Context File** — All loop state is persisted to
+`.claude/review-loop-sessions/{uuid}.md`. Both agents read it each round
+for instant context. Session files are preserved for post-hoc traceability.
 
-**Soft iteration limits** — no hard cap on rounds. When the soft limit is
-reached and CRITICALs remain, the Orchestrator asks you whether to continue.
+**Soft Limits + Stuck Detection** — No hard cap on rounds. When the soft limit
+is reached and CRITICALs remain, the Orchestrator asks whether to continue.
 Stuck detection stops the loop if the same issue recurs 3 rounds without
 progress.
 
-**Project-specific config** — customize the review loop per project via
-`.claude/review-loop-config.md`. Choose your Reviewer backend, set iteration
-limits, and define `review_focus` to tell the Reviewer what matters most for
-your project (security for web apps, concurrency for backend services,
-accessibility for frontend, etc.).
+**Quality Polish** — After the adversarial review loop approves, a suite of
+specialized agents automatically runs static analysis, simplification, test
+coverage, and comment checks. Configurable via `quality_focus` and
+`skip_quality_polish`.
 
-## File structure
+## File Structure
 
 ```
 review-loop/
 ├── skills/
-│   └── review-loop/
-│       └── SKILL.md                ← Orchestrator instructions
+│   ├── review-loop/
+│   │   └── SKILL.md              ← Orchestrator instructions
+│   ├── code-quality-loop/
+│   │   └── SKILL.md              ← Standalone quality polish
+│   ├── review-pr/
+│   │   └── SKILL.md              ← Spot-check specific aspects
+│   └── guide/
+│       └── SKILL.md              ← Usage guide
 ├── agents/
-│   ├── executor.md                 ← Executor sub-agent definition
-│   └── reviewer.md                 ← Reviewer definition (also embedded in codex prompt)
-├── review-loop-config.example.md   ← Copy to .claude/ and customize
+│   ├── executor.md               ← Executor sub-agent
+│   ├── reviewer.md               ← Adversarial Reviewer
+│   ├── code-reviewer.md          ← Code style + patterns
+│   ├── code-simplifier.md        ← Complexity reduction
+│   ├── silent-failure-hunter.md  ← Error handling review
+│   ├── pr-test-analyzer.md       ← Test coverage review
+│   ├── comment-analyzer.md       ← Comment quality review
+│   ├── type-design-analyzer.md   ← Type design review
+│   ├── go-reviewer.md            ← Go static analysis
+│   ├── rust-reviewer.md          ← Rust static analysis
+│   ├── python-reviewer.md        ← Python static analysis
+│   └── frontend-security-reviewer.md ← Frontend security
+├── review-loop-config.example.md ← Copy to .claude/ and customize
 ├── .gitignore
-├── LICENSE                         ← Apache 2.0
-└── README.md                       ← This file
+├── LICENSE                       ← Apache 2.0
+└── README.md
 ```
 
 ## License
