@@ -19,7 +19,7 @@ Display the following guide to the user exactly as written:
 Orchestrator (this session)
 │
 ├── Context file: .claude/review-loop-sessions/{uuid}.md
-│   Single source of truth — both agents read it each round
+│   Single source of truth — all agents read it each round
 │
 ├── [Planning phase]
 │   → Executor drafts plan → Reviewer critiques → iterate
@@ -27,7 +27,10 @@ Orchestrator (this session)
 ├── [Execution phase]
 │   → Executor implements → Reviewer does CR → iterate
 │
-└── Delivery: findings table + time breakdown + optional commit
+├── [Quality Polish]  (skip with skip_quality_polish: true)
+│   → Language analysis → Code quality → Simplify → Tests
+│
+└── Delivery: findings table + quality summary + time breakdown
 ```
 
 ## Usage
@@ -64,6 +67,9 @@ Create `.claude/review-loop-config.md` in your project to customize:
 | `auto_commit` | false | Commit after delivery |
 | `handsfree` | false | Default to handsfree mode |
 | `review_focus` | "" | Project-specific review priorities (free text) |
+| `quality_focus` | "" | What to prioritize in Quality Polish (Step 3.5) |
+| `review_style` | "" | Tone/rules for ALL reviews — adversarial + quality agents |
+| `skip_quality_polish` | false | Skip Step 3.5 entirely |
 
 ### review_focus examples
 

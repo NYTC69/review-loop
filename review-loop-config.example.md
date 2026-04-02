@@ -19,3 +19,14 @@ handsfree: false
 #   - Security: XSS, CSRF, input sanitization, auth state handling
 #   - Accessibility: WCAG compliance, keyboard navigation, screen reader
 #   - UX edge cases: loading states, empty states, error states
+
+# What to prioritize in quality polish (Step 3.5).
+# Natural language — injected into quality agent prompts.
+# quality_focus: "strict clippy lints, skip comment analysis"
+
+# Tone and rules for ALL reviews (adversarial CR + quality agents).
+# Natural language — injected into every reviewer prompt.
+# review_style: "be terse, flag 80-char violations as CRITICAL"
+
+# Skip Quality Polish (Step 3.5) entirely.
+skip_quality_polish: false

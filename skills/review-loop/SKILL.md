@@ -70,6 +70,9 @@ commit_message_prefix: "feat"   # conventional commit prefix
 docs_file: CHANGELOG.md         # file to append delivery summary to; "" to skip
 handsfree: false                # set true to make --handsfree the default
 review_focus: ""                # project-specific review priorities (see below)
+quality_focus: ""               # what to prioritize in quality polish (Step 3.5)
+review_style: ""                # tone and rules for ALL reviews (adversarial CR + quality agents)
+skip_quality_polish: false      # skip Step 3.5 entirely
 ```
 
 The `--handsfree` flag at invocation always overrides the config value.
@@ -84,6 +87,18 @@ review_focus: |
   - Accessibility: WCAG compliance, keyboard navigation, screen reader
   - UX edge cases: loading states, empty states, error states
 ```
+
+**`quality_focus`**: free-text field injected into quality agent prompts in
+Step 3.5. Tells the quality agents what to prioritize (e.g., "strict clippy
+lints, skip comment analysis"). Leave empty for default behavior.
+
+**`review_style`**: free-text field injected into ALL reviewer prompts —
+both the adversarial Reviewer (Steps 2-3) and the quality agents (Step 3.5).
+Use this to set tone and cross-cutting rules (e.g., "be terse, flag 80-char
+violations as CRITICAL"). Leave empty for default behavior.
+
+**`skip_quality_polish`**: set to `true` to skip Step 3.5 entirely. Useful
+when you only want the adversarial CR loop without the supplementary polish.
 
 ---
 
@@ -333,6 +348,10 @@ Reviewer call. Store as:
    ## Your Task
    This is the first review. Review the plan critically from scratch.
 
+   {if review_style is set:}
+   ## Review Style
+   {review_style}
+
    Return your structured verdict following the output format in your
    instructions above.
    ```
@@ -454,6 +473,10 @@ loop_state.round = 0
 
    You have read-only access to the project files — use it.
 
+   {if review_style is set:}
+   ## Review Style
+   {review_style}
+
    Return your structured verdict following the output format in your
    instructions above.
    ```
@@ -463,9 +486,139 @@ loop_state.round = 0
 4. **Loop control** — same logic as planning phase (APPROVE exits,
    soft limit uses `soft_limit_exec`, stuck detection applies).
 
+### Step 3.5 — Quality Polish
+
+> **Skip condition**: if `skip_quality_polish: true` in config, skip this
+> entire step and go directly to Step 4.
+
+After the execution loop exits with APPROVE, run supplementary quality
+checks before delivery. This is NOT a replacement for the adversarial
+review — it is automated polish that catches language-specific and
+structural issues the adversarial reviewer may not focus on.
+
+#### 3.5.1 — Language detection
+
+Detect languages in changed files (both tracked and untracked):
+```bash
+{ git diff --name-only --diff-filter=d HEAD; git ls-files --others --exclude-standard; } | grep '\.' | sed 's/.*\.\([^.]*\)$/\1/' | sort -u
+```
+
+Map extensions to agents:
+- `.go` → `review-loop:go-reviewer`
+- `.rs` → `review-loop:rust-reviewer`
+- `.py` → `review-loop:python-reviewer`
+- `.ts/.tsx/.js/.jsx/.html/.vue/.svelte` → `review-loop:frontend-security-reviewer`
+- Multiple languages → run all applicable agents
+
+#### 3.5.2 — Language-specific static analysis
+
+For each detected language, invoke the corresponding agent:
+```
+Agent tool:
+  subagent_type: review-loop:<agent-name>
+  prompt: |
+    Run analysis on the changed files. Context file: {context_file}
+    {if quality_focus is set:}
+    ## Quality Focus
+    {quality_focus}
+    {if review_style is set:}
+    ## Review Style
+    {review_style}
+```
+
+These agents have `tools: read-only` — they report findings but cannot fix.
+
+Display findings to the user. If any CRITICAL/HIGH issues found, invoke the
+Executor (via `subagent_type: general-purpose`) to fix them, then re-run the
+language agent to verify. Max **2 fix rounds**. If issues remain after 2
+rounds, report them to user and continue to the next sub-step.
+
+#### 3.5.3 — Code quality review-fix loop
+
+Invoke `review-loop:code-reviewer` and `review-loop:silent-failure-hunter`
+on the changed code:
+```
+Agent tool:
+  subagent_type: review-loop:code-reviewer  (and silent-failure-hunter)
+  prompt: |
+    Review the changed files listed in context file: {context_file}
+    {if quality_focus is set:}
+    ## Quality Focus
+    {quality_focus}
+    {if review_style is set:}
+    ## Review Style
+    {review_style}
+```
+
+- Parse findings, triage by severity
+- If CRITICAL/HIGH issues: invoke Executor (`subagent_type: general-purpose`)
+  to fix → re-review
+- Max **3 rounds** or until clean
+- **Stuck detection**: same issue persists 3 rounds = stop
+
+#### 3.5.4 — Simplify
+
+Invoke code-simplifier via `subagent_type: general-purpose` (it needs
+Write/Edit tools):
+```
+Agent tool:
+  subagent_type: general-purpose
+  prompt: |
+    {contents of agents/code-simplifier.md body}
+    Simplify the recently changed files: {file_list from context file}
+    {if quality_focus is set:}
+    ## Quality Focus
+    {quality_focus}
+    {if review_style is set:}
+    ## Review Style
+    {review_style}
+```
+
+If simplify makes changes, run a quick build check to ensure nothing broke.
+If build fails, revert the simplify changes and report to user.
+
+#### 3.5.5 — Test consolidation
+
+Invoke `review-loop:pr-test-analyzer` to check test coverage:
+```
+Agent tool:
+  subagent_type: review-loop:pr-test-analyzer
+  prompt: |
+    Analyze test coverage for the changed files. Context file: {context_file}
+    {if quality_focus is set:}
+    ## Quality Focus
+    {quality_focus}
+    {if review_style is set:}
+    ## Review Style
+    {review_style}
+```
+
+If gaps found, invoke Executor (`subagent_type: general-purpose`) to add
+missing tests. Then run the build/test command:
+- Go: `go test ./...`
+- Rust: `cargo test`
+- Python: `pytest` or project test command
+- Other: language-appropriate command
+
+Max **2 fix rounds** for test failures. If still failing after 2 rounds,
+report remaining failures to user and proceed to delivery.
+
+#### 3.5.6 — Display Quality Polish summary
+
+```
+── review-loop: Quality Polish ─────────────────────
+Static analysis: {go-reviewer: PASS / rust-reviewer: 2 fixed / ...}
+Code quality:    {3 rounds, 5 fixed, 0 remaining}
+Simplify:        {4 improvements applied}
+Tests:           {PASS (12 tests) / 2 added, 1 updated}
+────────────────────────────────────────────────────
+```
+
+Update the context file with Quality Polish results and timing.
+
 ### Step 4 — Delivery
 
-After execution loop exits with `APPROVE` (or user decides to stop):
+After Quality Polish completes (or is skipped), or user decides to stop:
 
 1. **If `auto_commit: true`**: stage only the files reported as changed by the
    Executor using `git add <file1> <file2> ...` (never `git add -A` or
@@ -481,6 +634,7 @@ After execution loop exits with `APPROVE` (or user decides to stop):
    **Reviewer**: {codex | subagent} ({reviewer_model})
    **Mode**: {interactive | handsfree}
    **Plan rounds**: {N}  |  **Exec rounds**: {N}
+   **Quality Polish**: {ran / skipped}
 
    ### Review Findings
    | Round | Phase | Severity | Issue | Resolution |
@@ -499,6 +653,13 @@ After execution loop exits with `APPROVE` (or user decides to stop):
    {if unresolved_minor_issues:}
    ### Unresolved Minor Issues
    - {issue} — {why unresolved}
+
+   {if quality polish ran:}
+   ### Quality Polish
+   Static analysis: {agent: PASS/FIXED/...}
+   Code quality:    {rounds, fixed, remaining}
+   Simplify:        {improvements applied}
+   Tests:           {PASS/FAIL (count)}
 
    ### Time Breakdown
    | Phase | Round | Executor | Reviewer | Round Total |
