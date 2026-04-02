@@ -11,7 +11,7 @@
     {
       "name": "review-loop",
       "source": "./",
-      "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 4 skills, full Plan-Execute-Review-Polish pipeline.",
+      "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 5 skills, full Plan-Execute-Review-Polish pipeline.",
       "version": "2.0.0",
       "author": {
         "name": "NYTC69"

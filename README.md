@@ -35,7 +35,7 @@ cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .claude/rev
 │
 ├── 3. Quality Polish (automatic)
 │   Language-specific static analysis → code quality review →
-│   code simplification → test coverage check
+│   reorganize → code simplification → test coverage check
 │
 └── 4. Delivery
     Findings table + quality summary + time breakdown
@@ -59,9 +59,10 @@ The Executor revises. The Reviewer approves on round 2.
 `RateLimitLayer` was applied globally instead of per-route and flags plan
 conformance violation. Fixed and approved on round 2.
 
-**Quality Polish** — `rust-reviewer` runs `cargo clippy`, `code-simplifier`
-removes a redundant `.clone()`, `pr-test-analyzer` notes missing test for
-the 429 response path.
+**Quality Polish** — `rust-reviewer` runs `cargo clippy`, `reorganize`
+restructures the handler into focused modules, `code-simplifier` removes a
+redundant `.clone()`, `pr-test-analyzer` notes missing test for the 429
+response path.
 
 **Delivery** — Full findings table, quality summary, and time breakdown are
 shown. Optionally auto-commits the result.
@@ -73,6 +74,18 @@ shown. Optionally auto-commits the result.
 Run quality polish independently on existing code. Same agents as Step 3.5
 but triggered on demand — useful for cleaning up code that was written
 outside the review-loop workflow.
+
+### `/review-loop:reorganize <file/dir or 'diff'>`
+
+Restructure code files: rearrange module layout, extract shared logic, remove
+redundancy, add section comments. Splits coupled files into focused modules.
+Preserves all functionality — this is restructuring, not rewriting.
+
+```
+/review-loop:reorganize src/engine.go    # single file
+/review-loop:reorganize src/core/        # directory
+/review-loop:reorganize diff             # all uncommitted changes
+```
 
 ### `/review-loop:review-pr [aspects]`
 
@@ -176,9 +189,9 @@ Stuck detection stops the loop if the same issue recurs 3 rounds without
 progress.
 
 **Quality Polish** — After the adversarial review loop approves, a suite of
-specialized agents automatically runs static analysis, simplification, test
-coverage, and comment checks. Configurable via `quality_focus` and
-`skip_quality_polish`.
+specialized agents automatically runs static analysis, reorganization,
+simplification, test coverage, and comment checks. Configurable via
+`quality_focus` and `skip_quality_polish`.
 
 ## File Structure
 
@@ -189,6 +202,8 @@ review-loop/
 │   │   └── SKILL.md              ← Orchestrator instructions
 │   ├── code-quality-loop/
 │   │   └── SKILL.md              ← Standalone quality polish
+│   ├── reorganize/
+│   │   └── SKILL.md              ← Code file restructuring
 │   ├── review-pr/
 │   │   └── SKILL.md              ← Spot-check specific aspects
 │   └── guide/
