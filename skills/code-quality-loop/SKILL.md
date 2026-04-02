@@ -1,6 +1,6 @@
 ---
 name: code-quality-loop
-description: "Iterative review-fix loop: reviews code, auto-fixes issues, repeats until clean or stuck. Finishes with simplify + test consolidation."
+description: "Iterative review-fix loop: reviews code, auto-fixes issues, repeats until clean or stuck. Finishes with reorganize (for large changes), simplify + test consolidation."
 argument-hint: "[max-rounds]"
 ---
 
@@ -14,12 +14,19 @@ Automated code review cycle: review -> fix -> re-review until clean. Focuses on 
 Pre-loop:  language-specific agents -> fix (once per detected language)
 Loop R1:   code-reviewer + silent-failure-hunter + comment-analyzer + type-design-analyzer -> triage -> fix
 Loop R2+:  code-reviewer + silent-failure-hunter -> triage -> fix -> repeat
-Finalize:  code-simplifier agent -> build -> test consolidation -> pr-test-analyzer
+Finalize:  reorganize (if applicable) -> code-simplifier agent -> build -> test consolidation -> pr-test-analyzer
 ```
 
 ## Arguments
 
-`$ARGUMENTS`: Optional max round count. Example: `/code-quality-loop 3`. Default: 5.
+`$ARGUMENTS`: Optional flags and max round count.
+
+- **Max rounds**: `/code-quality-loop 3` — limit to 3 rounds (default: 5)
+- **Skip reorganize**: `/code-quality-loop --skip-reorganize` — skip the Reorganize step in Finalize
+- **Force reorganize**: `/code-quality-loop --reorganize` — always run Reorganize regardless of change size
+- **Combined**: `/code-quality-loop 3 --skip-reorganize`
+
+If neither `--skip-reorganize` nor `--reorganize` is specified, the Orchestrator decides automatically based on change scope (see Finalize Step 1).
 
 ## Initialization
 
@@ -313,7 +320,23 @@ Do NOT run tests after each fix. Testing happens once in the Finalize phase.
 
 Execute the following steps regardless of how the loop ended (CLEAN, STUCK, or MAX_ROUNDS). Code has been partially modified and must be left in a buildable, testable state.
 
-### Step 1: Simplify + Build
+### Step 1: Reorganize (conditional)
+
+**Skip if** `--skip-reorganize` was passed. **Always run if** `--reorganize` was passed.
+
+**If neither flag was passed**, decide automatically: examine the scope of changes from Initialization (file count, total lines changed via `git diff --stat`). Apply this heuristic:
+- **Skip**: <= 3 files changed AND <= 100 lines changed — likely a bug fix or small patch
+- **Run**: > 3 files changed OR > 100 lines changed — likely a feature or significant refactor
+
+Run `/review-loop:reorganize diff` to restructure changed files. The reorganize skill includes its own build verification.
+
+**Output:**
+
+```
+[REORGANIZE]   {skipped (small change) / skipped (--skip-reorganize) / ran (see reorganize output)}
+```
+
+### Step 2: Simplify + Build
 
 Launch the `code-simplifier` agent for final code polish (auto-fix). Due to the known plugin agent type sandbox bug, invoke code-simplifier via `subagent_type: general-purpose` with the agent's full body inlined in the prompt:
 
@@ -349,9 +372,9 @@ Then verify compilation. Detect build command from the languages found during in
 - Multiple languages: run all applicable build checks
 - No specific build tool: skip build check
 
-If build fails -> fix the compilation error and rebuild. Max 3 attempts. If still failing after 3 attempts, report to user and continue to Step 2.
+If build fails -> fix the compilation error and rebuild. Max 3 attempts. If still failing after 3 attempts, report to user and continue to Step 3.
 
-### Step 2: Test consolidation
+### Step 3: Test consolidation
 
 Consolidate tests for the changed code:
 - Keep only tests for critical logic paths
@@ -371,7 +394,7 @@ Detect test command from project languages:
 
 Max 3 fix cycles. If still failing after 3 attempts, report remaining failures to user and continue.
 
-### Step 3: Test quality gate
+### Step 4: Test quality gate
 
 Launch the `pr-test-analyzer` agent to verify test quality (coverage gaps, missing edge cases):
 
@@ -406,10 +429,11 @@ If issues found -> fix and re-run tests.
 
 Max 2 fix cycles. If still failing, report to user and continue.
 
-**Finalize output (all 3 steps):**
+**Finalize output (all 4 steps):**
 
 ```
 -- FINALIZE ------------------------------------------
+[REORGANIZE]   {skipped (small change) / skipped (--skip-reorganize) / ran (see output above)}
 [SIMPLIFY]     {X improvements applied / 0 (already clean)}
 [BUILD]        {PASS / FAIL -> fixed (attempt {n}/3) / FAIL (unresolved)}
 [TESTS]
