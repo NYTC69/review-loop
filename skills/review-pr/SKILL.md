@@ -51,12 +51,11 @@ Each aspect maps to a specialized agent in the `agents/` directory:
 | **errors**   | silent-failure-hunter  | Always (error handling analysis)    |
 | **comments** | comment-analyzer       | If comments/docs added or changed   |
 | **types**    | type-design-analyzer   | If types added or modified          |
-| **tests**    | pr-test-analyzer       | If test files changed               |
+| **tests**    | pr-test-analyzer       | Always (checks if changes lack tests too) |
 | **simplify** | code-simplifier        | After other reviews pass (polish)   |
 
 When `all` is selected, determine applicable aspects based on the changed files:
-- **Always run**: `code`, `errors`
-- **If test files changed** (files matching `*test*`, `*spec*`, `__tests__/*`): `tests`
+- **Always run**: `code`, `errors`, `tests` (catches missing tests for new code too)
 - **If comments or docs changed**: `comments`
 - **If type definitions added/modified** (interfaces, type aliases, classes): `types`
 - **`simplify` runs last** when selected — it applies changes, so it goes after

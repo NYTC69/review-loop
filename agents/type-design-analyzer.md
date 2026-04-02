@@ -109,3 +109,25 @@ Always consider:
 - The balance between safety and usability
 
 Think deeply about each type's role in the larger system. Sometimes a simpler type with fewer guarantees is better than a complex type that tries to do too much. Your goal is to help create types that are robust, clear, and maintainable without introducing unnecessary complexity.
+
+**Standard Output Section:**
+
+After your detailed analysis above, ALWAYS append a summary block for the orchestrator. Map your ratings to standard severity levels:
+
+- **CRITICAL**: Any rating category (Encapsulation, Invariant Expression, Usefulness, Enforcement) below 4/10
+- **HIGH**: Any rating category between 4/10 and 6/10
+- **MEDIUM**: Items listed under Concerns that don't already map to CRITICAL or HIGH via ratings
+
+Format:
+
+```
+## Summary for Orchestrator
+CRITICAL: X | HIGH: X | MEDIUM: X
+
+- [SEVERITY] file:line — One-line description of the issue
+- ...
+
+Verdict: [APPROVE / BLOCK]
+- APPROVE: No CRITICAL or HIGH issues
+- BLOCK: Has CRITICAL or HIGH issues
+```

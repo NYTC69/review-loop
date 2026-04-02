@@ -46,3 +46,26 @@ Group issues by severity (Critical: 90-100, Important: 80-89).
 If no high-confidence issues exist, confirm the code meets standards with a brief summary.
 
 Be thorough but filter aggressively - quality over quantity. Focus on issues that truly matter.
+
+**Standard Output Section:**
+
+After your detailed analysis above, ALWAYS append a summary block for the orchestrator. Map your confidence scores to standard severity levels:
+
+- **CRITICAL**: Issues with confidence 90-100 (critical bugs or explicit CLAUDE.md violations)
+- **HIGH**: Issues with confidence 80-89 (important issues requiring attention)
+
+Note: Issues below confidence 80 are already filtered out per the review rules above.
+
+Format:
+
+```
+## Summary for Orchestrator
+CRITICAL: X | HIGH: X | MEDIUM: X
+
+- [SEVERITY] file:line — One-line description of the issue
+- ...
+
+Verdict: [APPROVE / BLOCK]
+- APPROVE: No CRITICAL or HIGH issues
+- BLOCK: Has CRITICAL or HIGH issues
+```

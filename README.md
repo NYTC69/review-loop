@@ -18,26 +18,26 @@ cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .claude/rev
 ```
 
 > **After updating the plugin** — Claude Code caches plugin paths at session
-> start. After running `/plugin update`, start a new session so it picks up
-> the latest version. Old sessions will keep using the version loaded at
-> startup.
+> start. After running `/plugin update`, try `/reload-plugins` first. If
+> that doesn't pick up the new version, start a new session. This is a
+> Claude Code caching behavior, not a review-loop limitation.
 
 ## Workflow Overview
 
 ```
 /review-loop <task>
 │
-├── Step 1 — Planning
+├── 1. Planning
 │   Executor drafts plan → Adversarial Reviewer critiques → iterate until APPROVE
 │
-├── Step 2 — Execution
+├── 2. Execution
 │   Executor implements → Adversarial Reviewer code-reviews → iterate until APPROVE
 │
-├── Step 3.5 — Quality Polish (automatic)
+├── 3. Quality Polish (automatic)
 │   Language-specific static analysis → code quality review →
-│   code simplification → test coverage check → comment analysis
+│   code simplification → test coverage check
 │
-└── Delivery
+└── 4. Delivery
     Findings table + quality summary + time breakdown
 ```
 

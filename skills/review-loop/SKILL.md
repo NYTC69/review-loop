@@ -348,6 +348,8 @@ Reviewer call. Store as:
    ## Your Task
    This is the first review. Review the plan critically from scratch.
 
+   {endif}
+
    {if review_style is set:}
    ## Review Style
    {review_style}
@@ -480,6 +482,11 @@ loop_state.round = 0
    Return your structured verdict following the output format in your
    instructions above.
    ```
+
+   > **Note**: the `review_style` and `review_focus` blocks above are
+   > NOT inside the `{if round > 1}` branch — they apply to ALL rounds
+   > including round 1. The template indentation above is for readability
+   > only; structure the actual prompt so these fields appear unconditionally.
 
 3. **Parse, update loop state, display Live Report** — same as planning phase.
 
