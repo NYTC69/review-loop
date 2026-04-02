@@ -59,6 +59,8 @@ If the file is already focused and coherent, do not split.
 
 After splitting, apply steps 2.3-2.7 to each resulting file.
 
+**Import fixing**: After splitting, scan the project for files that import or reference the original file. If the split moved symbols to new files, update the affected imports. This may require modifying files outside the original target scope — this is the only case where that is allowed.
+
 #### 2.3 Restructure File Layout
 
 Organize code blocks in a logical order based on the file's actual content. Common reference (adapt as needed):
@@ -74,13 +76,7 @@ Organize code blocks in a logical order based on the file's actual content. Comm
 
 Core principle: **a reader scanning top-to-bottom should naturally understand the file's structure and business flow**. Keep related code together; high-level logic before implementation details.
 
-Separate functional sections with divider comments:
-
-```
-// ============================================================
-// Order Management
-// ============================================================
-```
+Separate functional sections with divider comments. First check if the project already uses a divider style (scan existing files for patterns like `// ---`, `// ===`, `#region`, etc.) and adopt that style. If no existing convention is found, use a simple comment divider appropriate for the language.
 
 #### 2.4 Extract Reusable Logic
 
