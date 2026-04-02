@@ -261,18 +261,22 @@ Reviewer call. Store as:
    - Set `Current Phase: planning`
    - After round 1+: update `Review History` with latest findings
 
-2. **Call the Executor** (via Agent tool, subagent_type: review-loop:executor,
+2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
    model: {executor_model if not "inherit", else omit}):
 
-   The `review-loop:executor` agent type auto-loads `agents/executor.md` as
-   the system prompt and enforces `tools: all`. Do NOT re-include the
-   executor.md body in the prompt — only send task-specific content.
+   > **Why general-purpose**: plugin-defined agent types (review-loop:executor)
+   > silently block Write/Edit tools due to sandbox restrictions. Use
+   > general-purpose and manually include executor.md body in the prompt.
 
    Prompt template:
    ```
+   You are the Executor in a review-loop workflow.
+
+   {contents of agents/executor.md body — the system prompt}
+
    Read the context file first: {context_file}
    DO NOT modify the context file — return your output as described in
-   the output format in your instructions.
+   the output format above.
 
    ## Your Task
    Produce a detailed solution plan following the output format in your
@@ -382,14 +386,18 @@ loop_state.round = 0
    - Update `Files Changed` and `Key Related Files` after each Executor round
    - Update `Review History` with latest findings
 
-2. **Call the Executor** (via Agent tool, subagent_type: review-loop:executor,
+2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
    model: {executor_model if not "inherit", else omit}):
 
    Prompt template:
    ```
+   You are the Executor in a review-loop workflow.
+
+   {contents of agents/executor.md body — the system prompt}
+
    Read the context file first: {context_file}
    DO NOT modify the context file — return your output as described in
-   the output format in your instructions.
+   the output format above.
 
    ## Your Task
    Implement the approved plan (see context file). Make all necessary code
