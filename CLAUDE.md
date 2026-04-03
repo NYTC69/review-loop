@@ -14,7 +14,7 @@
 
 ### Plugin cache & version bump
 
-- `plugin.json` and `marketplace.json` version **must** be bumped with every feature/fix release. Without a version bump, `plugin update` thinks cache is current and won't pull new files.
+- `plugin.json` and `marketplace.json` version **must** be bumped with **every single push** that changes any file. Without a version bump, `plugin update` thinks cache is current and won't pull new files. This includes "just documentation" or "just guide" changes — ANY change requires a bump.
 - After `plugin update`, must open a **new session** — old sessions keep using the version loaded at startup.
 - `/reload-plugins` does NOT switch versions.
 - **Guide version is auto-bound**: `skills/guide/SKILL.md` reads version from `plugin.json` at runtime via `{VERSION}` placeholder. No manual sync needed.
