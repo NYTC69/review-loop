@@ -67,15 +67,23 @@ When `all` is selected, determine applicable aspects based on the changed files:
 
 For each applicable aspect, invoke the corresponding agent via the **Agent tool**.
 
-### Read-only agents (code, errors, comments, types, tests)
+### All agents (code, errors, comments, types, tests, simplify)
 
-These agents have `tools: read-only` and cannot modify files.
+Due to a known plugin agent type sandbox bug, **all** plugin-defined agent types
+have their tools silently blocked (both `tools: read-only` and `tools: all`).
+Therefore, all agents must be invoked via `subagent_type: general-purpose` with
+the agent's full body inlined in the prompt.
+
+**Read-only agents** (code, errors, comments, types, tests):
 
 ```
 Agent tool parameters:
-  subagent_type: review-loop:<agent-name>
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/<agent-name>.md body}
+
     Review the following code changes. Focus on your area of expertise.
+    IMPORTANT: Report only, do not modify any files.
 
     ## Changed Files
     {list of changed file paths}
@@ -92,19 +100,17 @@ Agent tool parameters:
     Reference specific files and line numbers where possible.
 ```
 
-Agent name mapping:
-- `code` → `subagent_type: review-loop:code-reviewer`
-- `errors` → `subagent_type: review-loop:silent-failure-hunter`
-- `comments` → `subagent_type: review-loop:comment-analyzer`
-- `types` → `subagent_type: review-loop:type-design-analyzer`
-- `tests` → `subagent_type: review-loop:pr-test-analyzer`
+Agent name mapping (all use `subagent_type: general-purpose` with agent body inlined):
+- `code` → inline `agents/code-reviewer.md` body
+- `errors` → inline `agents/silent-failure-hunter.md` body
+- `comments` → inline `agents/comment-analyzer.md` body
+- `types` → inline `agents/type-design-analyzer.md` body
+- `tests` → inline `agents/pr-test-analyzer.md` body
 
-### The `simplify` aspect (special handling)
+### The `simplify` aspect
 
-The `code-simplifier` agent has `tools: all` because it modifies files to apply
-simplifications. Due to a known plugin agent type sandbox bug, plugin-defined
-agent types silently block Write/Edit tools. Therefore, invoke code-simplifier
-via `subagent_type: general-purpose` with the agent's full body inlined in the
+The `code-simplifier` agent modifies files to apply simplifications. Invoke via
+`subagent_type: general-purpose` with the agent's full body inlined in the
 prompt:
 
 ```

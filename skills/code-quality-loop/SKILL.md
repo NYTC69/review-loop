@@ -72,8 +72,10 @@ Run each applicable language agent:
 
 ```
 Agent tool parameters:
-  subagent_type: review-loop:<agent-name>
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/<agent-name>.md body}
+
     Run static analysis on the changed files in this project.
     Focus on changed files from: git diff --name-only --diff-filter=d HEAD
 
@@ -86,11 +88,11 @@ Agent tool parameters:
     {review_style}
 ```
 
-Agent name mapping:
-- `go-reviewer` -> `subagent_type: review-loop:go-reviewer`
-- `rust-reviewer` -> `subagent_type: review-loop:rust-reviewer`
-- `python-reviewer` -> `subagent_type: review-loop:python-reviewer`
-- `frontend-security-reviewer` -> `subagent_type: review-loop:frontend-security-reviewer`
+Agent name mapping (all use `subagent_type: general-purpose` with agent body inlined in prompt):
+- `go-reviewer` -> inline `agents/go-reviewer.md` body
+- `rust-reviewer` -> inline `agents/rust-reviewer.md` body
+- `python-reviewer` -> inline `agents/python-reviewer.md` body
+- `frontend-security-reviewer` -> inline `agents/frontend-security-reviewer.md` body
 
 If multiple language agents apply, launch them sequentially (each may find issues that require fixes before the next can run cleanly).
 
@@ -123,8 +125,10 @@ Agent invocations:
 
 ```
 Agent tool parameters (code-reviewer):
-  subagent_type: review-loop:code-reviewer
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/code-reviewer.md body}
+
     Review the following code changes. Focus on code quality, bugs, logic errors, and anti-patterns.
 
     ## Changed Files
@@ -150,8 +154,10 @@ Agent tool parameters (code-reviewer):
 
 ```
 Agent tool parameters (silent-failure-hunter):
-  subagent_type: review-loop:silent-failure-hunter
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/silent-failure-hunter.md body}
+
     Review the following code changes. Focus on error handling analysis.
 
     ## Changed Files
@@ -177,8 +183,10 @@ Agent tool parameters (silent-failure-hunter):
 
 ```
 Agent tool parameters (comment-analyzer -- Round 1 only):
-  subagent_type: review-loop:comment-analyzer
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/comment-analyzer.md body}
+
     Review the following code changes. Focus on comment accuracy and documentation.
 
     ## Changed Files
@@ -204,8 +212,10 @@ Agent tool parameters (comment-analyzer -- Round 1 only):
 
 ```
 Agent tool parameters (type-design-analyzer -- Round 1 only):
-  subagent_type: review-loop:type-design-analyzer
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/type-design-analyzer.md body}
+
     Review the following code changes. Focus on type design quality.
 
     ## Changed Files
@@ -400,8 +410,10 @@ Launch the `pr-test-analyzer` agent to verify test quality (coverage gaps, missi
 
 ```
 Agent tool parameters:
-  subagent_type: review-loop:pr-test-analyzer
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/pr-test-analyzer.md body}
+
     Analyze test coverage for the changed files.
 
     ## Changed Files

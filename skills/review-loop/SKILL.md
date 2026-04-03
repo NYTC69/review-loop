@@ -519,11 +519,13 @@ Map extensions to agents:
 
 #### 3.5.2 — Language-specific static analysis
 
-For each detected language, invoke the corresponding agent:
+For each detected language, invoke the corresponding agent via `subagent_type: general-purpose` with the agent's full body inlined in the prompt (plugin-defined agent types have their tools silently blocked by Claude Code sandbox):
 ```
 Agent tool:
-  subagent_type: review-loop:<agent-name>
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/<agent-name>.md body}
+
     Run analysis on the changed files. Context file: {context_file}
     {if quality_focus is set:}
     ## Quality Focus
@@ -533,7 +535,7 @@ Agent tool:
     {review_style}
 ```
 
-These agents have `tools: read-only` — they report findings but cannot fix.
+These agents report findings but should not fix code — include "Report only, do not modify files" in the prompt.
 
 Display findings to the user. If any CRITICAL/HIGH issues found, invoke the
 Executor (via `subagent_type: general-purpose`) to fix them, then re-run the
@@ -542,13 +544,15 @@ rounds, report them to user and continue to the next sub-step.
 
 #### 3.5.3 — Code quality review-fix loop
 
-Invoke `review-loop:code-reviewer` and `review-loop:silent-failure-hunter`
-on the changed code:
+Invoke code-reviewer and silent-failure-hunter on the changed code via `subagent_type: general-purpose` with agent body inlined:
 ```
 Agent tool:
-  subagent_type: review-loop:code-reviewer  (and silent-failure-hunter)
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/code-reviewer.md body}  (or silent-failure-hunter.md)
+
     Review the changed files listed in context file: {context_file}
+    Report only, do not modify files.
     {if quality_focus is set:}
     ## Quality Focus
     {quality_focus}
@@ -586,11 +590,13 @@ If build fails, revert the simplify changes and report to user.
 
 #### 3.5.5 — Test consolidation
 
-Invoke `review-loop:pr-test-analyzer` to check test coverage:
+Invoke pr-test-analyzer via `subagent_type: general-purpose` with agent body inlined:
 ```
 Agent tool:
-  subagent_type: review-loop:pr-test-analyzer
+  subagent_type: general-purpose
   prompt: |
+    {contents of agents/pr-test-analyzer.md body}
+
     Analyze test coverage for the changed files. Context file: {context_file}
     {if quality_focus is set:}
     ## Quality Focus
@@ -750,21 +756,23 @@ Use the Agent tool to invoke the Reviewer as a Claude Code sub-agent:
 
 ```
 Agent tool parameters:
-  subagent_type: review-loop:reviewer
+  subagent_type: general-purpose
   model: {reviewer_model if set and not empty, else omit — inherits Orchestrator model}
-  prompt: {review_content — the review content template from Step 2.4 or Step 3.4}
+  prompt: |
+    {contents of agents/reviewer.md body}
+
+    {review_content — the review content template from Step 2.4 or Step 3.4}
+
+    IMPORTANT: You are a Reviewer. Report only, do not modify any files.
 ```
 
-The `review-loop:reviewer` agent type automatically:
-- Loads `agents/reviewer.md` body as the system prompt (review instructions,
-  output format, verdict rules, principles)
-- Enforces `tools: read-only` — the Reviewer can read project files but
-  cannot modify them
+Due to the plugin agent type sandbox bug (all plugin-defined agent types have
+their tools silently blocked), we use `general-purpose` and inline the
+reviewer.md body in the prompt.
 
-**Prompt construction for subagent mode**: do NOT prepend the `reviewer.md`
-body — it is already loaded as the system prompt. Send only the review
-content template (context file content, the plan or code to review, review
-history, and task instructions).
+**Prompt construction for subagent mode**: prepend the `reviewer.md` body,
+then append the review content template (context file content, the plan or
+code to review, review history, and task instructions).
 
 **Important behaviors**:
 - The sub-agent runs in the same project directory and can read all project
@@ -807,8 +815,8 @@ When the Executor raises a question (detected in its output), classify it:
     ```
 
     **If codex mode**: prepend `reviewer.md` body, then pass to `codex exec`.
-    **If subagent mode**: pass as-is to Agent tool with
-    `subagent_type: review-loop:reviewer` (reviewer.md auto-loaded).
+    **If subagent mode**: prepend `reviewer.md` body, then pass to Agent tool
+    with `subagent_type: general-purpose`.
 
     Log the decision in `loop_state` under autonomous_decisions.
 
