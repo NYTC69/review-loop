@@ -9,7 +9,7 @@ Display the following guide to the user exactly as written:
 
 ---
 
-# review-loop v2.0.0 — Quick Reference
+# review-loop v2.2.0 — Quick Reference
 
 ## How it works
 
