@@ -74,6 +74,18 @@ Run quality polish independently on existing code. Same agents as Step 3.5
 but triggered on demand — useful for cleaning up code that was written
 outside the review-loop workflow.
 
+### `/review-loop:reorganize <file/dir or 'diff'>`
+
+Restructure code files: rearrange module layout, extract shared logic, remove
+redundancy, add section comments. Splits coupled files into focused modules.
+Preserves all functionality — this is restructuring, not rewriting.
+
+```
+/review-loop:reorganize src/engine.go    # single file
+/review-loop:reorganize src/core/        # directory
+/review-loop:reorganize diff             # all uncommitted changes
+```
+
 ### `/review-loop:review-pr [aspects]`
 
 Spot-check specific aspects of recent changes. Available aspects:
@@ -189,6 +201,8 @@ review-loop/
 │   │   └── SKILL.md              ← Orchestrator instructions
 │   ├── code-quality-loop/
 │   │   └── SKILL.md              ← Standalone quality polish
+│   ├── reorganize/
+│   │   └── SKILL.md              ← Code file restructuring
 │   ├── review-pr/
 │   │   └── SKILL.md              ← Spot-check specific aspects
 │   └── guide/
