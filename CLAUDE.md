@@ -17,6 +17,7 @@
 - `plugin.json` and `marketplace.json` version **must** be bumped with every feature/fix release. Without a version bump, `plugin update` thinks cache is current and won't pull new files.
 - After `plugin update`, must open a **new session** — old sessions keep using the version loaded at startup.
 - `/reload-plugins` does NOT switch versions.
+- **Guide version is auto-bound**: `skills/guide/SKILL.md` reads version from `plugin.json` at runtime via `{VERSION}` placeholder. No manual sync needed.
 
 ## Agent Invocation Pattern
 

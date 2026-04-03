@@ -5,11 +5,13 @@ description: >
   and key features. Use when the user asks for help with review-loop.
 ---
 
-Display the following guide to the user exactly as written:
+First, read `.claude-plugin/plugin.json` to get the current version number.
+
+Then display the following guide to the user, replacing `{VERSION}` with the version from plugin.json:
 
 ---
 
-# review-loop v2.2.0 — Quick Reference
+# review-loop {VERSION} — Quick Reference
 
 ## How it works
 
