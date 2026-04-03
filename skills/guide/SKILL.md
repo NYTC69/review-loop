@@ -52,8 +52,9 @@ Orchestrator (this session)
 show me the review-loop guide
 ```
 
-> **After updating the plugin**: start a new session so Claude Code picks up
-> the latest version. Old sessions keep using the version loaded at startup.
+> **After updating the plugin**: exit with Ctrl-C twice, then `claude --resume`
+> to reload plugins while keeping your conversation. Old sessions keep using
+> the version loaded at startup.
 
 ## Configuration
 

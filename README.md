@@ -17,9 +17,9 @@ Start a new session. The `/review-loop` command is now available in all your pro
 cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .claude/review-loop-config.md
 ```
 
-> **After updating the plugin** — Claude Code caches plugin paths at session
-> start. After running `/plugin update`, try `/reload-plugins` first. If
-> that doesn't pick up the new version, start a new session. This is a
+> **After updating the plugin** — Claude Code caches plugins at session
+> start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
+> to reload plugins while keeping your conversation context. This is a
 > Claude Code caching behavior, not a review-loop limitation.
 
 ## Workflow Overview
