@@ -107,6 +107,8 @@ Agent name mapping (all use `subagent_type: general-purpose` with agent body inl
 - `types` → inline `agents/type-design-analyzer.md` body
 - `tests` → inline `agents/pr-test-analyzer.md` body
 
+**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report the failure.
+
 ### The `simplify` aspect
 
 The `code-simplifier` agent modifies files to apply simplifications. Invoke via

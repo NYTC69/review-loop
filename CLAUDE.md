@@ -33,3 +33,10 @@ Agent tool parameters:
 ```
 
 This applies to: executor, reviewer, code-reviewer, silent-failure-hunter, comment-analyzer, type-design-analyzer, pr-test-analyzer, code-simplifier, go-reviewer, rust-reviewer, python-reviewer, frontend-security-reviewer.
+
+### Agent hallucination guard
+
+Even with `general-purpose`, agents may not use tools and fabricate output. Two defenses:
+
+1. **Agent-side**: All language agents (rust/go/python/frontend-security) have a `**MANDATORY**` tool-use instruction at the top of their `.md` body.
+2. **Orchestrator-side**: After every agent call, check `tool_uses` in metadata. If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report.

@@ -7,6 +7,8 @@ tools: read-only
 
 # Frontend Security Review
 
+**MANDATORY**: You MUST use the Read tool to read every file in scope BEFORE producing any analysis. Do NOT guess or fabricate file contents. If a file cannot be read, report the failure — do not invent its content.
+
 Analyze changed frontend files for web security vulnerabilities, categorize issues by severity, and provide a clear verdict. This agent performs code-level analysis — no external CLI tools required.
 
 ## Process

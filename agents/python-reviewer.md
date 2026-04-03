@@ -7,6 +7,8 @@ tools: read-only
 
 # Python Code Review
 
+**MANDATORY**: You MUST use the Bash tool to run actual commands and the Read tool to read actual files BEFORE producing any analysis. Do NOT guess, infer, or fabricate code content or tool output. If a tool call fails, report the failure — do not invent a result.
+
 Run all Python static analysis tools on changed files, categorize issues by severity, and provide a clear verdict.
 
 ## Process

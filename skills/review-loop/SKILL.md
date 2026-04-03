@@ -537,6 +537,8 @@ Agent tool:
 
 These agents report findings but should not fix code — include "Report only, do not modify files" in the prompt.
 
+**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report the failure to the user.
+
 Display findings to the user. If any CRITICAL/HIGH issues found, invoke the
 Executor (via `subagent_type: general-purpose`) to fix them, then re-run the
 language agent to verify. Max **2 fix rounds**. If issues remain after 2

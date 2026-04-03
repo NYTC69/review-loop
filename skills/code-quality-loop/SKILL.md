@@ -96,6 +96,8 @@ Agent name mapping (all use `subagent_type: general-purpose` with agent body inl
 
 If multiple language agents apply, launch them sequentially (each may find issues that require fixes before the next can run cleanly).
 
+**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report: `STATIC ANALYSIS: {AGENT-NAME} — SKIPPED (agent failed to use tools)`.
+
 **Output per language agent:**
 
 ```
@@ -120,6 +122,8 @@ Launch review agents via the Agent tool. Each agent runs with read-only access.
 - **Round 2+**: Run only `code-reviewer` and `silent-failure-hunter` -- fixes are code-only changes, no need to re-check comments/types.
 
 `pr-test-analyzer` and `code-simplifier` are always skipped in the loop -- both have dedicated steps in Finalize.
+
+**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, discard the result and retry once. If the retry also has `tool_uses: 0`, skip that agent for this round and note it in the output.
 
 Agent invocations:
 
