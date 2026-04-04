@@ -526,7 +526,10 @@ Agent tool:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
-    Run analysis on the changed files. Context file: {context_file}
+    ## Changed Files
+    {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}
+
+    Run analysis on the changed files listed above. Context file: {context_file}
     {if quality_focus is set:}
     ## Quality Focus
     {quality_focus}

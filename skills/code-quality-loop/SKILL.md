@@ -76,8 +76,10 @@ Agent tool parameters:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
-    Run static analysis on the changed files in this project.
-    Focus on changed files from: git diff --name-only --diff-filter=d HEAD
+    ## Changed Files
+    {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}
+
+    Run static analysis on the changed files listed above.
 
     {if quality_focus is set:}
     ## Quality Focus
