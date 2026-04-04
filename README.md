@@ -212,18 +212,18 @@ review-loop/
 │   └── guide/
 │       └── SKILL.md              ← Usage guide
 ├── agents/
-│   ├── executor.md               ← Executor sub-agent
-│   ├── reviewer.md               ← Adversarial Reviewer
-│   ├── code-reviewer.md          ← Code style + patterns
-│   ├── code-simplifier.md        ← Complexity reduction
-│   ├── silent-failure-hunter.md  ← Error handling review
-│   ├── pr-test-analyzer.md       ← Test coverage review
-│   ├── comment-analyzer.md       ← Comment quality review
-│   ├── type-design-analyzer.md   ← Type design review
-│   ├── go-reviewer.md            ← Go static analysis
-│   ├── rust-reviewer.md          ← Rust static analysis
-│   ├── python-reviewer.md        ← Python static analysis
-│   └── frontend-security-reviewer.md ← Frontend security
+│   ├── executor.md                     ← Executor sub-agent
+│   ├── reviewer.md                     ← Adversarial Reviewer
+│   ├── code-reviewer.md                ← Code style + patterns
+│   ├── code-simplifier.md              ← Complexity reduction
+│   ├── silent-failure-hunter.md        ← Error handling review
+│   ├── pr-test-analyzer.md             ← Test coverage review
+│   ├── comment-analyzer.md             ← Comment quality review
+│   ├── type-design-analyzer.md         ← Type design review
+│   ├── go-reviewer.md                  ← Go static analysis
+│   ├── rust-reviewer.md                ← Rust static analysis
+│   ├── python-reviewer.md              ← Python static analysis
+│   └── frontend-security-reviewer.md  ← Frontend security
 ├── review-loop-config.example.md ← Copy to .review-loop/config.md and customize
 ├── .gitignore
 ├── LICENSE                       ← Apache 2.0

@@ -573,8 +573,15 @@ Agent tool:
 ```
 
 - Parse findings, triage by severity
-- If CRITICAL/HIGH issues: invoke Executor (`subagent_type: general-purpose`)
-  to fix → re-review
+- If CRITICAL/HIGH issues found, **do NOT stop the loop**. Triage each issue:
+  - **Can fix autonomously** (clear implementation fix — input sanitization,
+    missing auth check, obvious logic error): invoke Executor immediately to fix,
+    then re-run code-reviewer to verify. Do not ask the user first.
+  - **Requires design decision** (architecture change, security trade-off,
+    ambiguous requirement): surface to the user and wait for direction. Then
+    apply the decision and continue.
+  - Never batch both categories together and stop — fix what can be fixed
+    while asking about what cannot. Both paths must complete before moving on.
 - Max **3 rounds** or until clean
 - **Stuck detection**: same issue persists 3 rounds = stop
 
