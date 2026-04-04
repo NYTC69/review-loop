@@ -782,13 +782,25 @@ REVIEW_PROMPT
 
 Then read the output file to get the Reviewer's response.
 
+**CRITICAL — heredoc quoting**: Always use the **single-quoted** form `<<'REVIEW_PROMPT'`.
+Never use unquoted `<<REVIEW_PROMPT` — zsh will expand `$variables` and `$(...)` inside
+the prompt body, causing parse errors or unintended command execution.
+
+**CRITICAL — run synchronously**: Never set `run_in_background: true` on the Bash tool
+call. Codex must complete before the Orchestrator reads the output file. Do not use
+`sleep` to poll for output — if the call is synchronous there is nothing to poll.
+
 **Important behaviors**:
 - The Codex process runs in the same project directory, so it can read all
   project files in its read-only sandbox.
 - Use `-o` to capture output to a file, then read it. This is more reliable
   than capturing stdout for long responses.
-- If the codex command fails (non-zero exit), report the error to the user
-  and ask whether to retry or switch to subagent mode.
+- If the codex command fails (non-zero exit): automatically fall back to
+  subagent mode for **that round only** (do NOT ask the user, do NOT stop the
+  loop). Use `subagent_type: general-purpose` with the reviewer.md body inlined
+  in the prompt — exactly as described in Mode: subagent below. **Never** use
+  `subagent_type: review-loop:reviewer` as a fallback; plugin-defined agent types
+  have their tools silently blocked and will hallucinate.
 - Each review call is stateless (no session persistence between rounds).
   The Orchestrator compensates by including Review History in the prompt.
 
