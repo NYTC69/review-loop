@@ -181,7 +181,10 @@ CRITICAL even if the code is technically correct.
 
 **Context File** — All loop state is persisted to
 `.review-loop/sessions/{uuid}.md`. Both agents read it each round
-for instant context. Session files are preserved for post-hoc traceability.
+for instant context. Session files are preserved permanently — the UUID
+is printed in the delivery summary. To trace a bug back to a specific
+review session, find the UUID in the delivery output and open the
+corresponding `.review-loop/sessions/{uuid}.md` file.
 
 **Soft Limits + Stuck Detection** — No hard cap on rounds. When the soft limit
 is reached and CRITICALs remain, the Orchestrator asks whether to continue.

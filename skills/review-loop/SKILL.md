@@ -136,10 +136,13 @@ and Reviewer read it at the start of each round. The Orchestrator updates
 it after every round. This eliminates redundant context passing in prompts
 and gives agents instant project understanding without cold-start exploration.
 
-Session files are preserved in the project for traceability — useful for
-post-hoc review of which round introduced an issue and what the Reviewer
-caught or missed. Add `.review-loop/sessions/` to `.gitignore` if
-you don't want them in version control.
+Session files are preserved in the project for traceability. If a bug is
+later discovered in production, open `.review-loop/sessions/{uuid}.md` to
+see exactly which round introduced the change, what the Reviewer flagged,
+and what was left unresolved. The session UUID is printed in the delivery
+summary — search it in the file to locate the right session.
+Add `.review-loop/sessions/` to `.gitignore` if you don't want them in
+version control (keeping them makes the audit trail available to the whole team).
 
 The context file structure:
 
@@ -690,6 +693,7 @@ After Quality Polish completes (or is skipped), or user decides to stop:
    **Mode**: {interactive | handsfree}
    **Plan rounds**: {N}  |  **Exec rounds**: {N}
    **Quality Polish**: {ran / skipped}
+   **Session log**: `.review-loop/sessions/{session_id}.md`
 
    ### Review Findings
    | Round | Phase | Severity | Issue | Resolution |
@@ -746,7 +750,9 @@ After Quality Polish completes (or is skipped), or user decides to stop:
 4. **Cleanup temp files**: delete all round output files for this session:
    `rm -f .review-loop/sessions/{session_id}-round-*.txt`
    The context file (`.review-loop/sessions/{session_id}.md`) is
-   kept as a permanent record.
+   kept as a permanent record for post-hoc debugging. To trace a bug back
+   to a specific session, use the UUID from the delivery summary and open
+   the corresponding file in `.review-loop/sessions/`.
 
 ---
 
