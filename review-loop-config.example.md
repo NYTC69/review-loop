@@ -1,5 +1,5 @@
 # Review Loop — Project Config
-# Place this file at: .claude/review-loop-config.md
+# Place this file at: .review-loop/config.md
 # All fields are optional. Remove any line to use the default.
 
 reviewer: codex                 # "codex" | "subagent"

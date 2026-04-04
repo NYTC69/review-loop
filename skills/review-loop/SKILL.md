@@ -56,10 +56,10 @@ Without `--handsfree` (default): decision-type questions surface to the user.
 
 ## Configuration
 
-Read from `.claude/review-loop-config.md` if present, else use defaults:
+Read from `.review-loop/config.md` if present, else use defaults:
 
 ```yaml
-# .claude/review-loop-config.md  ← create this in your project to override defaults
+# .review-loop/config.md  ← create this in your project to override defaults
 reviewer: codex                 # "codex" | "subagent"
 reviewer_model: ""              # codex: -m flag (empty = codex default); subagent: Agent model (empty = inherit Orchestrator)
 executor_model: inherit         # Executor sub-agent model ("inherit" | "sonnet" | "opus")
@@ -111,7 +111,7 @@ planning or coding yourself.
 
 ### Step 0 — Load config and parse flags
 
-1. Check if `.claude/review-loop-config.md` exists. If so, read and parse it.
+1. Check if `.review-loop/config.md` exists. If so, read and parse it.
    Otherwise use the defaults above.
 2. Detect `--handsfree` in the user's invocation message. If present, or if
    `handsfree: true` in config, enable handsfree mode for this session.
@@ -126,7 +126,7 @@ Generate a UUID for this session and create the context file:
 
 ```bash
 uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
-context_dir=".claude/review-loop-sessions"
+context_dir=".review-loop/sessions"
 mkdir -p "${context_dir}"
 context_file="${context_dir}/${uuid}.md"
 ```
@@ -138,7 +138,7 @@ and gives agents instant project understanding without cold-start exploration.
 
 Session files are preserved in the project for traceability — useful for
 post-hoc review of which round introduced an issue and what the Reviewer
-caught or missed. Add `.claude/review-loop-sessions/` to `.gitignore` if
+caught or missed. Add `.review-loop/sessions/` to `.gitignore` if
 you don't want them in version control.
 
 The context file structure:
@@ -213,7 +213,7 @@ project state to determine if this task is already in progress:
   whether the changed files and logic align with the task's problem
   description. If the changes look unrelated or too minor to constitute
   an implementation, fall back to Planning.
-- **Existing session context file** found in `.claude/review-loop-sessions/`
+- **Existing session context file** found in `.review-loop/sessions/`
   that matches this task: read it and resume from where it left off.
 - **No prior state**: start from Step 2 (Planning) as normal.
 
@@ -744,8 +744,8 @@ After Quality Polish completes (or is skipped), or user decides to stop:
    drawing borders) to that file.
 
 4. **Cleanup temp files**: delete all round output files for this session:
-   `rm -f .claude/review-loop-sessions/{session_id}-round-*.txt`
-   The context file (`.claude/review-loop-sessions/{session_id}.md`) is
+   `rm -f .review-loop/sessions/{session_id}-round-*.txt`
+   The context file (`.review-loop/sessions/{session_id}.md`) is
    kept as a permanent record.
 
 ---
@@ -762,7 +762,7 @@ Use Bash to invoke the Codex CLI in non-interactive, read-only mode:
 ```bash
 # If reviewer_model is empty, omit -m flag entirely (codex uses its default model)
 # If reviewer_model is set, pass it via -m
-codex exec -s read-only {if reviewer_model: -m {reviewer_model}} -o .claude/review-loop-sessions/{session_id}-round-{round}.txt - <<'REVIEW_PROMPT'
+codex exec -s read-only {if reviewer_model: -m {reviewer_model}} -o .review-loop/sessions/{session_id}-round-{round}.txt - <<'REVIEW_PROMPT'
 {reviewer_prompt}
 REVIEW_PROMPT
 ```
@@ -869,7 +869,7 @@ When the Executor raises a question (detected in its output), classify it:
 The Orchestrator must actively manage its own context to avoid triggering
 the AI's automatic compaction, which can lose critical information.
 
-The context file (`.claude/review-loop-sessions/{uuid}.md`) is the single source of
+The context file (`.review-loop/sessions/{uuid}.md`) is the single source of
 truth for the entire loop. All critical state lives on disk, not in the
 Orchestrator's conversation context.
 

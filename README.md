@@ -14,7 +14,8 @@ Start a new session. The `/review-loop` command is now available in all your pro
 **Optional** — copy the config template to customize per-project defaults:
 
 ```bash
-cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .claude/review-loop-config.md
+mkdir -p .review-loop
+cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loop/config.md
 ```
 
 > **After updating the plugin** — Claude Code caches plugins at session
@@ -109,7 +110,7 @@ Show the usage guide — how it works, commands, configuration, and key features
 
 ## Configuration
 
-All options live in `.claude/review-loop-config.md`. Every field is optional.
+All options live in `.review-loop/config.md`. Every field is optional.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -179,7 +180,7 @@ stays within the approved plan. Unauthorized design decisions are flagged as
 CRITICAL even if the code is technically correct.
 
 **Context File** — All loop state is persisted to
-`.claude/review-loop-sessions/{uuid}.md`. Both agents read it each round
+`.review-loop/sessions/{uuid}.md`. Both agents read it each round
 for instant context. Session files are preserved for post-hoc traceability.
 
 **Soft Limits + Stuck Detection** — No hard cap on rounds. When the soft limit
@@ -220,7 +221,7 @@ review-loop/
 │   ├── rust-reviewer.md          ← Rust static analysis
 │   ├── python-reviewer.md        ← Python static analysis
 │   └── frontend-security-reviewer.md ← Frontend security
-├── review-loop-config.example.md ← Copy to .claude/ and customize
+├── review-loop-config.example.md ← Copy to .review-loop/config.md and customize
 ├── .gitignore
 ├── LICENSE                       ← Apache 2.0
 └── README.md

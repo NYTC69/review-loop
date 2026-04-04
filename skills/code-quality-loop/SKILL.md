@@ -46,7 +46,7 @@ If neither `--skip-reorganize` nor `--reorganize` is specified, the Orchestrator
 
 3. **Load design context (optional)**: Look for a design document in the project (e.g., `openspec/changes/*/design.md`, `docs/design.md`, or similar). If multiple exist, use the most recently modified one. If found, read it. This is the **fix boundary constraint** -- applies to all fix actions throughout this command (loop fixes, simplify, etc.). Do not deviate from design intent unless a design-level defect is found (security vulnerability, race condition, obvious logic error). If no design document is found, skip this constraint -- all fixes are allowed.
 
-4. **Load config (optional)**: Read `.claude/review-loop-config.md` if it exists. Extract:
+4. **Load config (optional)**: Read `.review-loop/config.md` if it exists. Extract:
    - `quality_focus`: free-text field injected into all agent prompts during this loop. Tells agents what to prioritize.
    - `review_style`: free-text field injected into ALL agent prompts. Sets tone and cross-cutting rules.
    If the config file does not exist or the fields are empty/absent, skip injection.

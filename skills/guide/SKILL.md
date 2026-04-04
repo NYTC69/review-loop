@@ -20,7 +20,7 @@ Then display the following guide to the user, replacing `{VERSION}` with the ver
 
 Orchestrator (this session)
 │
-├── Context file: .claude/review-loop-sessions/{uuid}.md
+├── Context file: .review-loop/sessions/{uuid}.md
 │   Single source of truth — all agents read it each round
 │
 ├── [Planning phase]
@@ -58,7 +58,7 @@ show me the review-loop guide
 
 ## Configuration
 
-Create `.claude/review-loop-config.md` in your project to customize:
+Create `.review-loop/config.md` in your project to customize:
 
 | Key | Default | Description |
 |-----|---------|-------------|
