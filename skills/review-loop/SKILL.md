@@ -526,6 +526,9 @@ Agent tool:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
+    IMPORTANT: Use Claude Code's native Bash tool to run shell commands.
+    Do NOT use MCP server tools (e.g. run_bash_command).
+
     ## Changed Files
     {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}
 
@@ -633,6 +636,40 @@ Tests:           {PASS (12 tests) / 2 added, 1 updated}
 ```
 
 Update the context file with Quality Polish results and timing.
+
+### Step 3.6 — Documentation Consistency Check
+
+After Quality Polish, ensure documentation reflects the latest code changes.
+
+#### 3.6.1 — Update project documentation (if any exists)
+
+Search the project for documentation files:
+- Design docs, architecture docs, ADRs (e.g. `docs/`, `design/`, `*.md` outside source dirs)
+- Runbooks, operational guides
+- Memory files (`.claude/memory/`, `tasks/lessons.md`)
+- Learning notes, changelogs, wikis
+
+For each doc found: read it, compare against the code changes in the context file. If the doc describes behavior, APIs, or logic that has changed, update it to reflect the new implementation. Focus on business logic accuracy — do not rewrite style.
+
+If no project documentation is found: note "no project docs found" and proceed to 3.6.2.
+
+#### 3.6.2 — Code comment consistency (always run)
+
+For each changed file, read the current code and verify:
+- Function/method docstrings and comments match the actual implementation
+- Type/struct comments match actual fields and behavior
+- Module-level comments match actual responsibilities
+- Inline comments explain current logic (not stale from a previous version)
+
+Fix any stale or incorrect comments directly using the Edit tool.
+
+**Output:**
+```
+── review-loop: Doc Consistency ─────────────────────
+Project docs:   {updated: X files / none found}
+Comments fixed: {N} stale comments in {files / "none"}
+─────────────────────────────────────────────────────
+```
 
 ### Step 4 — Delivery
 

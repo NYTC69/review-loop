@@ -76,6 +76,9 @@ Agent tool parameters:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
+    IMPORTANT: Use Claude Code's native Bash tool to run shell commands.
+    Do NOT use MCP server tools (e.g. run_bash_command).
+
     ## Changed Files
     {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}
 
@@ -461,6 +464,36 @@ Max 2 fix cycles. If still failing, report to user and continue.
   Quality:       {PASS / {X} issues -> fixed (attempt {n}/2)}
   Final run:     {PASS ({N} tests) / FAIL (unresolved)}
 -------------------------------------------------
+```
+
+### Step 5: Documentation Consistency Check
+
+#### 5.1 — Update project documentation (if any exists)
+
+Search the project for documentation files:
+- Design docs, architecture docs, ADRs (e.g. `docs/`, `design/`, `*.md` outside source dirs)
+- Runbooks, operational guides
+- Memory files (`.claude/memory/`, `tasks/lessons.md`)
+- Learning notes, changelogs, wikis
+
+For each doc found: compare against the code changes (`git diff HEAD`). If the doc describes behavior, APIs, or logic that has changed, update it to reflect the new implementation.
+
+If no project documentation is found: note "no project docs found" and proceed to 5.2.
+
+#### 5.2 — Code comment consistency (always run)
+
+For each changed file, read the current code and verify:
+- Function/method comments match the actual implementation
+- Type/struct comments match actual fields and behavior
+- Inline comments explain current logic (not stale)
+
+Fix any stale or incorrect comments directly.
+
+**Output:**
+```
+[DOC CONSISTENCY]
+  Project docs:   {updated: X files / none found}
+  Comments fixed: {N} stale comments in {files / "none"}
 ```
 
 ## Final Report
