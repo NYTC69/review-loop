@@ -5,7 +5,7 @@ description: >
   and key features. Use when the user asks for help with review-loop.
 ---
 
-First, read `.claude-plugin/plugin.json` to get the current version number.
+First, read `~/.claude/plugins/marketplaces/review-loop-marketplace/.claude-plugin/plugin.json` to get the current version number.
 
 Then display the following guide to the user, replacing `{VERSION}` with the version from plugin.json:
 
