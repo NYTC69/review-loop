@@ -357,7 +357,11 @@ Run `/review-loop:reorganize diff` to restructure changed files. The reorganize 
 
 ### Step 2: Simplify + Build
 
-Launch the `code-simplifier` agent for final code polish (auto-fix). Due to the known plugin agent type sandbox bug, invoke code-simplifier via `subagent_type: general-purpose` with the agent's full body inlined in the prompt:
+Launch the `code-simplifier` agent for final code polish (auto-fix).
+
+**CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:code-simplifier`.
+That agent type has tools silently blocked — it will produce `tool_uses: 0` hallucinated output.
+Always use `subagent_type: general-purpose` with the agent body inlined in the prompt:
 
 ```
 Agent tool parameters:

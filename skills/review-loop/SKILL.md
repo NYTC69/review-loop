@@ -587,6 +587,10 @@ Agent tool:
 
 #### 3.5.4 — Simplify
 
+**CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:code-simplifier`.
+That agent type has tools silently blocked — it will produce `tool_uses: 0` hallucinated output.
+Always use `subagent_type: general-purpose` with the agent body inlined below.
+
 Invoke code-simplifier via `subagent_type: general-purpose` (it needs
 Write/Edit tools):
 ```

@@ -111,8 +111,11 @@ Agent name mapping (all use `subagent_type: general-purpose` with agent body inl
 
 ### The `simplify` aspect
 
-The `code-simplifier` agent modifies files to apply simplifications. Invoke via
-`subagent_type: general-purpose` with the agent's full body inlined in the
+The `code-simplifier` agent modifies files to apply simplifications.
+
+**CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:code-simplifier`.
+That agent type has tools silently blocked — it will produce `tool_uses: 0` hallucinated output.
+Always use `subagent_type: general-purpose` with the agent's full body inlined in the
 prompt:
 
 ```
