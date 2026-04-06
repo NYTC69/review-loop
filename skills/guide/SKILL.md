@@ -30,7 +30,7 @@ Orchestrator (this session)
 │   → Executor implements → Reviewer does CR → iterate
 │
 ├── [Quality Polish]  (skip with skip_quality_polish: true)
-│   → Language analysis → Code quality → Simplify → Tests
+│   → Language analysis → Code quality → Simplify → Tests → Docs Consistency
 │
 └── Delivery: findings table + quality summary + time breakdown
 ```
@@ -68,6 +68,8 @@ Create `.review-loop/config.md` in your project to customize:
 | `soft_limit_plan` | 3 | Rounds before asking to continue |
 | `soft_limit_exec` | 3 | Same for execution phase |
 | `auto_commit` | false | Commit after delivery |
+| `commit_message_prefix` | `feat` | Conventional commit type prefix |
+| `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | false | Default to handsfree mode |
 | `review_focus` | "" | Project-specific review priorities (free text) |
 | `quality_focus` | "" | What to prioritize in Quality Polish (Step 3.5) |

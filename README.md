@@ -36,7 +36,7 @@ cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loo
 │
 ├── 3. Quality Polish (automatic)
 │   Language-specific static analysis → code quality review →
-│   code simplification → test coverage check
+│   code simplification → test coverage check → docs consistency
 │
 └── 4. Delivery
     Findings table + quality summary + time breakdown
@@ -115,7 +115,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `reviewer` | `codex` | `"codex"` \| `"subagent"` — which backend reviews |
-| `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = default) |
+| `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = inherit) |
 | `executor_model` | `inherit` | `"inherit"` \| `"sonnet"` \| `"opus"` |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
