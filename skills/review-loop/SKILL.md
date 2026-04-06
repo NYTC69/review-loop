@@ -282,9 +282,10 @@ Reviewer call. Store as:
 2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
    model: {executor_model if not "inherit", else omit}):
 
-   > **Why general-purpose**: plugin-defined agent types (review-loop:executor)
-   > silently block Write/Edit tools due to sandbox restrictions. Use
-   > general-purpose and manually include executor.md body in the prompt.
+   **CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:executor`.
+   That agent type has Write/Edit tools silently blocked — the Executor will be unable
+   to create or modify files. Always use `subagent_type: general-purpose` with the
+   agent's full body inlined in the prompt.
 
    Prompt template:
    ```
@@ -412,6 +413,11 @@ loop_state.round = 0
 
 2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
    model: {executor_model if not "inherit", else omit}):
+
+   **CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:executor`.
+   That agent type has Write/Edit tools silently blocked — the Executor will be unable
+   to create or modify files. Always use `subagent_type: general-purpose` with the
+   agent's full body inlined in the prompt.
 
    Prompt template:
    ```
