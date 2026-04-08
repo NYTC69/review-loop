@@ -231,27 +231,39 @@ the work currently is, not force a rigid start-from-scratch sequence.
 
 ### Step 1.6 — Historical context retrieval (optional)
 
-**This step is strictly optional.** Skip it entirely and silently if MemPalace
-is not available. Never ask the user to install it.
+**This step is strictly optional.** Skip it entirely and silently if no
+external memory tool is available. Never ask the user to install anything.
+Never mention the tool name to users who don't have it.
 
-Probe for availability:
+**Availability probe**:
 - Check if a `mempalace_search` MCP tool is listed in available tools, OR
 - Run `which mempalace` via Bash — if exit code non-zero, skip this step.
 
-If available:
-1. Extract 1-2 search terms from the work item title and problem description
+**If available, run with full error isolation**:
+1. **Resume dedup**: if the context file already has a `## Historical Context`
+   section (from a resumed session), skip this step entirely — do not
+   re-search or append a second block.
+2. Extract 1-2 search terms from the work item title and problem description
    (pick the most specific nouns — e.g. "bybit adapter" not "fix bug")
-2. Run: `mempalace search "<terms>"`
-3. If results returned, pick the top 3 most relevant and append to the
+3. **Search**: prefer the MCP tool if available (`mempalace_search`), else
+   fall back to CLI (`mempalace search "<terms>"`). For CLI, use a
+   **10-second timeout**. For either path: if the call errors, hangs,
+   times out, returns non-zero, or produces stderr, **silently skip this
+   step and continue.** Do not log the error, do not mention it to the
+   user — treat it as "no context available."
+4. **Validate output**: only use results that are clearly structured memory
+   entries with relevance scores. If the output is empty, malformed, or
+   cannot be parsed into clear bullet points, skip silently.
+5. If valid results returned, pick the top 3 most relevant and append to the
    context file under a `## Historical Context` section:
    ```
    ## Historical Context
-   (retrieved from MemPalace — may contain relevant past decisions)
+   (auto-retrieved — may contain relevant past decisions)
    - {result summary 1}
    - {result summary 2}
    - {result summary 3}
    ```
-4. If no relevant results, skip the section entirely — do not add an empty
+6. If no relevant results, skip the section entirely — do not add an empty
    section to the context file.
 
 This context is available to all agents throughout the loop via the context
@@ -266,7 +278,7 @@ Problem: {problem_description}
 Reviewer: {codex | subagent} ({reviewer_model})
 Mode: {interactive | handsfree}
 Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)
-{if historical context found: MemPalace: {N} relevant memories loaded}
+{if historical context found: Historical context: {N} relevant memories loaded}
 ────────────────────────────────────────────────────
 ```
 

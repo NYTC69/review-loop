@@ -27,6 +27,8 @@ review-loop is designed for a broad audience — not every user will have the sa
 
 **Rule**: Before using any optional external tool, probe for its availability first (check MCP tool list or `which <cli>`). If unavailable, skip the step entirely and continue. Never make the skill depend on an optional integration.
 
+**Rule 2**: Even after a successful availability probe, the tool may fail at runtime (misconfigured, hung, garbage output). **All runtime failures must also be caught and silently skipped.** The "fail silently" contract applies to the entire lifecycle — not just the initial probe.
+
 **Why this matters**: review-loop's value is the Plan-Execute-Review loop itself. Optional integrations add convenience for users who have them, but must never become a barrier for users who don't. A skill that fails because MemPalace isn't installed has failed its core audience.
 
 **How to implement**: wrap optional steps in an availability check:
