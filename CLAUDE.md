@@ -19,6 +19,26 @@
 - `/reload-plugins` does NOT switch versions.
 - **Guide version is auto-bound**: `skills/guide/SKILL.md` reads version from `plugin.json` at runtime via `{VERSION}` placeholder. No manual sync needed.
 
+## Design Philosophy
+
+### Optional integrations must fail silently
+
+review-loop is designed for a broad audience — not every user will have the same tools installed. Any integration with external tools (MemPalace, Graphify, etc.) **must be strictly optional**: if the tool is unavailable, the skill proceeds normally without degradation, without warnings, and without asking the user to install anything.
+
+**Rule**: Before using any optional external tool, probe for its availability first (check MCP tool list or `which <cli>`). If unavailable, skip the step entirely and continue. Never make the skill depend on an optional integration.
+
+**Why this matters**: review-loop's value is the Plan-Execute-Review loop itself. Optional integrations add convenience for users who have them, but must never become a barrier for users who don't. A skill that fails because MemPalace isn't installed has failed its core audience.
+
+**How to implement**: wrap optional steps in an availability check:
+```
+if mempalace MCP tool is available OR `which mempalace` succeeds:
+    → run optional step
+else:
+    → skip silently, continue
+```
+
+This principle applies to: MemPalace context retrieval (Step 1.6), any future Graphify integration, or any other optional tool.
+
 ## Agent Invocation Pattern
 
 All agents must follow this pattern:

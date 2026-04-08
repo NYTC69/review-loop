@@ -229,6 +229,35 @@ Detected: {plan exists / code already implemented / fresh start}
 If the user disagrees, they can override. The goal is to pick up where
 the work currently is, not force a rigid start-from-scratch sequence.
 
+### Step 1.6 — Historical context retrieval (optional)
+
+**This step is strictly optional.** Skip it entirely and silently if MemPalace
+is not available. Never ask the user to install it.
+
+Probe for availability:
+- Check if a `mempalace_search` MCP tool is listed in available tools, OR
+- Run `which mempalace` via Bash — if exit code non-zero, skip this step.
+
+If available:
+1. Extract 1-2 search terms from the work item title and problem description
+   (pick the most specific nouns — e.g. "bybit adapter" not "fix bug")
+2. Run: `mempalace search "<terms>"`
+3. If results returned, pick the top 3 most relevant and append to the
+   context file under a `## Historical Context` section:
+   ```
+   ## Historical Context
+   (retrieved from MemPalace — may contain relevant past decisions)
+   - {result summary 1}
+   - {result summary 2}
+   - {result summary 3}
+   ```
+4. If no relevant results, skip the section entirely — do not add an empty
+   section to the context file.
+
+This context is available to all agents throughout the loop via the context
+file. It helps the Executor avoid re-litigating past decisions and helps the
+Reviewer spot regressions against prior work.
+
 Display to the user:
 ```
 ── review-loop: Starting ──────────────────────────
@@ -237,6 +266,7 @@ Problem: {problem_description}
 Reviewer: {codex | subagent} ({reviewer_model})
 Mode: {interactive | handsfree}
 Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)
+{if historical context found: MemPalace: {N} relevant memories loaded}
 ────────────────────────────────────────────────────
 ```
 
