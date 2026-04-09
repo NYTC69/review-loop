@@ -220,9 +220,17 @@ project state to determine if this task is already in progress:
   that matches this task: read it and resume from where it left off.
 - **No prior state**: start from Step 2 (Planning) as normal.
 
+**Also check for `.claude/checkpoint.md`** in the current repo:
+- If the file exists, read it and inject its content into the context file
+  under a `## Previous Session Context` section.
+- This file is written by the `/checkpoint` skill and survives across sessions
+  and auto-compacts. Treat it as authoritative background for this task.
+- Do not ask the user about it — silently load it if present.
+
 Display the detected state to the user for confirmation:
 ```
 Detected: {plan exists / code already implemented / fresh start}
+{if checkpoint.md found: + Previous session checkpoint loaded}
 → Starting from: {Planning / Execution / Code Review only}
 ```
 
@@ -354,6 +362,24 @@ Reviewer call. Store as:
    to the `Approved Plan` (or `Draft Plan`) section now. If the Executor
    reported file changes, update `Files Changed`. The Reviewer must see
    the latest state, not stale data from the previous round.
+
+3.5. **Context check: persist if high**
+
+   1. Run: `cat ~/.claude/session-state.json 2>/dev/null || echo "{}"`
+   2. Parse `context_pct`. If missing or file absent → skip, proceed to Reviewer.
+   3. If `context_pct >= 70`:
+      a. Derive `task_slug` from the earliest clear task description in the conversation: lowercase kebab-case, max 5 words.
+      b. Scan conversation for expensive intermediate results (coordinates, calibration values,
+         computed parameters, benchmark numbers, API structures discovered by exploration).
+      c. If results found:
+         - Write to `{cwd}/.claude/results/{YYYY-MM-DD}_{task_slug}.json` using idempotent merge
+           (replace by label, append new, never delete).
+         - After successful write: update `~/.claude/persist-state.json` atomically with
+           `{"last_persisted_at": epoch, "context_pct_at_persist": N, "task_slug": "..."}`.
+         - Log: `✓ Results persisted at {context_pct}%: {N} entries — {label1}, {label2}, ...`
+      d. If no results found: log `✓ Context check at {context_pct}%: no intermediate results to persist.`
+      e. Continue to Reviewer regardless.
+   4. If `context_pct < 70`: skip silently.
 
 4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
 
@@ -487,6 +513,24 @@ loop_state.round = 0
    Reviewer. Write the Executor's change summary, updated file list, and
    any deviations from the plan into the context file. The Reviewer will
    read this file for orientation — stale data here means a wrong review.
+
+3.5. **Context check: persist if high**
+
+   1. Run: `cat ~/.claude/session-state.json 2>/dev/null || echo "{}"`
+   2. Parse `context_pct`. If missing or file absent → skip, proceed to Reviewer.
+   3. If `context_pct >= 70`:
+      a. Derive `task_slug` from the earliest clear task description in the conversation: lowercase kebab-case, max 5 words.
+      b. Scan conversation for expensive intermediate results (coordinates, calibration values,
+         computed parameters, benchmark numbers, API structures discovered by exploration).
+      c. If results found:
+         - Write to `{cwd}/.claude/results/{YYYY-MM-DD}_{task_slug}.json` using idempotent merge
+           (replace by label, append new, never delete).
+         - After successful write: update `~/.claude/persist-state.json` atomically with
+           `{"last_persisted_at": epoch, "context_pct_at_persist": N, "task_slug": "..."}`.
+         - Log: `✓ Results persisted at {context_pct}%: {N} entries — {label1}, {label2}, ...`
+      d. If no results found: log `✓ Context check at {context_pct}%: no intermediate results to persist.`
+      e. Continue to Reviewer regardless.
+   4. If `context_pct < 70`: skip silently.
 
 4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
 
