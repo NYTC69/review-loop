@@ -32,6 +32,20 @@ result? Consider:
   as CRITICAL. The plan should specify what to test (happy paths, edge cases,
   error paths) and how (unit, integration, end-to-end). A plan without a
   test strategy will produce untested code.
+- **Unvalidated assumptions**: does the plan depend on an unverified
+  assumption that would invalidate the approach if false (e.g., "OCR
+  can read this format", "the API returns X", "this library supports Y")?
+  If so, flag as CRITICAL and require a spike — a time-boxed, throwaway
+  experiment that directly exercises the assumption against real input.
+  Do not flag implementation unknowns that can be corrected mid-execution
+  without reworking the plan.
+- **Incremental scope**: can any intermediate result be inspected before
+  the full plan runs? Plans should produce an early inspectable result
+  against a small but real slice of the work (30-second clip vs 3-hour
+  video, 10 rows vs 10 million, one endpoint call vs full pipeline) so
+  a wrong assumption fails fast. Note missing incrementality as MINOR;
+  escalate to CRITICAL only when the plan commits its full cost before
+  any output can be inspected. Skip for single-step or atomic tasks.
 
 ## Code review mode
 Evaluate implemented changes against the approved plan and acceptance criteria.
