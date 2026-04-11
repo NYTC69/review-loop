@@ -14,6 +14,7 @@ Return the exact shared Stage 1 reviewer output schema:
 - [CRITICAL] <description> - must be resolved before proceeding
   File: `path/file.ext`, around line N
 - [MINOR] <description> - recommended improvement
+- None.
 
 ### Strengths
 ...
@@ -27,9 +28,14 @@ Verdict rules:
 - Allowed issue severities are exactly `[CRITICAL]` and `[MINOR]`.
 - `### Strengths` is always required.
 - `### Issues` may be omitted only when there are no issues.
+- If `### Issues` is present with no issues, it must contain exactly `- None.`.
+- Do not use prose placeholders such as `no issues found` or localized free
+  text equivalents inside `### Issues`.
 - `### Questions` may be omitted only when there are no questions.
 - `REQUEST_CHANGES` with no `### Issues` section is invalid.
 - `APPROVE` with no `### Issues` section is valid.
+- `APPROVE` with `### Issues` containing exactly `- None.` is valid.
+- `REQUEST_CHANGES` with `### Issues` containing exactly `- None.` is invalid.
 - `APPROVE` with any `[CRITICAL]` issue is invalid.
 - `REQUEST_CHANGES` with only `[MINOR]` issues is invalid.
 

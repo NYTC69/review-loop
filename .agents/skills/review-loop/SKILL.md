@@ -187,6 +187,7 @@ All reviewer backends must return the shared Stage 1 reviewer schema:
 - [CRITICAL] <description> - must be resolved before proceeding
   File: `path/file.ext`, around line N
 - [MINOR] <description> - recommended improvement
+- None.
 
 ### Strengths
 ...
@@ -202,9 +203,14 @@ Rules:
   severity label is invalid reviewer output.
 - `### Strengths` is always required.
 - `### Issues` may be omitted only when there are no issues.
+- If `### Issues` is present with no issues, it must contain exactly `- None.`.
+- Do not use prose placeholders such as `no issues found` or localized free
+  text equivalents inside `### Issues`.
 - `### Questions` may be omitted only when there are no questions.
 - `APPROVE` with no `### Issues` section is valid.
+- `APPROVE` with `### Issues` containing exactly `- None.` is valid.
 - `REQUEST_CHANGES` with no `### Issues` section is invalid.
+- `REQUEST_CHANGES` with `### Issues` containing exactly `- None.` is invalid.
 - Reject semantically inconsistent reviewer output, including `APPROVE` with any
   `[CRITICAL]` issue and `REQUEST_CHANGES` with only `[MINOR]` issues.
 - Reject malformed reviewer output instead of guessing what it meant.
@@ -278,6 +284,10 @@ Rules:
 - Validate the `result` field against the shared reviewer schema.
 - If Claude invocation fails or validation fails, do not guess and do not retry
   Claude for that round.
+- If Claude invocation fails or validation fails, record a short failure reason
+  summary in `## Review History` before falling back. Include whether the
+  failure was command execution, JSON parsing, missing `result`, or reviewer
+  schema validation.
 - If Claude invocation fails or validation fails, spawn `review_loop_reviewer`.
 
 ### Fallback Reviewer Path
