@@ -25,6 +25,8 @@
 - Codex subagents live under `.codex/agents/*.toml`.
 - The Claude reviewer contract for Codex uses `claude -p --no-session-persistence --output-format json < prompt-file`.
 - This reviewer call must run outside the Codex sandbox.
+- In `codex exec --ephemeral`, subagent calls should use fresh self-contained
+  prompts instead of relying on forked parent-thread context.
 - `.review-loop/config.md` and `.review-loop/sessions/*.md` remain the shared protocol.
 
 ## Design Philosophy

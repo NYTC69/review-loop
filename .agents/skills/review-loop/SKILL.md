@@ -24,6 +24,9 @@ and keep the shared `.review-loop` session file accurate.
 - The orchestrator is the only writer of `.review-loop/sessions/{uuid}.md`.
 - `review_loop_executor` never writes the session file directly.
 - `review_loop_reviewer` never writes the session file directly.
+- When invoking Codex subagents, use a fresh self-contained prompt that embeds
+  the required task context directly. Do not rely on inherited or forked parent
+  thread context.
 - Reject malformed Executor or Reviewer output instead of guessing.
 - If the user explicitly resumes an existing Stage 1 session, reopen that file.
   Otherwise create a new session with a new UUID.
@@ -159,8 +162,13 @@ No-op round. The approved plan and current code already satisfy this step.
 
 Rules:
 
-- Spawn `review_loop_executor` for planning rounds.
-- Spawn `review_loop_executor` for execution rounds.
+- Spawn `review_loop_executor` for planning rounds using a fresh,
+  self-contained prompt that includes the work item, relevant session content,
+  and the required planning schema directly in the subagent call.
+- Spawn `review_loop_executor` for execution rounds using a fresh,
+  self-contained prompt that includes the approved plan, relevant session
+  content, unresolved review issues, and the required execution schema directly
+  in the subagent call.
 - The section headers above are mandatory.
 - If Executor output is invalid, whether materially malformed or semantically
   invalid under the Executor guard, reject it instead of guessing.
@@ -276,6 +284,9 @@ Rules:
 
 - Spawn `review_loop_reviewer` if the Claude reviewer path is skipped, fails, or
   returns invalid output.
+- Invoke `review_loop_reviewer` with a fresh, self-contained prompt that
+  embeds the exact review content directly. Do not rely on inherited or forked
+  parent thread context.
 - Use the same review content and the same reviewer schema rules as the Claude
   path.
 - Validate fallback reviewer output with the same schema rules.
