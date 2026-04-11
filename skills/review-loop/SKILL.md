@@ -777,6 +777,101 @@ Comments fixed: {N} stale comments in {files / "none"}
 ─────────────────────────────────────────────────────
 ```
 
+### Step 3.7 — Security Preflight
+
+Scan the working tree for sensitive files that must never be committed to a public repository. Run this step on every delivery, regardless of whether `auto_commit` is set.
+
+#### 3.7.1 — Check for tracked or staged sensitive files
+
+Run these commands to detect any tracked or staged file that matches a known-sensitive pattern. Use Bash for each grep:
+
+```bash
+# Tracked files — keys, certificates, identity files
+git ls-files | grep -iE '\.(pem|key|crt|cert|cer|p12|pfx|jks|keystore|ppk|asc|gpg|pgp)$'
+
+# Tracked files — environment and config secrets (exclude safe .example/.sample templates)
+git ls-files | grep -iE '(^|/)(\.env|\.env\..+)$' | grep -v -iE '\.(example|sample)(\.[^/]*)?$'
+git ls-files | grep -iE '\.(env)$'
+
+# Tracked files — credential and secret file names (basename substring match; exclude .example/.sample)
+git ls-files | grep -iE '(^|/)[^/]*(credentials?|secrets?|api[-_.]?key|auth[-_.]?token|passwd|shadow)[^/]*$' | grep -v -iE '\.(example|sample)(\.[^/]*)?$'
+
+# Tracked files — SSH private key basenames (id_rsa*, id_dsa*, id_ecdsa*, id_ed25519*)
+git ls-files | grep -iE '(^|/)id_(rsa|dsa|ecdsa|ed25519)'
+
+# Tracked files — cloud service account credentials
+git ls-files | grep -iE '(^|/)service-account[^/]*\.json$'
+
+# Tracked files — cloud credential directories (.aws/, .gcloud/)
+git ls-files | grep -iE '(^|/)\.(aws|gcloud)/'
+
+# Tracked files — database dumps and files
+git ls-files | grep -iE '\.(sqlite3?|db|dump|sql\.gz)$'
+
+# Tracked files — Terraform state (may contain secrets; exclude .example templates)
+git ls-files | grep -iE '(\.tfstate|\.tfvars)($|\.)' | grep -v -iE '\.example$'
+
+# Tracked files — Terraform plugin/module cache directory (.terraform/)
+git ls-files | grep -E '(^|/)\.terraform/'
+
+# Tracked files — compiled source maps (JS, CSS, and other — all expose source)
+git ls-files | grep -iE '\.map$'
+
+# Tracked files — log files (may contain sensitive runtime data)
+git ls-files | grep -iE '\.log$'
+git ls-files | grep -E '(^|/)logs/'
+```
+
+Collect every match into a list of **flagged files**.
+
+If flagged files are found:
+- Report each as **CRITICAL** in the output block below
+- **Halt — do not proceed to Step 4**
+- Tell the user: to untrack each file, run `git rm --cached <file>` and add the appropriate pattern to `.gitignore`
+- Wait for the user to resolve before continuing
+
+#### 3.7.2 — Audit .gitignore for missing sensitive pattern coverage
+
+Read the project's `.gitignore` (create it if it does not exist). For each category below, check whether adequate glob coverage already exists. If a category is not covered, add its patterns:
+
+| Category | Patterns to add if missing |
+|----------|---------------------------|
+| Environment & config | `.env`, `.env.*`, `*.env`, `!.env.example`, `!.env.sample` |
+| Keys & certificates | `*.pem`, `*.key`, `*.crt`, `*.cert`, `*.cer`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` |
+| SSH key files | `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*`, `*.ppk` |
+| PGP / GPG | `*.asc`, `*.gpg`, `*.pgp` |
+| Cloud credentials | `*credentials*`, `!*credentials.example*`, `!*credentials.sample*`, `service-account*.json`, `.aws/`, `.gcloud/` | ⚠️ always confirm |
+| Generic secret files | `*secret*`, `!*secret.example*`, `!*secret.sample*`, `secrets.*`, `!secrets.example*`, `!secrets.sample*` | ⚠️ always confirm |
+| Database & dumps | `*.sqlite`, `*.sqlite3`, `*.db`, `*.dump`, `*.sql.gz` |
+| Compiled source maps | `*.map` | intentionally broad: covers JS, CSS, and all source map variants |
+| Terraform | `*.tfstate`, `*.tfstate.*`, `*.tfvars`, `!*.tfvars.example`, `.terraform/` |
+| Logs | `*.log`, `logs/` |
+
+Before writing any pattern to `.gitignore`:
+- For **wildcard patterns** (e.g., `*.pem`, `id_rsa*`, `*.tfstate`): use `git ls-files -- '<glob>'` — git's native pathspec matches at any depth.
+  Example: `git ls-files -- '*.pem'`, `git ls-files -- 'id_rsa*'`, `git ls-files -- '*.tfstate'`
+- For **literal/directory patterns** (e.g., `.env`, `.aws/`, `.gcloud/`, `.terraform/`, `logs/`): use anchored grep — `git ls-files -- '.env'` only matches at root, not nested paths like `services/.env`.
+  Example: `git ls-files | grep -E '(^|/)\.env$'`, `git ls-files | grep -E '(^|/)\.aws/'`, `git ls-files | grep -E '(^|/)logs/'`
+- Patterns marked **⚠️ always confirm** (Cloud credentials, Generic secret files): always ask the user
+  before adding, regardless of whether tracked files match — these globs are broad enough to hit source code.
+- All other patterns: if tracked files are found → warn and confirm; if none → add silently.
+
+Use the Edit tool to append missing patterns to `.gitignore`, grouped by category with a comment header (e.g., `# Keys & certificates`).
+
+**Output:**
+```
+── review-loop: Security Preflight ─────────────────
+Tracked sensitive files: {NONE | CRITICAL: <file1>, <file2>, ...}
+.gitignore additions:    {N patterns added across M categories | already covered}
+Status: {✓ CLEAN — ready to commit | ✗ BLOCKED — N sensitive files must be removed from tracking}
+─────────────────────────────────────────────────────
+```
+
+If Status is **BLOCKED**: halt. Do not proceed to Step 4 until resolved.
+If Status is **✓ CLEAN**: proceed to Step 4.
+
+---
+
 ### Step 4 — Delivery
 
 After Quality Polish completes (or is skipped), or user decides to stop:
