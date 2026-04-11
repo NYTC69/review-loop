@@ -2,9 +2,16 @@
 # Place this file at: .review-loop/config.md
 # All fields are optional. Remove any line to use the default.
 
-reviewer: codex                 # "codex" | "subagent"
-reviewer_model: ""              # codex: -m flag (empty = codex default); subagent: Agent model (empty = inherit Orchestrator)
-executor_model: inherit         # Executor sub-agent model
+# Shared config keys retain their Claude-side meaning in the shared protocol.
+reviewer: codex                 # shared Claude/plugin key; Codex Stage 1 does not use this to pick the reviewer backend
+reviewer_model: ""              # shared Claude/plugin key; in Codex Stage 1 this still applies to the default Claude CLI reviewer path
+executor_model: inherit         # shared Claude/plugin key; ignored by Codex Stage 1
+# Codex runtime does not use `reviewer` to choose the reviewer backend.
+# Codex runtime-specific backend/model behavior comes from the optional `codex_*` keys below.
+# Codex defaults to Claude CLI, then falls back to the local Codex reviewer.
+# codex_reviewer_backend: claude_cli  # "claude_cli" | "codex"
+# codex_reviewer_model: ""            # model override for Codex fallback reviewer
+# codex_executor_model: ""            # shared key remains `executor_model`; this is reserved/ignored in Stage 1
 soft_limit_plan: 3              # after N rounds, ask user to continue if CRITICALs remain
 soft_limit_exec: 3
 auto_commit: false
