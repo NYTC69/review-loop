@@ -777,6 +777,86 @@ Comments fixed: {N} stale comments in {files / "none"}
 ─────────────────────────────────────────────────────
 ```
 
+### Step 3.7 — Security Preflight
+
+Scan the working tree for sensitive files that must never be committed to a public repository. Run this step on every delivery, regardless of whether `auto_commit` is set.
+
+#### 3.7.1 — Check for tracked or staged sensitive files
+
+Run these commands to detect any tracked or staged file that matches a known-sensitive pattern. Use Bash for each grep:
+
+```bash
+# Tracked files — keys, certificates, identity files
+git ls-files | grep -iE '\.(pem|key|crt|cert|cer|p12|pfx|jks|keystore|ppk|asc|gpg|pgp)$'
+
+# Tracked files — environment and config secrets
+git ls-files | grep -iE '(^|/)(\.env|\.env\..+)$'
+git ls-files | grep -iE '\.(env)$'
+
+# Tracked files — credential and secret file names
+git ls-files | grep -iE '(^|/)\.?(credentials?|secrets?|passwd|shadow)(\..*)?$'
+
+# Tracked files — database dumps and files
+git ls-files | grep -iE '\.(sqlite3?|db|dump|sql\.gz)$'
+
+# Tracked files — Terraform state (may contain secrets)
+git ls-files | grep -iE '(\.tfstate|\.tfvars)($|\.)'
+
+# Tracked files — compiled JS source maps (source code exposure risk)
+git ls-files | grep -iE '\.map$'
+
+# Also check staged-only (not yet tracked)
+git diff --cached --name-only | grep -iE '\.(pem|key|crt|cert|cer|p12|pfx|jks|keystore|ppk|asc|gpg|pgp)$'
+git diff --cached --name-only | grep -iE '(^|/)(\.env|\.env\..+)$'
+git diff --cached --name-only | grep -iE '(^|/)\.?(credentials?|secrets?|passwd|shadow)(\..*)?$'
+```
+
+Collect every match into a list of **flagged files**.
+
+If flagged files are found:
+- Report each as **CRITICAL** in the output block below
+- **Halt — do not proceed to Step 4**
+- Tell the user: to untrack each file, run `git rm --cached <file>` and add the appropriate pattern to `.gitignore`
+- Wait for the user to resolve before continuing
+
+#### 3.7.2 — Audit .gitignore for missing sensitive pattern coverage
+
+Read the project's `.gitignore` (create it if it does not exist). For each category below, check whether adequate glob coverage already exists. If a category is not covered, add its patterns:
+
+| Category | Patterns to add if missing |
+|----------|---------------------------|
+| Environment & config | `.env`, `.env.*`, `*.env`, `!.env.example`, `!.env.sample` |
+| Keys & certificates | `*.pem`, `*.key`, `*.crt`, `*.cert`, `*.cer`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` |
+| SSH key files | `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*`, `*.ppk` |
+| PGP / GPG | `*.asc`, `*.gpg`, `*.pgp` |
+| Cloud credentials | `*credentials*`, `!*credentials.example*`, `service-account*.json`, `.aws/`, `.gcloud/` |
+| Generic secret files | `*secret*`, `!*secret.example*`, `secrets.*`, `!secrets.example*` |
+| Database & dumps | `*.sqlite`, `*.sqlite3`, `*.db`, `*.dump`, `*.sql.gz` |
+| Compiled source maps | `*.map` |
+| Terraform | `*.tfstate`, `*.tfstate.*`, `*.tfvars`, `!*.tfvars.example`, `.terraform/` |
+| Logs | `*.log`, `logs/` |
+
+Before writing any pattern to `.gitignore`:
+- Run `git ls-files | grep -E '<pattern>'` to check if any already-tracked file would be matched
+- If yes: warn the user and ask for confirmation before adding that pattern
+- If no already-tracked files match: add silently
+
+Use the Edit tool to append missing patterns to `.gitignore`, grouped by category with a comment header (e.g., `# Keys & certificates`).
+
+**Output:**
+```
+── review-loop: Security Preflight ─────────────────
+Tracked sensitive files: {NONE | CRITICAL: <file1>, <file2>, ...}
+.gitignore additions:    {N patterns added across M categories | already covered}
+Status: {✓ CLEAN — ready to commit | ✗ BLOCKED — N sensitive files must be removed from tracking}
+─────────────────────────────────────────────────────
+```
+
+If Status is **BLOCKED**: halt. Do not proceed to Step 4 until resolved.
+If Status is **✓ CLEAN**: proceed to Step 4.
+
+---
+
 ### Step 4 — Delivery
 
 After Quality Polish completes (or is skipped), or user decides to stop:
