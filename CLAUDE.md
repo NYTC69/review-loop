@@ -19,6 +19,14 @@
 - `/reload-plugins` does NOT switch versions.
 - **Guide version is auto-bound**: `skills/guide/SKILL.md` reads version from `plugin.json` at runtime via `{VERSION}` placeholder. No manual sync needed.
 
+## Codex Stage 1 Notes
+
+- Codex skills live under `.agents/skills/`.
+- Codex subagents live under `.codex/agents/*.toml`.
+- The Claude reviewer contract for Codex uses `claude -p --no-session-persistence --output-format json < prompt-file`.
+- This reviewer call must run outside the Codex sandbox.
+- `.review-loop/config.md` and `.review-loop/sessions/*.md` remain the shared protocol.
+
 ## Design Philosophy
 
 ### Optional integrations must fail silently
@@ -43,7 +51,7 @@ This principle applies to: MemPalace context retrieval (Step 1.6), any future Gr
 
 ## Agent Invocation Pattern
 
-All agents must follow this pattern:
+All Claude/plugin-side agents must follow this pattern:
 
 ```
 Agent tool parameters:
@@ -54,7 +62,10 @@ Agent tool parameters:
     <task-specific instructions here>
 ```
 
-This applies to: executor, reviewer, code-reviewer, silent-failure-hunter, comment-analyzer, type-design-analyzer, pr-test-analyzer, code-simplifier, go-reviewer, rust-reviewer, python-reviewer, frontend-security-reviewer.
+This applies to the Claude/plugin-side agents: executor, reviewer, code-reviewer, silent-failure-hunter, comment-analyzer, type-design-analyzer, pr-test-analyzer, code-simplifier, go-reviewer, rust-reviewer, python-reviewer, frontend-security-reviewer.
+
+Codex Stage 1 runtime agents are defined separately under `.codex/agents/*.toml`
+and do not use this Claude-specific invocation pattern.
 
 ### Agent hallucination guard
 

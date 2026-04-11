@@ -3,3 +3,4 @@
 .worktrees/
 node_modules/
 .review-loop/sessions/
+.review-loop/tmp/

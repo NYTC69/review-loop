@@ -1,6 +1,6 @@
 # review-loop
 
-A Claude Code plugin for AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis.
+A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
 
 ## Quick Start
 
@@ -22,6 +22,30 @@ cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loo
 > start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
 > to reload plugins while keeping your conversation context. This is a
 > Claude Code caching behavior, not a review-loop limitation.
+
+## Codex Stage 1
+
+Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
+`review-loop` skill shares `.review-loop/config.md` and `.review-loop/sessions/`
+with Claude Code, so both runtimes work against the same project state.
+The rest of this README primarily documents the current Claude Code plugin
+surface; Codex Stage 1 currently exposes only `review-loop` and `guide`.
+
+The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
+(`claude -p`). If you need to force the Codex fallback reviewer, set
+`codex_reviewer_backend: codex` in `.review-loop/config.md`.
+The shared `reviewer` and `executor_model` keys do not actively control
+Stage 1 Codex reviewer/backend selection.
+In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains reserved.
+
+Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
+
+## Claude Plugin Surface
+
+The commands, configuration tables, reviewer modes, and included agent list
+below describe the current Claude Code plugin surface. They are not yet part of
+the Codex Stage 1 surface beyond the shared `review-loop` and `guide` entries
+described above.
 
 ## Workflow Overview
 
@@ -114,9 +138,9 @@ All options live in `.review-loop/config.md`. Every field is optional.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `reviewer` | `codex` | `"codex"` \| `"subagent"` — which backend reviews |
+| `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
 | `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = inherit) |
-| `executor_model` | `inherit` | `"inherit"` \| `"sonnet"` \| `"opus"` |
+| `executor_model` | `inherit` | Shared Claude/plugin executor-model key; ignored by Codex Stage 1 |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
 | `auto_commit` | `false` | Stage changed files and commit after delivery |
@@ -127,6 +151,13 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `quality_focus` | `""` | What to prioritize in quality polish (free text) |
 | `review_style` | `""` | Tone and rules for all reviews (free text) |
 | `skip_quality_polish` | `false` | Skip Quality Polish (Step 3.5) entirely |
+
+For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
+path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,
+and `codex_reviewer_model` overrides the model used by that Codex fallback
+reviewer path. The `reviewer` and `executor_model` entries above still
+describe shared Claude/plugin-side behavior and do not actively control
+Stage 1 Codex behavior.
 
 ### Natural language config examples
 
@@ -197,6 +228,10 @@ coverage, and comment checks. Configurable via `quality_focus` and
 `skip_quality_polish`.
 
 ## File Structure
+
+The tree below shows the Claude/plugin-side structure. Codex Stage 1 also uses
+the runtime paths `.agents/skills/` and `.codex/agents/` for its repo skills
+and subagents. Only `review-loop` and `guide` are wired for Codex in Stage 1.
 
 ```
 review-loop/
