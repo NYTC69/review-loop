@@ -1,0 +1,37 @@
+{
+  "format": "markdown",
+  "heading_shape": {
+    "verdict": "### VERDICT: [APPROVE | REQUEST_CHANGES]",
+    "issues": "### Issues",
+    "strengths": "### Strengths",
+    "questions": "### Questions"
+  },
+  "verdicts": [
+    "APPROVE",
+    "REQUEST_CHANGES"
+  ],
+  "allowed_severities": [
+    "CRITICAL",
+    "MINOR"
+  ],
+  "sections": {
+    "VERDICT": {
+      "required": true
+    },
+    "Issues": {
+      "required_when_verdict": "REQUEST_CHANGES",
+      "optional_when_verdict": "APPROVE",
+      "empty_marker": "- None."
+    },
+    "Strengths": {
+      "required": true
+    },
+    "Questions": {
+      "optional": true
+    }
+  },
+  "issue_entry_shapes": {
+    "critical": "- [CRITICAL] <description> - must be resolved before proceeding\n  File: `path/file.ext`, around line N",
+    "minor": "- [MINOR] <description> - recommended improvement"
+  }
+}

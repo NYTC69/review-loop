@@ -1,0 +1,315 @@
+{
+  "id": "assertion-mapping",
+  "description": "Concrete smoke assertion meanings and cross-file consistency mappings for skill tests",
+  "smoke_assertions": {
+    "session_created": {
+      "kind": "artifact_path_exists",
+      "artifact": "session-path.txt",
+      "needle": ".review-loop/sessions/"
+    },
+    "planning_round_recorded": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Planning Round 1"
+    },
+    "execution_round_recorded": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Execution Round 1"
+    },
+    "noop_execution_outcome_recorded": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "No-op execution round approved."
+    },
+    "reviewer_backend_codex": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- reviewer_backend: codex"
+    },
+    "reviewer_prompt_exists": {
+      "kind": "artifact_exists",
+      "artifact": "reviewer-prompt.txt"
+    },
+    "shared_config_path_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": ".review-loop/config.md"
+    },
+    "shared_sessions_path_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": ".review-loop/sessions/"
+    },
+    "reviewer_backend_default_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "try the Claude CLI reviewer first via"
+    },
+    "reviewer_backend_fallback_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "fall back to the local Codex reviewer"
+    }
+  },
+  "smoke_groups": {
+    "execution_or_noop_round_recorded": {
+      "mode": "any",
+      "members": [
+        "execution_round_recorded",
+        "noop_execution_outcome_recorded"
+      ]
+    },
+    "reviewer_backend_behavior_mentioned": {
+      "mode": "all",
+      "members": [
+        "reviewer_backend_default_mentioned",
+        "reviewer_backend_fallback_mentioned"
+      ]
+    }
+  },
+  "consistency_mappings": {
+    "reviewer_model": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "reviewer_model: \"\"              # shared Claude/plugin key; in Codex Stage 1 this still applies to the default Claude CLI reviewer path"
+      },
+      {
+        "path": "README.md",
+        "needle": "`reviewer_model` controls the default Claude CLI reviewer"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "`reviewer_model` still applies to the Claude"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`reviewer_model` applies only to the Claude CLI reviewer path."
+      }
+    ],
+    "codex_reviewer_backend": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "# codex_reviewer_backend: claude_cli  # \"claude_cli\" | \"codex\""
+      },
+      {
+        "path": "README.md",
+        "needle": "`codex_reviewer_backend: codex` in `.review-loop/config.md`."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "You can force that fallback path with:"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "codex_reviewer_backend: codex"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "If `codex_reviewer_backend: codex` is present, skip the Claude path and use"
+      }
+    ],
+    "codex_reviewer_model": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "# codex_reviewer_model: \"\"            # model override for Codex fallback reviewer"
+      },
+      {
+        "path": "README.md",
+        "needle": "and `codex_reviewer_model` overrides the model used by that Codex fallback"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "and use the Codex reviewer directly. In that case, `codex_reviewer_model` is"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`codex_reviewer_model` applies only to the Codex fallback reviewer path."
+      }
+    ],
+    "executor_model": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "executor_model: inherit         # shared Claude/plugin key; ignored by Codex Stage 1"
+      },
+      {
+        "path": "README.md",
+        "needle": "The `reviewer` and `executor_model` entries above still"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`executor_model` is ignored by the Codex runtime in Stage 1."
+      }
+    ],
+    "codex_executor_model": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "# codex_executor_model: \"\"            # shared key remains `executor_model`; this is reserved/ignored in Stage 1"
+      },
+      {
+        "path": "README.md",
+        "needle": "In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains reserved."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`codex_executor_model` is reserved only and ignored in Stage 1."
+      }
+    ],
+    "executor_schema_parity": [
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "## Solution Plan: {title}"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "## Solution Plan: {title}"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Problem Analysis"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Problem Analysis"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Proposed Approach"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Proposed Approach"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Implementation Steps"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Implementation Steps"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Files to Modify / Create"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Files to Modify / Create"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Risks & Assumptions"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Risks & Assumptions"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Open Questions"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Open Questions"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "## Implementation Complete: {title}"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "## Implementation Complete: {title}"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Changes Made"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Changes Made"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Files Modified / Created / Deleted"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Files Modified / Created / Deleted"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Deviations from Plan"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Deviations from Plan"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Notes for Reviewer"
+      },
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "### Notes for Reviewer"
+      }
+    ],
+    "reviewer_schema_parity": [
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### VERDICT: [APPROVE | REQUEST_CHANGES]"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "### VERDICT: [APPROVE | REQUEST_CHANGES]"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Issues"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "### Issues"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "- [CRITICAL] <description> - must be resolved before proceeding"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "- [CRITICAL] <description> - must be resolved before proceeding"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "- [MINOR] <description> - recommended improvement"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "- [MINOR] <description> - recommended improvement"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "- None."
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "- None."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Strengths"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "### Strengths"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "### Questions"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "### Questions"
+      }
+    ]
+  }
+}

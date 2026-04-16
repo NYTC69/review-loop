@@ -1,0 +1,35 @@
+{
+  "id": "guide.shared-state.codex",
+  "type": "smoke",
+  "target": "guide",
+  "runtime": "codex",
+  "requires": ["codex"],
+  "setup": {
+    "temp_config": ""
+  },
+  "artifacts": {
+    "capture": {
+      "response": "stdout"
+    },
+    "required": [
+      "response",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "codex",
+    "exec",
+    "-C",
+    "__WORKTREE__",
+    "-s",
+    "workspace-write",
+    "--ephemeral",
+    "Use the repo skill guide to explain the current Stage 1 behavior in this repository. Include the shared config path, shared sessions path, and reviewer backend behavior."
+  ],
+  "assertions": [
+    "shared_config_path_mentioned",
+    "shared_sessions_path_mentioned",
+    "reviewer_backend_behavior_mentioned"
+  ]
+}

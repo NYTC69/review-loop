@@ -1,0 +1,54 @@
+REVIEW ONLY. Do not modify files.
+
+Note: the filename is historical; the fixture content models a fallback-approved session artifact.
+
+Shared session file path:
+`tests/skills/fixtures/sessions/codex-planning-approved.md`
+
+Current planning-phase context:
+- Current Phase: `planning`
+- The session already has an approved plan.
+- The recorded session reviewer backend is `codex` and `reviewer_fallback_used`
+  is `true`; this prompt is the planning-review input for that synthetic
+  fallback-approved fixture.
+- `Files Changed` is `None.`
+
+Latest Executor planning output:
+```md
+### Solution Plan: Add stable fixtures
+1. Create a compact session fixture with the required section order.
+2. Create a stable planning-review prompt fixture with the shared session path and reviewer schema.
+3. Create a machine-readable reviewer schema expectation file.
+```
+
+Review the planning output only. Return a single reviewer response in the
+shared schema below.
+
+Explicit reviewer schema:
+```md
+### VERDICT: [APPROVE | REQUEST_CHANGES]
+
+### Issues
+Include only when there are issues. For `APPROVE`, omit this section or use:
+- None.
+
+For `REQUEST_CHANGES`, use one or more of:
+- [CRITICAL] <description> - must be resolved before proceeding
+  File: `path/file.ext`, around line N
+- [MINOR] <description> - recommended improvement
+
+### Strengths
+...
+
+### Questions
+Include only when there are questions.
+```
+
+Rules:
+- Valid verdicts are exactly `APPROVE` and `REQUEST_CHANGES`.
+- Allowed issue severities are exactly `[CRITICAL]` and `[MINOR]`.
+- `### Issues` is optional when the verdict is `APPROVE`.
+- `### Issues` is required when the verdict is `REQUEST_CHANGES`.
+- If `### Issues` is present with no issues, it must contain exactly `- None.`.
+- `APPROVE` with no `### Issues` section is valid.
+- `REQUEST_CHANGES` with no `### Issues` section is invalid.
