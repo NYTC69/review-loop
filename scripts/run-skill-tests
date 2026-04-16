@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
+
+lint_status=0
+smoke_status=0
+
+bash scripts/run-skill-lint || lint_status=$?
+
+bash scripts/run-skill-smoke || smoke_status=$?
+
+if [[ $lint_status -ne 0 || $smoke_status -ne 0 ]]; then
+  exit 1
+fi

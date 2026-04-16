@@ -1,0 +1,160 @@
+{
+  "id": "review-loop",
+  "description": "Static contract assertions for the review-loop workflow",
+  "assertions": [
+    {
+      "id": "claude_wrapper_exists",
+      "kind": "exists",
+      "path": "skills/review-loop/SKILL.md"
+    },
+    {
+      "id": "claude_soft_limit_plan_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "soft_limit_plan"
+    },
+    {
+      "id": "claude_soft_limit_exec_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "soft_limit_exec"
+    },
+    {
+      "id": "claude_current_phase_section_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Current Phase"
+    },
+    {
+      "id": "claude_approved_plan_section_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Approved Plan"
+    },
+    {
+      "id": "claude_review_history_section_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Review History"
+    },
+    {
+      "id": "claude_quality_polish_flow_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Quality Polish"
+    },
+    {
+      "id": "claude_delivery_flow_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Delivery"
+    },
+    {
+      "id": "codex_wrapper_exists",
+      "kind": "exists",
+      "path": ".agents/skills/review-loop/SKILL.md"
+    },
+    {
+      "id": "codex_executor_agent_exists",
+      "kind": "exists",
+      "path": ".codex/agents/review-loop-executor.toml"
+    },
+    {
+      "id": "codex_reviewer_agent_exists",
+      "kind": "exists",
+      "path": ".codex/agents/review-loop-reviewer.toml"
+    },
+    {
+      "id": "codex_session_path_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": ".review-loop/sessions/{uuid}.md"
+    },
+    {
+      "id": "codex_reviewer_prompt_path_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": ".review-loop/tmp/{uuid}-reviewer-prompt.txt"
+    },
+    {
+      "id": "codex_executor_reference_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "review_loop_executor"
+    },
+    {
+      "id": "codex_reviewer_reference_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "review_loop_reviewer"
+    },
+    {
+      "id": "codex_session_metadata_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Session Metadata"
+    },
+    {
+      "id": "codex_reviewer_schema_heading_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Reviewer Output Schema"
+    },
+    {
+      "id": "codex_executor_schema_heading_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Executor Output Schema"
+    },
+    {
+      "id": "codex_claude_reviewer_command_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "claude -p --no-session-persistence --output-format json"
+    },
+    {
+      "id": "codex_plan_soft_limit_behavior_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "When `soft_limit_plan` is reached and blocking issues remain"
+    },
+    {
+      "id": "codex_exec_soft_limit_behavior_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "When `soft_limit_exec` is reached and blocking issues remain"
+    },
+    {
+      "id": "codex_hallucination_guard_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Reject malformed Executor or Reviewer output instead of guessing."
+    },
+    {
+      "id": "claude_plugin_agent_type_forbidden",
+      "kind": "forbidden_pattern",
+      "applies_to": "claude-plugin-agent-invocations",
+      "needle": "subagent_type: review-loop:",
+      "guard_path": "CLAUDE.md",
+      "guard_needle": "Never use `subagent_type: review-loop:<name>`."
+    },
+    {
+      "id": "codex_inherited_parent_context_forbidden",
+      "kind": "forbidden_pattern",
+      "applies_to": "codex-subagent-prompts",
+      "needle": "inherited or forked parent thread context",
+      "guard_path": ".agents/skills/review-loop/SKILL.md",
+      "guard_needle": "Do not rely on inherited or forked parent"
+    },
+    {
+      "id": "executor_schema_parity",
+      "kind": "consistent_with",
+      "mapping_id": "executor_schema_parity"
+    },
+    {
+      "id": "reviewer_schema_parity",
+      "kind": "consistent_with",
+      "mapping_id": "reviewer_schema_parity"
+    }
+  ]
+}

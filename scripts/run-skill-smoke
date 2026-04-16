@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
+WORKTREE=$(git rev-parse --show-toplevel)
+
+exec python3 - "$WORKTREE" "$@" <<'PY'
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+class RunnerError(Exception):
+    def __init__(self, label: str, message: str):
+        super().__init__(message)
+        self.label = label
+        self.message = message
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def load_json(path: Path):
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def safe_load_json(path: Path, label: str):
+    try:
+        payload = load_json(path)
+    except OSError as exc:
+        raise RunnerError(label, f"unable to read JSON: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise RunnerError(label, f"malformed JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RunnerError(label, "JSON payload must be an object")
+    return payload
+
+
+def require_mapping_object(value, field_name: str, label: str):
+    if not isinstance(value, dict):
+        raise RunnerError(label, f"{field_name} must be an object")
+    return value
+
+
+def write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
+
+
+def write_json(path: Path, value) -> None:
+    write_text(path, json.dumps(value, indent=2) + "\n")
+
+
+def scalar_runtime(value):
+    return value
+
+
+def case_record(case_id: str, case_type: str, target: str, runtime, status: str, reason: str, artifacts, started_at: str, finished_at: str):
+    return {
+        "id": case_id,
+        "type": case_type,
+        "target": target,
+        "runtime": scalar_runtime(runtime),
+        "status": status,
+        "reason": reason,
+        "artifacts": artifacts,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+
+
+def relative_to_root(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def list_files(path: Path, pattern: str):
+    if not path.exists():
+        return set()
+    return {candidate.resolve() for candidate in path.glob(pattern) if candidate.is_file()}
+
+
+def codex_session_dir_accessible() -> tuple[bool, str]:
+    session_dir = Path.home() / ".codex" / "sessions"
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        probe = session_dir / ".smoke-write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True, ""
+    except OSError as exc:
+        return False, f"environment cannot access Codex session dir at {session_dir}: {exc}"
+
+
+def git_status(root: Path) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(root), "status", "--short"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
+def load_existing_results(path: Path):
+    if not path.exists():
+        return {"results": []}
+    payload = safe_load_json(path, ".last-run.json")
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RunnerError(".last-run.json", "results must be a list")
+    return payload
+
+
+def write_results(path: Path, smoke_results):
+    try:
+        payload = load_existing_results(path)
+        retained = []
+        for entry in payload.get("results", []):
+            if isinstance(entry, dict) and entry.get("type") == "smoke":
+                continue
+            retained.append(entry)
+        payload["results"] = retained + smoke_results
+        payload["updated_at"] = now_iso()
+        write_json(path, payload)
+    except RunnerError:
+        raise
+    except OSError as exc:
+        raise RunnerError(".last-run.json", f"unable to write JSON: {exc}") from exc
+
+
+def reset_artifact_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Path):
+    smoke_assertions = require_mapping_object(mapping_data.get("smoke_assertions", {}), "smoke_assertions", "assertion-mapping")
+    smoke_groups = require_mapping_object(mapping_data.get("smoke_groups", {}), "smoke_groups", "assertion-mapping")
+    results = []
+
+    def evaluate(assertion_id: str):
+        group = smoke_groups.get(assertion_id)
+        if isinstance(group, dict):
+            mode = group.get("mode")
+            members = group.get("members", [])
+            member_results = [evaluate(member_id) for member_id in members]
+            passed = [item for item in member_results if item["status"] == "pass"]
+            if mode == "any":
+                if passed:
+                    return {"id": assertion_id, "status": "pass", "message": "group(any) satisfied"}
+                return {"id": assertion_id, "status": "fail", "message": "group(any) failed"}
+            if mode == "all":
+                if len(passed) == len(member_results):
+                    return {"id": assertion_id, "status": "pass", "message": "group(all) satisfied"}
+                return {"id": assertion_id, "status": "fail", "message": "group(all) failed"}
+            return {"id": assertion_id, "status": "fail", "message": f"unsupported group mode {mode!r}"}
+
+        assertion = smoke_assertions.get(assertion_id)
+        if not isinstance(assertion, dict):
+            return {"id": assertion_id, "status": "fail", "message": f"unknown assertion id {assertion_id!r}"}
+
+        artifact_name = assertion.get("artifact")
+        artifact_path = artifact_dir / artifact_name if isinstance(artifact_name, str) else None
+        kind = assertion.get("kind")
+        needle = assertion.get("needle")
+
+        if kind == "artifact_exists":
+            if artifact_path and artifact_path.exists():
+                return {"id": assertion_id, "status": "pass", "message": f"{artifact_name} exists"}
+            return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+
+        if kind == "artifact_path_exists":
+            if artifact_path is None or not artifact_path.exists():
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+            haystack = artifact_path.read_text(encoding="utf-8")
+            if isinstance(needle, str) and needle.lower() in haystack.lower():
+                return {"id": assertion_id, "status": "pass", "message": f"{artifact_name} contains expected path"}
+            return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} does not contain {needle!r}"}
+
+        if kind == "artifact_contains":
+            if artifact_path is None or not artifact_path.exists():
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+            haystack = artifact_path.read_text(encoding="utf-8")
+            if isinstance(needle, str) and needle.lower() in haystack.lower():
+                return {"id": assertion_id, "status": "pass", "message": f"{artifact_name} contains expected text"}
+            return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} does not contain {needle!r}"}
+
+        return {"id": assertion_id, "status": "fail", "message": f"unsupported smoke assertion kind {kind!r}"}
+
+    for assertion_id in assertion_ids:
+        results.append(evaluate(assertion_id))
+
+    failures = [result for result in results if result["status"] != "pass"]
+    if failures:
+        reason = "; ".join(f"{result['id']}: {result['message']}" for result in failures)
+        return results, "fail", reason
+    return results, "pass", f"{len(results)} assertions passed"
+
+
+def require_string(value, field_name: str, case_id: str):
+    if not isinstance(value, str) or not value:
+        raise RunnerError(case_id, f"{field_name} must be a non-empty string")
+    return value
+
+
+def require_string_list(value, field_name: str, case_id: str):
+    if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item for item in value):
+        raise RunnerError(case_id, f"{field_name} must be a non-empty list of strings")
+    return value
+
+
+def require_artifacts(value, case_id: str):
+    if not isinstance(value, dict):
+        raise RunnerError(case_id, "artifacts must be an object")
+    capture = value.get("capture", {})
+    if capture is None:
+        capture = {}
+    if not isinstance(capture, dict):
+        raise RunnerError(case_id, "artifacts.capture must be an object")
+    for key, mode in capture.items():
+        if not isinstance(key, str) or not key:
+            raise RunnerError(case_id, "artifacts.capture keys must be non-empty strings")
+        if not isinstance(mode, str) or not mode:
+            raise RunnerError(case_id, f"artifacts.capture[{key!r}] must be a non-empty string")
+    required = value.get("required")
+    if not isinstance(required, list) or not required or any(not isinstance(item, str) or not item for item in required):
+        raise RunnerError(case_id, "artifacts.required must be a non-empty list of strings")
+    if len(set(required)) != len(required):
+        raise RunnerError(case_id, "artifacts.required must not contain duplicates")
+    return {"required": required, "capture": capture}
+
+
+def require_runtime(value, case_id: str):
+    if not isinstance(value, str) or not value:
+        raise RunnerError(case_id, "runtime must be a non-empty string")
+    if value not in {"shared", "codex", "claude"}:
+        raise RunnerError(case_id, "runtime must be one of: shared, codex, claude")
+    return value
+
+
+def declared_runtime_profile(case_data) -> str:
+    value = case_data.get("runtime", "shared")
+    if isinstance(value, str) and value:
+        return value
+    return "shared"
+
+
+def config_manager(root: Path, desired_text):
+    config_path = root / ".review-loop/config.md"
+    backup_text = None
+    had_existing = config_path.exists()
+    if had_existing:
+        backup_text = config_path.read_text(encoding="utf-8")
+
+    def restore():
+        if backup_text is not None:
+            write_text(config_path, backup_text)
+        elif config_path.exists():
+            config_path.unlink()
+
+    if desired_text is None:
+        return config_path, restore
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if desired_text == "":
+        if config_path.exists():
+            config_path.unlink()
+    else:
+        write_text(config_path, desired_text)
+    return config_path, restore
+
+
+def build_claude_wrapper(wrapper_dir: Path):
+    script_path = wrapper_dir / "claude"
+    script_path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+prompt_tmp=$(mktemp)
+stdout_tmp=$(mktemp)
+cleanup() {
+  rm -f "$prompt_tmp" "$stdout_tmp"
+}
+trap cleanup EXIT
+cat >"$prompt_tmp"
+cp "$prompt_tmp" "$REVIEW_LOOP_SMOKE_PROMPT_ARTIFACT"
+set +e
+"$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$stdout_tmp"
+status=$?
+set -e
+if [ -s "$stdout_tmp" ]; then
+  python3 - "$stdout_tmp" "$REVIEW_LOOP_SMOKE_RESULT_ARTIFACT" <<'PYWRAP'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+text = source.read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+index = 0
+length = len(text)
+while index < length and text[index].isspace():
+    index += 1
+if index >= length:
+    raise SystemExit(0)
+try:
+    value, _ = decoder.raw_decode(text, index)
+except json.JSONDecodeError:
+    raise SystemExit(0)
+target.write_text(json.dumps(value, indent=2) + "\\n", encoding="utf-8")
+PYWRAP
+fi
+cat "$stdout_tmp"
+exit "$status"
+""",
+        encoding="utf-8",
+    )
+    script_path.chmod(0o755)
+    return script_path
+
+
+def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        raise RunnerError("command-timeout", f"command timed out after {timeout_seconds}s\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}") from exc
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def missing_required_artifacts(artifacts, required_keys):
+    missing = []
+    for key in required_keys:
+        artifact_ref = artifacts.get(key)
+        if not isinstance(artifact_ref, str) or not artifact_ref:
+            missing.append(key)
+            continue
+        if not (ROOT / artifact_ref).exists():
+            missing.append(key)
+    return missing
+
+
+def resolved_case_definition(case_data):
+    case_id = case_data["id"]
+    command = require_string_list(case_data.get("command"), "command", case_id)
+    assertions = require_string_list(case_data.get("assertions"), "assertions", case_id)
+    artifacts = require_artifacts(case_data.get("artifacts"), case_id)
+    raw_setup = case_data.get("setup", {})
+    if raw_setup is None:
+        raw_setup = {}
+    if not isinstance(raw_setup, dict):
+        raise RunnerError(case_id, "setup must be an object")
+    temp_config = raw_setup.get("temp_config")
+    if temp_config is not None and not isinstance(temp_config, str):
+        raise RunnerError(case_id, "setup.temp_config must be a string or null")
+    timeout_seconds = raw_setup.get("timeout_seconds", 300)
+    if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+        raise RunnerError(case_id, "setup.timeout_seconds must be a positive integer")
+    return {
+        "assertions": assertions,
+        "artifacts": artifacts,
+        "command": [ROOT.as_posix() if item == "__WORKTREE__" else item for item in command],
+        "config_text": temp_config,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def run_case(case_data, mapping_data):
+    case_id = case_data["id"]
+    target = require_string(case_data.get("target", case_id.split(".", 1)[0]), "target", case_id)
+    # "runtime" is a smoke profile label, not necessarily the outer CLI used to launch the case.
+    runtime_profile = require_runtime(case_data.get("runtime", "shared"), case_id)
+    required_clis = require_string_list(case_data.get("requires"), "requires", case_id)
+    started_at = now_iso()
+    artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+    reset_artifact_dir(artifact_dir)
+    artifacts = {"dir": relative_to_root(artifact_dir, ROOT)}
+    missing = [cli for cli in required_clis if shutil.which(cli) is None]
+    meta = {
+        "id": case_id,
+        "type": case_data.get("type"),
+        "target": target,
+        "runtime": runtime_profile,
+        "requires": required_clis,
+        "started_at": started_at,
+    }
+
+    if missing:
+        finished_at = now_iso()
+        meta["finished_at"] = finished_at
+        meta["status"] = "skip"
+        meta["reason"] = f"missing required CLI(s): {', '.join(missing)}"
+        write_json(artifact_dir / "meta.json", meta)
+        artifacts["meta"] = relative_to_root(artifact_dir / "meta.json", ROOT)
+        return case_record(case_id, "smoke", target, runtime_profile, "skip", meta["reason"], artifacts, started_at, finished_at)
+
+    if "codex" in required_clis:
+        codex_ok, codex_reason = codex_session_dir_accessible()
+        if not codex_ok:
+            finished_at = now_iso()
+            meta["finished_at"] = finished_at
+            meta["status"] = "skip"
+            meta["reason"] = codex_reason
+            write_json(artifact_dir / "meta.json", meta)
+            artifacts["meta"] = relative_to_root(artifact_dir / "meta.json", ROOT)
+            return case_record(case_id, "smoke", target, runtime_profile, "skip", codex_reason, artifacts, started_at, finished_at)
+
+    definition = resolved_case_definition(case_data)
+    command = definition["command"]
+    declared_artifacts = set(definition["artifacts"]["required"])
+    capture_modes = definition["artifacts"]["capture"]
+    meta["command"] = command
+    meta["expected_artifacts"] = definition["artifacts"]["required"]
+    meta["timeout_seconds"] = definition["timeout_seconds"]
+    before_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
+    before_tmp_prompts = set()
+    if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
+        before_tmp_prompts = list_files(ROOT / ".review-loop/tmp", "*-reviewer-prompt.txt")
+    write_text(artifact_dir / "git-status-before.txt", git_status(ROOT))
+    artifacts["git_status_before"] = relative_to_root(artifact_dir / "git-status-before.txt", ROOT)
+
+    env = os.environ.copy()
+    restore = None
+    wrapper_tmp = None
+    try:
+        _, restore = config_manager(ROOT, definition["config_text"])
+        if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
+            wrapper_tmp = tempfile.TemporaryDirectory(prefix="run-skill-smoke-claude-")
+            wrapper_dir = Path(wrapper_tmp.name)
+            build_claude_wrapper(wrapper_dir)
+            real_claude = shutil.which("claude")
+            env["REVIEW_LOOP_SMOKE_REAL_CLAUDE"] = real_claude or "claude"
+            env["REVIEW_LOOP_SMOKE_PROMPT_ARTIFACT"] = str(artifact_dir / "reviewer-prompt.txt")
+            env["REVIEW_LOOP_SMOKE_RESULT_ARTIFACT"] = str(artifact_dir / "reviewer-result.json")
+            env["PATH"] = f"{wrapper_dir.as_posix()}:{env.get('PATH', '')}"
+
+        returncode, stdout, stderr = execute_command(command, ROOT, definition["timeout_seconds"], env=env)
+    finally:
+        if restore is not None:
+            restore()
+        if wrapper_tmp is not None:
+            wrapper_tmp.cleanup()
+
+    finished_at = now_iso()
+    write_text(artifact_dir / "stdout.txt", stdout)
+    artifacts["stdout"] = relative_to_root(artifact_dir / "stdout.txt", ROOT)
+    if stderr:
+        write_text(artifact_dir / "stderr.txt", stderr)
+        artifacts["stderr"] = relative_to_root(artifact_dir / "stderr.txt", ROOT)
+    write_text(artifact_dir / "git-status-after.txt", git_status(ROOT))
+    artifacts["git_status_after"] = relative_to_root(artifact_dir / "git-status-after.txt", ROOT)
+
+    after_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
+    new_sessions = sorted(after_sessions - before_sessions, key=lambda path: path.name)
+    session_path = new_sessions[-1] if new_sessions else None
+    if session_path is not None and {"session_path", "session_final"} & set(capture_modes):
+        write_text(artifact_dir / "session-path.txt", relative_to_root(session_path, ROOT) + "\n")
+        write_text(artifact_dir / "session-final.md", session_path.read_text(encoding="utf-8"))
+        if capture_modes.get("session_path") == "latest_session":
+            artifacts["session_path"] = relative_to_root(artifact_dir / "session-path.txt", ROOT)
+        if capture_modes.get("session_final") == "latest_session":
+            artifacts["session_final"] = relative_to_root(artifact_dir / "session-final.md", ROOT)
+
+    if capture_modes.get("response") == "stdout":
+        write_text(artifact_dir / "response.txt", stdout)
+        artifacts["response"] = relative_to_root(artifact_dir / "response.txt", ROOT)
+
+    if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
+        prompt_artifact = artifact_dir / "reviewer-prompt.txt"
+        if not prompt_artifact.exists():
+            after_tmp_prompts = list_files(ROOT / ".review-loop/tmp", "*-reviewer-prompt.txt")
+            prompt_candidates = sorted(after_tmp_prompts - before_tmp_prompts, key=lambda path: path.name)
+            if prompt_candidates:
+                write_text(prompt_artifact, prompt_candidates[-1].read_text(encoding="utf-8"))
+        if capture_modes.get("reviewer_prompt") == "reviewer_prompt_file" and prompt_artifact.exists():
+            artifacts["reviewer_prompt"] = relative_to_root(prompt_artifact, ROOT)
+        result_artifact = artifact_dir / "reviewer-result.json"
+        if capture_modes.get("reviewer_result") == "reviewer_result_file" and result_artifact.exists():
+            artifacts["reviewer_result"] = relative_to_root(result_artifact, ROOT)
+
+    assertion_results, assertion_status, assertion_reason = evaluate_mapping(
+        case_id,
+        definition["assertions"],
+        mapping_data,
+        artifact_dir,
+    )
+    write_json(artifact_dir / "assertions.json", assertion_results)
+    artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
+
+    if returncode != 0:
+        status = "fail"
+        reason = f"command exited with status {returncode}"
+        if assertion_status == "fail":
+            reason = f"{reason}; {assertion_reason}"
+    elif assertion_status == "fail":
+        status = "fail"
+        reason = assertion_reason
+    else:
+        status = "pass"
+        reason = assertion_reason
+
+    meta["finished_at"] = finished_at
+    meta["status"] = status
+    meta["reason"] = reason
+    meta["returncode"] = returncode
+    meta_path = artifact_dir / "meta.json"
+    write_json(meta_path, meta)
+    artifacts["meta"] = relative_to_root(meta_path, ROOT)
+
+    missing_artifacts = missing_required_artifacts(
+        artifacts,
+        definition["artifacts"]["required"],
+    )
+    if missing_artifacts:
+        artifact_reason = f"missing required artifact(s): {', '.join(missing_artifacts)}"
+        if status == "pass":
+            status = "fail"
+            reason = artifact_reason
+        else:
+            reason = f"{reason}; {artifact_reason}"
+        meta["status"] = status
+        meta["reason"] = reason
+        write_json(meta_path, meta)
+
+    return case_record(case_id, "smoke", target, runtime_profile, status, reason, artifacts, started_at, finished_at)
+
+
+ROOT = Path(sys.argv[1]).resolve()
+
+
+def main():
+    mapping_path = ROOT / "tests/skills/contracts/assertion-mapping.json"
+    mapping_data = safe_load_json(mapping_path, "assertion-mapping")
+    smoke_dir = ROOT / "tests/skills/smoke"
+    case_paths = sorted(smoke_dir.glob("*.json"), key=lambda path: path.stem)
+    results = []
+
+    for case_path in case_paths:
+        label = relative_to_root(case_path, ROOT)
+        try:
+            case_data = safe_load_json(case_path, label)
+        except RunnerError as exc:
+            started_at = now_iso()
+            finished_at = started_at
+            record = case_record(
+                case_path.stem,
+                "smoke",
+                case_path.stem.split(".", 1)[0],
+                "shared",
+                "fail",
+                exc.message,
+                {},
+                started_at,
+                finished_at,
+            )
+            results.append(record)
+            print(f"FAIL {case_path.stem} - {exc.message}", flush=True)
+            continue
+        try:
+            case_type = case_data.get("type")
+            case_id = require_string(case_data.get("id", case_path.stem), "id", case_path.stem)
+            case_target = require_string(case_data.get("target", case_id.split(".", 1)[0]), "target", case_id)
+            case_runtime = require_runtime(case_data.get("runtime", "shared"), case_id)
+        except RunnerError as exc:
+            started_at = now_iso()
+            finished_at = started_at
+            record = case_record(
+                case_path.stem,
+                "smoke",
+                case_path.stem.split(".", 1)[0],
+                "shared",
+                "fail",
+                exc.message,
+                {},
+                started_at,
+                finished_at,
+            )
+            results.append(record)
+            print(f"FAIL {case_path.stem} - {exc.message}", flush=True)
+            continue
+        if case_type != "smoke":
+            if case_type == "lint":
+                reason = "lint-only case belongs to run-skill-lint; skipping here"
+                print(f"SKIP {case_id} - {reason}", flush=True)
+                continue
+            started_at = now_iso()
+            finished_at = started_at
+            reason = f"files under tests/skills/smoke must declare type 'smoke'; found {case_type!r}"
+            record = case_record(
+                case_id,
+                "smoke",
+                case_target,
+                case_runtime,
+                "fail",
+                reason,
+                {},
+                started_at,
+                finished_at,
+            )
+            results.append(record)
+            print(f"FAIL {case_id} - {reason}", flush=True)
+            continue
+
+        try:
+            record = run_case(case_data, mapping_data)
+        except RunnerError as exc:
+            started_at = now_iso()
+            finished_at = started_at
+            record = case_record(
+                case_id,
+                "smoke",
+                case_target,
+                case_runtime,
+                "fail",
+                exc.message,
+                {},
+                started_at,
+                finished_at,
+            )
+        results.append(record)
+        print(f"{record['status'].upper()} {record['id']} - {record['reason']}", flush=True)
+
+    try:
+        write_results(ROOT / "tests/skills/.last-run.json", results)
+    except RunnerError as exc:
+        print(f"FAIL {exc.label} - {exc.message}", flush=True)
+        raise SystemExit(1)
+    had_failures = any(record["status"] == "fail" for record in results)
+    raise SystemExit(1 if had_failures else 0)
+
+
+try:
+    main()
+except RunnerError as exc:
+    print(f"FAIL {exc.label} - {exc.message}", flush=True)
+    raise SystemExit(1)
+PY

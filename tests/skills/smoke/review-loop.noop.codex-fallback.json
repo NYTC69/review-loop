@@ -1,0 +1,43 @@
+{
+  "id": "review-loop.noop.codex-fallback",
+  "type": "smoke",
+  "target": "review-loop",
+  "runtime": "codex",
+  "requires": ["codex"],
+  "setup": {
+    "temp_config": "codex_reviewer_backend: codex\n",
+    "timeout_seconds": 150
+  },
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "session_final": "latest_session",
+      "git_status_before": "git_status_before",
+      "git_status_after": "git_status_after"
+    },
+    "required": [
+      "session_path",
+      "session_final",
+      "git_status_before",
+      "git_status_after",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "codex",
+    "exec",
+    "-C",
+    "__WORKTREE__",
+    "-s",
+    "workspace-write",
+    "--ephemeral",
+    "Use the repo skill review-loop to handle this task end-to-end: add one concise sentence to the Codex Stage 1 section of README.md clarifying that executor_model is ignored in Codex Stage 1 and codex_executor_model remains reserved. If the task is already satisfied, complete the loop as a no-op round rather than making a duplicate edit."
+  ],
+  "assertions": [
+    "session_created",
+    "planning_round_recorded",
+    "execution_or_noop_round_recorded",
+    "reviewer_backend_codex"
+  ]
+}

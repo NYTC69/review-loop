@@ -1,0 +1,157 @@
+{
+  "id": "shared-schema",
+  "description": "Shared schema assertions for skill testing",
+  "assertions": [
+    {
+      "id": "session_problem_description_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Problem Description"
+    },
+    {
+      "id": "session_context_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Context"
+    },
+    {
+      "id": "session_acceptance_criteria_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Acceptance Criteria"
+    },
+    {
+      "id": "session_current_phase_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Current Phase"
+    },
+    {
+      "id": "session_approved_plan_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Approved Plan"
+    },
+    {
+      "id": "session_review_history_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Review History"
+    },
+    {
+      "id": "session_files_changed_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Files Changed"
+    },
+    {
+      "id": "session_key_related_files_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Key Related Files"
+    },
+    {
+      "id": "session_timing_log_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Timing Log"
+    },
+    {
+      "id": "session_metadata_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Session Metadata"
+    },
+    {
+      "id": "reviewer_verdict_heading_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### VERDICT: [APPROVE | REQUEST_CHANGES]"
+    },
+    {
+      "id": "reviewer_issues_heading_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Issues"
+    },
+    {
+      "id": "reviewer_strengths_heading_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Strengths"
+    },
+    {
+      "id": "reviewer_questions_heading_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Questions"
+    },
+    {
+      "id": "reviewer_allowed_critical_severity_declared",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "[CRITICAL]"
+    },
+    {
+      "id": "reviewer_allowed_minor_severity_declared",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "[MINOR]"
+    },
+    {
+      "id": "reviewer_allowed_severities_rule_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Allowed issue severities are exactly `[CRITICAL]` and `[MINOR]`."
+    },
+    {
+      "id": "reviewer_empty_issues_marker_declared",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "- None."
+    },
+    {
+      "id": "reviewer_empty_issues_rule_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "If `### Issues` is present with no issues, it must contain exactly `- None.`."
+    },
+    {
+      "id": "reviewer_approve_without_issues_rule_declared",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "`APPROVE` with no `### Issues` section is valid."
+    },
+    {
+      "id": "reviewer_request_changes_requires_issues_rule_declared",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "`REQUEST_CHANGES` with no `### Issues` section is invalid."
+    },
+    {
+      "id": "reviewer_model_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "reviewer_model"
+    },
+    {
+      "id": "codex_reviewer_backend_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_reviewer_backend"
+    },
+    {
+      "id": "codex_reviewer_model_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_reviewer_model"
+    },
+    {
+      "id": "executor_model_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "executor_model"
+    },
+    {
+      "id": "codex_executor_model_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_executor_model"
+    }
+  ]
+}

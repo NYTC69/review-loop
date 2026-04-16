@@ -1,0 +1,28 @@
+{
+  "id": "guide.plugin-surface.readme",
+  "type": "lint",
+  "target": "guide",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "## Codex Stage 1"
+    },
+    {
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "## Claude Plugin Surface"
+    },
+    {
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "the current Claude Code plugin surface"
+    }
+  ]
+}

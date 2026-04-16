@@ -1,0 +1,897 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+exec python3 - "$ROOT_DIR" "$@" <<'PY'
+import datetime
+import json
+import re
+import sys
+from pathlib import Path
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def load_json(path: Path):
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def normalize_phrase(value: str) -> str:
+    lowered = value.lower().replace("`", " ")
+    collapsed = re.sub(r"\s+", " ", lowered)
+    return collapsed.strip()
+
+
+def normalize_text(value: str) -> str:
+    return normalize_phrase(value)
+
+
+def scalar_runtime(value):
+    if isinstance(value, list):
+        if not value:
+            return "shared"
+        if len(value) == 1:
+            return value[0]
+    return value
+
+
+def case_record(case_id: str, case_type: str, target: str, runtime, status: str, reason: str, started_at: str, finished_at: str):
+    return {
+        "id": case_id,
+        "type": case_type,
+        "target": target,
+        "runtime": scalar_runtime(runtime),
+        "status": status,
+        "reason": reason,
+        "artifacts": {},
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+
+
+def assertion_result(status: str, label: str, message: str):
+    return {"status": status, "label": label, "message": message}
+
+
+def require_fields(assertion, label: str, *field_names):
+    missing = [field_name for field_name in field_names if assertion.get(field_name) in (None, "")]
+    if missing:
+        return assertion_result("fail", label, f"missing required field(s): {', '.join(missing)}")
+    return None
+
+
+def require_string_fields(assertion, label: str, *field_names):
+    field_error = require_fields(assertion, label, *field_names)
+    if field_error:
+        return field_error
+    wrong_types = [field_name for field_name in field_names if not isinstance(assertion.get(field_name), str)]
+    if wrong_types:
+        return assertion_result("fail", label, f"field(s) must be strings: {', '.join(wrong_types)}")
+    return None
+
+
+def require_string_list(value, label: str, field_name: str):
+    if not isinstance(value, list) or not value:
+        return assertion_result("fail", label, f"{field_name} requires a non-empty list")
+    if any(not isinstance(item, str) for item in value):
+        return assertion_result("fail", label, f"{field_name} must contain only strings")
+    return None
+
+
+def normalize_target(target, case_id: str):
+    if isinstance(target, str) and target in {"guide", "review-loop", "shared"}:
+        return target
+    if case_id == "shared-schema":
+        return "shared"
+    if case_id in {"guide", "review-loop"}:
+        return case_id
+    if isinstance(target, str):
+        prefix = target.split(".", 1)[0]
+        if prefix in {"guide", "review-loop", "shared"}:
+            return prefix
+    prefix = case_id.split(".", 1)[0]
+    if prefix in {"guide", "review-loop", "shared"}:
+        return prefix
+    return "shared"
+
+
+def safe_load_json(path: Path, label: str, display_path: str):
+    try:
+        return load_json(path), None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, assertion_result("fail", label, f"unable to load JSON {display_path}: {exc}")
+
+
+def safe_read_text(path: Path, label: str, display_path: str):
+    try:
+        return read_text(path), None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, assertion_result("fail", label, f"unable to read {display_path}: {exc}")
+
+
+def validate_assertion_mapping(mapping_data):
+    errors = []
+    for section_name in ("smoke_assertions", "smoke_groups", "consistency_mappings"):
+        if not isinstance(mapping_data.get(section_name), dict):
+            errors.append(f"{section_name} must be an object")
+    return errors
+
+
+def require_mapping_section(mapping_data, section_name: str):
+    section = mapping_data.get(section_name)
+    if not isinstance(section, dict):
+        return None, f"{section_name} must be an object"
+    return section, None
+
+
+def extract_case_metadata(case_data, fallback_case_id: str, fallback_target: str):
+    errors = []
+    case_id = fallback_case_id
+    target = fallback_target
+
+    raw_case_id = case_data.get("id", fallback_case_id)
+    if raw_case_id is not None and not isinstance(raw_case_id, str):
+        errors.append(assertion_result("fail", "id", "case id must be a string"))
+    elif isinstance(raw_case_id, str):
+        case_id = raw_case_id
+
+    raw_target = case_data.get("target", fallback_target)
+    if raw_target is not None and not isinstance(raw_target, str):
+        errors.append(assertion_result("fail", "target", "case target must be a string"))
+    elif isinstance(raw_target, str):
+        target = raw_target
+
+    return case_id, target, errors
+
+
+def extract_strict_routed_case_metadata(case_data, fallback_case_id: str):
+    errors = []
+    case_id = fallback_case_id
+    allowed_runtimes = {"claude", "codex", "shared"}
+
+    raw_case_id = case_data.get("id", fallback_case_id)
+    if raw_case_id is not None and not isinstance(raw_case_id, str):
+        errors.append(assertion_result("fail", "id", "case id must be a string"))
+    elif isinstance(raw_case_id, str):
+        case_id = raw_case_id
+
+    target = None
+    raw_target = case_data.get("target")
+    if not isinstance(raw_target, str) or not raw_target:
+        errors.append(assertion_result("fail", "target", "routed lint case target must be a non-empty string"))
+    elif not routed_search_paths(raw_target):
+        errors.append(assertion_result("fail", "target", f"unknown routed lint case target {raw_target!r}"))
+    else:
+        target = raw_target
+
+    runtime = None
+    raw_runtime = case_data.get("runtime")
+    if isinstance(raw_runtime, str):
+        if raw_runtime in allowed_runtimes:
+            runtime = raw_runtime
+        else:
+            errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {', '.join(sorted(allowed_runtimes))}"))
+    elif isinstance(raw_runtime, list):
+        if not raw_runtime:
+            errors.append(assertion_result("fail", "runtime", "routed lint case runtime must be a non-empty list of strings"))
+        elif len(raw_runtime) != 1:
+            errors.append(assertion_result("fail", "runtime", "routed lint case runtime list must contain exactly one value"))
+        elif not isinstance(raw_runtime[0], str) or raw_runtime[0] not in allowed_runtimes:
+            errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {', '.join(sorted(allowed_runtimes))}"))
+        else:
+            runtime = raw_runtime[0]
+    else:
+        errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {', '.join(sorted(allowed_runtimes))}"))
+
+    return case_id, target, runtime, errors
+
+
+def resolve_repo_path(root: Path, label: str, raw_path: str, field_name: str = "path"):
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return None, assertion_result("fail", label, f"{field_name} must be repo-relative: {raw_path!r}")
+    try:
+        resolved = (root / candidate).resolve(strict=False)
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        return None, assertion_result("fail", label, f"{field_name} escapes repo root: {raw_path!r}")
+    return resolved, None
+
+
+def load_existing_results(path: Path):
+    if not path.exists():
+        return {"results": []}, None
+
+    payload, load_error = safe_load_json(path, ".last-run.json", path.as_posix())
+    if load_error:
+        return None, load_error
+    if not isinstance(payload, dict):
+        return None, assertion_result("fail", ".last-run.json", "malformed .last-run.json: expected an object with a results list")
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return None, assertion_result("fail", ".last-run.json", "malformed .last-run.json: results must be a list")
+
+    return payload, None
+
+
+def write_results(path: Path, new_results):
+    payload, load_error = load_existing_results(path)
+    if load_error:
+        return load_error
+    retained = []
+    for entry in payload.get("results", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "lint":
+            continue
+        retained.append(entry)
+
+    payload["results"] = retained + new_results
+    payload["updated_at"] = now_iso()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return assertion_result("fail", ".last-run.json", f"unable to write {path.as_posix()}: {exc}")
+    return None
+
+
+def find_last_heading(markdown_text: str):
+    last_heading = None
+    for raw_line in markdown_text.splitlines():
+        stripped = raw_line.lstrip()
+        if not stripped.startswith("#"):
+            continue
+        if not re.match(r"^#{1,6}\s+\S", stripped):
+            continue
+        cleaned = re.sub(r"\s+#+\s*$", "", stripped.strip())
+        last_heading = cleaned
+    return last_heading
+
+
+def forbidden_scope_files(root: Path, applies_to: str):
+    scope_roots = {
+        "claude-plugin-agent-invocations": [root / ".claude-plugin"],
+        "codex-subagent-prompts": [root / ".codex/agents"],
+    }.get(applies_to)
+
+    if not scope_roots:
+        return None
+
+    files = []
+    for scope_root in scope_roots:
+        if not scope_root.exists():
+            continue
+        for path in sorted(candidate for candidate in scope_root.rglob("*") if candidate.is_file()):
+            files.append(path)
+    return files
+
+
+def evaluate_assertion(root: Path, mapping_data, assertion):
+    if not isinstance(assertion, dict):
+        return assertion_result("fail", "assertion", f"assertion entry must be an object, got {type(assertion).__name__}")
+
+    kind = assertion.get("kind")
+    label = assertion.get("id", kind or "assertion")
+
+    if kind == "group":
+        field_error = require_string_fields(assertion, label, "mode")
+        if field_error:
+            return field_error
+        mode = assertion.get("mode")
+        members = assertion.get("members", [])
+        if mode not in {"any", "all"}:
+            return assertion_result("fail", label, f"unsupported group mode {mode!r}")
+        if not isinstance(members, list) or not members:
+            return assertion_result("fail", label, "group requires members")
+
+        member_results = [evaluate_assertion(root, mapping_data, member) for member in members]
+        passed = [result for result in member_results if result["status"] == "pass"]
+        failed = [result for result in member_results if result["status"] == "fail"]
+
+        if mode == "any":
+            if passed:
+                passing_labels = ", ".join(result["label"] for result in passed)
+                return assertion_result("pass", label, f"group(any) satisfied by {passing_labels}")
+            return assertion_result("fail", label, f"group(any) failed; no members passed ({len(failed)} failed)")
+
+        if failed:
+            failing_labels = ", ".join(result["label"] for result in failed)
+            return assertion_result("fail", label, f"group(all) failed: {failing_labels}")
+        return assertion_result("pass", label, f"group(all) satisfied by {len(passed)} members")
+
+    if kind == "exists":
+        field_error = require_string_fields(assertion, label, "path")
+        if field_error:
+            return field_error
+        path, path_error = resolve_repo_path(root, label, assertion["path"])
+        if path_error:
+            return path_error
+        if path.exists():
+            return assertion_result("pass", label, f"{assertion['path']} exists")
+        return assertion_result("fail", label, f"{assertion['path']} is missing")
+
+    if kind == "contains":
+        field_error = require_string_fields(assertion, label, "path", "needle")
+        if field_error:
+            return field_error
+        path, path_error = resolve_repo_path(root, label, assertion["path"])
+        if path_error:
+            return path_error
+        if not path.exists():
+            return assertion_result("fail", label, f"{assertion['path']} is missing")
+        needle = assertion["needle"]
+        contents, read_error = safe_read_text(path, label, assertion["path"])
+        if read_error:
+            return read_error
+        if needle in contents:
+            return assertion_result("pass", label, f"{assertion['path']} contains expected text")
+        return assertion_result("fail", label, f"{assertion['path']} does not contain {needle!r}")
+
+    if kind == "contains_any":
+        field_error = require_string_fields(assertion, label, "needle")
+        if field_error:
+            return field_error
+        needle = assertion["needle"]
+        raw_paths = assertion.get("paths")
+        list_error = require_string_list(raw_paths, label, "paths")
+        if list_error:
+            return list_error
+        candidate_paths = []
+        for path_value in raw_paths:
+            candidate_path, path_error = resolve_repo_path(root, label, path_value, "paths")
+            if path_error:
+                return path_error
+            candidate_paths.append(candidate_path)
+        existing_paths = [path for path in candidate_paths if path.exists()]
+        if not existing_paths:
+            return assertion_result("fail", label, "contains_any has no existing candidate paths")
+        for path in existing_paths:
+            contents, read_error = safe_read_text(path, label, path.relative_to(root).as_posix())
+            if read_error:
+                return read_error
+            if needle in contents:
+                return assertion_result("pass", label, f"{path.relative_to(root).as_posix()} contains expected text")
+        checked = ", ".join(path.relative_to(root).as_posix() for path in existing_paths)
+        return assertion_result("fail", label, f"{needle!r} not found in {checked}")
+
+    if kind == "not_contains":
+        field_error = require_string_fields(assertion, label, "path", "needle")
+        if field_error:
+            return field_error
+        path, path_error = resolve_repo_path(root, label, assertion["path"])
+        if path_error:
+            return path_error
+        if not path.exists():
+            return assertion_result("fail", label, f"{assertion['path']} is missing")
+        needle = assertion["needle"]
+        contents, read_error = safe_read_text(path, label, assertion["path"])
+        if read_error:
+            return read_error
+        if needle in contents:
+            return assertion_result("fail", label, f"{assertion['path']} unexpectedly contains {needle!r}")
+        return assertion_result("pass", label, f"{assertion['path']} does not contain forbidden text")
+
+    if kind == "section_last":
+        field_error = require_string_fields(assertion, label, "path")
+        if field_error:
+            return field_error
+        path, path_error = resolve_repo_path(root, label, assertion["path"])
+        if path_error:
+            return path_error
+        if not path.exists():
+            return assertion_result("fail", label, f"{assertion['path']} is missing")
+        expected = assertion.get("section") or assertion.get("needle")
+        if not expected:
+            return assertion_result("fail", label, "section_last requires section or needle")
+        contents, read_error = safe_read_text(path, label, assertion["path"])
+        if read_error:
+            return read_error
+        actual = find_last_heading(contents)
+        if actual is None:
+            return assertion_result("fail", label, f"{assertion['path']} has no markdown headings")
+        if normalize_phrase(actual) == normalize_phrase(expected):
+            return assertion_result("pass", label, f"{assertion['path']} ends with {actual!r}")
+        return assertion_result("fail", label, f"{assertion['path']} ends with {actual!r}, expected {expected!r}")
+
+    if kind == "forbidden_pattern":
+        field_error = require_string_fields(assertion, label, "applies_to", "needle")
+        if field_error:
+            return field_error
+        applies_to = assertion.get("applies_to")
+        files = forbidden_scope_files(root, applies_to)
+        if files is None:
+            return assertion_result("fail", label, f"unsupported forbidden_pattern scope {applies_to!r}")
+
+        guard_path_value = assertion.get("guard_path")
+        guard_needle = assertion.get("guard_needle")
+        guard_note = ""
+        if guard_path_value or guard_needle:
+            if not isinstance(guard_path_value, str) or not isinstance(guard_needle, str):
+                return assertion_result("fail", label, "forbidden_pattern guard requires string guard_path and guard_needle")
+            guard_path, path_error = resolve_repo_path(root, label, guard_path_value, "guard_path")
+            if path_error:
+                return path_error
+            if not guard_path.exists():
+                return assertion_result("fail", label, f"guard path {guard_path_value!r} is missing")
+            guard_contents, read_error = safe_read_text(guard_path, label, guard_path_value)
+            if read_error:
+                return read_error
+            if guard_needle not in guard_contents:
+                return assertion_result("fail", label, f"guard needle {guard_needle!r} not found in {guard_path_value!r}")
+            guard_note = f"; guard confirmed in {guard_path_value}"
+
+        needle = assertion["needle"]
+        matches = []
+        for path in files:
+            contents, read_error = safe_read_text(path, label, path.relative_to(root).as_posix())
+            if read_error:
+                return read_error
+            if needle in contents:
+                matches.append(path.relative_to(root).as_posix())
+
+        if matches:
+            return assertion_result("fail", label, f"forbidden text {needle!r} found in {', '.join(matches)}{guard_note}")
+        return assertion_result("pass", label, f"forbidden text {needle!r} not found in {applies_to}{guard_note}")
+
+    if kind == "consistent_with":
+        field_error = require_string_fields(assertion, label, "mapping_id")
+        if field_error:
+            return field_error
+        mapping_id = assertion.get("mapping_id")
+        mappings, mapping_error = require_mapping_section(mapping_data, "consistency_mappings")
+        if mapping_error:
+            return assertion_result("fail", label, mapping_error)
+        pairs = mappings.get(mapping_id)
+        if not isinstance(pairs, list):
+            return assertion_result("fail", label, f"mapping {mapping_id!r} is missing")
+        if not pairs:
+            return assertion_result("fail", label, f"mapping {mapping_id!r} has no configured pairs")
+
+        failures = []
+        for pair in pairs:
+            if not isinstance(pair, dict):
+                failures.append(f"mapping {mapping_id!r} contains a non-object pair")
+                continue
+            if not isinstance(pair.get("path"), str):
+                failures.append(f"mapping {mapping_id!r} has a pair with non-string path")
+                continue
+            if not isinstance(pair.get("needle"), str):
+                failures.append(f"mapping {mapping_id!r} has a pair with non-string needle")
+                continue
+            pair_path, path_error = resolve_repo_path(root, label, pair["path"])
+            if path_error:
+                failures.append(path_error["message"])
+                continue
+            if not pair_path.exists():
+                failures.append(f"{pair['path']} is missing")
+                continue
+            contents, read_error = safe_read_text(pair_path, label, pair["path"])
+            if read_error:
+                failures.append(read_error["message"])
+                continue
+            haystack = normalize_text(contents)
+            needle = normalize_phrase(pair["needle"])
+            if needle not in haystack:
+                failures.append(f"{pair['path']} is missing normalized phrase {pair['needle']!r}")
+
+        if failures:
+            return assertion_result("fail", label, "; ".join(failures))
+        return assertion_result("pass", label, f"mapping {mapping_id!r} matched all configured phrases")
+
+    return assertion_result("fail", label, f"unsupported assertion kind {kind!r}")
+
+
+def run_case_data(root: Path, mapping_data, case_id: str, target: str, runtime, assertions):
+    started_at = now_iso()
+    assertion_results = []
+    if not isinstance(assertions, list) or not assertions:
+        finished_at = now_iso()
+        record = case_record(case_id, "lint", target, runtime, "fail", "case contains no assertions", started_at, finished_at)
+        return [assertion_result("fail", "assertions", "case contains no assertions")], record
+
+    for assertion in assertions:
+        assertion_results.append(evaluate_assertion(root, mapping_data, assertion))
+
+    finished_at = now_iso()
+    failures = [result for result in assertion_results if result["status"] == "fail"]
+    skips = [result for result in assertion_results if result["status"] == "skip"]
+
+    if failures:
+        status = "fail"
+        reason = f"{len(failures)} failed, {len(skips)} skipped"
+    elif assertion_results and len(skips) == len(assertion_results):
+        status = "skip"
+        reason = f"all {len(skips)} assertions skipped"
+    else:
+        status = "pass"
+        if skips:
+            reason = f"{len(assertion_results) - len(skips)} passed, {len(skips)} skipped"
+        else:
+            reason = f"{len(assertion_results)} passed"
+
+    details = [assertion_results, case_record(case_id, "lint", normalize_target(target, case_id), runtime, status, reason, started_at, finished_at)]
+    return details
+
+
+def routed_search_paths(target: str):
+    path_map = {
+        "guide": [
+            ".agents/skills/guide/SKILL.md",
+            "README.md",
+        ],
+        "review-loop": [
+            ".agents/skills/review-loop/SKILL.md",
+            ".codex/agents/review-loop-executor.toml",
+            ".codex/agents/review-loop-reviewer.toml",
+            "README.md",
+            "review-loop-config.example.md",
+        ],
+    }
+    return list(path_map.get(target, []))
+
+
+def resolve_routed_smoke_assertion(mapping_data, target: str, assertion_id: str):
+    if not isinstance(assertion_id, str):
+        return None, f"smoke assertion id must be a string, got {type(assertion_id).__name__}"
+    smoke_assertions, mapping_error = require_mapping_section(mapping_data, "smoke_assertions")
+    if mapping_error:
+        return None, mapping_error
+    smoke_assertion = smoke_assertions.get(assertion_id)
+    if not isinstance(smoke_assertion, dict):
+        return None, f"unknown smoke assertion id {assertion_id!r}"
+
+    search_paths = routed_search_paths(target)
+    if not search_paths:
+        return None, f"no routed search paths configured for target {target!r}"
+
+    mapping_kind = smoke_assertion.get("kind")
+    if mapping_kind in {"artifact_contains", "artifact_path_exists"}:
+        needle = smoke_assertion.get("needle")
+        if not isinstance(needle, str) or not needle:
+            return None, f"smoke assertion {assertion_id!r} is missing a string needle"
+        return {
+            "id": assertion_id,
+            "kind": "contains_any",
+            "paths": search_paths,
+            "needle": needle,
+        }, None
+
+    if mapping_kind == "artifact_exists":
+        artifact = smoke_assertion.get("artifact")
+        if not isinstance(artifact, str) or not artifact:
+            return None, f"smoke assertion {assertion_id!r} is missing a string artifact"
+        derived_needles = {
+            "reviewer-prompt.txt": "reviewer-prompt",
+        }
+        derived_needle = derived_needles.get(artifact)
+        if not derived_needle:
+            return None, f"smoke assertion {assertion_id!r} has no routed lint translation"
+        return {
+            "id": assertion_id,
+            "kind": "contains_any",
+            "paths": search_paths,
+            "needle": derived_needle,
+        }, None
+
+    return None, f"unsupported smoke assertion kind {mapping_kind!r} for {assertion_id!r}"
+
+
+def expand_routed_assertions(mapping_data, target: str, raw_assertions):
+    expanded = []
+    errors = []
+    smoke_groups, mapping_error = require_mapping_section(mapping_data, "smoke_groups")
+    if mapping_error:
+        return expanded, [mapping_error]
+
+    for entry in raw_assertions:
+        if isinstance(entry, dict):
+            expanded.append(entry)
+            continue
+
+        if not isinstance(entry, str):
+            errors.append(f"unsupported routed assertion entry {entry!r}")
+            continue
+
+        group = smoke_groups.get(entry)
+        if isinstance(group, dict):
+            mode = group.get("mode")
+            members = group.get("members")
+            if mode not in {"any", "all"}:
+                errors.append(f"smoke group {entry!r} has unsupported mode {mode!r}")
+                continue
+            list_error = require_string_list(members, entry, "members")
+            if list_error:
+                errors.append(f"smoke group {entry!r}: {list_error['message']}")
+                continue
+            resolved_members = []
+            for member_id in members:
+                resolved, error = resolve_routed_smoke_assertion(mapping_data, target, member_id)
+                if error:
+                    errors.append(error)
+                else:
+                    resolved_members.append(resolved)
+            if len(resolved_members) != len(members):
+                continue
+            expanded.append({
+                "id": entry,
+                "kind": "group",
+                "mode": mode,
+                "members": resolved_members,
+            })
+            continue
+
+        resolved, error = resolve_routed_smoke_assertion(mapping_data, target, entry)
+        if error:
+            errors.append(error)
+        else:
+            expanded.append(resolved)
+
+    return expanded, errors
+
+
+def run_contract_case(root: Path, mapping_data, contract_path: Path):
+    contract, load_error = safe_load_json(contract_path, contract_path.stem, contract_path.as_posix())
+    if load_error:
+        record = case_record(contract_path.stem, "lint", normalize_target("shared", contract_path.stem), "shared", "fail", load_error["message"], now_iso(), now_iso())
+        return [load_error], record
+    if not isinstance(contract, dict):
+        case_id = contract_path.stem
+        record = case_record(case_id, "lint", normalize_target("shared", case_id), "shared", "fail", "contract JSON must be an object", now_iso(), now_iso())
+        return [assertion_result("fail", "contract", "contract JSON must be an object")], record
+    case_id, target, metadata_errors = extract_case_metadata(contract, contract_path.stem, contract_path.stem)
+    if metadata_errors:
+        timestamp = now_iso()
+        record = case_record(
+            case_id,
+            "lint",
+            normalize_target(target, case_id),
+            "shared",
+            "fail",
+            "; ".join(result["message"] for result in metadata_errors),
+            timestamp,
+            timestamp,
+        )
+        return metadata_errors, record
+    return run_case_data(root, mapping_data, case_id, target, "shared", contract.get("assertions", []))
+
+
+def run_routed_lint_case(root: Path, mapping_data, case_path: Path):
+    started_at = now_iso()
+    fallback_case_id = case_path.stem
+    fallback_target = fallback_case_id.split(".", 1)[0] if "." in fallback_case_id else fallback_case_id
+    if not case_path.exists():
+        finished_at = now_iso()
+        record = case_record(fallback_case_id, "lint", normalize_target(fallback_target, fallback_case_id), "shared", "fail", f"{case_path.as_posix()} is missing", started_at, finished_at)
+        return [], record
+
+    case_data, load_error = safe_load_json(case_path, fallback_case_id, case_path.as_posix())
+    if load_error:
+        finished_at = now_iso()
+        record = case_record(fallback_case_id, "lint", normalize_target(fallback_target, fallback_case_id), "shared", "fail", load_error["message"], started_at, finished_at)
+        return [load_error], record
+    if not isinstance(case_data, dict):
+        case_id = case_path.stem
+        finished_at = now_iso()
+        record = case_record(case_id, "lint", normalize_target(fallback_target, case_id), "shared", "fail", "routed lint case JSON must be an object", started_at, finished_at)
+        return [assertion_result("fail", "case", "routed lint case JSON must be an object")], record
+    case_id, target, runtime, metadata_errors = extract_strict_routed_case_metadata(case_data, fallback_case_id)
+    finished_at = now_iso()
+    if metadata_errors:
+        record_target = normalize_target(fallback_target, case_id)
+        record_runtime = "shared"
+        record = case_record(
+            case_id,
+            "lint",
+            record_target,
+            record_runtime,
+            "fail",
+            "; ".join(result["message"] for result in metadata_errors),
+            started_at,
+            finished_at,
+        )
+        return metadata_errors, record
+    normalized_target = target
+    if case_data.get("type") != "lint":
+        record = case_record(case_id, "lint", normalized_target, runtime, "fail", "routed case is not marked as lint", started_at, finished_at)
+        return [], record
+
+    raw_assertions = case_data.get("assertions", [])
+    if not isinstance(raw_assertions, list):
+        assertion_results = [
+            assertion_result("fail", "assertions", "routed lint case assertions must be a list")
+        ]
+        record = case_record(
+            case_id,
+            "lint",
+            normalized_target,
+            runtime,
+            "fail",
+            "routed lint case assertions must be a list",
+            started_at,
+            finished_at,
+        )
+        return assertion_results, record
+
+    expanded_assertions, expansion_errors = expand_routed_assertions(
+        mapping_data,
+        normalized_target,
+        raw_assertions,
+    )
+    if expansion_errors:
+        assertion_results = [
+            assertion_result("fail", f"resolve[{index}]", message)
+            for index, message in enumerate(expansion_errors, start=1)
+        ]
+        record = case_record(
+            case_id,
+            "lint",
+            normalized_target,
+            runtime,
+            "fail",
+            f"{len(expansion_errors)} assertion references failed to resolve",
+            started_at,
+            finished_at,
+        )
+        return assertion_results, record
+
+    if not expanded_assertions:
+        assertion_results = [
+            assertion_result("fail", "assertions", "routed lint case contains no executable assertions")
+        ]
+        record = case_record(
+            case_id,
+            "lint",
+            normalized_target,
+            runtime,
+            "fail",
+            "routed lint case contains no executable assertions",
+            started_at,
+            finished_at,
+        )
+        return assertion_results, record
+
+    return run_case_data(
+        root,
+        mapping_data,
+        case_id,
+        normalized_target,
+        runtime,
+        expanded_assertions,
+    )
+
+
+def print_case(case_id: str, assertion_results, record):
+    for result in assertion_results:
+        print(f"{result['status'].upper()} {case_id}:{result['label']} - {result['message']}")
+    print(f"{record['status'].upper()} {case_id} - {record['reason']}")
+
+
+def main():
+    root = Path(sys.argv[1]).resolve()
+    mapping_path = root / "tests/skills/contracts/assertion-mapping.json"
+    mapping_data, mapping_error = safe_load_json(mapping_path, "assertion-mapping", mapping_path.as_posix())
+    if mapping_error:
+        print(f"FAIL assertion-mapping - {mapping_error['message']}")
+        raise SystemExit(1)
+    if not isinstance(mapping_data, dict):
+        print("FAIL assertion-mapping - assertion-mapping JSON must be an object")
+        raise SystemExit(1)
+    mapping_errors = validate_assertion_mapping(mapping_data)
+    if mapping_errors:
+        for message in mapping_errors:
+            print(f"FAIL assertion-mapping - {message}")
+        raise SystemExit(1)
+
+    contract_paths = sorted(
+        path
+        for path in (root / "tests/skills/contracts").glob("*.json")
+        if path.name != "assertion-mapping.json"
+    )
+
+    lint_results = []
+    had_failures = False
+
+    for contract_path in contract_paths:
+        assertion_results, record = run_contract_case(root, mapping_data, contract_path)
+        print_case(record["id"], assertion_results, record)
+        lint_results.append(record)
+        had_failures = had_failures or record["status"] == "fail"
+
+    smoke_dir = root / "tests/skills/smoke"
+    if smoke_dir.exists():
+        for routed_case_path in sorted(smoke_dir.glob("*.json")):
+            routed_data, load_error = safe_load_json(
+                routed_case_path,
+                "routed-lint-case-discovery",
+                routed_case_path.as_posix(),
+            )
+            if load_error:
+                fallback_case_id = routed_case_path.stem
+                fallback_target = fallback_case_id.split(".", 1)[0] if "." in fallback_case_id else fallback_case_id
+                finished_at = now_iso()
+                record = case_record(
+                    fallback_case_id,
+                    "lint",
+                    normalize_target(fallback_target, fallback_case_id),
+                    "shared",
+                    "fail",
+                    load_error["message"],
+                    finished_at,
+                    finished_at,
+                )
+                assertion_results = [
+                    assertion_result("fail", "case", load_error["message"])
+                ]
+                print_case(record["id"], assertion_results, record)
+                lint_results.append(record)
+                had_failures = True
+                continue
+            if not isinstance(routed_data, dict):
+                fallback_case_id = routed_case_path.stem
+                fallback_target = fallback_case_id.split(".", 1)[0] if "." in fallback_case_id else fallback_case_id
+                finished_at = now_iso()
+                record = case_record(
+                    fallback_case_id,
+                    "lint",
+                    normalize_target(fallback_target, fallback_case_id),
+                    "shared",
+                    "fail",
+                    "routed lint case JSON must be an object",
+                    finished_at,
+                    finished_at,
+                )
+                assertion_results = [
+                    assertion_result("fail", "case", "routed lint case JSON must be an object")
+                ]
+                print_case(record["id"], assertion_results, record)
+                lint_results.append(record)
+                had_failures = True
+                continue
+            if routed_case_path.stem == "guide.plugin-surface.readme" and routed_data.get("type") != "lint":
+                fallback_case_id = routed_case_path.stem
+                finished_at = now_iso()
+                record = case_record(
+                    fallback_case_id,
+                    "lint",
+                    "guide",
+                    "shared",
+                    "fail",
+                    "routed lint case must declare type 'lint'",
+                    finished_at,
+                    finished_at,
+                )
+                assertion_results = [
+                    assertion_result("fail", "case", "routed lint case must declare type 'lint'")
+                ]
+                print_case(record["id"], assertion_results, record)
+                lint_results.append(record)
+                had_failures = True
+                continue
+            if routed_data.get("type") == "lint":
+                routed_assertions, routed_record = run_routed_lint_case(
+                    root, mapping_data, routed_case_path
+                )
+                print_case(routed_record["id"], routed_assertions, routed_record)
+                lint_results.append(routed_record)
+                had_failures = had_failures or routed_record["status"] == "fail"
+
+    write_error = write_results(root / "tests/skills/.last-run.json", lint_results)
+    if write_error:
+        print(f"FAIL .last-run.json - {write_error['message']}")
+        had_failures = True
+    raise SystemExit(1 if had_failures else 0)
+
+
+main()
+PY

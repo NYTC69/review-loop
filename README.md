@@ -40,6 +40,20 @@ In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains
 
 Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
 
+## Skill Tests
+
+The repository includes a first-version skill testing framework for
+`review-loop` and `guide`.
+
+- `scripts/run-skill-lint` runs static contract checks
+- `scripts/run-skill-smoke` runs the small real smoke suite
+- `scripts/run-skill-tests` runs both in order
+
+Test output uses `PASS`, `FAIL`, and `SKIP`.
+
+- Aggregate results: `tests/skills/.last-run.json`
+- Per-case artifacts: `tests/skills/.artifacts/`
+
 ## Claude Plugin Surface
 
 The commands, configuration tables, reviewer modes, and included agent list

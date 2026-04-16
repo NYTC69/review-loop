@@ -1,0 +1,77 @@
+{
+  "id": "guide",
+  "description": "Static contract assertions for the guide workflow",
+  "assertions": [
+    {
+      "id": "codex_guide_wrapper_exists",
+      "kind": "exists",
+      "path": ".agents/skills/guide/SKILL.md"
+    },
+    {
+      "id": "shared_config_path_mentioned_in_guide",
+      "kind": "contains",
+      "path": ".agents/skills/guide/SKILL.md",
+      "needle": ".review-loop/config.md"
+    },
+    {
+      "id": "shared_sessions_path_mentioned_in_guide",
+      "kind": "contains",
+      "path": ".agents/skills/guide/SKILL.md",
+      "needle": ".review-loop/sessions/"
+    },
+    {
+      "id": "codex_reviewer_backend_override_mentioned_in_guide",
+      "kind": "contains",
+      "path": ".agents/skills/guide/SKILL.md",
+      "needle": "codex_reviewer_backend: codex"
+    },
+    {
+      "id": "guide_mentions_default_and_fallback_reviewer_behavior",
+      "kind": "contains",
+      "path": ".agents/skills/guide/SKILL.md",
+      "needle": "Codex Stage 1 defaults to the Claude CLI reviewer path."
+    },
+    {
+      "id": "guide_mentions_fallback_reviewer_behavior",
+      "kind": "contains",
+      "path": ".agents/skills/guide/SKILL.md",
+      "needle": "fall back to its local reviewer backend"
+    },
+    {
+      "id": "readme_marks_codex_stage1_surface",
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "## Codex Stage 1"
+    },
+    {
+      "id": "readme_marks_claude_plugin_surface",
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "## Claude Plugin Surface"
+    },
+    {
+      "id": "readme_distinguishes_plugin_surface_from_codex_stage1",
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "below describe the current Claude Code plugin surface."
+    },
+    {
+      "id": "guide_plugin_surface_readme_case_exists",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.plugin-surface.readme.json",
+      "needle": "guide.plugin-surface.readme"
+    },
+    {
+      "id": "guide_plugin_surface_readme_case_routes_to_lint",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.plugin-surface.readme.json",
+      "needle": "\"type\": \"lint"
+    },
+    {
+      "id": "guide_plugin_surface_readme_case_targets_guide",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.plugin-surface.readme.json",
+      "needle": "\"target\": \"guide"
+    }
+  ]
+}
