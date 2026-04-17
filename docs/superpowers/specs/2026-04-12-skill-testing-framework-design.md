@@ -509,10 +509,37 @@ Minimum schema:
   "id": "review-loop.noop.codex-fallback",
   "type": "smoke",
   "target": "review-loop",
-  "runtime": ["codex"],
+  "runtime": "codex",
   "requires": ["codex"],
   "setup": {
-    "temp_config": "codex_reviewer_backend: codex\n"
+    "temp_config": "codex_reviewer_backend: codex\n",
+    "timeout_seconds": 150
+  },
+  "command": [
+    "codex",
+    "exec",
+    "-C",
+    "__WORKTREE__",
+    "-s",
+    "workspace-write",
+    "--ephemeral",
+    "<prompt goes here>"
+  ],
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "session_final": "latest_session",
+      "git_status_before": "git_status_before",
+      "git_status_after": "git_status_after"
+    },
+    "required": [
+      "session_path",
+      "session_final",
+      "git_status_before",
+      "git_status_after",
+      "assertions",
+      "meta"
+    ]
   },
   "assertions": [
     "session_created",
