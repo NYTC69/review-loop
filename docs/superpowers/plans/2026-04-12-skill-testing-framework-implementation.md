@@ -109,10 +109,25 @@ minimum schema:
   "id": "guide.shared-state.codex",
   "type": "smoke",
   "target": "guide",
-  "runtime": ["codex"],
+  "runtime": "codex",
   "requires": ["codex"],
   "setup": {},
-  "assertions": []
+  "command": ["command", "goes", "here"],
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "git_status_before": "git_status_before",
+      "git_status_after": "git_status_after"
+    },
+    "required": [
+      "session_path",
+      "git_status_before",
+      "git_status_after",
+      "assertions",
+      "meta"
+    ]
+  },
+  "assertions": ["assertion_id"]
 }
 ```
 
