@@ -543,21 +543,7 @@ def run_case(case_data, mapping_data):
     write_json(artifact_dir / "assertions.json", assertion_results)
     artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
 
-    stderr_text = stderr or ""
-    environment_reason = None
-    if execution_policy == "best_effort":
-        if "command timed out after" in stderr_text:
-            environment_reason = "best-effort smoke timed out"
-        else:
-            for snippet in ENVIRONMENT_ERROR_SNIPPETS:
-                if snippet in stderr_text:
-                    environment_reason = "best-effort smoke hit environment limitation"
-                    break
-
-    if environment_reason is not None:
-        status = "skip"
-        reason = environment_reason
-    elif returncode != 0:
+    if returncode != 0:
         status = "fail"
         reason = f"command exited with status {returncode}"
         if assertion_status == "fail":
