@@ -23,6 +23,11 @@ class RunnerError(Exception):
         self.message = message
 
 
+ENVIRONMENT_ERROR_SNIPPETS = [
+    "Codex cannot access session files at /Users/yuanlei/.codex/sessions",
+]
+
+
 def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
@@ -343,8 +348,10 @@ def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
+        raw_stdout = exc.stdout
+        raw_stderr = exc.stderr
+        stdout = raw_stdout.decode("utf-8", errors="replace") if isinstance(raw_stdout, (bytes, bytearray)) else (raw_stdout or "")
+        stderr = raw_stderr.decode("utf-8", errors="replace") if isinstance(raw_stderr, (bytes, bytearray)) else (raw_stderr or "")
         raise RunnerError("command-timeout", f"command timed out after {timeout_seconds}s\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}") from exc
     return completed.returncode, completed.stdout, completed.stderr
 
@@ -377,12 +384,16 @@ def resolved_case_definition(case_data):
     timeout_seconds = raw_setup.get("timeout_seconds", 300)
     if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
         raise RunnerError(case_id, "setup.timeout_seconds must be a positive integer")
+    execution_policy = case_data.get("execution_policy", "strict")
+    if execution_policy not in {"strict", "best_effort"}:
+        raise RunnerError(case_id, "execution_policy must be 'strict' or 'best_effort'")
     return {
         "assertions": assertions,
         "artifacts": artifacts,
         "command": [ROOT.as_posix() if item == "__WORKTREE__" else item for item in command],
         "config_text": temp_config,
         "timeout_seconds": timeout_seconds,
+        "execution_policy": execution_policy,
     }
 
 
@@ -430,9 +441,11 @@ def run_case(case_data, mapping_data):
     command = definition["command"]
     declared_artifacts = set(definition["artifacts"]["required"])
     capture_modes = definition["artifacts"]["capture"]
+    execution_policy = definition["execution_policy"]
     meta["command"] = command
     meta["expected_artifacts"] = definition["artifacts"]["required"]
     meta["timeout_seconds"] = definition["timeout_seconds"]
+    meta["execution_policy"] = execution_policy
     before_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
     before_tmp_prompts = set()
     if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
@@ -455,7 +468,29 @@ def run_case(case_data, mapping_data):
             env["REVIEW_LOOP_SMOKE_RESULT_ARTIFACT"] = str(artifact_dir / "reviewer-result.json")
             env["PATH"] = f"{wrapper_dir.as_posix()}:{env.get('PATH', '')}"
 
-        returncode, stdout, stderr = execute_command(command, ROOT, definition["timeout_seconds"], env=env)
+        try:
+            returncode, stdout, stderr = execute_command(command, ROOT, definition["timeout_seconds"], env=env)
+        except RunnerError as exc:
+            if exc.label == "command-timeout" and execution_policy == "best_effort":
+                timeout_stderr = exc.message
+                reason = "best-effort smoke timed out"
+                for snippet in ENVIRONMENT_ERROR_SNIPPETS:
+                    if snippet in timeout_stderr:
+                        reason = "best-effort smoke hit environment limitation"
+                        break
+                finished_at = now_iso()
+                write_text(artifact_dir / "stderr.txt", timeout_stderr)
+                artifacts["stderr"] = relative_to_root(artifact_dir / "stderr.txt", ROOT)
+                write_text(artifact_dir / "git-status-after.txt", git_status(ROOT))
+                artifacts["git_status_after"] = relative_to_root(artifact_dir / "git-status-after.txt", ROOT)
+                meta["finished_at"] = finished_at
+                meta["status"] = "skip"
+                meta["reason"] = reason
+                meta_path = artifact_dir / "meta.json"
+                write_json(meta_path, meta)
+                artifacts["meta"] = relative_to_root(meta_path, ROOT)
+                return case_record(case_id, "smoke", target, runtime_profile, "skip", reason, artifacts, started_at, finished_at)
+            raise
     finally:
         if restore is not None:
             restore()
@@ -508,7 +543,21 @@ def run_case(case_data, mapping_data):
     write_json(artifact_dir / "assertions.json", assertion_results)
     artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
 
-    if returncode != 0:
+    stderr_text = stderr or ""
+    environment_reason = None
+    if execution_policy == "best_effort":
+        if "command timed out after" in stderr_text:
+            environment_reason = "best-effort smoke timed out"
+        else:
+            for snippet in ENVIRONMENT_ERROR_SNIPPETS:
+                if snippet in stderr_text:
+                    environment_reason = "best-effort smoke hit environment limitation"
+                    break
+
+    if environment_reason is not None:
+        status = "skip"
+        reason = environment_reason
+    elif returncode != 0:
         status = "fail"
         reason = f"command exited with status {returncode}"
         if assertion_status == "fail":

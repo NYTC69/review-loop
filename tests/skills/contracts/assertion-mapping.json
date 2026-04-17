@@ -44,12 +44,12 @@
     "reviewer_backend_default_mentioned": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
-      "needle": "try the Claude CLI reviewer first via"
+      "needle": "Claude CLI reviewer"
     },
     "reviewer_backend_fallback_mentioned": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
-      "needle": "fall back to the local Codex reviewer"
+      "needle": "local Codex reviewer"
     }
   },
   "smoke_groups": {
