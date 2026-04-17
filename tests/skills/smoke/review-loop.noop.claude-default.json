@@ -7,6 +7,7 @@
   "setup": {
     "temp_config": ""
   },
+  "execution_policy": "best_effort",
   "artifacts": {
     "capture": {
       "session_path": "latest_session",

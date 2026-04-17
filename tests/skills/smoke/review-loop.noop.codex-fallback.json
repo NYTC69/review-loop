@@ -8,6 +8,7 @@
     "temp_config": "codex_reviewer_backend: codex\n",
     "timeout_seconds": 150
   },
+  "execution_policy": "best_effort",
   "artifacts": {
     "capture": {
       "session_path": "latest_session",
