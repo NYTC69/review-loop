@@ -176,6 +176,14 @@ Fields:
 - `entry_point` — identifies how the session was created. `plan` /
   `execute-from-session` / `execute-from-plan` / `review-only` /
   `review-loop`. Set once on creation; **not** rewritten on resume.
+  The value `execute-from-session` is reserved for the backward-compat
+  edge where a legacy session lacks `entry_point` entirely; in that
+  single case the backward-compat backfill path (see
+  [§Backward-compat fallback](#backward-compat-fallback)) may write
+  `execute-from-session` on first resume. Normal `--session` resumes of
+  a well-formed session leave `entry_point` untouched, so the runtime
+  values written on fresh session creation are `plan`,
+  `execute-from-plan`, `review-only`, or `review-loop`.
 - `plan_source` — provenance of `## Approved Plan`. Drives reviewer
   strictness. Omitted during planning draft rounds; written on APPROVE
   (one of the three post-approval values).

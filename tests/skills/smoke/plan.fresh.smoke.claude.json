@@ -1,0 +1,42 @@
+{
+  "id": "plan.fresh.smoke.claude",
+  "type": "smoke",
+  "target": "plan",
+  "runtime": "claude",
+  "requires": ["claude", "codex"],
+  "setup": {
+    "temp_config": "",
+    "timeout_seconds": 300
+  },
+  "execution_policy": "best_effort",
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "session_final": "latest_session",
+      "reviewer_prompt": "reviewer_prompt_file"
+    },
+    "required": [
+      "session_path",
+      "session_final",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--permission-mode",
+    "bypassPermissions",
+    "--add-dir",
+    "__WORKTREE__",
+    "Use the review-loop:plan skill on the following trivial work item: Document that running `/review-loop:plan` initializes a session file with `## Current Phase: planning`. The goal of this invocation is to validate that the plan skill creates a session file under .review-loop/sessions/{uuid}.md and produces at least one reviewer prompt before exiting. Treat any existing context as sufficient; run a single planning round and stop as soon as the Reviewer responds."
+  ],
+  "assertions": [
+    "session_created",
+    "reviewer_prompt_exists",
+    "plan_source_reviewer_approved",
+    "entry_point_plan",
+    "approved_plan_section_present"
+  ]
+}

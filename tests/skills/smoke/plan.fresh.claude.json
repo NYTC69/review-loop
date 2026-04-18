@@ -1,0 +1,78 @@
+{
+  "id": "plan.fresh.claude",
+  "type": "lint",
+  "target": "plan",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "exists",
+      "path": "skills/plan/SKILL.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "## Protocol Imports"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "argument-hint: \"<work item description> [--handsfree]\""
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "entry_point: plan"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "plan_source: reviewer-approved"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "docs/protocol/planning.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "docs/protocol/reviewer-output.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "Next: review-loop:execute --session"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/planning.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/reviewer-output.md"
+    }
+  ]
+}

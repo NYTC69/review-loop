@@ -61,6 +61,81 @@ below describe the current Claude Code plugin surface. They are not yet part of
 the Codex Stage 1 surface beyond the shared `review-loop` and `guide` entries
 described above.
 
+## Three Skills: `plan`, `execute`, `review-loop`
+
+Starting in v2.6.0 the workflow is split into three composable skills. Pick
+the one that matches where your work currently is:
+
+- **`/review-loop`** — the umbrella. Full plan → execute → polish →
+  delivery in one invocation. Step 1.5 auto-routes based on detected state
+  (fresh / existing plan / code already implemented). Unchanged external UX
+  from earlier versions.
+- **`/review-loop:plan`** — planning phase only. Drives a work item to a
+  reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits
+  with a hand-off hint (`Next: review-loop:execute --session <uuid>`). Use
+  this when you want plan-only iteration, or want to plan on one runtime
+  and execute on another.
+- **`/review-loop:execute`** — execution + quality polish + delivery.
+  Three mutually-exclusive entry modes:
+  - `--session <uuid>` — resume an approved session. Reviewer strictness
+    follows the session's `plan_source` (strict for `reviewer-approved`,
+    advisory-for-plan-conformance for `user-supplied`, pure CR for
+    `review-only`).
+  - `--plan <text|path> --title <title>` — execute a user-supplied plan
+    verbatim. `plan_source: user-supplied`; plan-conformance deviations
+    become advisory MINOR findings.
+  - `--review-only [--description <what was done>]` — pure CR sweep over
+    the current working tree. Skips the first Executor round; goes
+    straight to the Reviewer.
+
+All three skills share the same session-file schema and can hand off
+between invocations (and between runtimes).
+
+### Multi-batch example
+
+Stop cleanly between stages with `--stop-after <stage>`, then resume:
+
+```bash
+# 1. Plan-only.
+/review-loop:plan split auth middleware into request-scoped + global layers
+# → prints session UUID, e.g. a3c4...
+
+# 2. Execute but stop before Quality Polish.
+/review-loop:execute --session a3c4... --stop-after before-polish
+
+# 3. Review the diff, then resume — runs polish + docs + security + delivery.
+/review-loop:execute --session a3c4...
+```
+
+### `--stop-after <stage>` enum (Claude Code)
+
+Claude Code supports the full set of stages:
+
+| Value | Stops |
+|---|---|
+| `exec-round` | After the current execution round finishes (even on REQUEST_CHANGES) |
+| `before-polish` | Before Step 3.5 Quality Polish |
+| `before-docs` | Before Step 3.6 Documentation Consistency |
+| `before-security` | Before Step 3.7 Security Preflight |
+| `before-delivery` | Before Step 4 Delivery |
+| `delivery` | Default — no early stop |
+
+Unsupported values are rejected at parse time, before any lock is acquired
+or session field is written. (Codex Stage 1 supports only
+`exec-round`, `before-delivery`, `delivery` — Steps 3.5 / 3.6 / 3.7 are out
+of Stage 1 scope.)
+
+### `--accept-external-state` (unsafe opt-in)
+
+Auto-accepts every "external drift detected — (A) accept / (B) abort"
+pause-and-confirm prompt the Orchestrator would otherwise surface
+(drift-check decision tree; backward-compat missing-baseline fallback).
+
+**Unsafe**. Use only when you *know* external tree changes between
+batches were intentional and you want to reset baseline silently. The
+`--handsfree` flag alone does NOT auto-accept drift — this flag must be
+passed explicitly.
+
 ## Workflow Overview
 
 ```
@@ -249,9 +324,20 @@ and subagents. Only `review-loop` and `guide` are wired for Codex in Stage 1.
 
 ```
 review-loop/
+├── docs/
+│   └── protocol/                 ← Shared protocol docs (single source of truth)
+│       ├── session-file.md       ← Canonical session schema + moving baseline
+│       ├── planning.md           ← Planning phase round loop
+│       ├── execution.md          ← Execution / polish / docs / security / delivery
+│       ├── executor-output.md    ← Executor output schema
+│       └── reviewer-output.md    ← Reviewer output schema
 ├── skills/
 │   ├── review-loop/
-│   │   └── SKILL.md              ← Orchestrator instructions
+│   │   └── SKILL.md              ← Umbrella orchestrator (auto-routing)
+│   ├── plan/
+│   │   └── SKILL.md              ← Planning-only sub-skill
+│   ├── execute/
+│   │   └── SKILL.md              ← Execution + polish + delivery (3 entry modes)
 │   ├── code-quality-loop/
 │   │   └── SKILL.md              ← Standalone quality polish
 │   ├── reorganize/

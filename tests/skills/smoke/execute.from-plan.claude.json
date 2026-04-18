@@ -1,0 +1,64 @@
+{
+  "id": "execute.from-plan.claude",
+  "type": "lint",
+  "notes": "Stays as lint: the feature under test (user-supplied plan-body provenance marker in ## Approved Plan, plan_source: user-supplied, and advisory-MINOR reviewer-prompt selection) is purely textual contract in skills/execute/SKILL.md. Exercising it end-to-end would require a seeded plan payload plus a full LLM-driven execution round, duplicating coverage already provided by execute.session-resume.smoke.claude.",
+  "target": "execute",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "exists",
+      "path": "skills/execute/SKILL.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "--plan <text|path>"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "plan_source: user-supplied"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "entry_point: execute-from-plan"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "provenance-aware reviewer"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "advisory"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Provenance-aware reviewer prompts"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/reviewer-output.md"
+    }
+  ]
+}

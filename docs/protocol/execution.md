@@ -236,10 +236,17 @@ provided by the user verbatim and was NOT produced by a planning loop,
 so plan-conformance deviations are advisory: treat them as [MINOR]
 unless the deviation changes user-visible behavior or violates stated
 acceptance criteria.
+
+(plan_source: user-supplied — plan conformance is advisory/MINOR)
 ```
 
 Plan-conformance deviations become MINOR/advisory; correctness + intent
-alignment still enforced.
+alignment still enforced. The final parenthetical line is a **stable
+sentinel** emitted verbatim in the reviewer prompt so tests and audits
+can assert that this provenance-aware block (and only this block) was
+selected. The exact literal is `(plan_source: user-supplied — plan
+conformance is advisory/MINOR)`; orchestrators must emit it
+character-for-character when `plan_source: user-supplied`.
 
 #### `plan_source: review-only`
 

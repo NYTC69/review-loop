@@ -31,6 +31,11 @@
       "kind": "artifact_exists",
       "artifact": "reviewer-prompt.txt"
     },
+    "reviewer_prompt_user_supplied_provenance_marker": {
+      "kind": "artifact_contains",
+      "artifact": "reviewer-prompt.txt",
+      "needle": "(plan_source: user-supplied — plan conformance is advisory/MINOR)"
+    },
     "shared_config_path_mentioned": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
@@ -50,6 +55,111 @@
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "local Codex reviewer"
+    },
+    "plan_source_reviewer_approved": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Source: reviewer-approved"
+    },
+    "plan_source_user_supplied": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Source: user-supplied"
+    },
+    "plan_source_review_only": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Source: review-only"
+    },
+    "review_only_sentinel_present": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "(none — review-only mode)"
+    },
+    "review_target_section_present": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "## Review Target"
+    },
+    "approved_plan_section_present": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "## Approved Plan"
+    },
+    "entry_point_plan": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "entry_point: plan"
+    },
+    "entry_point_execute_from_plan": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "entry_point: execute-from-plan"
+    },
+    "entry_point_review_only": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "entry_point: review-only"
+    },
+    "entry_point_review_loop": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "entry_point: review-loop"
+    },
+    "completed_stages_field_present": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "completed_stages:"
+    },
+    "completed_stages_contains_exec_token": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "exec"
+    },
+    "completed_stages_contains_polish_token": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "polish"
+    },
+    "delivery_section_absent": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "## Session Metadata"
+    },
+    "completed_stages_list_exec_polish": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages: [exec, polish]"
+    },
+    "completed_stages_list_exec_polish_docs_security": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages: [exec, polish, docs, security]"
+    },
+    "delivery_blocked_by_null_literal": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- delivery_blocked_by: null"
+    },
+    "review_only_sentinel_line_1": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "(none — review-only mode)"
+    },
+    "review_only_sentinel_line_2": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "Scope: see `## Review Target` section below."
+    },
+    "review_target_smoke_token_present": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "REVIEW_TARGET_SMOKE_TOKEN"
+    },
+    "execute_round_1_reviewer_only_marker": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Executor backend: skipped (review-only first round)"
     }
   },
   "smoke_groups": {
@@ -65,6 +175,68 @@
       "members": [
         "reviewer_backend_default_mentioned",
         "reviewer_backend_fallback_mentioned"
+      ]
+    },
+    "completed_stages_contains_exec": {
+      "mode": "all",
+      "members": [
+        "completed_stages_field_present",
+        "completed_stages_contains_exec_token"
+      ]
+    },
+    "completed_stages_contains_polish": {
+      "mode": "all",
+      "members": [
+        "completed_stages_field_present",
+        "completed_stages_contains_polish_token"
+      ]
+    },
+    "completed_stages_ordered_exec_polish": {
+      "mode": "all",
+      "members": [
+        "completed_stages_field_present",
+        "completed_stages_list_exec_polish"
+      ]
+    },
+    "completed_stages_ordered_exec_polish_docs_security": {
+      "mode": "all",
+      "members": [
+        "completed_stages_field_present",
+        "completed_stages_list_exec_polish_docs_security"
+      ]
+    },
+    "delivery_blocked_by_null": {
+      "mode": "all",
+      "members": [
+        "delivery_blocked_by_null_literal"
+      ]
+    },
+    "review_only_sentinel_literal_two_line": {
+      "mode": "all",
+      "members": [
+        "review_only_sentinel_line_1",
+        "review_only_sentinel_line_2"
+      ]
+    },
+    "review_target_section_has_scope_content": {
+      "mode": "all",
+      "members": [
+        "review_target_section_present",
+        "review_target_smoke_token_present"
+      ]
+    },
+    "source_user_supplied_under_approved_plan": {
+      "mode": "all",
+      "members": [
+        "approved_plan_section_present",
+        "plan_source_user_supplied"
+      ]
+    },
+    "execute_round_1_reviewer_only": {
+      "mode": "all",
+      "members": [
+        "execution_round_recorded",
+        "execute_round_1_reviewer_only_marker"
       ]
     }
   },

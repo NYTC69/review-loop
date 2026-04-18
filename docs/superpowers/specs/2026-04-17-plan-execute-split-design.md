@@ -398,3 +398,9 @@ map with tombstones + rename/copy coverage (v7-v9); `completed_stages`
 redefined as "current-state validations" with strict invalidation + replay
 (v7-v10); hard-stop lifecycle and `delivery_blocked_by` typing (v9-v10);
 backward-compat fallback pauses instead of silent backfill (v4).
+
+**Post-approval revision (2026-04-17)**: hallucination-guard smoke
+extracted from Phase 2 into a separate Phase 2.1 ship unit due to
+runner-infrastructure scope. The SKILL split + behavioral smoke
+(Phase 2) ships first. Phase 2.1 follows before Phase 3 Codex
+cross-runtime work. No runtime behavior change.

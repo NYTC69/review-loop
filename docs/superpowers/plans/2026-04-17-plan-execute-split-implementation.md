@@ -10,6 +10,16 @@
 
 **Tech stack:** Markdown protocol docs; SKILL.md frontmatter + body; shell-based session-file IO; Bash for git/porcelain dirty-map construction; existing smoke-case framework under `tests/`.
 
+## Phases
+
+Ship order (each phase is an independent ship unit with its own exit criteria):
+
+1. **Phase 1** — Shared protocol docs under `docs/protocol/` (shipped in `e853d53`).
+2. **Phase 2** — SKILL split (`skills/plan`, `skills/execute`, umbrella refactor) + behavioral smoke cases, version bump, README + CLAUDE.md updates. No runner changes.
+3. **Phase 2.1** — Hallucination-guard smoke runner extension: `scripts/run-skill-smoke` gains `--output-format json` support, streaming `tool_use` event capture, and a new assertion kind that proves each `## Protocol Imports` file was actually Read. Separate ship unit because it is purely runner infrastructure and is not a prerequisite for Phase 2 to land.
+4. **Phase 3** — Codex side (`.agents/skills/plan`, `.agents/skills/execute`, umbrella refactor) + Codex smoke cases.
+5. **Phase 4** — Cross-runtime integration verification.
+
 ---
 
 ## File Structure
@@ -115,7 +125,6 @@
   - `execute.review-only.claude.json`: seeds dirty workspace, runs `execute --review-only`, asserts first round is Reviewer-only and Approved Plan holds sentinel.
   - `execute.stop-after-polish.claude.json`: asserts `--stop-after before-docs` exits after Step 3.5 with `completed_stages: [exec, polish]` and no delivery.
   - `review-loop.regression.claude.json`: runs end-to-end umbrella skill on a fresh work item; verifies UX identical to pre-refactor (plan loop + execution loop + polish + delivery).
-- [ ] Add hallucination-guard smoke: each SKILL.md's orchestrator metadata must include Read events for every file in its `## Protocol Imports` list.
 - [ ] Bump `.claude-plugin/plugin.json` version to `2.6.0`.
 - [ ] Bump `.claude-plugin/marketplace.json` version to `2.6.0`.
 - [ ] Update root `README.md`: new skills, three entry modes, multi-batch example, `--stop-after` enum, `--accept-external-state` flag (documented as unsafe opt-in).
@@ -127,7 +136,38 @@
   - Drift trigger: manually edit a file mid-batch, rerun `execute --session`; verify pause + decision tree.
   - `--review-only`: modify repo, run `execute --review-only`, verify pure-CR path.
 
-**Exit criteria:** all Phase 2 smoke cases pass; manual runs work; version bumped; docs updated. Ship as a single Claude Code release.
+**Explicitly out of Phase 2 scope:** hallucination-guard smoke (orchestrator Read-event assertions for every `## Protocol Imports` file). That assertion class requires runner-infrastructure work on `scripts/run-skill-smoke` and ships as its own unit — see [Phase 2.1](#phase-21--hallucination-guard-smoke-separate-ship-unit) below. Phase 2's behavioral smoke cases ship without it; the Phase 2.1 work ships before Phase 3.
+
+**Exit criteria:** all Phase 2 behavioral smoke cases pass; manual runs work; version bumped; docs updated. The hallucination-guard smoke is tracked under Phase 2.1 and is NOT required for Phase 2 exit. Ship as a single Claude Code release.
+
+### Assertion limitations
+
+Behavioral smoke cases are grey-box assertions against `session-final.md` via the runner's `artifact_contains` substring matcher. A few acceptance criteria are partially covered rather than fully asserted; this section records the known carve-outs so reviewers do not treat them as silent gaps.
+
+- `execute.session-resume.smoke.claude.json` — asserts the single-round resume writes an `### Execution Round N` entry, preserves `entry_point: plan` (from the seeded fixture), and keeps `- Source: reviewer-approved`. It does **not** assert delivery or the full `completed_stages` quartet, because the smoke prompt intentionally stops at the first Reviewer VERDICT. End-to-end delivery parity from a resumed session is covered by the manual-verification steps, not by this smoke.
+- `execute.review-only.smoke.claude.json` — does not self-seed a dirty workspace inside the runner, because the smoke executes against the live repo worktree and the session-file assertions do not depend on the dirty set. The round-1 reviewer-only invariant is asserted via the literal `- Executor backend: skipped (review-only first round)` marker that the orchestrator writes to `## Review History` per `skills/execute/SKILL.md` §`--review-only` first-round skip.
+- `artifact_contains` is a substring matcher. Compound assertions use `smoke_groups` (mode `all`) to AND several substring probes together. True ordering / structural assertions on YAML would require a richer matcher; that upgrade is out of scope here and can be revisited if the grey-box assertions start drifting.
+
+### Phase 2.1 — Hallucination-guard smoke (separate ship unit)
+
+Separate ship unit. Ships after Phase 2 and before Phase 3. No runtime behavior change; the extension lives entirely in `scripts/run-skill-smoke` and a new assertion kind.
+
+**Goal:** `scripts/run-skill-smoke` captures `tool_use` Read events emitted by the `claude` CLI during a smoke run and exposes an assertion that every path in a SKILL's `## Protocol Imports` block was actually read.
+
+**Concrete tasks:**
+
+- [ ] Detect the runtime of the smoke case. For `runtime: claude`, inject `--output-format json` (and any companion flags required to stream tool events) into the `claude` invocation. For `runtime: codex`, leave the invocation unchanged — Codex is out of scope for this extension.
+- [ ] In the wrapper script (`build_claude_wrapper`), tee stdout into a structured parser that walks the streaming JSON, filters `tool_use` events whose tool name is `Read`, and persists the normalized event list as a new artifact (proposed: `meta.tool_use_events.json` with schema `[{"tool": "Read", "target": "<absolute_or_repo_relative_path>"}, ...]`).
+- [ ] Add a new `smoke_assertions` kind `tool_use_read_covers_paths` with schema `{"kind": "tool_use_read_covers_paths", "artifact": "meta.tool_use_events.json", "paths": ["<path1>", ...]}`. The matcher passes iff every declared path appears as a `Read` target in the event list.
+- [ ] Wire the new assertion into each Phase 2 Claude smoke case:
+  - `plan.fresh.smoke.claude.json` — paths: the four `## Protocol Imports` in `skills/plan/SKILL.md`.
+  - `execute.*.smoke.claude.json` — paths: the four `## Protocol Imports` in `skills/execute/SKILL.md`.
+  - `review-loop.regression.smoke.claude.json` — paths: the four `## Protocol Imports` in `skills/review-loop/SKILL.md`.
+- [ ] Pin the JSON parser to the currently-shipping `claude` CLI output format. Add a smoke-level sanity check that flags parser drift (unexpected schema) as a failure rather than silent pass.
+
+**Exit criteria:** the `tool_use_read_covers_paths` assertion passes on every Phase 2 smoke case; parser is pinned; lint + smoke remain at parity or better.
+
+**Risk:** the `claude` CLI's streaming JSON schema may evolve between releases. Mitigation: pin against the current format, fail loudly on schema drift, version the parser alongside the runner.
 
 ---
 

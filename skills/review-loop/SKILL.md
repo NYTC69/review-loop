@@ -10,28 +10,49 @@ description: >
   or any task the user wants driven by a plan→review→implement→CR cycle.
 ---
 
-# Review Loop — Dual-Agent Orchestration Skill
+# review-loop — Umbrella Orchestration Skill
 
-Drive a work item from description to delivery using an Executor and an independent
-Reviewer in an iterative loop. The Reviewer catches bugs, design issues, and gaps
-that a single agent would miss — and you see every finding in real time.
+Drive a work item from description to delivery using an Executor and an
+independent Reviewer in an iterative loop. The Reviewer catches bugs,
+design issues, and gaps a single agent would miss — and the user sees
+every finding in real time.
 
-## Architecture
+This is the **umbrella** skill. For finer-grained control, see:
 
-```
-You (Orchestrator — this session)
-├── Executor sub-agent   — plans, refines, implements (runs in Agent thread)
-└── Reviewer             — reviews plans and code, returns structured verdict
-    ├── mode: codex      — external CLI: codex exec -s read-only
-    └── mode: subagent   — Claude Code sub-agent (read-only tools)
-```
+- `review-loop:plan` — planning phase only.
+- `review-loop:execute` — three entry modes (`--session`, `--plan`,
+  `--review-only`), `--stop-after`, multi-batch delivery.
 
-Two phases, each with their own iteration loop:
+The umbrella preserves the original end-to-end UX: Step 1.5 auto-routes
+(plan-exists / code-exists / fresh) and hands off internally into the
+planning or execution loops described by the protocol docs below.
+`entry_point: review-loop` is written to the session metadata.
 
-| Phase       | What happens                                                    |
-|-------------|-----------------------------------------------------------------|
-| **Plan**    | Executor drafts a solution plan → Reviewer critiques → iterate  |
-| **Execute** | Executor implements approved plan → Reviewer does CR → iterate  |
+## Protocol Imports
+
+The Orchestrator MUST Read each of these files at start. They are the
+single source of truth for this skill's planning loop, execution loop,
+session schema, and output schemas.
+
+- `docs/protocol/session-file.md`
+- `docs/protocol/planning.md`
+- `docs/protocol/execution.md`
+- `docs/protocol/executor-output.md`
+- `docs/protocol/reviewer-output.md`
+
+Do not re-derive any rule that already lives in a protocol doc. When a
+step below says "see `docs/protocol/<doc>.md` §Foo", follow that doc
+verbatim.
+
+## Orchestrator rules
+
+- **Plugin agent-type sandbox bug**: every Executor / Reviewer / quality
+  agent invocation MUST use `subagent_type: general-purpose` with the
+  agent's full `.md` body inlined in the `prompt` parameter. Never use
+  `subagent_type: review-loop:<name>`. See `CLAUDE.md` §"Plugin agent
+  type sandbox bug" for background.
+- Only the Orchestrator writes to the session file. Sub-agents read.
+- Live Reports after each round are not optional.
 
 ---
 
@@ -41,244 +62,130 @@ Two phases, each with their own iteration loop:
 run review-loop on: <work item description> [--handsfree]
 ```
 
-**`--handsfree`** (optional): fully autonomous mode. Decision-type questions
-(architecture choices, approach trade-offs) go to the Reviewer instead of
-pausing for the user. All Reviewer-made decisions are logged in the delivery
-summary for post-hoc review.
-
-Without `--handsfree` (default): decision-type questions surface to the user.
-
-> **Note**: regardless of mode, questions requiring external information the agents
-> cannot know (credentials, file paths outside the repo, business rules not in
-> context) **always** pause and ask the user.
+`--handsfree` (optional): fully autonomous mode. Decision-type
+questions go to the Reviewer instead of pausing. External-info
+questions (credentials, file paths outside repo, business rules not in
+context) always pause. See `docs/protocol/planning.md` §Question
+classification.
 
 ---
 
 ## Configuration
 
-Read from `.review-loop/config.md` if present, else use defaults:
+Read `.review-loop/config.md` if present, else defaults:
 
 ```yaml
-# .review-loop/config.md  ← create this in your project to override defaults
 reviewer: codex                 # "codex" | "subagent"
-reviewer_model: ""              # codex: -m flag (empty = codex default); subagent: Agent model (empty = inherit Orchestrator)
-executor_model: inherit         # Executor sub-agent model ("inherit" | "sonnet" | "opus")
-soft_limit_plan: 3              # after N rounds, ask user whether to continue (if CRITICALs remain)
-soft_limit_exec: 3              # same for execution phase
-auto_commit: false              # commit after execution phase completes
-commit_message_prefix: "feat"   # conventional commit prefix
-docs_file: CHANGELOG.md         # file to append delivery summary to; "" to skip
-handsfree: false                # set true to make --handsfree the default
-review_focus: ""                # project-specific review priorities (see below)
-quality_focus: ""               # what to prioritize in quality polish (Step 3.5)
-review_style: ""                # tone and rules for ALL reviews (adversarial CR + quality agents)
+reviewer_model: ""              # codex: -m flag; subagent: Agent model
+executor_model: inherit         # "inherit" | "sonnet" | "opus"
+soft_limit_plan: 3              # see docs/protocol/planning.md §Loop control
+soft_limit_exec: 3              # see docs/protocol/execution.md §Per-stage max-round caps
+auto_commit: false
+commit_message_prefix: "feat"
+docs_file: CHANGELOG.md
+handsfree: false
+review_focus: ""                # free text injected into code-review prompts only
+quality_focus: ""               # free text injected into Quality Polish (Step 3.5) prompts
+review_style: ""                # free text injected into ALL reviewer prompts
 skip_quality_polish: false      # skip Step 3.5 entirely
 ```
 
-The `--handsfree` flag at invocation always overrides the config value.
-
-**`review_focus`**: free-text field injected into the Reviewer's code review
-prompt as additional focus areas. Only applies to code review, not plan review.
-Leave empty to use the default review checklist in `reviewer.md`. Example:
-
-```yaml
-review_focus: |
-  - Security: XSS, CSRF, input sanitization, auth state handling
-  - Accessibility: WCAG compliance, keyboard navigation, screen reader
-  - UX edge cases: loading states, empty states, error states
-```
-
-**`quality_focus`**: free-text field injected into quality agent prompts in
-Step 3.5. Tells the quality agents what to prioritize (e.g., "strict clippy
-lints, skip comment analysis"). Leave empty for default behavior.
-
-**`review_style`**: free-text field injected into ALL reviewer prompts —
-both the adversarial Reviewer (Steps 2-3) and the quality agents (Step 3.5).
-Use this to set tone and cross-cutting rules (e.g., "be terse, flag 80-char
-violations as CRITICAL"). Leave empty for default behavior.
-
-**`skip_quality_polish`**: set to `true` to skip Step 3.5 entirely. Useful
-when you only want the adversarial CR loop without the supplementary polish.
+`--handsfree` flag at invocation overrides the config value.
 
 ---
 
 ## Orchestrator Instructions
 
-When this skill is triggered, you are the **Orchestrator**. Your job is to
-coordinate the Executor and Reviewer, enforce the iteration loop, and keep
-the user informed of what the review process is finding. Do **not** do the
-planning or coding yourself.
+When triggered, you are the Orchestrator. Coordinate Executor and
+Reviewer; enforce the loop; keep the user informed via Live Reports.
+Never do the planning or coding yourself.
 
 ### Step 0 — Load config and parse flags
 
-1. Check if `.review-loop/config.md` exists. If so, read and parse it.
-   Otherwise use the defaults above.
-2. Detect `--handsfree` in the user's invocation message. If present, or if
-   `handsfree: true` in config, enable handsfree mode for this session.
-3. Confirm the Reviewer backend is available:
-   - If `reviewer: codex`: verify `codex` CLI is in PATH by running `which codex`.
-     If not found, tell the user and suggest `reviewer: subagent` as fallback.
-   - If `reviewer: subagent`: no check needed (uses Agent tool).
+Read `.review-loop/config.md` (or defaults). Detect `--handsfree`.
+Reviewer backend availability check (`which codex` for
+`reviewer: codex`; suggest `reviewer: subagent` fallback if absent).
 
-### Step 0.5 — Initialize context file
+### Step 0.5 — Initialize session file
 
-Generate a UUID for this session and create the context file:
+Generate a lowercase UUID. Create `.review-loop/sessions/{uuid}.md`
+with the canonical section list per `docs/protocol/session-file.md`
+§Canonical sections (includes `## Problem Description`, `## Context`,
+`## Acceptance Criteria`, `## Current Phase`, `## Approved Plan`,
+`## Review History`, `## Files Changed`, `## Key Related Files`,
+`## Timing Log`, `## Session Metadata`). `## Current Phase: planning`
+(fresh) or `execution` (when Step 1.5 routes to CR).
+`entry_point: review-loop`. Fresh baseline quintet from current repo
+state. `plan_source` is written only after the planning loop APPROVEs
+or Step 1.5 routes directly into Approved Plan / review-only; omitted
+during planning draft rounds.
 
-```bash
-uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
-context_dir=".review-loop/sessions"
-mkdir -p "${context_dir}"
-context_file="${context_dir}/${uuid}.md"
-```
-
-This file is the **single source of truth** for the loop. Both the Executor
-and Reviewer read it at the start of each round. The Orchestrator updates
-it after every round. This eliminates redundant context passing in prompts
-and gives agents instant project understanding without cold-start exploration.
-
-Session files are preserved in the project for traceability. If a bug is
-later discovered in production, open `.review-loop/sessions/{uuid}.md` to
-see exactly which round introduced the change, what the Reviewer flagged,
-and what was left unresolved. The session UUID is printed in the delivery
-summary — search it in the file to locate the right session.
-Add `.review-loop/sessions/` to `.gitignore` if you don't want them in
-version control (keeping them makes the audit trail available to the whole team).
-
-The context file structure:
-
-```markdown
-# Review Loop Context — {title}
-
-## Problem Description
-{problem_description}
-
-## Context
-{context}
-
-## Acceptance Criteria
-{acceptance_criteria}
-
-## Current Phase
-{planning | execution}
-
-## Approved Plan
-{empty during planning, populated after plan approval}
-
-## Review History
-{accumulated findings with severity and resolution status}
-
-## Files Changed
-{updated after each Executor round — files modified/created and why}
-
-## Key Related Files
-{files relevant to the task that were NOT changed but important for review context}
-
-## Timing Log
-{updated after each step — for post-hoc analysis}
-| Phase | Round | Role | Duration |
-|-------|-------|------|----------|
-| planning | 1 | executor | 45s |
-| planning | 1 | reviewer | 82s |
-| ... | | | |
-```
-
-Tell the user the context file path so they can inspect it if needed:
-```
-Context file: {context_file}
-```
+Acquire the single-writer lock per
+`docs/protocol/session-file.md` §Lock file lifecycle. Print the
+session file path.
 
 ### Step 1 — Parse the work item
 
-Extract from the user's message:
-- **Title**: one-line summary
-- **Problem Description**: a clear, self-contained description of the problem
-  to solve. Write this as if briefing a new engineer who has no prior context.
-  Include: what is broken or missing, why it matters, and what the desired
-  outcome looks like. This description is passed to every Executor and
-  Reviewer call throughout the entire loop — it is the shared understanding
-  of "what we are doing and why."
-- **Context**: any additional background info, file paths, constraints
-- **Acceptance criteria**: what "done" looks like (infer if not stated)
+Extract title, problem description, context, acceptance criteria.
+Ask ONE clarifying question if critical information is missing.
 
-If critical information is missing, ask ONE clarifying question before proceeding.
+### Step 1.5 — Auto-routing (preserved from v2.5.0)
 
-### Step 1.5 — Detect current work state
+The umbrella skill auto-routes based on detected state. Unlike `plan`,
+which only prints a suggestion, the umbrella dispatches internally:
 
-Before starting from Step 2 (Planning), assess the conversation context and
-project state to determine if this task is already in progress:
+- **Plan already exists** (user says "review this", approved plan in
+  context): skip planning; populate `## Approved Plan` with the
+  existing plan and `plan_source: reviewer-approved`, set
+  `## Current Phase: execution`, jump to the execution round loop.
+- **Code already implemented** (user asks for CR only, OR git diff
+  shows substantial task-relevant changes): treat as
+  `--review-only`-equivalent. Populate `## Approved Plan` with the
+  canonical sentinel per `docs/protocol/session-file.md` §Canonical
+  sentinel for `review-only`, populate `## Review Target`, set
+  `plan_source: review-only`, and jump to the execution loop with the
+  first-round Executor skip per `docs/protocol/execution.md`
+  §`--review-only` first-round skip.
+- **Existing session context file** matching this task: read it and
+  resume (equivalent to `execute --session <uuid>`).
+- **No prior state**: start from the planning phase as normal.
 
-- **Plan already exists** (user says "review this", or there's an approved
-  plan in context, or code changes are already made): skip the Planning
-  phase entirely — jump directly to Step 3 (Execution/CR).
-- **Code already implemented**: the user explicitly asks for CR only, OR
-  git diff shows substantial changes that are clearly related to this task
-  (not just a few trivial or unrelated edits). Assess relevance by checking
-  whether the changed files and logic align with the task's problem
-  description. If the changes look unrelated or too minor to constitute
-  an implementation, fall back to Planning.
-- **Existing session context file** found in `.review-loop/sessions/`
-  that matches this task: read it and resume from where it left off.
-- **No prior state**: start from Step 2 (Planning) as normal.
+Also check for `.claude/checkpoint.md`. If present, read it and inject
+the content into the session file under `## Previous Session Context`.
+Silently load — do not ask.
 
-**Also check for `.claude/checkpoint.md`** in the current repo:
-- If the file exists, read it and inject its content into the context file
-  under a `## Previous Session Context` section.
-- This file is written by the `/checkpoint` skill and survives across sessions
-  and auto-compacts. Treat it as authoritative background for this task.
-- Do not ask the user about it — silently load it if present.
+Display the detected state to the user:
 
-Display the detected state to the user for confirmation:
 ```
 Detected: {plan exists / code already implemented / fresh start}
 {if checkpoint.md found: + Previous session checkpoint loaded}
 → Starting from: {Planning / Execution / Code Review only}
 ```
 
-If the user disagrees, they can override. The goal is to pick up where
-the work currently is, not force a rigid start-from-scratch sequence.
+User can override if they disagree.
 
-### Step 1.6 — Historical context retrieval (optional)
+### Step 1.6 — Historical context retrieval (optional, fail-silently)
 
-**This step is strictly optional.** Skip it entirely and silently if no
-external memory tool is available. Never ask the user to install anything.
-Never mention the tool name to users who don't have it.
+**Strictly optional. Skip silently if no external memory tool is
+available. Never ask the user to install anything. Never mention the
+tool name to users who don't have it.** The fail-silently contract
+applies to the entire lifecycle per `CLAUDE.md` §"Optional
+integrations must fail silently" — probe failure, runtime failure,
+malformed output all fall through silently.
 
-**Availability probe**:
-- Check if a `mempalace_search` MCP tool is listed in available tools, OR
-- Run `which mempalace` via Bash — if exit code non-zero, skip this step.
+1. **Availability probe**: check if a `mempalace_search` MCP tool is
+   listed, OR run `which mempalace` via Bash. If neither, skip.
+2. **Resume dedup**: if the session file already has a
+   `## Historical Context` section, skip.
+3. Extract 1-2 specific search terms from the work item. Prefer MCP,
+   else CLI with a **10-second timeout**. On any error / hang /
+   timeout / non-zero exit / stderr / malformed output → silently skip
+   and continue. Do not log the error; treat as "no context".
+4. Append top 3 validated results under `## Historical Context`. If
+   none, skip — do not add an empty section.
 
-**If available, run with full error isolation**:
-1. **Resume dedup**: if the context file already has a `## Historical Context`
-   section (from a resumed session), skip this step entirely — do not
-   re-search or append a second block.
-2. Extract 1-2 search terms from the work item title and problem description
-   (pick the most specific nouns — e.g. "bybit adapter" not "fix bug")
-3. **Search**: prefer the MCP tool if available (`mempalace_search`), else
-   fall back to CLI (`mempalace search "<terms>"`). For CLI, use a
-   **10-second timeout**. For either path: if the call errors, hangs,
-   times out, returns non-zero, or produces stderr, **silently skip this
-   step and continue.** Do not log the error, do not mention it to the
-   user — treat it as "no context available."
-4. **Validate output**: only use results that are clearly structured memory
-   entries with relevance scores. If the output is empty, malformed, or
-   cannot be parsed into clear bullet points, skip silently.
-5. If valid results returned, pick the top 3 most relevant and append to the
-   context file under a `## Historical Context` section:
-   ```
-   ## Historical Context
-   (auto-retrieved — may contain relevant past decisions)
-   - {result summary 1}
-   - {result summary 2}
-   - {result summary 3}
-   ```
-6. If no relevant results, skip the section entirely — do not add an empty
-   section to the context file.
+Display:
 
-This context is available to all agents throughout the loop via the context
-file. It helps the Executor avoid re-litigating past decisions and helps the
-Reviewer spot regressions against prior work.
-
-Display to the user:
 ```
 ── review-loop: Starting ──────────────────────────
 Work item: {title}
@@ -290,838 +197,97 @@ Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)
 ────────────────────────────────────────────────────
 ```
 
-### Step 2 — Planning phase
+### Step 2 — Planning phase (fresh only)
 
-Initialize loop state:
-```
-loop_state = {
-  phase: "planning",
-  round: 0,
-  plan_version: null,
-  findings: [],        # accumulated across rounds
-  pending_issues: [],
-  resolved_issues: [],
-  timing: {            # wall-clock time tracking per step
-    loop_start: null,  # timestamp when loop begins
-    steps: []          # [{phase, round, role, start, end, duration_s}]
-  },
-  token_usage: {       # best-effort tracking
-    executor: 0,       # sum from Agent tool metadata
-    reviewer: 0        # sum from codex/agent metadata (N/A if unavailable)
-  }
-}
-```
+When Step 1.5 selected "fresh start", run the planning loop per
+`docs/protocol/planning.md` §Round loop. All per-round dispatch,
+Executor/Reviewer prompts, loop control, soft limit
+(`soft_limit_plan`), stuck detection, and question classification
+behavior are defined in that doc and not duplicated here.
 
-**Timing**: record wall-clock time before and after each Executor and
-Reviewer call. Store as:
-```
-{phase: "planning", round: 1, role: "executor", duration_s: 45}
-{phase: "planning", round: 1, role: "reviewer", duration_s: 82}
-{phase: "execution", round: 1, role: "executor", duration_s: 120}
-...
-```
-```
-
-**Round loop:**
-
-1. **Update context file** before calling agents:
-   - Write/update all sections in `{context_file}`
-   - Set `Current Phase: planning`
-   - After round 1+: update `Review History` with latest findings
-
-2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
-   model: {executor_model if not "inherit", else omit}):
-
-   **CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:executor`.
-   That agent type has Write/Edit tools silently blocked — the Executor will be unable
-   to create or modify files. Always use `subagent_type: general-purpose` with the
-   agent's full body inlined in the prompt.
-
-   Prompt template:
-   ```
-   You are the Executor in a review-loop workflow.
-
-   {contents of agents/executor.md body — the system prompt}
-
-   Read the context file first: {context_file}
-   DO NOT modify the context file — return your output as described in
-   the output format above.
-
-   ## Your Task
-   Produce a detailed solution plan following the output format in your
-   instructions.
-
-   {if round > 1:}
-   ## Previous Reviewer Feedback (address each point)
-   {reviewer_feedback — this is the one thing passed directly, for immediacy}
-   ```
-
-3. **Update context file with Executor's output** — BEFORE calling the
-   Reviewer. This is critical: the Reviewer reads the context file for
-   orientation. If the Executor produced a new/revised plan, write it
-   to the `Approved Plan` (or `Draft Plan`) section now. If the Executor
-   reported file changes, update `Files Changed`. The Reviewer must see
-   the latest state, not stale data from the previous round.
-
-3.5. **Context check: persist if high**
-
-   1. Run: `cat ~/.claude/session-state.json 2>/dev/null || echo "{}"`
-   2. Parse `context_pct`. If missing or file absent → skip, proceed to Reviewer.
-   3. If `context_pct >= 70`:
-      a. Derive `task_slug` from the earliest clear task description in the conversation: lowercase kebab-case, max 5 words.
-      b. Scan conversation for expensive intermediate results (coordinates, calibration values,
-         computed parameters, benchmark numbers, API structures discovered by exploration).
-      c. If results found:
-         - Write to `{cwd}/.claude/results/{YYYY-MM-DD}_{task_slug}.json` using idempotent merge
-           (replace by label, append new, never delete).
-         - After successful write: update `~/.claude/persist-state.json` atomically with
-           `{"last_persisted_at": epoch, "context_pct_at_persist": N, "task_slug": "..."}`.
-         - Log: `✓ Results persisted at {context_pct}%: {N} entries — {label1}, {label2}, ...`
-      d. If no results found: log `✓ Context check at {context_pct}%: no intermediate results to persist.`
-      e. Continue to Reviewer regardless.
-   4. If `context_pct < 70`: skip silently.
-
-4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
-
-   The template below is the **review content** — what the Reviewer should
-   review. How it is delivered depends on the reviewer mode:
-   - **codex mode**: prepend `agents/reviewer.md` body to this template
-     (codex doesn't load agent definitions).
-   - **subagent mode**: send this template as-is — `reviewer.md` is
-     auto-loaded as the system prompt by the `review-loop:reviewer` agent.
-
-   Review content template:
-   ```
-   Read the context file first: {context_file}
-   DO NOT modify the context file.
-
-   ## Solution Plan to Review
-   {executor_plan}
-
-   {if round > 1:}
-   ## Review History
-   You are reviewing round {round}. Here is what you found in previous rounds
-   and what has changed since. Pay special attention to whether previously
-   identified CRITICAL issues have been properly addressed.
-
-   {for each finding in loop_state.findings:}
-   - Round {n}: [{severity}] {description} → {Executor claims fixed | Still pending | Accepted}
-
-   ## Your Focus This Round
-   1. Verify that previously flagged CRITICAL issues are actually resolved
-   2. Check whether the fixes introduced new problems
-   3. **Scope Drift**: check whether the Executor quietly changed the plan's
-      design decisions while addressing feedback. A fix for a CRITICAL issue
-      should not silently introduce new trade-offs, relax constraints, or
-      change the agreed approach. If it does, flag as CRITICAL.
-   4. Review any new aspects of the plan not covered before
-
-   {else (round == 1):}
-   ## Your Task
-   This is the first review. Review the plan critically from scratch.
-
-   {endif}
-
-   {if review_style is set:}
-   ## Review Style
-   {review_style}
-
-   Return your structured verdict following the output format in your
-   instructions above.
-   ```
-
-3. **Parse the Reviewer's response**:
-   - Extract VERDICT (APPROVE / REQUEST_CHANGES)
-   - Extract all issues with severity (CRITICAL / MINOR)
-   - Update loop_state: add new findings, track resolved vs pending
-
-4. **Display Live Report** to the user:
-   ```
-   ── review-loop: Round {n} (Planning) ───────────────
-   Executor: {duration}s  |  Reviewer: {duration}s
-   Reviewer found:
-     [CRITICAL] {issue description}
-     [MINOR] {issue description}
-   Verdict: {APPROVE | REQUEST_CHANGES}
-   {if APPROVE: ✓ Plan approved — proceeding to execution}
-   {if REQUEST_CHANGES: → sending feedback to Executor...}
-   ────────────────────────────────────────────────────
-   ```
-   If no issues: `Reviewer found: No issues. Clean approval.`
-
-5. **Loop control**:
-   - `VERDICT: APPROVE` → exit planning loop, proceed to Step 3.
-   - `REQUEST_CHANGES` → feed feedback to next Executor round.
-   - **Soft limit reached** (`round >= soft_limit_plan`) AND still has
-     CRITICALs → ask the user: "Planning has run {N} rounds and still
-     has open CRITICAL issues: {list}. Continue iterating, or proceed
-     with current plan?" User decides.
-   - **Stuck detection**: if the same CRITICAL issue appears 3 rounds in
-     a row without progress, stop and escalate to the user — the Executor
-     likely cannot resolve it without human guidance.
-
-6. **If Executor raises a question during planning** — see "Question
-   Classification" section below.
+On `VERDICT: APPROVE`: promote `## Draft Plan` → `## Approved Plan`
+with `- Source: reviewer-approved`, write `plan_source:
+reviewer-approved` to `## Session Metadata`, remove `## Draft Plan`
+entirely, and proceed to Step 3.
 
 ### Step 3 — Execution phase
 
-Update loop state:
-```
-loop_state.phase = "execution"
-loop_state.round = 0
-```
+Run the execution loop per `docs/protocol/execution.md` §Step 3. The
+provenance-aware reviewer prompts in that doc select the right
+strictness level from `plan_source`:
 
-**Round loop:**
+- `reviewer-approved` (planning-approved or imported) → strict
+  plan-conformance.
+- `review-only` (code-exists auto-route) → pure CR mode; first
+  Executor round is skipped.
 
-1. **Update context file** before calling agents:
-   - Update `Current Phase: execution`
-   - Update `Approved Plan` (now populated)
-   - Update `Files Changed` and `Key Related Files` after each Executor round
-   - Update `Review History` with latest findings
-
-2. **Call the Executor** (via Agent tool, subagent_type: general-purpose,
-   model: {executor_model if not "inherit", else omit}):
-
-   **CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:executor`.
-   That agent type has Write/Edit tools silently blocked — the Executor will be unable
-   to create or modify files. Always use `subagent_type: general-purpose` with the
-   agent's full body inlined in the prompt.
-
-   Prompt template:
-   ```
-   You are the Executor in a review-loop workflow.
-
-   {contents of agents/executor.md body — the system prompt}
-
-   Read the context file first: {context_file}
-   DO NOT modify the context file — return your output as described in
-   the output format above.
-
-   ## Your Task
-   Implement the approved plan (see context file). Make all necessary code
-   changes. Follow the execution mode output format in your instructions.
-
-   When done, list all files you modified/created so the Orchestrator can
-   update the context file for the Reviewer.
-
-   {if round > 1:}
-   ## Code Review Feedback (address each point)
-   {reviewer_cr_feedback — passed directly for immediacy}
-   ```
-
-3. **Update context file with Executor's output** — BEFORE calling the
-   Reviewer. Write the Executor's change summary, updated file list, and
-   any deviations from the plan into the context file. The Reviewer will
-   read this file for orientation — stale data here means a wrong review.
-
-3.5. **Context check: persist if high**
-
-   1. Run: `cat ~/.claude/session-state.json 2>/dev/null || echo "{}"`
-   2. Parse `context_pct`. If missing or file absent → skip, proceed to Reviewer.
-   3. If `context_pct >= 70`:
-      a. Derive `task_slug` from the earliest clear task description in the conversation: lowercase kebab-case, max 5 words.
-      b. Scan conversation for expensive intermediate results (coordinates, calibration values,
-         computed parameters, benchmark numbers, API structures discovered by exploration).
-      c. If results found:
-         - Write to `{cwd}/.claude/results/{YYYY-MM-DD}_{task_slug}.json` using idempotent merge
-           (replace by label, append new, never delete).
-         - After successful write: update `~/.claude/persist-state.json` atomically with
-           `{"last_persisted_at": epoch, "context_pct_at_persist": N, "task_slug": "..."}`.
-         - Log: `✓ Results persisted at {context_pct}%: {N} entries — {label1}, {label2}, ...`
-      d. If no results found: log `✓ Context check at {context_pct}%: no intermediate results to persist.`
-      e. Continue to Reviewer regardless.
-   4. If `context_pct < 70`: skip silently.
-
-4. **Call the Reviewer** (see "Reviewer Dispatch" section below) with:
-
-   The template below is the **review content**. Delivery depends on mode:
-   - **codex mode**: prepend `agents/reviewer.md` body to this template.
-   - **subagent mode**: send as-is — `reviewer.md` is auto-loaded.
-
-   Review content template:
-   ```
-   Read the context file first: {context_file}
-   DO NOT modify the context file.
-   It contains the problem description, approved plan, review history,
-   changed files, and related files.
-
-   ## Changes Made (summary from Executor)
-   {executor_change_summary}
-
-   ## Your Task
-   Review the code changes against the approved plan in the context file.
-
-   Check both **correctness** (does the code work?) AND **plan conformance**
-   (does the code match the plan's design decisions?). If the Executor
-   deviated from the plan — introduced new thresholds, relaxed constraints,
-   changed the agreed approach — flag it as CRITICAL even if the code is
-   technically correct.
-
-   {if review_focus is set:}
-   ## Project-Specific Review Priorities
-   In addition to the standard review checklist, pay special attention to:
-   {review_focus}
-
-   {if round > 1:}
-   The context above contains your previous findings. Verify that previously
-   flagged CRITICAL issues are actually resolved in code — read the actual
-   code, don't just take the Executor's word for it. Also check whether
-   fixes introduced regressions or new issues.
-
-   You have read-only access to the project files — use it.
-
-   {if review_style is set:}
-   ## Review Style
-   {review_style}
-
-   Return your structured verdict following the output format in your
-   instructions above.
-   ```
-
-   > **Note**: the `review_style` and `review_focus` blocks above are
-   > NOT inside the `{if round > 1}` branch — they apply to ALL rounds
-   > including round 1. The template indentation above is for readability
-   > only; structure the actual prompt so these fields appear unconditionally.
-
-3. **Parse, update loop state, display Live Report** — same as planning phase.
-
-4. **Loop control** — same logic as planning phase (APPROVE exits,
-   soft limit uses `soft_limit_exec`, stuck detection applies).
+Soft limit is `soft_limit_exec` (default 3). On APPROVE, mint `exec`
+into `completed_stages` and proceed to Step 3.5.
 
 ### Step 3.5 — Quality Polish
 
-> **Skip condition**: if `skip_quality_polish: true` in config, skip this
-> entire step and go directly to Step 4.
+Run Step 3.5 per `docs/protocol/execution.md` §Step 3.5. Skip entirely
+if `skip_quality_polish: true`. All substeps use
+`subagent_type: general-purpose` with the agent body inlined — never
+plugin-defined agent types. Hallucination guard on `tool_uses: 0`.
 
-After the execution loop exits with APPROVE, run supplementary quality
-checks before delivery. This is NOT a replacement for the adversarial
-review — it is automated polish that catches language-specific and
-structural issues the adversarial reviewer may not focus on.
+On a no-write clean finish, mint `polish`. Any writing substep clears
+`completed_stages` and replays from `exec` per
+`docs/protocol/session-file.md` §`completed_stages` lifecycle.
 
-#### 3.5.1 — Language detection
+### Step 3.6 — Documentation Consistency
 
-Detect languages in changed files (both tracked and untracked):
-```bash
-{ git diff --name-only --diff-filter=d HEAD; git ls-files --others --exclude-standard; } | grep '\.' | sed 's/.*\.\([^.]*\)$/\1/' | sort -u
-```
-
-Map extensions to agents:
-- `.go` → `review-loop:go-reviewer`
-- `.rs` → `review-loop:rust-reviewer`
-- `.py` → `review-loop:python-reviewer`
-- `.ts/.tsx/.js/.jsx/.html/.vue/.svelte` → `review-loop:frontend-security-reviewer`
-- Multiple languages → run all applicable agents
-
-#### 3.5.2 — Language-specific static analysis
-
-For each detected language, invoke the corresponding agent via `subagent_type: general-purpose` with the agent's full body inlined in the prompt (plugin-defined agent types have their tools silently blocked by Claude Code sandbox):
-```
-Agent tool:
-  subagent_type: general-purpose
-  prompt: |
-    {contents of agents/<agent-name>.md body}
-
-    IMPORTANT: Use Claude Code's native Bash tool to run shell commands.
-    Do NOT use MCP server tools (e.g. run_bash_command).
-
-    ## Changed Files
-    {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}
-
-    Run analysis on the changed files listed above. Context file: {context_file}
-    {if quality_focus is set:}
-    ## Quality Focus
-    {quality_focus}
-    {if review_style is set:}
-    ## Review Style
-    {review_style}
-```
-
-These agents report findings but should not fix code — include "Report only, do not modify files" in the prompt.
-
-**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report the failure to the user.
-
-Display findings to the user. If any CRITICAL/HIGH issues found, invoke the
-Executor (via `subagent_type: general-purpose`) to fix them, then re-run the
-language agent to verify. Max **2 fix rounds**. If issues remain after 2
-rounds, report them to user and continue to the next sub-step.
-
-#### 3.5.3 — Code quality review-fix loop
-
-Invoke code-reviewer and silent-failure-hunter on the changed code via `subagent_type: general-purpose` with agent body inlined:
-```
-Agent tool:
-  subagent_type: general-purpose
-  prompt: |
-    {contents of agents/code-reviewer.md body}  (or silent-failure-hunter.md)
-
-    Review the changed files listed in context file: {context_file}
-    Report only, do not modify files.
-    {if quality_focus is set:}
-    ## Quality Focus
-    {quality_focus}
-    {if review_style is set:}
-    ## Review Style
-    {review_style}
-```
-
-- Parse findings, triage by severity
-- If CRITICAL/HIGH issues found, **do NOT stop the loop**. Triage each issue:
-  - **Can fix autonomously** (clear implementation fix — input sanitization,
-    missing auth check, obvious logic error): invoke Executor immediately to fix,
-    then re-run code-reviewer to verify. Do not ask the user first.
-  - **Requires design decision** (architecture change, security trade-off,
-    ambiguous requirement): surface to the user and wait for direction. Then
-    apply the decision and continue.
-  - Never batch both categories together and stop — fix what can be fixed
-    while asking about what cannot. Both paths must complete before moving on.
-- Max **3 rounds** or until clean
-- **Stuck detection**: same issue persists 3 rounds = stop
-
-#### 3.5.4 — Simplify
-
-**CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:code-simplifier`.
-That agent type has tools silently blocked — it will produce `tool_uses: 0` hallucinated output.
-Always use `subagent_type: general-purpose` with the agent body inlined below.
-
-Invoke code-simplifier via `subagent_type: general-purpose` (it needs
-Write/Edit tools):
-```
-Agent tool:
-  subagent_type: general-purpose
-  prompt: |
-    {contents of agents/code-simplifier.md body}
-    Simplify the recently changed files: {file_list from context file}
-    {if quality_focus is set:}
-    ## Quality Focus
-    {quality_focus}
-    {if review_style is set:}
-    ## Review Style
-    {review_style}
-```
-
-If simplify makes changes, run a quick build check to ensure nothing broke.
-If build fails, revert the simplify changes and report to user.
-
-#### 3.5.5 — Test consolidation
-
-Invoke pr-test-analyzer via `subagent_type: general-purpose` with agent body inlined:
-```
-Agent tool:
-  subagent_type: general-purpose
-  prompt: |
-    {contents of agents/pr-test-analyzer.md body}
-
-    Analyze test coverage for the changed files. Context file: {context_file}
-    {if quality_focus is set:}
-    ## Quality Focus
-    {quality_focus}
-    {if review_style is set:}
-    ## Review Style
-    {review_style}
-```
-
-If gaps found, invoke Executor (`subagent_type: general-purpose`) to add
-missing tests. Then run the build/test command:
-- Go: `go test ./...`
-- Rust: `cargo test`
-- Python: `pytest` or project test command
-- Other: language-appropriate command
-
-Max **2 fix rounds** for test failures. If still failing after 2 rounds,
-report remaining failures to user and proceed to delivery.
-
-#### 3.5.6 — Display Quality Polish summary
-
-```
-── review-loop: Quality Polish ─────────────────────
-Static analysis: {go-reviewer: PASS / rust-reviewer: 2 fixed / ...}
-Code quality:    {3 rounds, 5 fixed, 0 remaining}
-Simplify:        {4 improvements applied}
-Tests:           {PASS (12 tests) / 2 added, 1 updated}
-────────────────────────────────────────────────────
-```
-
-Update the context file with Quality Polish results and timing.
-
-### Step 3.6 — Documentation Consistency Check
-
-After Quality Polish, ensure documentation reflects the latest code changes.
-
-#### 3.6.1 — Update project documentation (if any exists)
-
-Search the project for documentation files:
-- Design docs, architecture docs, ADRs (e.g. `docs/`, `design/`, `*.md` outside source dirs)
-- Runbooks, operational guides
-- Memory files (`.claude/memory/`, `tasks/lessons.md`)
-- Learning notes, changelogs, wikis
-
-For each doc found: read it, compare against the code changes in the context file. If the doc describes behavior, APIs, or logic that has changed, update it to reflect the new implementation. Focus on business logic accuracy — do not rewrite style.
-
-If no project documentation is found: note "no project docs found" and proceed to 3.6.2.
-
-#### 3.6.2 — Code comment consistency (always run)
-
-For each changed file, read the current code and verify:
-- Function/method docstrings and comments match the actual implementation
-- Type/struct comments match actual fields and behavior
-- Module-level comments match actual responsibilities
-- Inline comments explain current logic (not stale from a previous version)
-
-Fix any stale or incorrect comments directly using the Edit tool.
-
-**Output:**
-```
-── review-loop: Doc Consistency ─────────────────────
-Project docs:   {updated: X files / none found}
-Comments fixed: {N} stale comments in {files / "none"}
-─────────────────────────────────────────────────────
-```
+Single pass per `docs/protocol/execution.md` §Step 3.6. Writes → clear
+`completed_stages`, replay. No-write → mint `docs`.
 
 ### Step 3.7 — Security Preflight
 
-Scan the working tree for sensitive files that must never be committed to a public repository. Run this step on every delivery, regardless of whether `auto_commit` is set.
-
-#### 3.7.1 — Check for tracked or staged sensitive files
-
-Run these commands to detect any tracked or staged file that matches a known-sensitive pattern. Use Bash for each grep:
-
-```bash
-# Tracked files — keys, certificates, identity files
-git ls-files | grep -iE '\.(pem|key|crt|cert|cer|p12|pfx|jks|keystore|ppk|asc|gpg|pgp)$'
-
-# Tracked files — environment and config secrets (exclude safe .example/.sample templates)
-git ls-files | grep -iE '(^|/)(\.env|\.env\..+)$' | grep -v -iE '\.(example|sample)(\.[^/]*)?$'
-git ls-files | grep -iE '\.(env)$'
-
-# Tracked files — credential and secret file names (basename substring match; exclude .example/.sample)
-git ls-files | grep -iE '(^|/)[^/]*(credentials?|secrets?|api[-_.]?key|auth[-_.]?token|passwd|shadow)[^/]*$' | grep -v -iE '\.(example|sample)(\.[^/]*)?$'
-
-# Tracked files — SSH private key basenames (id_rsa*, id_dsa*, id_ecdsa*, id_ed25519*)
-git ls-files | grep -iE '(^|/)id_(rsa|dsa|ecdsa|ed25519)'
-
-# Tracked files — cloud service account credentials
-git ls-files | grep -iE '(^|/)service-account[^/]*\.json$'
-
-# Tracked files — cloud credential directories (.aws/, .gcloud/)
-git ls-files | grep -iE '(^|/)\.(aws|gcloud)/'
-
-# Tracked files — database dumps and files
-git ls-files | grep -iE '\.(sqlite3?|db|dump|sql\.gz)$'
-
-# Tracked files — Terraform state (may contain secrets; exclude .example templates)
-git ls-files | grep -iE '(\.tfstate|\.tfvars)($|\.)' | grep -v -iE '\.example$'
-
-# Tracked files — Terraform plugin/module cache directory (.terraform/)
-git ls-files | grep -E '(^|/)\.terraform/'
-
-# Tracked files — compiled source maps (JS, CSS, and other — all expose source)
-git ls-files | grep -iE '\.map$'
-
-# Tracked files — log files (may contain sensitive runtime data)
-git ls-files | grep -iE '\.log$'
-git ls-files | grep -E '(^|/)logs/'
-```
-
-Collect every match into a list of **flagged files**.
-
-If flagged files are found:
-- Report each as **CRITICAL** in the output block below
-- **Halt — do not proceed to Step 4**
-- Tell the user: to untrack each file, run `git rm --cached <file>` and add the appropriate pattern to `.gitignore`
-- Wait for the user to resolve before continuing
-
-#### 3.7.2 — Audit .gitignore for missing sensitive pattern coverage
-
-Read the project's `.gitignore` (create it if it does not exist). For each category below, check whether adequate glob coverage already exists. If a category is not covered, add its patterns:
-
-| Category | Patterns to add if missing |
-|----------|---------------------------|
-| Environment & config | `.env`, `.env.*`, `*.env`, `!.env.example`, `!.env.sample` |
-| Keys & certificates | `*.pem`, `*.key`, `*.crt`, `*.cert`, `*.cer`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` |
-| SSH key files | `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*`, `*.ppk` |
-| PGP / GPG | `*.asc`, `*.gpg`, `*.pgp` |
-| Cloud credentials | `*credentials*`, `!*credentials.example*`, `!*credentials.sample*`, `service-account*.json`, `.aws/`, `.gcloud/` | ⚠️ always confirm |
-| Generic secret files | `*secret*`, `!*secret.example*`, `!*secret.sample*`, `secrets.*`, `!secrets.example*`, `!secrets.sample*` | ⚠️ always confirm |
-| Database & dumps | `*.sqlite`, `*.sqlite3`, `*.db`, `*.dump`, `*.sql.gz` |
-| Compiled source maps | `*.map` | intentionally broad: covers JS, CSS, and all source map variants |
-| Terraform | `*.tfstate`, `*.tfstate.*`, `*.tfvars`, `!*.tfvars.example`, `.terraform/` |
-| Logs | `*.log`, `logs/` |
-
-Before writing any pattern to `.gitignore`:
-- For **wildcard patterns** (e.g., `*.pem`, `id_rsa*`, `*.tfstate`): use `git ls-files -- '<glob>'` — git's native pathspec matches at any depth.
-  Example: `git ls-files -- '*.pem'`, `git ls-files -- 'id_rsa*'`, `git ls-files -- '*.tfstate'`
-- For **literal/directory patterns** (e.g., `.env`, `.aws/`, `.gcloud/`, `.terraform/`, `logs/`): use anchored grep — `git ls-files -- '.env'` only matches at root, not nested paths like `services/.env`.
-  Example: `git ls-files | grep -E '(^|/)\.env$'`, `git ls-files | grep -E '(^|/)\.aws/'`, `git ls-files | grep -E '(^|/)logs/'`
-- Patterns marked **⚠️ always confirm** (Cloud credentials, Generic secret files): always ask the user
-  before adding, regardless of whether tracked files match — these globs are broad enough to hit source code.
-- All other patterns: if tracked files are found → warn and confirm; if none → add silently.
-
-Use the Edit tool to append missing patterns to `.gitignore`, grouped by category with a comment header (e.g., `# Keys & certificates`).
-
-**Output:**
-```
-── review-loop: Security Preflight ─────────────────
-Tracked sensitive files: {NONE | CRITICAL: <file1>, <file2>, ...}
-.gitignore additions:    {N patterns added across M categories | already covered}
-Status: {✓ CLEAN — ready to commit | ✗ BLOCKED — N sensitive files must be removed from tracking}
-─────────────────────────────────────────────────────
-```
-
-If Status is **BLOCKED**: halt. Do not proceed to Step 4 until resolved.
-If Status is **✓ CLEAN**: proceed to Step 4.
-
----
+Single scan per `docs/protocol/execution.md` §Step 3.7. Writes to
+`.gitignore` or `git rm --cached` → clear `completed_stages`, replay.
+No-write → mint `security`. BLOCKED → halt; do not proceed.
 
 ### Step 4 — Delivery
 
-After Quality Polish completes (or is skipped), or user decides to stop:
-
-1. **If `auto_commit: true`**: stage only the files reported as changed by the
-   Executor using `git add <file1> <file2> ...` (never `git add -A` or
-   `git add .`), then commit with message:
-   `{commit_message_prefix}: {title}`
-
-2. **Display Delivery Summary** to the user:
-
-   ```
-   ── review-loop: Delivery ───────────────────────────
-   ## {title}
-   **Status**: {Delivered | Stopped by user — unresolved issues noted below}
-   **Reviewer**: {codex | subagent} ({reviewer_model})
-   **Mode**: {interactive | handsfree}
-   **Plan rounds**: {N}  |  **Exec rounds**: {N}
-   **Quality Polish**: {ran / skipped}
-   **Session log**: `.review-loop/sessions/{session_id}.md`
-
-   ### Review Findings
-   | Round | Phase | Severity | Issue | Resolution |
-   |-------|-------|----------|-------|------------|
-   {for each finding in loop_state.findings:}
-   | {round} | {phase} | {severity} | {description} | {Fixed in round N | Accepted | Unresolved} |
-
-   ### Files Changed
-   - {file1} — {what changed}
-   - {file2} — {what changed}
-
-   {if handsfree and autonomous_decisions:}
-   ### Autonomous Decisions
-   - [{question}] → {decision} (Reason: {reason})
-
-   {if unresolved_minor_issues:}
-   ### Unresolved Minor Issues
-   - {issue} — {why unresolved}
-
-   {if quality polish ran:}
-   ### Quality Polish
-   Static analysis: {agent: PASS/FIXED/...}
-   Code quality:    {rounds, fixed, remaining}
-   Simplify:        {improvements applied}
-   Tests:           {PASS/FAIL (count)}
-
-   ### Time Breakdown
-   | Phase | Round | Executor | Reviewer | Round Total |
-   |-------|-------|----------|----------|-------------|
-   {for each round in loop_state.timing.steps, grouped by phase+round:}
-   | {phase} | {round} | {executor_duration}s | {reviewer_duration}s | {sum}s |
-
-   | | | **Executor Total** | **Reviewer Total** | **Loop Total** |
-   | | | {sum_executor}s | {sum_reviewer}s | {total_elapsed}s |
-
-   _Slowest step: {phase} round {N} {role} ({duration}s)_
-
-   ### Token Usage (best-effort)
-   | Role     | Tokens | Cost Estimate |
-   |----------|--------|---------------|
-   | Executor | {sum of Agent tool total_tokens across all rounds, if available} | — |
-   | Reviewer | {if available from codex --json or Agent tool} | — |
-   | Total    | {sum} | — |
-   _Token counts are approximate. Reviewer tokens may show "N/A" in codex mode._
-
-   ### Suggested Next Steps
-   - {action items}
-   ────────────────────────────────────────────────────
-   ```
-
-3. **If `docs_file` is set**: append the delivery summary (without the box
-   drawing borders) to that file.
-
-4. **Cleanup temp files**: delete all round output files for this session:
-   `rm -f .review-loop/sessions/{session_id}-round-*.txt`
-   The context file (`.review-loop/sessions/{session_id}.md`) is
-   kept as a permanent record for post-hoc debugging. To trace a bug back
-   to a specific session, use the UUID from the delivery summary and open
-   the corresponding file in `.review-loop/sessions/`.
+Gated by the runtime delivery gate: Claude Code requires
+`{exec, polish, docs, security} ⊆ completed_stages`. Per
+`docs/protocol/execution.md` §Step 4 — Delivery: if `auto_commit:
+true`, stage only the Executor-reported files, commit
+`{commit_message_prefix}: {title}`, append sha to `session_commits`.
+Print the Delivery Summary (status, reviewer backend, plan / exec
+rounds, Quality Polish summary, Review Findings table, Files Changed,
+Autonomous Decisions, Unresolved Minor Issues, Time Breakdown, Token
+Usage, Suggested Next Steps). Append to `docs_file` if set. Cleanup
+round temp files; preserve the session file. Clear
+`delivery_blocked_by ← null`. Release the lock.
 
 ---
 
-## Reviewer Dispatch
+## Reviewer Dispatch, Question Classification, Context Management
 
-This section defines how the Orchestrator calls the Reviewer based on the
-`reviewer` config value.
-
-### Mode: `codex`
-
-Use Bash to invoke the Codex CLI in non-interactive, read-only mode:
-
-```bash
-# If reviewer_model is empty, omit -m flag entirely (codex uses its default model)
-# If reviewer_model is set, pass it via -m
-codex exec -s read-only {if reviewer_model: -m {reviewer_model}} -o .review-loop/sessions/{session_id}-round-{round}.txt - <<'REVIEW_PROMPT'
-{reviewer_prompt}
-REVIEW_PROMPT
-```
-
-Then read the output file to get the Reviewer's response.
-
-**CRITICAL — heredoc quoting**: Always use the **single-quoted** form `<<'REVIEW_PROMPT'`.
-Never use unquoted `<<REVIEW_PROMPT` — zsh will expand `$variables` and `$(...)` inside
-the prompt body, causing parse errors or unintended command execution.
-
-**CRITICAL — run synchronously**: Never set `run_in_background: true` on the Bash tool
-call. Codex must complete before the Orchestrator reads the output file. Do not use
-`sleep` to poll for output — if the call is synchronous there is nothing to poll.
-
-**Important behaviors**:
-- The Codex process runs in the same project directory, so it can read all
-  project files in its read-only sandbox.
-- Use `-o` to capture output to a file, then read it. This is more reliable
-  than capturing stdout for long responses.
-- If the codex command fails (non-zero exit): automatically fall back to
-  subagent mode for **that round only** (do NOT ask the user, do NOT stop the
-  loop). Use `subagent_type: general-purpose` with the reviewer.md body inlined
-  in the prompt — exactly as described in Mode: subagent below. **Never** use
-  `subagent_type: review-loop:reviewer` as a fallback; plugin-defined agent types
-  have their tools silently blocked and will hallucinate.
-- Each review call is stateless (no session persistence between rounds).
-  The Orchestrator compensates by including Review History in the prompt.
-
-**Prompt construction for codex mode**: prepend the full `agents/reviewer.md`
-body (everything below the frontmatter) to the review content template from
-Step 2.4 or Step 3.4. This is necessary because codex does not load Claude
-Code agent definitions.
-
-**Project conventions are loaded automatically**:
-- Codex loads the project's `codex.md` on every invocation, so the user's
-  coding standards and project-specific rules apply during review.
-- Similarly, in subagent mode, Claude Code loads `CLAUDE.md` automatically.
-- The Reviewer's output format does not need to be pretty — it is consumed
-  by the Orchestrator (to extract VERDICT and issues), not by the user
-  directly. The user sees the Live Report summary instead.
-
-### Mode: `subagent`
-
-Use the Agent tool to invoke the Reviewer as a Claude Code sub-agent:
-
-```
-Agent tool parameters:
-  subagent_type: general-purpose
-  model: {reviewer_model if set and not empty, else omit — inherits Orchestrator model}
-  prompt: |
-    {contents of agents/reviewer.md body}
-
-    {review_content — the review content template from Step 2.4 or Step 3.4}
-
-    IMPORTANT: You are a Reviewer. Report only, do not modify any files.
-```
-
-Due to the plugin agent type sandbox bug (all plugin-defined agent types have
-their tools silently blocked), we use `general-purpose` and inline the
-reviewer.md body in the prompt.
-
-**Prompt construction for subagent mode**: prepend the `reviewer.md` body,
-then append the review content template (context file content, the plan or
-code to review, review history, and task instructions).
-
-**Important behaviors**:
-- The sub-agent runs in the same project directory and can read all project
-  files via the Read tool (read-only sandbox).
-- Claude Code loads `CLAUDE.md` automatically, so project conventions apply.
-- The Agent tool returns the sub-agent's full response text. Parse it the
-  same way as codex output: extract VERDICT and issues.
-- If the Agent tool returns an error, report it to the user and ask whether
-  to retry or switch to codex mode.
-- Each review call is stateless (fresh sub-agent per call). The Orchestrator
-  compensates by including Review History in the prompt.
-- Token usage: the Agent tool metadata may include token counts. If
-  available, accumulate them in `loop_state.token_usage.reviewer`.
-
----
-
-## Question Classification
-
-When the Executor raises a question (detected in its output), classify it:
-
-- **External info** (credentials, file paths outside repo, business rules not
-  in context) → **always pause and ask the user**, regardless of mode.
-
-- **Decision-type** (architecture choice, approach trade-off, ambiguous
-  requirement with multiple valid solutions):
-  - **Default mode** → pause and ask the user.
-  - **`--handsfree` mode** → forward to Reviewer via the configured mode:
-
-    Decision prompt (review content only):
-    ```
-    ## Decision Required
-    The Executor encountered a decision point and needs guidance:
-    {executor_question}
-
-    ## Work Item Context
-    {title + context + acceptance_criteria}
-
-    Please make a decision and provide brief reasoning.
-    Return: DECISION: <your choice> \n REASON: <why>
-    ```
-
-    **If codex mode**: prepend `reviewer.md` body, then pass to `codex exec`.
-    **If subagent mode**: prepend `reviewer.md` body, then pass to Agent tool
-    with `subagent_type: general-purpose`.
-
-    Log the decision in `loop_state` under autonomous_decisions.
-
----
-
-## Context Management
-
-The Orchestrator must actively manage its own context to avoid triggering
-the AI's automatic compaction, which can lose critical information.
-
-The context file (`.review-loop/sessions/{uuid}.md`) is the single source of
-truth for the entire loop. All critical state lives on disk, not in the
-Orchestrator's conversation context.
-
-**Sub-agent file access**: sub-agents read the context file from disk
-each round. They are explicitly told NOT to modify the context file —
-only the Orchestrator writes to it. This prevents sub-agents from
-accidentally editing the file (which can cause permission errors in
-`.claude/`).
-
-**The Orchestrator's context stays minimal:**
-- The context file path
-- The latest Reviewer feedback (passed directly to the next Executor call)
-- Loop control state (current phase, round number)
-
-**After each round**, update the context file with:
-- Latest findings and their resolution status
-- Updated file change list (from Executor output)
-- Any new related files discovered
-- Plan updates (if planning phase)
-
-Since all durable state is on disk, the Orchestrator's conversation context
-stays lean and compaction is unlikely to be an issue.
-
----
+- **Reviewer Dispatch** — per `docs/protocol/planning.md` §Reviewer
+  dispatch, Claude Code block. Two modes (`codex` / `subagent`).
+  `subagent` uses `subagent_type: general-purpose` with
+  `agents/reviewer.md` inlined plus a "Report only" instruction. Never
+  `subagent_type: review-loop:<name>`.
+- **Question Classification** — per `docs/protocol/planning.md`
+  §Question classification. External-info always pauses.
+  Decision-type pauses by default; `--handsfree` forwards to Reviewer
+  and logs under `loop_state.autonomous_decisions`.
+- **Context Management** — per `docs/protocol/planning.md` §Context
+  management discipline. Session file on disk is the single source of
+  truth. Orchestrator keeps minimal conversation context: session
+  path, latest Reviewer feedback, loop control state. All durable
+  state is on disk.
 
 ## Important Orchestrator Behaviors
 
-- **Never do the work yourself** — delegate planning to the Executor sub-agent
-  and reviewing to the Reviewer (codex or subagent).
-- **Keep the context file up to date** — both Executor and Reviewer read it
-  at the start of each round. Update it after every round with latest
-  findings, file changes, and plan updates before calling the next agent.
-- **Preserve the Reviewer's VERDICT** — never override an `APPROVE` to keep
-  iterating, and never skip a `REQUEST_CHANGES` to save time.
-- **Surface blockers immediately** — if the Executor reports it cannot proceed,
-  pause and ask the user rather than guessing.
-- **Make findings visible** — the Live Report after each round is not optional.
-  The whole point of this skill is that the user sees what the review process
-  catches. Never silently pass feedback without reporting it.
+- **Never do the work yourself** — delegate planning to the Executor
+  and reviewing to the Reviewer.
+- **Keep the session file up to date** — both agents read it each
+  round.
+- **Preserve the Reviewer's VERDICT** — never override APPROVE,
+  never skip REQUEST_CHANGES.
+- **Surface blockers immediately** — pause and ask on unrecoverable
+  situations.
+- **Make findings visible** — Live Report after each round is not
+  optional.

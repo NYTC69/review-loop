@@ -1,0 +1,107 @@
+{
+  "id": "review-loop.regression.claude",
+  "type": "lint",
+  "target": "review-loop",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "exists",
+      "path": "skills/review-loop/SKILL.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "soft_limit_plan"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "soft_limit_exec"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Current Phase"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Approved Plan"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Review History"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Quality Polish"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Delivery"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "## Protocol Imports"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "docs/protocol/planning.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "docs/protocol/reviewer-output.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "entry_point: review-loop"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/planning.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/reviewer-output.md"
+    }
+  ]
+}

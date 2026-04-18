@@ -1,0 +1,64 @@
+{
+  "id": "execute.review-only.claude",
+  "type": "lint",
+  "notes": "Stays as lint: the feature under test (canonical two-line sentinel in ## Approved Plan, ## Review Target supplemental section, first-round Executor skip) is textual contract in skills/execute/SKILL.md. The execution-round behavior (skipped-first-Executor then Reviewer-first CR loop) is covered end-to-end by execute.session-resume.smoke.claude; exercising --review-only additionally would require a dirty working tree and add no new skill-code coverage beyond what that smoke case already gives.",
+  "target": "execute",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "exists",
+      "path": "skills/execute/SKILL.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "--review-only"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "(none — review-only mode)"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "## Review Target"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "skips the first Executor round"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "entry_point: review-only"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "plan_source: review-only"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/reviewer-output.md"
+    }
+  ]
+}

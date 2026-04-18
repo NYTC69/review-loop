@@ -1,0 +1,39 @@
+{
+  "id": "execute.session-resume.smoke.claude",
+  "type": "smoke",
+  "target": "execute",
+  "runtime": "claude",
+  "requires": ["claude", "codex"],
+  "setup": {
+    "temp_config": "",
+    "timeout_seconds": 300
+  },
+  "execution_policy": "best_effort",
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "session_final": "latest_session",
+      "reviewer_prompt": "reviewer_prompt_file"
+    },
+    "required": [
+      "session_path",
+      "session_final",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "bash",
+    "-lc",
+    "set -eu; WT=\"$1\"; cd \"$WT\"; UUID=$(python3 -c 'import uuid; print(uuid.uuid4())'); mkdir -p .review-loop/sessions; cp tests/skills/fixtures/sessions/v2.6.0-approved-session.md \".review-loop/sessions/${UUID}.md\"; cleanup() { rm -f \".review-loop/sessions/${UUID}.lock\"; }; trap cleanup EXIT; exec claude -p --no-session-persistence --permission-mode bypassPermissions --add-dir \"$WT\" \"Use the review-loop:execute skill with --session ${UUID}. The preseeded session is a valid v2.6.0 session whose Approved Plan is already satisfied by the current working tree. Run a single execution round and stop as soon as the Reviewer returns VERDICT.\"",
+    "--",
+    "__WORKTREE__"
+  ],
+  "assertions": [
+    "session_created",
+    "execution_or_noop_round_recorded",
+    "plan_source_reviewer_approved",
+    "entry_point_plan",
+    "approved_plan_section_present"
+  ]
+}

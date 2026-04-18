@@ -88,18 +88,19 @@ def require_string_list(value, label: str, field_name: str):
 
 
 def normalize_target(target, case_id: str):
-    if isinstance(target, str) and target in {"guide", "review-loop", "shared"}:
+    known_targets = {"guide", "review-loop", "plan", "execute", "shared"}
+    if isinstance(target, str) and target in known_targets:
         return target
     if case_id == "shared-schema":
         return "shared"
-    if case_id in {"guide", "review-loop"}:
+    if case_id in {"guide", "review-loop", "plan", "execute"}:
         return case_id
     if isinstance(target, str):
         prefix = target.split(".", 1)[0]
-        if prefix in {"guide", "review-loop", "shared"}:
+        if prefix in known_targets:
             return prefix
     prefix = case_id.split(".", 1)[0]
-    if prefix in {"guide", "review-loop", "shared"}:
+    if prefix in known_targets:
         return prefix
     return "shared"
 
@@ -536,6 +537,20 @@ def routed_search_paths(target: str):
             ".codex/agents/review-loop-reviewer.toml",
             "README.md",
             "review-loop-config.example.md",
+        ],
+        "plan": [
+            "skills/plan/SKILL.md",
+            "docs/protocol/session-file.md",
+            "docs/protocol/planning.md",
+            "docs/protocol/executor-output.md",
+            "docs/protocol/reviewer-output.md",
+        ],
+        "execute": [
+            "skills/execute/SKILL.md",
+            "docs/protocol/session-file.md",
+            "docs/protocol/execution.md",
+            "docs/protocol/executor-output.md",
+            "docs/protocol/reviewer-output.md",
         ],
     }
     return list(path_map.get(target, []))

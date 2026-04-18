@@ -1,0 +1,78 @@
+{
+  "id": "execute.session-resume.claude",
+  "type": "lint",
+  "target": "execute",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "exists",
+      "path": "skills/execute/SKILL.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "## Protocol Imports"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "--session <uuid>"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Step 1 — Acquire the single-writer lock"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Step 2 — Drift check"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "docs/protocol/reviewer-output.md"
+    },
+    {
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "execute-from-session"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/reviewer-output.md"
+    }
+  ]
+}

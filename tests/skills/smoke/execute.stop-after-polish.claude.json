@@ -1,0 +1,74 @@
+{
+  "id": "execute.stop-after-polish.claude",
+  "type": "lint",
+  "notes": "Stays as lint: the feature under test is parse-time rejection of unsupported --stop-after values and the presence of the full stage enum (exec-round, before-polish, before-docs, before-security, before-delivery). Exercising the reject-at-parse-time seam in smoke would require invoking the skill with a bad flag and capturing stderr, which the current run-skill-smoke shape does not support (it only reads .review-loop/sessions/* artifacts, not stderr contents). Static contract coverage is sufficient here.",
+  "target": "execute",
+  "runtime": "shared",
+  "requires": [],
+  "setup": {},
+  "artifacts": {
+    "required": []
+  },
+  "assertions": [
+    {
+      "kind": "exists",
+      "path": "skills/execute/SKILL.md"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "--stop-after"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "before-docs"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "before-polish"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "before-security"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "before-delivery"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "exec-round"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "completed_stages"
+    },
+    {
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "rejected at parse time"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/session-file.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/execution.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/executor-output.md"
+    },
+    {
+      "kind": "exists",
+      "path": "docs/protocol/reviewer-output.md"
+    }
+  ]
+}

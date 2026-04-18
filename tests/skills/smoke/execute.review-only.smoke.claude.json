@@ -1,0 +1,43 @@
+{
+  "id": "execute.review-only.smoke.claude",
+  "type": "smoke",
+  "target": "execute",
+  "runtime": "claude",
+  "requires": ["claude", "codex"],
+  "setup": {
+    "temp_config": "",
+    "timeout_seconds": 300
+  },
+  "execution_policy": "best_effort",
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "session_final": "latest_session",
+      "reviewer_prompt": "reviewer_prompt_file"
+    },
+    "required": [
+      "session_path",
+      "session_final",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--permission-mode",
+    "bypassPermissions",
+    "--add-dir",
+    "__WORKTREE__",
+    "Use the review-loop:execute skill with --review-only --description \"REVIEW_TARGET_SMOKE_TOKEN: review-only smoke pass over review-loop repo top-level docs\". Copy the --description verbatim into the ## Review Target section. Run a single Reviewer round on the existing working tree and stop as soon as the Reviewer returns VERDICT. The Approved Plan body must be the canonical two-line review-only sentinel; the scope lives in ## Review Target. Log round 1 in ## Review History with '- Executor backend: skipped (review-only first round)' per skills/execute/SKILL.md."
+  ],
+  "assertions": [
+    "session_created",
+    "plan_source_review_only",
+    "review_only_sentinel_literal_two_line",
+    "review_target_section_has_scope_content",
+    "entry_point_review_only",
+    "execute_round_1_reviewer_only"
+  ]
+}
