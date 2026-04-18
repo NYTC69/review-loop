@@ -3,10 +3,13 @@
   "type": "smoke",
   "target": "execute",
   "runtime": "claude",
-  "requires": ["claude", "codex"],
+  "requires": [
+    "claude",
+    "codex"
+  ],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 300
+    "timeout_seconds": 900
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -31,7 +34,8 @@
     "bypassPermissions",
     "--add-dir",
     "__WORKTREE__",
-    "Use the review-loop:execute skill with --plan \"Document that running /review-loop:execute --plan injects the user-supplied plan verbatim into ## Approved Plan with Source: user-supplied. Treat the current repo state as already satisfying this trivial plan.\" --title \"user-supplied plan smoke\". Run a single execution round and stop as soon as the Reviewer returns VERDICT."
+    "--",
+    "Use the review-loop:execute skill with --stop-after exec-round --title \"user-supplied plan smoke\" --plan \"Trivial no-op plan: the repo already documents execute entry mode 2 behavior (plan body injected verbatim under the Approved Plan section with Source user-supplied). Treat current state as already satisfying this plan.\""
   ],
   "assertions": [
     "session_created",

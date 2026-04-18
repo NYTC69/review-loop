@@ -6,7 +6,7 @@
   "requires": ["claude", "codex"],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 300
+    "timeout_seconds": 1200
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -30,6 +30,7 @@
     "bypassPermissions",
     "--add-dir",
     "__WORKTREE__",
+    "--",
     "Use the repo skill review-loop to handle this task end-to-end: add one concise sentence to the Codex Stage 1 section of README.md clarifying that executor_model is ignored in Codex Stage 1 and codex_executor_model remains reserved. If the task is already satisfied, complete the loop as a no-op round rather than making a duplicate edit."
   ],
   "assertions": [

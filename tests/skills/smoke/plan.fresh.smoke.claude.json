@@ -6,7 +6,7 @@
   "requires": ["claude", "codex"],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 300
+    "timeout_seconds": 600
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -30,6 +30,7 @@
     "bypassPermissions",
     "--add-dir",
     "__WORKTREE__",
+    "--",
     "Use the review-loop:plan skill on the following trivial work item: Document that running `/review-loop:plan` initializes a session file with `## Current Phase: planning`. The goal of this invocation is to validate that the plan skill creates a session file under .review-loop/sessions/{uuid}.md and produces at least one reviewer prompt before exiting. Treat any existing context as sufficient; run a single planning round and stop as soon as the Reviewer responds."
   ],
   "assertions": [

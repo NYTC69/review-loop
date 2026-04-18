@@ -301,7 +301,11 @@ trap cleanup EXIT
 cat >"$prompt_tmp"
 cp "$prompt_tmp" "$REVIEW_LOOP_SMOKE_PROMPT_ARTIFACT"
 set +e
-"$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$stdout_tmp"
+if [ -s "$prompt_tmp" ]; then
+  "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$stdout_tmp"
+else
+  "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" </dev/null >"$stdout_tmp"
+fi
 status=$?
 set -e
 if [ -s "$stdout_tmp" ]; then

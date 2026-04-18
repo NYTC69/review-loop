@@ -15,12 +15,12 @@
     "execution_round_recorded": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Execution Round 1"
+      "needle": "### Round 1 — Executor"
     },
     "noop_execution_outcome_recorded": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "No-op execution round approved."
+      "needle": "no-op execution round"
     },
     "reviewer_backend_codex": {
       "kind": "artifact_contains",
@@ -33,7 +33,7 @@
     },
     "reviewer_prompt_user_supplied_provenance_marker": {
       "kind": "artifact_contains",
-      "artifact": "reviewer-prompt.txt",
+      "artifact": "session-final.md",
       "needle": "(plan_source: user-supplied — plan conformance is advisory/MINOR)"
     },
     "shared_config_path_mentioned": {
