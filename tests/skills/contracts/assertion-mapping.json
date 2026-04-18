@@ -7,15 +7,25 @@
       "artifact": "session-path.txt",
       "needle": ".review-loop/sessions/"
     },
-    "planning_round_recorded": {
+    "planning_round_recorded_numbered": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "### Planning Round 1"
+    },
+    "planning_round_recorded_roleform": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Round 1 — Planner"
     },
     "execution_round_recorded": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "### Round 1 — Executor"
+    },
+    "reviewer_round_1_recorded": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Round 1 — Reviewer"
     },
     "noop_execution_outcome_recorded": {
       "kind": "artifact_contains",
@@ -163,6 +173,13 @@
     }
   },
   "smoke_groups": {
+    "planning_round_recorded": {
+      "mode": "any",
+      "members": [
+        "planning_round_recorded_numbered",
+        "planning_round_recorded_roleform"
+      ]
+    },
     "execution_or_noop_round_recorded": {
       "mode": "any",
       "members": [
@@ -235,7 +252,7 @@
     "execute_round_1_reviewer_only": {
       "mode": "all",
       "members": [
-        "execution_round_recorded",
+        "reviewer_round_1_recorded",
         "execute_round_1_reviewer_only_marker"
       ]
     }

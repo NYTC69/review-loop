@@ -28,7 +28,7 @@
   "command": [
     "bash",
     "-lc",
-    "set -eu; WT=\"$1\"; cd \"$WT\"; UUID=$(python3 -c 'import uuid; print(uuid.uuid4())'); mkdir -p .review-loop/sessions; cp tests/skills/fixtures/sessions/v2.6.0-approved-session.md \".review-loop/sessions/${UUID}.md\"; cleanup() { rm -f \".review-loop/sessions/${UUID}.lock\"; }; trap cleanup EXIT; exec claude -p --no-session-persistence --permission-mode bypassPermissions --add-dir \"$WT\" -- \"Use the review-loop:execute skill with --session ${UUID} --stop-after exec-round. The preseeded session is a valid v2.6.0 session whose Approved Plan is already satisfied by the current working tree. Run a single execution round and stop as soon as the Reviewer returns VERDICT.\"",
+    "set -eu; WT=\"$1\"; cd \"$WT\"; UUID=$(python3 -c 'import uuid; print(uuid.uuid4())'); mkdir -p .review-loop/sessions; cp tests/skills/fixtures/sessions/v2.6.0-approved-session.md \".review-loop/sessions/${UUID}.md\"; cleanup() { rm -f \".review-loop/sessions/${UUID}.lock\"; }; trap cleanup EXIT; exec claude -p --no-session-persistence --permission-mode bypassPermissions --add-dir \"$WT\" -- \"Use the review-loop:execute skill with --session ${UUID} --stop-after exec-round --accept-external-state. The preseeded session is a valid v2.6.0 session whose Approved Plan is already satisfied by the current working tree. Run a single execution round and stop as soon as the Reviewer returns VERDICT.\"",
     "--",
     "__WORKTREE__"
   ],
