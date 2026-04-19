@@ -34,5 +34,7 @@
 ## Reference
 
 - 当前 plan.yaml plan_sha: `a8d9343ef0c1`（前 12 位）
-- 当前已分类 entries[] = 4（E001-E004，全在 README.md L1-56）
+- 当前已分类 entries[] = 4（E001-E004，原 README.md L1-56 的内容已追加到 CLAUDE.md / ARCHITECTURE.md 的 `## Migrated —` block）
 - 当前 ambiguous[] = 4（A001 no-fit / A002 split / A003 split / A004 no-fit）
+
+**⚠️ README.md 保留完整形态**：初版 adopt 同时 trim 了 README.md L1-63，但 `run-skill-lint` 的 `guide:readme_marks_*` 和 `shared-schema:*` 断言依赖 README 里的若干 phrase 作 SSOT，trim 后 lint 5 条 FAIL。已 revert README 回到完整 370 行，CLAUDE.md + ARCHITECTURE.md 的 `## Migrated —` block 作为双存储保留。后续要真 trim README 必须同步把 `guide` skill + lint contract 指向新 SSOT（CLAUDE.md migrated block 或其他目标），先别动 README 本体。

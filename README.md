@@ -1,3 +1,66 @@
+# review-loop
+
+A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
+
+## Quick Start
+
+```
+/plugin marketplace add NYTC69/review-loop
+/plugin install review-loop@review-loop-marketplace
+```
+
+Start a new session. The `/review-loop` command is now available in all your projects.
+
+**Optional** — copy the config template to customize per-project defaults:
+
+```bash
+mkdir -p .review-loop
+cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loop/config.md
+```
+
+> **After updating the plugin** — Claude Code caches plugins at session
+> start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
+> to reload plugins while keeping your conversation context. This is a
+> Claude Code caching behavior, not a review-loop limitation.
+
+## Codex Stage 1
+
+Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
+`review-loop` skill shares `.review-loop/config.md` and `.review-loop/sessions/`
+with Claude Code, so both runtimes work against the same project state.
+The rest of this README primarily documents the current Claude Code plugin
+surface; Codex Stage 1 currently exposes only `review-loop` and `guide`.
+
+The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
+(`claude -p`). If you need to force the Codex fallback reviewer, set
+`codex_reviewer_backend: codex` in `.review-loop/config.md`.
+The shared `reviewer` and `executor_model` keys do not actively control
+Stage 1 Codex reviewer/backend selection.
+In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains reserved.
+
+Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
+
+## Skill Tests
+
+The repository includes a first-version skill testing framework for
+`review-loop` and `guide`.
+
+- `scripts/run-skill-lint` runs static contract checks
+- `scripts/run-skill-smoke` runs the small real smoke suite
+- `scripts/run-skill-tests` runs both in order
+
+Test output uses `PASS`, `FAIL`, and `SKIP`.
+
+- Aggregate results: `tests/skills/.last-run.json`
+- Per-case artifacts: `tests/skills/.artifacts/`
+
+## Claude Plugin Surface
+
+The commands, configuration tables, reviewer modes, and included agent list
+below describe the current Claude Code plugin surface. They are not yet part of
+the Codex Stage 1 surface beyond the shared `review-loop` and `guide` entries
+described above.
+
 ## Three Skills: `plan`, `execute`, `review-loop`
 
 Starting in v2.6.0 the workflow is split into three composable skills. Pick
