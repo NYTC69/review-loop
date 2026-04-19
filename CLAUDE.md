@@ -132,3 +132,45 @@ Test output uses `PASS`, `FAIL`, and `SKIP`.
 
 - Aggregate results: `tests/skills/.last-run.json`
 - Per-case artifacts: `tests/skills/.artifacts/`
+
+<!-- 迁移自 README.md:224-261 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
+## Migrated — README.md:224-261
+
+## Configuration
+
+All options live in `.review-loop/config.md`. Every field is optional.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
+| `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = inherit) |
+| `executor_model` | `inherit` | Shared Claude/plugin executor-model key; ignored by Codex Stage 1 |
+| `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
+| `soft_limit_exec` | `3` | Same for execution phase |
+| `auto_commit` | `false` | Stage changed files and commit after delivery |
+| `commit_message_prefix` | `feat` | Conventional commit type prefix |
+| `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
+| `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
+| `review_focus` | `""` | Project-specific review priorities (free text) |
+| `quality_focus` | `""` | What to prioritize in quality polish (free text) |
+| `review_style` | `""` | Tone and rules for all reviews (free text) |
+| `skip_quality_polish` | `false` | Skip Quality Polish (Step 3.5) entirely |
+
+For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
+path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,
+and `codex_reviewer_model` overrides the model used by that Codex fallback
+reviewer path. The `reviewer` and `executor_model` entries above still
+describe shared Claude/plugin-side behavior and do not actively control
+Stage 1 Codex behavior.
+
+### Natural language config examples
+
+```yaml
+review_focus: |
+  - Security: auth checks, input validation, SQL injection
+  - Performance: N+1 queries, missing indexes
+
+quality_focus: "strict clippy lints, skip comment analysis"
+
+review_style: "be terse, flag any unwrap() as CRITICAL"
+```
