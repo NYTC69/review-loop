@@ -338,7 +338,8 @@ agent body inlined, per `docs/protocol/execution.md` §3.5.2 /
 
 Per `docs/protocol/execution.md` §Step 3.6. Single pass. Update project
 docs + fix stale code comments. Writes → clear `completed_stages`,
-replay from `exec`. No-write → mint `docs`.
+replay from `exec`. No-write → mint `docs`. **After minting `docs`,
+proceed to Step 3.7** — a no-op docs stage is not a terminal state.
 
 `--stop-after before-security` → exit after Step 3.6 and before Step 3.7.
 
@@ -348,6 +349,13 @@ Per `docs/protocol/execution.md` §Step 3.7. Single scan. Check for
 tracked/staged sensitive files; audit `.gitignore` for missing
 coverage. Writes to `.gitignore` or `git rm --cached` → clear
 `completed_stages`, replay from `exec`. No-write → mint `security`.
+
+Step 3.7 runs **unconditionally** after Step 3.6, regardless of
+whether any prior stage wrote files. A no-op session (zero code
+changes, zero doc updates) still runs this scan — it is a security
+gate, not a content-dependent step. The only exits before 3.7 are
+`--stop-after before-security` / `before-docs` / `before-polish` /
+`exec-round`.
 
 `--stop-after before-delivery` → exit after Step 3.7 and before Step 4.
 

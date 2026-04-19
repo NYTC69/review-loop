@@ -238,13 +238,21 @@ On a no-write clean finish, mint `polish`. Any writing substep clears
 ### Step 3.6 — Documentation Consistency
 
 Single pass per `docs/protocol/execution.md` §Step 3.6. Writes → clear
-`completed_stages`, replay. No-write → mint `docs`.
+`completed_stages`, replay. No-write → mint `docs`. **After minting
+`docs`, proceed to Step 3.7** — a no-op docs stage is not a terminal
+state.
 
 ### Step 3.7 — Security Preflight
 
 Single scan per `docs/protocol/execution.md` §Step 3.7. Writes to
 `.gitignore` or `git rm --cached` → clear `completed_stages`, replay.
 No-write → mint `security`. BLOCKED → halt; do not proceed.
+
+Step 3.7 runs **unconditionally** after Step 3.6, regardless of
+whether any prior stage wrote files. A no-op session (zero code
+changes, zero doc updates) still runs this scan. The only exits before
+3.7 are `--stop-after before-security` / `before-docs` /
+`before-polish` / `exec-round`.
 
 ### Step 4 — Delivery
 

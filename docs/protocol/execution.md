@@ -540,7 +540,8 @@ Comments fixed: {N} stale comments in {files / "none"}
 
 If Step 3.6 performs any writes (doc or comment fixes), `completed_stages`
 is cleared and replay restarts from `exec`. On a no-write completion, mint
-`docs`.
+`docs` — **then proceed to Step 3.7**. A no-op docs stage is not a
+terminal state; Step 3.7 still has to run.
 
 ---
 
@@ -549,6 +550,13 @@ is cleared and replay restarts from `exec`. On a no-write completion, mint
 > Codex Stage 1 excludes Step 3.7.
 
 **Single scan** — runs on every delivery regardless of `auto_commit`.
+Step 3.7 runs **unconditionally** after Step 3.6 on every Claude Code
+invocation that reaches this point, regardless of whether any prior
+stage wrote files. A no-op session (zero code changes, zero doc
+updates) still runs this scan — it is a security gate, not a
+content-dependent step. The only exits before 3.7 are
+`--stop-after before-security` / `before-docs` / `before-polish` /
+`exec-round`.
 
 ### 3.7.1 — Check for tracked or staged sensitive files
 
