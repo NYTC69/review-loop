@@ -454,6 +454,9 @@ def run_case(case_data, mapping_data):
     before_tmp_prompts = set()
     if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
         before_tmp_prompts = list_files(ROOT / ".review-loop/tmp", "*-reviewer-prompt.txt")
+    smoke_uuid_marker = ROOT / ".review-loop/tmp/smoke-session-uuid"
+    if smoke_uuid_marker.exists():
+        smoke_uuid_marker.unlink()
     write_text(artifact_dir / "git-status-before.txt", git_status(ROOT))
     artifacts["git_status_before"] = relative_to_root(artifact_dir / "git-status-before.txt", ROOT)
 
@@ -510,9 +513,18 @@ def run_case(case_data, mapping_data):
     write_text(artifact_dir / "git-status-after.txt", git_status(ROOT))
     artifacts["git_status_after"] = relative_to_root(artifact_dir / "git-status-after.txt", ROOT)
 
-    after_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
-    new_sessions = sorted(after_sessions - before_sessions, key=lambda path: path.name)
-    session_path = new_sessions[-1] if new_sessions else None
+    session_path = None
+    if smoke_uuid_marker.is_file():
+        tracked_uuid = smoke_uuid_marker.read_text(encoding="utf-8").strip()
+        if tracked_uuid:
+            candidate = ROOT / f".review-loop/sessions/{tracked_uuid}.md"
+            if candidate.is_file():
+                session_path = candidate
+        smoke_uuid_marker.unlink()
+    if session_path is None:
+        after_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
+        new_sessions = sorted(after_sessions - before_sessions, key=lambda path: path.name)
+        session_path = new_sessions[-1] if new_sessions else None
     if session_path is not None and {"session_path", "session_final"} & set(capture_modes):
         write_text(artifact_dir / "session-path.txt", relative_to_root(session_path, ROOT) + "\n")
         write_text(artifact_dir / "session-final.md", session_path.read_text(encoding="utf-8"))
