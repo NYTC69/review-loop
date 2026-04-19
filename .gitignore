@@ -6,3 +6,4 @@ node_modules/
 .review-loop/tmp/
 tests/skills/.artifacts/
 tests/skills/.last-run.json
+HANDOFF.md

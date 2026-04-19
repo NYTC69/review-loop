@@ -84,3 +84,51 @@ Even with `general-purpose`, agents may not use tools and fabricate output. Two 
 
 1. **Agent-side**: All language agents (rust/go/python/frontend-security) have a `**MANDATORY**` tool-use instruction at the top of their `.md` body.
 2. **Orchestrator-side**: After every agent call, check `tool_uses` in metadata. If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report.
+
+<!-- 迁移自 README.md:1-4 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
+## Migrated — README.md:1-4
+
+# review-loop
+
+A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
+
+<!-- 迁移自 README.md:5-25 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
+## Migrated — README.md:5-25
+
+## Quick Start
+
+```
+/plugin marketplace add NYTC69/review-loop
+/plugin install review-loop@review-loop-marketplace
+```
+
+Start a new session. The `/review-loop` command is now available in all your projects.
+
+**Optional** — copy the config template to customize per-project defaults:
+
+```bash
+mkdir -p .review-loop
+cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loop/config.md
+```
+
+> **After updating the plugin** — Claude Code caches plugins at session
+> start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
+> to reload plugins while keeping your conversation context. This is a
+> Claude Code caching behavior, not a review-loop limitation.
+
+<!-- 迁移自 README.md:43-56 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
+## Migrated — README.md:43-56
+
+## Skill Tests
+
+The repository includes a first-version skill testing framework for
+`review-loop` and `guide`.
+
+- `scripts/run-skill-lint` runs static contract checks
+- `scripts/run-skill-smoke` runs the small real smoke suite
+- `scripts/run-skill-tests` runs both in order
+
+Test output uses `PASS`, `FAIL`, and `SKIP`.
+
+- Aggregate results: `tests/skills/.last-run.json`
+- Per-case artifacts: `tests/skills/.artifacts/`
