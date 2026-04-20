@@ -202,6 +202,30 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
                 return {"id": assertion_id, "status": "pass", "message": f"{artifact_name} contains expected text"}
             return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} does not contain {needle!r}"}
 
+        if kind == "tool_use_read_covers_paths":
+            if artifact_path is None or not artifact_path.exists():
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+            declared_paths = assertion.get("paths")
+            if not isinstance(declared_paths, list) or not declared_paths or any(not isinstance(p, str) or not p for p in declared_paths):
+                return {"id": assertion_id, "status": "fail", "message": "paths must be a non-empty list of strings"}
+            try:
+                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is not valid JSON: {exc}"}
+            if not isinstance(payload, dict):
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} payload must be an object"}
+            schema_errors = payload.get("schema_errors") or []
+            if schema_errors:
+                return {"id": assertion_id, "status": "fail", "message": f"CLI stream schema drift: {'; '.join(schema_errors)}"}
+            events = payload.get("events")
+            if not isinstance(events, list):
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} missing 'events' list"}
+            read_targets = [event.get("target") for event in events if isinstance(event, dict) and event.get("tool") == "Read"]
+            missing = [p for p in declared_paths if not any(isinstance(t, str) and p in t for t in read_targets)]
+            if missing:
+                return {"id": assertion_id, "status": "fail", "message": f"paths not read: {missing}"}
+            return {"id": assertion_id, "status": "pass", "message": f"all {len(declared_paths)} declared paths observed as Read events"}
+
         return {"id": assertion_id, "status": "fail", "message": f"unsupported smoke assertion kind {kind!r}"}
 
     for assertion_id in assertion_ids:
@@ -294,12 +318,22 @@ def build_claude_wrapper(wrapper_dir: Path):
 set -euo pipefail
 prompt_tmp=$(mktemp)
 stdout_tmp=$(mktemp)
+text_tmp=$(mktemp)
 cleanup() {
-  rm -f "$prompt_tmp" "$stdout_tmp"
+  rm -f "$prompt_tmp" "$stdout_tmp" "$text_tmp"
 }
 trap cleanup EXIT
 cat >"$prompt_tmp"
 cp "$prompt_tmp" "$REVIEW_LOOP_SMOKE_PROMPT_ARTIFACT"
+
+# Phase 2.1: inject stream-json flags when tool-event capture is requested.
+# stream-json requires --verbose and emits JSONL on stdout; we extract the
+# final result text in-wrapper so downstream plaintext stdout capture
+# (response.txt etc.) remains unchanged for callers that did not opt in.
+if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ]; then
+  set -- --output-format stream-json --verbose "$@"
+fi
+
 set +e
 if [ -s "$prompt_tmp" ]; then
   "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$stdout_tmp"
@@ -308,7 +342,68 @@ else
 fi
 status=$?
 set -e
-if [ -s "$stdout_tmp" ]; then
+
+if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ] && [ -s "$stdout_tmp" ]; then
+  python3 - "$stdout_tmp" "$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT" "$text_tmp" <<'PYWRAP'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+events_target = Path(sys.argv[2])
+text_target = Path(sys.argv[3])
+
+read_events = []
+result_text = ""
+assistant_seen = False
+result_seen = False
+parse_errors = 0
+for raw in source.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line[0] != "{":
+        continue
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        parse_errors += 1
+        continue
+    if not isinstance(event, dict):
+        continue
+    etype = event.get("type")
+    if etype == "assistant":
+        assistant_seen = True
+        msg = event.get("message") or {}
+        for block in (msg.get("content") or []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("name") == "Read":
+                fp = (block.get("input") or {}).get("file_path")
+                if isinstance(fp, str) and fp:
+                    read_events.append({"tool": "Read", "target": fp})
+    elif etype == "result":
+        result_seen = True
+        if event.get("subtype") == "success" and isinstance(event.get("result"), str):
+            result_text = event["result"]
+
+schema_errors = []
+if not assistant_seen:
+    schema_errors.append("no 'type=assistant' events observed — possible CLI schema drift")
+if not result_seen:
+    schema_errors.append("no 'type=result' event observed — possible truncated stream or schema drift")
+
+payload = {
+    "schema_version": 1,
+    "events": read_events,
+    "schema_errors": schema_errors,
+    "parse_errors": parse_errors,
+}
+events_target.write_text(json.dumps(payload, indent=2) + "\\n", encoding="utf-8")
+text_target.write_text(result_text, encoding="utf-8")
+PYWRAP
+  # Replace stdout with extracted plaintext so callers capturing stdout see
+  # the same shape they did in text mode. Keep the raw JSONL at exit status.
+  cat "$text_tmp"
+elif [ -n "${REVIEW_LOOP_SMOKE_RESULT_ARTIFACT:-}" ] && [ -s "$stdout_tmp" ]; then
   python3 - "$stdout_tmp" "$REVIEW_LOOP_SMOKE_RESULT_ARTIFACT" <<'PYWRAP'
 import json
 import sys
@@ -330,8 +425,10 @@ except json.JSONDecodeError:
     raise SystemExit(0)
 target.write_text(json.dumps(value, indent=2) + "\\n", encoding="utf-8")
 PYWRAP
+  cat "$stdout_tmp"
+else
+  cat "$stdout_tmp"
 fi
-cat "$stdout_tmp"
 exit "$status"
 """,
         encoding="utf-8",
@@ -465,7 +562,8 @@ def run_case(case_data, mapping_data):
     wrapper_tmp = None
     try:
         _, restore = config_manager(ROOT, definition["config_text"])
-        if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
+        wrapper_capture_keys = {"reviewer_prompt", "reviewer_result", "tool_use_events"}
+        if wrapper_capture_keys & set(capture_modes):
             wrapper_tmp = tempfile.TemporaryDirectory(prefix="run-skill-smoke-claude-")
             wrapper_dir = Path(wrapper_tmp.name)
             build_claude_wrapper(wrapper_dir)
@@ -473,6 +571,8 @@ def run_case(case_data, mapping_data):
             env["REVIEW_LOOP_SMOKE_REAL_CLAUDE"] = real_claude or "claude"
             env["REVIEW_LOOP_SMOKE_PROMPT_ARTIFACT"] = str(artifact_dir / "reviewer-prompt.txt")
             env["REVIEW_LOOP_SMOKE_RESULT_ARTIFACT"] = str(artifact_dir / "reviewer-result.json")
+            if "tool_use_events" in capture_modes:
+                env["REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT"] = str(artifact_dir / "tool-use-events.json")
             env["PATH"] = f"{wrapper_dir.as_posix()}:{env.get('PATH', '')}"
 
         try:
@@ -550,6 +650,11 @@ def run_case(case_data, mapping_data):
         if capture_modes.get("reviewer_result") == "reviewer_result_file" and result_artifact.exists():
             artifacts["reviewer_result"] = relative_to_root(result_artifact, ROOT)
 
+    if "tool_use_events" in capture_modes:
+        tool_events_artifact = artifact_dir / "tool-use-events.json"
+        if tool_events_artifact.exists():
+            artifacts["tool_use_events"] = relative_to_root(tool_events_artifact, ROOT)
+
     assertion_results, assertion_status, assertion_reason = evaluate_mapping(
         case_id,
         definition["assertions"],
@@ -598,6 +703,18 @@ def run_case(case_data, mapping_data):
 
 
 ROOT = Path(sys.argv[1]).resolve()
+# Extra args after the worktree: optionally `--case <id>` (repeatable) to
+# restrict the run to specific smoke cases. Useful for iterating on a single
+# case without waiting for the full suite.
+EXTRA_ARGV = list(sys.argv[2:])
+CASE_FILTER = set()
+_i = 0
+while _i < len(EXTRA_ARGV):
+    if EXTRA_ARGV[_i] == "--case" and _i + 1 < len(EXTRA_ARGV):
+        CASE_FILTER.add(EXTRA_ARGV[_i + 1])
+        _i += 2
+    else:
+        _i += 1
 
 
 def main():
@@ -611,6 +728,8 @@ def main():
         label = relative_to_root(case_path, ROOT)
         try:
             case_data = safe_load_json(case_path, label)
+            if CASE_FILTER and case_data.get("id") not in CASE_FILTER and case_path.stem not in CASE_FILTER:
+                continue
         except RunnerError as exc:
             started_at = now_iso()
             finished_at = started_at

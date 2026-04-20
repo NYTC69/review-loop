@@ -4,6 +4,10 @@
 
 ## P1 — high priority
 
+## P1 — high priority
+
+- Orchestrator conformance for `skills/review-loop/SKILL.md` §Protocol Imports MUST directive: currently only 3/5 declared docs (`session-file`, `planning`, `execution`) are Read reliably; `executor-output.md` + `reviewer-output.md` are skipped because their schemas are embedded in `agents/executor.md` + `agents/reviewer.md` (verified via `executor_schema_parity` / `reviewer_schema_parity` consistency_mappings). Either (a) tighten the orchestrator to Read all 5 at start, or (b) relax SKILL.md wording to mark the two output-schema docs as reference-only. Once decided, expand `review_loop_protocol_imports_read` from 3 paths to 5 and wire into all 6 Phase 2 Claude smoke cases. (added 2026-04-20)
+
 ## P2 — normal
 
 - 给 subagent 配置不同的模型. 简单的工作用便宜的模型去做，只有复杂的 plan review 和 code review 用复杂的模型做. (added 2026-04-19)
