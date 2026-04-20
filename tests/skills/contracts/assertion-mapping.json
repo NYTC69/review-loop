@@ -17,15 +17,30 @@
       "artifact": "session-final.md",
       "needle": "### Round 1 — Planner"
     },
-    "execution_round_recorded": {
+    "execution_round_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "### Round 1 — Executor"
     },
-    "reviewer_round_1_recorded": {
+    "execution_round_recorded_numbered": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Execution Round 1"
+    },
+    "execution_round_recorded_appended_form": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Round 1 — Execution"
+    },
+    "reviewer_round_1_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "### Round 1 — Reviewer"
+    },
+    "reviewer_round_1_recorded_review_only_form": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Round 1 — Execution (review-only)"
     },
     "noop_execution_outcome_recorded": {
       "kind": "artifact_contains",
@@ -41,10 +56,15 @@
       "kind": "artifact_exists",
       "artifact": "reviewer-prompt.txt"
     },
-    "reviewer_prompt_user_supplied_provenance_marker": {
+    "reviewer_prompt_user_supplied_provenance_marker_advisory_phrase": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "(plan_source: user-supplied — plan conformance is advisory/MINOR)"
+    },
+    "reviewer_prompt_user_supplied_provenance_marker_plan_source_key": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "plan_source: user-supplied"
     },
     "shared_config_path_mentioned": {
       "kind": "artifact_contains",
@@ -136,15 +156,25 @@
       "artifact": "session-final.md",
       "needle": "## Session Metadata"
     },
-    "completed_stages_list_exec_polish": {
+    "completed_stages_list_exec_polish_inline": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "- completed_stages: [exec, polish]"
     },
-    "completed_stages_list_exec_polish_docs_security": {
+    "completed_stages_list_exec_polish_block": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages:\n  - exec\n  - polish\n- "
+    },
+    "completed_stages_list_exec_polish_docs_security_inline": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "- completed_stages: [exec, polish, docs, security]"
+    },
+    "completed_stages_list_exec_polish_docs_security_block": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages:\n  - exec\n  - polish\n  - docs\n  - security"
     },
     "delivery_blocked_by_null_literal": {
       "kind": "artifact_contains",
@@ -178,6 +208,42 @@
       "members": [
         "planning_round_recorded_numbered",
         "planning_round_recorded_roleform"
+      ]
+    },
+    "execution_round_recorded": {
+      "mode": "any",
+      "members": [
+        "execution_round_recorded_roleform",
+        "execution_round_recorded_numbered",
+        "execution_round_recorded_appended_form"
+      ]
+    },
+    "reviewer_round_1_recorded": {
+      "mode": "any",
+      "members": [
+        "reviewer_round_1_recorded_roleform",
+        "reviewer_round_1_recorded_review_only_form"
+      ]
+    },
+    "reviewer_prompt_user_supplied_provenance_marker": {
+      "mode": "any",
+      "members": [
+        "reviewer_prompt_user_supplied_provenance_marker_advisory_phrase",
+        "reviewer_prompt_user_supplied_provenance_marker_plan_source_key"
+      ]
+    },
+    "completed_stages_list_exec_polish": {
+      "mode": "any",
+      "members": [
+        "completed_stages_list_exec_polish_inline",
+        "completed_stages_list_exec_polish_block"
+      ]
+    },
+    "completed_stages_list_exec_polish_docs_security": {
+      "mode": "any",
+      "members": [
+        "completed_stages_list_exec_polish_docs_security_inline",
+        "completed_stages_list_exec_polish_docs_security_block"
       ]
     },
     "execution_or_noop_round_recorded": {
