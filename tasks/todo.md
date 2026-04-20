@@ -14,14 +14,9 @@ Round 3 apply（plan_sha `e2439220c6bd`）把 A002 拆成 E005-E012 共 8 条 en
 Phase 3 verify byte-exact pass（3 targets）。Lint 160 PASS/0 FAIL（README 保持 370 行完整，SSOT needles 仍在 README 解析）。Journal: `.compass-adopt/rollback/e2439220c6bd.../` status=succeeded。
 旧 journal `a8d9343ef0c1...` 保留作 Round 2 audit。
 
-### [ ] 2. 细拆 tasks/ideas.md（A003）
+### [x] 2. 细拆 tasks/ideas.md（A003） — 完成 2026-04-19
 
-当前整文件进 ambiguous[] recommendation=split。细拆计划：
-
-- L1-22 Problem + Motivation + "Ideas to explore" 4 个 bullet → 4 条独立 BACKLOG P2 条目（每 bullet 一条 + 一条 umbrella）
-- L23-26 "Related bugs caught in the wild" → LEARNINGS 条目（需先与 `CLAUDE.md` §Plugin agent type sandbox bug 去重，可能直接删）
-
-做法：改 plan.yaml，把 A003 挪到 entries[]（拆成 ~4 条 BACKLOG + 可能 1 条 LEARNINGS），重算 plan_sha，再跑 apply。
+手工 Edit 路径（不改 `.compass-adopt/plan.yaml` / 不重跑 adopt:apply）：L1-22 "Ideas to explore" 4 个 bullet 逐条 append 进 `BACKLOG.md` P2（2 条 `[partial]` + 2 条 `[new]`，无 umbrella —— `tasks/ideas.md` 保留作 audit 本体即是 umbrella）；L23-26 "Related bugs caught in the wild" 与 `CLAUDE.md §Plugin agent type sandbox bug` 完全去重后 DROP，仅把第三条 code-simplifier 2026-04-06 incident 单句 inline 进 CLAUDE.md History 句；`tasks/ideas.md` 字节保持不变，`.compass-adopt/plan.yaml` A003 ambiguous 记录原样保留。
 
 ---
 

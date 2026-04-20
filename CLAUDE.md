@@ -8,7 +8,7 @@
 
 **Fix**: Always use `subagent_type: general-purpose` and inline the agent's `.md` body in the prompt. For read-only agents, add "Report only, do not modify files" to the prompt.
 
-**History**: First discovered with Executor (`tools: all`) in commit `8506809`. We incorrectly concluded `tools: read-only` was safe. This wrong assumption was recorded in memory and carried forward through 4+ commits until `rust-reviewer` was caught hallucinating (issue #3). The root cause is Claude Code's sandbox, not the `tools:` declaration.
+**History**: First discovered with Executor (`tools: all`) in commit `8506809`. We incorrectly concluded `tools: read-only` was safe. This wrong assumption was recorded in memory and carried forward through 4+ commits (including a code-simplifier recurrence on 2026-04-06) until `rust-reviewer` was caught hallucinating (issue #3). The root cause is Claude Code's sandbox, not the `tools:` declaration.
 
 **Rule**: When adding ANY new agent invocation, always use `subagent_type: general-purpose` with inlined body. Never use `subagent_type: review-loop:<name>`.
 
