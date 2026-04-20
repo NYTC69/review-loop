@@ -2,6 +2,11 @@
 .claude/
 .worktrees/
 node_modules/
+# review-loop session files are ephemeral work logs — one per /review-loop
+# invocation, including all smoke runs. Keeping them gitignored avoids repo
+# bloat (≈5KB × every run, unbounded) and UUID-named diff noise. Durable
+# audit lives in commit messages and .compass-adopt/rollback/*/journal.yaml;
+# see HANDOFF.md when a specific session's context matters.
 .review-loop/sessions/
 .review-loop/tmp/
 tests/skills/.artifacts/
