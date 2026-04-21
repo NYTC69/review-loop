@@ -104,6 +104,8 @@ Shared tier contract:
   documented no-op because Stage 1 only ships judgment-tier Codex agents.
 - In Codex Stage 1, review stays on the outside-sandbox Claude CLI reviewer
   path unless `codex_reviewer_backend: codex` is explicitly set.
+- On that default Codex Stage 1 Claude reviewer path, the model resolves as
+  `reviewer_model` -> `judgment_model` -> `claude-sonnet-4-6`.
 
 ---
 

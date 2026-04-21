@@ -147,7 +147,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
-| `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = inherit) |
+| `reviewer_model` | `""` | codex: `--model` flag; subagent: Agent `model` param (empty = inherit) |
 | `executor_model` | `inherit` | Shared Claude/plugin executor-model key; ignored by Codex Stage 1 |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
@@ -163,7 +163,9 @@ All options live in `.review-loop/config.md`. Every field is optional.
 For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
 path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,
 and `codex_reviewer_model` overrides the model used by that Codex fallback
-reviewer path. The `reviewer` and `executor_model` entries above still
+reviewer path. When neither `reviewer_model` nor `judgment_model` is set,
+that default Claude reviewer path backstops to `claude-sonnet-4-6`. The
+`reviewer` and `executor_model` entries above still
 describe shared Claude/plugin-side behavior and do not actively control
 Stage 1 Codex behavior.
 

@@ -57,6 +57,8 @@ The execution-phase implications are:
 - Cheap-tier agent dispatches still backstop to `claude-haiku-4-5-20251001`.
 - Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path
   unless `codex_reviewer_backend: codex` is explicitly set.
+- On that default Codex Stage 1 Claude reviewer path, the model resolves as
+  `reviewer_model` > `judgment_model` > `claude-sonnet-4-6`.
 - Codex Stage 1 accepts `cheap_model` in shared config, but Stage 1
   currently has no cheap-tier Codex agent consumers, so that key is
   accepted-but-no-op there.

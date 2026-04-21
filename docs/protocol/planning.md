@@ -92,8 +92,8 @@ Shared rules:
 - Codex Stage 1 keeps the default reviewer on the outside-sandbox Claude
   CLI path unless `codex_reviewer_backend: codex` is explicitly set.
 - On that default Codex Stage 1 Claude reviewer path, resolve the reviewer
-  model as `reviewer_model` > `judgment_model` > `gpt-5.4`, and pass it as
-  `--model <resolved_model>`.
+  model as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6`, and
+  pass it as `--model <resolved_model>`.
 - Codex Stage 1 accepts `cheap_model` in shared config for compatibility,
   but Stage 1 currently ships no cheap-tier Codex executor or reviewer
   agent, so this key is documented as accepted-but-no-op there.
@@ -275,7 +275,7 @@ including Review History in the prompt.
 {{codex}}
 
 Default reviewer path: `claude -p --no-session-persistence --output-format
-json --model {reviewer_model if set; else judgment_model if set; else gpt-5.4}`
+json --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}`
 with stdin fed from
 `.review-loop/tmp/{session_id}-reviewer-prompt.txt`. Run **outside** the
 Codex sandbox. Parse the first JSON result object from stdout; validate its

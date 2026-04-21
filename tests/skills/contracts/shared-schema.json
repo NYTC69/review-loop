@@ -179,9 +179,9 @@
       "mapping_id": "missing_tier_defaults_to_judgment"
     },
     {
-      "id": "codex_claude_reviewer_backstop_gpt54_target",
+      "id": "codex_claude_reviewer_backstop_claude_sonnet_4_6_target",
       "kind": "consistent_with",
-      "mapping_id": "codex_claude_reviewer_backstop_gpt54"
+      "mapping_id": "codex_claude_reviewer_backstop_claude_sonnet_4_6"
     },
     {
       "id": "codex_reviewer_requires_explicit_opt_in_target",

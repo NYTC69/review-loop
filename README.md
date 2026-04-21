@@ -37,7 +37,7 @@ explicitly opt into the local Codex reviewer with
 `codex_reviewer_backend: codex` in `.review-loop/config.md`.
 In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
 `judgment_model` is its shared-tier fallback, and the empty backstop is an
-explicit `--model gpt-5.4`.
+explicit `--model claude-sonnet-4-6`.
 The shared `cheap_model` key is accepted for cross-runtime config
 compatibility, but Stage 1 currently has no cheap-tier Codex agents, so it is
 a documented no-op there.
@@ -256,7 +256,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 For Codex Stage 1, the reviewer separation policy is explicit: unless
 `codex_reviewer_backend: codex` is set, review stays on the
 outside-sandbox Claude CLI reviewer path. That default path resolves its model
-as `reviewer_model` > `judgment_model` > `gpt-5.4` and passes it via
+as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` and passes it via
 `--model`. The local Codex reviewer is opt-in only. The `cheap_model` entry is
 accepted in the shared config but remains a no-op in Stage 1 because only
 judgment-tier Codex agents are currently shipped.

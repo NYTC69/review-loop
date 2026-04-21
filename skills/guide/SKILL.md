@@ -172,7 +172,9 @@ Create `.review-loop/config.md` in your project to customize:
 Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path by
 default. The local Codex reviewer is explicit opt-in only via
 `codex_reviewer_backend: codex`. `cheap_model` remains accepted-but-no-op in
-Codex Stage 1 because only judgment-tier Codex agents are shipped today.
+Codex Stage 1 because only judgment-tier Codex agents are shipped today. When
+neither `reviewer_model` nor `judgment_model` is set, that default Claude
+reviewer path backstops to `claude-sonnet-4-6`.
 
 ### review_focus examples
 

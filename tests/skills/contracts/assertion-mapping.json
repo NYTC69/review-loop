@@ -674,18 +674,34 @@
         "needle": "treat it as `judgment`."
       }
     ],
-    "codex_claude_reviewer_backstop_gpt54": [
+    "codex_claude_reviewer_backstop_claude_sonnet_4_6": [
       {
         "path": "docs/protocol/planning.md",
-        "needle": "`reviewer_model` > `judgment_model` > `gpt-5.4`"
+        "needle": "`reviewer_model` > `judgment_model` > `claude-sonnet-4-6`"
       },
       {
         "path": "README.md",
-        "needle": "as `reviewer_model` > `judgment_model` > `gpt-5.4` and passes it via"
+        "needle": "as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` and passes it via"
       },
       {
         "path": ".agents/skills/review-loop/SKILL.md",
-        "needle": "--model {reviewer_model if set; else judgment_model if set; else gpt-5.4}"
+        "needle": "--model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "explicit `claude-sonnet-4-6` backstop."
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "`reviewer_model` -> `judgment_model` -> `claude-sonnet-4-6`."
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "reviewer path backstops to `claude-sonnet-4-6`."
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "that Claude path uses `--model claude-sonnet-4-6`."
       }
     ],
     "codex_reviewer_requires_explicit_opt_in": [

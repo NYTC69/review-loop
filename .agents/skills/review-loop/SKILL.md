@@ -52,7 +52,7 @@ and keep the shared `.review-loop` session file accurate.
   the local Codex reviewer directly.
 - `reviewer_model` applies only to the Claude CLI reviewer path.
 - `judgment_model` is the shared-tier fallback for that Claude CLI reviewer
-  path before the explicit `gpt-5.4` backstop.
+  path before the explicit `claude-sonnet-4-6` backstop.
 - `cheap_model` is accepted in shared config but is a documented no-op in
   Codex Stage 1 because Stage 1 currently ships no cheap-tier Codex agents.
 - `codex_reviewer_model` applies only to the local Codex reviewer path.
@@ -278,7 +278,7 @@ Rules:
 Unless `codex_reviewer_backend: codex` is set, use this default reviewer path:
 
 ```bash
-claude -p --no-session-persistence --output-format json --model {reviewer_model if set; else judgment_model if set; else gpt-5.4} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
+claude -p --no-session-persistence --output-format json --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
 ```
 
 Rules:
