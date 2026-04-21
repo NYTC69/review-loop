@@ -135,6 +135,9 @@ The execution round loop mirrors the planning round loop (see
    post-Executor state (see the no-op validation rules below).
 4. **Optional context-persist sub-step** — same as
    [planning.md §3.5](./planning.md#35-optional-context-persist-sub-step).
+   When this step fires, Read `docs/protocol/planning.md` §3.5 if it is
+   not already loaded in the orchestrator's context; the threshold
+   config read and full persist procedure are authoritative there.
 5. **Call the Reviewer** with the execution-mode review content template:
 
    ```

@@ -154,7 +154,11 @@ unavailable (no `~/.claude/session-state.json` or runtime-equivalent).
 1. Read `~/.claude/session-state.json` (or runtime-equivalent). If absent or
    malformed, skip.
 2. Parse `context_pct`. If missing, skip.
-3. If `context_pct >= 70`:
+3. Resolve `threshold` from `.review-loop/config.md` field
+   `context_persist_threshold`: parse as an integer in the range
+   `[0, 100]`; on absent / unreadable / non-integer / out-of-range,
+   fall back to `70` silently.
+4. If `context_pct >= threshold`:
    a. Derive `task_slug` from the earliest clear task description
       (lowercase kebab-case, max 5 words).
    b. Scan conversation for expensive intermediate results (coordinates,
@@ -166,7 +170,16 @@ unavailable (no `~/.claude/session-state.json` or runtime-equivalent).
       `context_pct_at_persist`, `task_slug`.
    d. Log either a persist summary or a "no intermediate results" line.
    e. Continue to the Reviewer regardless.
-4. If `context_pct < 70`, skip silently.
+5. If `context_pct < threshold`, skip silently.
+
+**Config field** — `context_persist_threshold` (integer, default `70`)
+in `.review-loop/config.md`, written as a flat `key: value` line
+alongside the other keys (`reviewer:`, `skip_quality_polish:`, etc. —
+see `review-loop-config.example.md`). Repos that want a more
+aggressive persist cadence (triggering sooner) set a smaller value;
+repos that want less frequent persistence set a larger one.
+Out-of-range (outside `[0, 100]`) or unparseable values silently fall
+back to `70`.
 
 ### 4. Call the Reviewer
 
