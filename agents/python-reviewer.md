@@ -2,6 +2,7 @@
 name: python-reviewer
 description: Run Python static analysis tools and generate a categorized review report. Use before committing or creating PRs for Python code.
 model: inherit
+tier: cheap
 tools: read-only
 ---
 

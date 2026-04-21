@@ -6,6 +6,7 @@ description: >
   a plan based on reviewer feedback, or implement an approved plan with
   actual code changes. This agent does the planning and coding work.
 model: inherit
+tier: judgment
 tools: all
 ---
 

@@ -39,6 +39,17 @@ Mode: {sequential | parallel}
 ────────────────────────────────────────────────────
 ```
 
+## Step 1.5 — Load shared tier config
+
+Read `.review-loop/config.md` if it exists. Extract:
+
+- `judgment_model`: shared tier override for judgment-tier review agents
+- `cheap_model`: shared tier override for cheap-tier review agents; if absent,
+  cheap-tier dispatches backstop to `claude-haiku-4-5-20251001`
+- `review_style`: optional review tone / cross-cutting rules
+
+Missing agent `tier` defaults to `judgment`.
+
 ---
 
 ## Step 2 — Available Review Aspects
@@ -107,6 +118,13 @@ Agent name mapping (all use `subagent_type: general-purpose` with agent body inl
 - `types` → inline `agents/type-design-analyzer.md` body
 - `tests` → inline `agents/pr-test-analyzer.md` body
 
+Concrete dispatch inventory:
+- `review_pr_code_reviewer_dispatch` -> `code-reviewer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
+- `review_pr_silent_failure_hunter_dispatch` -> `silent-failure-hunter`; tier: `judgment`; `model: {judgment_model if set; else omit}`
+- `review_pr_comment_analyzer_dispatch` -> `comment-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
+- `review_pr_type_design_analyzer_dispatch` -> `type-design-analyzer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
+- `review_pr_pr_test_analyzer_dispatch` -> `pr-test-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
+
 **Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report the failure.
 
 ### The `simplify` aspect
@@ -133,6 +151,10 @@ Agent tool parameters:
     Review the changed code and apply simplifications directly.
     After making changes, summarize what you simplified and why.
 ```
+
+Concrete dispatch anchor: `review_pr_code_simplifier_dispatch`.
+`code-simplifier` is a `cheap`-tier dispatch and resolves `model` as
+`cheap_model` if set, else `claude-haiku-4-5-20251001`.
 
 **Important**: `simplify` always runs last (after all read-only reviews), because
 it modifies files. **Skip `simplify` if any prior review returned CRITICAL

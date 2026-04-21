@@ -166,10 +166,13 @@ this skill specifically:
 Follow `docs/protocol/planning.md` §Executor dispatch, Claude Code
 block. Reminder:
 
+Dispatch anchor: `plan_executor_dispatch_skill`. The planning-phase Executor
+is a `judgment`-tier dispatch; missing `tier` defaults to `judgment`.
+
 ```
 Agent tool parameters:
   subagent_type: general-purpose
-  model: {executor_model if not "inherit", else omit}
+  model: {executor_model if set and != "inherit"; else judgment_model if set; else omit}
   prompt: |
     You are the Executor in a review-loop workflow.
 

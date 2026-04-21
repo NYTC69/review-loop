@@ -286,6 +286,11 @@ Executor: see `docs/protocol/planning.md` §Executor dispatch, Claude
 Code block — same template, with the execution-mode task body per
 `docs/protocol/execution.md` §Round steps step 2.
 
+Dispatch anchor: `execute_executor_dispatch_skill`. The execution-phase
+Executor remains a `judgment`-tier dispatch and resolves `model` as
+`executor_model` if set and not `inherit`, else `judgment_model` if set,
+else omit.
+
 Reviewer: see `docs/protocol/planning.md` §Reviewer dispatch, Claude
 Code block, with the execution-mode review content template per
 `docs/protocol/execution.md` §Round steps step 5. `review_style` and

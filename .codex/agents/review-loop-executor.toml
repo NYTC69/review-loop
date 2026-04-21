@@ -1,6 +1,7 @@
 name = "review_loop_executor"
 description = "Executor for the Codex review-loop workflow. Produces structured planning and implementation output and never writes the session file directly."
 model = "gpt-5.4"
+tier = "judgment"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """

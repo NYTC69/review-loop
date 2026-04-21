@@ -2,6 +2,7 @@
 name: silent-failure-hunter
 description: Use this agent when reviewing code changes to identify silent failures, inadequate error handling, and inappropriate fallback behavior. Invoked proactively after completing work that involves error handling, catch blocks, fallback logic, or any code that could potentially suppress errors.
 model: inherit
+tier: judgment
 tools: read-only
 color: yellow
 ---

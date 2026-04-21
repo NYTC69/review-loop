@@ -2,6 +2,7 @@
 name: comment-analyzer
 description: Use this agent when you need to analyze code comments for accuracy, completeness, and long-term maintainability. This includes after generating large documentation comments, before finalizing code that adds or modifies comments, when reviewing existing comments for potential technical debt or comment rot, and when verifying that comments accurately reflect the code they describe.
 model: inherit
+tier: cheap
 tools: read-only
 color: green
 ---

@@ -39,22 +39,27 @@ and keep the shared `.review-loop` session file accurate.
 
 - Read `.review-loop/config.md` if present. If it is absent, use Stage 1
   defaults.
-- Consume shared keys conservatively: `reviewer_model`, `soft_limit_plan`,
-  `soft_limit_exec`, `handsfree`, `review_focus`, `quality_focus`,
-  `review_style`, and `skip_quality_polish`.
+- Consume shared keys conservatively: `reviewer_model`, `judgment_model`,
+  `cheap_model`, `soft_limit_plan`, `soft_limit_exec`, `handsfree`,
+  `review_focus`, `quality_focus`, `review_style`, and `skip_quality_polish`.
 - Do not use the shared `reviewer` key to choose the reviewer backend in Codex.
   In Codex Stage 1, reviewer selection is controlled only by the runtime
   default and optional Codex-only keys.
 - Default reviewer behavior in Codex Stage 1:
-  - try Claude CLI first
-  - fall back automatically to the Codex reviewer if Claude CLI is unavailable
-    or invalid
+  - keep review on the outside-sandbox Claude CLI reviewer path
+  - do not auto-fall back to the local Codex reviewer
 - If `codex_reviewer_backend: codex` is present, skip the Claude path and use
   the local Codex reviewer directly.
 - `reviewer_model` applies only to the Claude CLI reviewer path.
-- `codex_reviewer_model` applies only to the Codex fallback reviewer path.
+- `judgment_model` is the shared-tier fallback for that Claude CLI reviewer
+  path before the explicit `gpt-5.4` backstop.
+- `cheap_model` is accepted in shared config but is a documented no-op in
+  Codex Stage 1 because Stage 1 currently ships no cheap-tier Codex agents.
+- `codex_reviewer_model` applies only to the local Codex reviewer path.
 - `executor_model` is ignored by the Codex runtime in Stage 1.
 - `codex_executor_model` is reserved only and ignored in Stage 1.
+- Local Codex Stage 1 agents are all `judgment` tier. If a tier is omitted,
+  treat it as `judgment`.
 - Do not introduce new required config keys in Stage 1.
 
 ## Session Files
@@ -169,6 +174,8 @@ Rules:
   self-contained prompt that includes the approved plan, relevant session
   content, unresolved review issues, and the required execution schema directly
   in the subagent call.
+- Concrete dispatch anchor: `codex_execution_executor_dispatch`. The Codex
+  execution-phase Executor remains a `judgment`-tier local agent.
 - The section headers above are mandatory.
 - If Executor output is invalid, whether materially malformed or semantically
   invalid under the Executor guard, reject it instead of guessing.
@@ -271,12 +278,16 @@ Rules:
 Unless `codex_reviewer_backend: codex` is set, use this default reviewer path:
 
 ```bash
-claude -p --no-session-persistence --output-format json {optional_model_flag} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
+claude -p --no-session-persistence --output-format json --model {reviewer_model if set; else judgment_model if set; else gpt-5.4} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
 ```
 
 Rules:
 
 - Run the Claude call outside the sandbox.
+- Do not treat a sandboxed `claude -p` rehearsal as representative of this
+  reviewer path. If the command fails inside the sandbox, rerun the same
+  command outside before declaring the Claude reviewer path unhealthy or
+  switching to fallback.
 - Render the full reviewer prompt into
   `.review-loop/tmp/{session_id}-reviewer-prompt.txt`.
 - Parse the first JSON result object from stdout.
@@ -285,24 +296,28 @@ Rules:
 - If Claude invocation fails or validation fails, do not guess and do not retry
   Claude for that round.
 - If Claude invocation fails or validation fails, record a short failure reason
-  summary in `## Review History` before falling back. Include whether the
+  summary in `## Review History`. Include whether the
   failure was command execution, JSON parsing, missing `result`, or reviewer
   schema validation.
-- If Claude invocation fails or validation fails, spawn `review_loop_reviewer`.
+- If `codex_reviewer_backend: codex` is not set, surface that Claude-path
+  failure to the user instead of auto-falling back. The default Stage 1
+  reviewer separation policy keeps review on the outside-sandbox Claude path
+  unless the user explicitly opts into the local Codex reviewer.
 
-### Fallback Reviewer Path
+### Optional Local Reviewer Path
 
-- Spawn `review_loop_reviewer` if the Claude reviewer path is skipped, fails, or
-  returns invalid output.
+- Spawn `review_loop_reviewer` only if `codex_reviewer_backend: codex` is set,
+  or if the user has otherwise explicitly opted into the local Codex reviewer
+  path.
 - Invoke `review_loop_reviewer` with a fresh, self-contained prompt that
   embeds the exact review content directly. Do not rely on inherited or forked
   parent thread context.
 - Use the same review content and the same reviewer schema rules as the Claude
   path.
-- Validate fallback reviewer output with the same schema rules.
-- If the fallback reviewer output is invalid, retry once with explicit
+- Validate local reviewer output with the same schema rules.
+- If the local reviewer output is invalid, retry once with explicit
   correction instructions.
-- If the fallback retry is still invalid, stop and surface the failure to the
+- If the local reviewer retry is still invalid, stop and surface the failure to the
   user.
 
 ## Review Content Composition

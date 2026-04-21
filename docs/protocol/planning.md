@@ -67,6 +67,39 @@ append to `loop_state.timing.steps`.
 
 ---
 
+## Shared model-tier contract
+
+Shared config keys participate in model resolution across the protocol docs:
+
+- Path-specific overrides: `executor_model`, `reviewer_model`
+- Tier-generic overrides: `judgment_model`, `cheap_model`
+
+Resolver precedence for every Claude-model dispatch is:
+
+1. path-specific override
+2. tier-generic override
+3. runtime backstop
+
+Shared rules:
+
+- Supported shared tiers are `judgment` and `cheap`.
+- Missing `tier` defaults to `judgment`.
+- Cheap-tier backstop is always `claude-haiku-4-5-20251001`.
+- The Claude/plugin Executor is a `judgment`-tier dispatch.
+  `executor_model: ""` and `executor_model: inherit` both mean "this path
+  does not specify a model"; they therefore fall through to
+  `judgment_model` when it is set.
+- Codex Stage 1 keeps the default reviewer on the outside-sandbox Claude
+  CLI path unless `codex_reviewer_backend: codex` is explicitly set.
+- On that default Codex Stage 1 Claude reviewer path, resolve the reviewer
+  model as `reviewer_model` > `judgment_model` > `gpt-5.4`, and pass it as
+  `--model <resolved_model>`.
+- Codex Stage 1 accepts `cheap_model` in shared config for compatibility,
+  but Stage 1 currently ships no cheap-tier Codex executor or reviewer
+  agent, so this key is documented as accepted-but-no-op there.
+
+---
+
 ## Round loop
 
 Each planning round follows the same six-step sequence.
@@ -113,10 +146,12 @@ will be unable to create or modify files, `tool_uses` will be 0, and the
 output will be hallucinated. Always inline the full body of
 `agents/executor.md` in the `prompt` parameter.
 
+Concrete dispatch anchor: `protocol_planning_executor_dispatch`.
+
 ```
 Agent tool parameters:
   subagent_type: general-purpose
-  model: {executor_model if not "inherit"; else omit}
+  model: {executor_model if set and != "inherit"; else judgment_model if set; else omit}
   prompt: |
     {the prompt template above}
 ```
@@ -240,21 +275,31 @@ including Review History in the prompt.
 {{codex}}
 
 Default reviewer path: `claude -p --no-session-persistence --output-format
-json {optional_model_flag}` with stdin fed from
+json --model {reviewer_model if set; else judgment_model if set; else gpt-5.4}`
+with stdin fed from
 `.review-loop/tmp/{session_id}-reviewer-prompt.txt`. Run **outside** the
 Codex sandbox. Parse the first JSON result object from stdout; validate its
 `result` field against the shared reviewer schema.
 
+This outside-sandbox requirement is not cosmetic. A sandboxed rehearsal of
+the same `claude -p` command is **not** equivalent for diagnosis and may fail
+with transport-level connection errors even when the outside-sandbox command
+works. If a Claude reviewer command was tested inside the Codex sandbox,
+rerun that same command outside the sandbox before concluding the Claude
+reviewer path is broken or before falling back.
+
 If Claude invocation fails or validation fails, **do not retry Claude** for
 that round. Record a short failure-reason summary in `## Review History`
-(execution, JSON parsing, missing `result`, or schema validation) and spawn
-`review_loop_reviewer` as the fallback. The fallback uses the same review
-content and the same reviewer schema rules. If the fallback output is
-invalid, retry once with explicit correction instructions; if the retry is
-still invalid, stop and surface the failure to the user.
+(execution, JSON parsing, missing `result`, or schema validation).
 
 If `codex_reviewer_backend: codex` is set in config, skip the Claude path
 entirely and use `review_loop_reviewer` directly.
+
+If `codex_reviewer_backend: codex` is **not** set, do not auto-fall back to
+`review_loop_reviewer`. Surface the Claude-path failure to the user instead;
+the default Codex Stage 1 reviewer separation policy keeps review on the
+outside-sandbox Claude path unless the user explicitly opts into the local
+Codex reviewer.
 
 Delete `.review-loop/tmp/{session_id}-reviewer-prompt.txt` immediately after
 the Claude command returns (success or failure).

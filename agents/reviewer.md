@@ -6,6 +6,7 @@ description: >
   a set of code changes produced by the Executor. This agent reads and
   analyzes but never modifies files. Returns a structured verdict.
 model: inherit
+tier: judgment
 tools: read-only
 ---
 

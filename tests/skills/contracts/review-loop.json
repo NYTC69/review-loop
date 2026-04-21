@@ -147,6 +147,131 @@
       "guard_needle": "Do not rely on inherited or forked parent"
     },
     {
+      "id": "plan_executor_dispatch_skill_target",
+      "kind": "consistent_with",
+      "mapping_id": "plan_executor_dispatch_skill"
+    },
+    {
+      "id": "protocol_planning_executor_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "protocol_planning_executor_dispatch"
+    },
+    {
+      "id": "protocol_execution_executor_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "protocol_execution_executor_dispatch"
+    },
+    {
+      "id": "execute_executor_dispatch_skill_target",
+      "kind": "consistent_with",
+      "mapping_id": "execute_executor_dispatch_skill"
+    },
+    {
+      "id": "codex_execution_executor_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_execution_executor_dispatch"
+    },
+    {
+      "id": "review_pr_code_reviewer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_code_reviewer_dispatch"
+    },
+    {
+      "id": "review_pr_silent_failure_hunter_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_silent_failure_hunter_dispatch"
+    },
+    {
+      "id": "review_pr_comment_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_comment_analyzer_dispatch"
+    },
+    {
+      "id": "review_pr_type_design_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_type_design_analyzer_dispatch"
+    },
+    {
+      "id": "review_pr_pr_test_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_pr_test_analyzer_dispatch"
+    },
+    {
+      "id": "review_pr_code_simplifier_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_code_simplifier_dispatch"
+    },
+    {
+      "id": "code_quality_go_reviewer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_go_reviewer_dispatch"
+    },
+    {
+      "id": "code_quality_rust_reviewer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_rust_reviewer_dispatch"
+    },
+    {
+      "id": "code_quality_python_reviewer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_python_reviewer_dispatch"
+    },
+    {
+      "id": "code_quality_frontend_security_reviewer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_frontend_security_reviewer_dispatch"
+    },
+    {
+      "id": "code_quality_code_reviewer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_code_reviewer_dispatch"
+    },
+    {
+      "id": "code_quality_silent_failure_hunter_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_silent_failure_hunter_dispatch"
+    },
+    {
+      "id": "code_quality_comment_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_comment_analyzer_dispatch"
+    },
+    {
+      "id": "code_quality_type_design_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_type_design_analyzer_dispatch"
+    },
+    {
+      "id": "code_quality_code_simplifier_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_code_simplifier_dispatch"
+    },
+    {
+      "id": "code_quality_pr_test_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "code_quality_pr_test_analyzer_dispatch"
+    },
+    {
+      "id": "protocol_execution_language_static_analysis_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "protocol_execution_language_static_analysis_dispatch"
+    },
+    {
+      "id": "protocol_execution_code_review_loop_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "protocol_execution_code_review_loop_dispatch"
+    },
+    {
+      "id": "protocol_execution_code_simplifier_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "protocol_execution_code_simplifier_dispatch"
+    },
+    {
+      "id": "protocol_execution_pr_test_analyzer_dispatch_target",
+      "kind": "consistent_with",
+      "mapping_id": "protocol_execution_pr_test_analyzer_dispatch"
+    },
+    {
       "id": "executor_schema_parity",
       "kind": "consistent_with",
       "mapping_id": "executor_schema_parity"

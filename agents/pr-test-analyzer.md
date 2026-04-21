@@ -2,6 +2,7 @@
 name: pr-test-analyzer
 description: Use this agent when you need to review code for test coverage quality and completeness. This agent should be invoked after code is written or updated to ensure tests adequately cover new functionality and edge cases.
 model: inherit
+tier: cheap
 tools: read-only
 color: cyan
 ---

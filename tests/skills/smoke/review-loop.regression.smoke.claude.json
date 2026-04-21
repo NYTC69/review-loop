@@ -37,7 +37,7 @@
   ],
   "assertions": [
     "session_created",
-    "planning_round_recorded",
+    "review_loop_planning_or_review_only_route_recorded",
     "execution_or_noop_round_recorded",
     "entry_point_review_loop",
     "approved_plan_section_present",

@@ -76,8 +76,10 @@ Read `.review-loop/config.md` if present, else defaults:
 
 ```yaml
 reviewer: codex                 # "codex" | "subagent"
-reviewer_model: ""              # codex: -m flag; subagent: Agent model
-executor_model: inherit         # "inherit" | "sonnet" | "opus"
+reviewer_model: ""              # path-specific reviewer override
+judgment_model: ""              # shared tier override for judgment-tier agents
+cheap_model: ""                 # shared tier override for cheap-tier agents
+executor_model: inherit         # path-specific Claude executor override; "" and inherit fall through to judgment_model
 soft_limit_plan: 3              # see docs/protocol/planning.md §Loop control
 soft_limit_exec: 3              # see docs/protocol/execution.md §Per-stage max-round caps
 auto_commit: false
@@ -91,6 +93,17 @@ skip_quality_polish: false      # skip Step 3.5 entirely
 ```
 
 `--handsfree` flag at invocation overrides the config value.
+
+Shared tier contract:
+
+- Dispatch precedence is path-specific override -> tier override -> runtime
+  backstop.
+- Missing `tier` defaults to `judgment`.
+- Cheap-tier backstop is `claude-haiku-4-5-20251001`.
+- In Codex Stage 1, `cheap_model` is accepted by the shared config but is a
+  documented no-op because Stage 1 only ships judgment-tier Codex agents.
+- In Codex Stage 1, review stays on the outside-sandbox Claude CLI reviewer
+  path unless `codex_reviewer_backend: codex` is explicitly set.
 
 ---
 

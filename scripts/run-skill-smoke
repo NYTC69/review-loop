@@ -9,11 +9,14 @@ exec python3 - "$WORKTREE" "$@" <<'PY'
 import datetime
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from scripts.run_skill_smoke_lib import finalize_stream_capture_artifact, select_primary_session_path
 
 
 class RunnerError(Exception):
@@ -332,73 +335,35 @@ cp "$prompt_tmp" "$REVIEW_LOOP_SMOKE_PROMPT_ARTIFACT"
 # (response.txt etc.) remains unchanged for callers that did not opt in.
 if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ]; then
   set -- --output-format stream-json --verbose "$@"
+  : >"$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT"
 fi
 
 set +e
 if [ -s "$prompt_tmp" ]; then
-  "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$stdout_tmp"
+  if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ]; then
+    "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT"
+  else
+    "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" <"$prompt_tmp" >"$stdout_tmp"
+  fi
 else
-  "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" </dev/null >"$stdout_tmp"
+  if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ]; then
+    "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" </dev/null >"$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT"
+  else
+    "$REVIEW_LOOP_SMOKE_REAL_CLAUDE" "$@" </dev/null >"$stdout_tmp"
+  fi
 fi
 status=$?
 set -e
 
-if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ] && [ -s "$stdout_tmp" ]; then
-  python3 - "$stdout_tmp" "$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT" "$text_tmp" <<'PYWRAP'
-import json
+if [ -n "${REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT:-}" ] && [ -s "$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT" ]; then
+  python3 - "$REVIEW_LOOP_SMOKE_TOOL_EVENTS_ARTIFACT" "$text_tmp" <<'PYWRAP'
 import sys
 from pathlib import Path
+from scripts.run_skill_smoke_lib import finalize_stream_capture_artifact
 
-source = Path(sys.argv[1])
-events_target = Path(sys.argv[2])
-text_target = Path(sys.argv[3])
-
-read_events = []
-result_text = ""
-assistant_seen = False
-result_seen = False
-parse_errors = 0
-for raw in source.read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line[0] != "{":
-        continue
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        parse_errors += 1
-        continue
-    if not isinstance(event, dict):
-        continue
-    etype = event.get("type")
-    if etype == "assistant":
-        assistant_seen = True
-        msg = event.get("message") or {}
-        for block in (msg.get("content") or []):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "tool_use" and block.get("name") == "Read":
-                fp = (block.get("input") or {}).get("file_path")
-                if isinstance(fp, str) and fp:
-                    read_events.append({"tool": "Read", "target": fp})
-    elif etype == "result":
-        result_seen = True
-        if event.get("subtype") == "success" and isinstance(event.get("result"), str):
-            result_text = event["result"]
-
-schema_errors = []
-if not assistant_seen:
-    schema_errors.append("no 'type=assistant' events observed — possible CLI schema drift")
-if not result_seen:
-    schema_errors.append("no 'type=result' event observed — possible truncated stream or schema drift")
-
-payload = {
-    "schema_version": 1,
-    "events": read_events,
-    "schema_errors": schema_errors,
-    "parse_errors": parse_errors,
-}
-events_target.write_text(json.dumps(payload, indent=2) + "\\n", encoding="utf-8")
-text_target.write_text(result_text, encoding="utf-8")
+artifact_path = Path(sys.argv[1])
+text_target = Path(sys.argv[2])
+finalize_stream_capture_artifact(artifact_path, text_target)
 PYWRAP
   # Replace stdout with extracted plaintext so callers capturing stdout see
   # the same shape they did in text mode. Keep the raw JSONL at exit status.
@@ -438,23 +403,31 @@ exit "$status"
 
 
 def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout_seconds,
-        )
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        raw_stdout = exc.stdout
-        raw_stderr = exc.stderr
-        stdout = raw_stdout.decode("utf-8", errors="replace") if isinstance(raw_stdout, (bytes, bytearray)) else (raw_stdout or "")
-        stderr = raw_stderr.decode("utf-8", errors="replace") if isinstance(raw_stderr, (bytes, bytearray)) else (raw_stderr or "")
-        raise RunnerError("command-timeout", f"command timed out after {timeout_seconds}s\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}") from exc
-    return completed.returncode, completed.stdout, completed.stderr
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        partial_stdout = exc.stdout or stdout or ""
+        partial_stderr = exc.stderr or stderr or ""
+        raise RunnerError(
+            "command-timeout",
+            f"command timed out after {timeout_seconds}s\nSTDOUT:\n{partial_stdout}\nSTDERR:\n{partial_stderr}",
+        ) from exc
+    return process.returncode, stdout, stderr
 
 
 def missing_required_artifacts(artifacts, required_keys):
@@ -548,6 +521,8 @@ def run_case(case_data, mapping_data):
     meta["timeout_seconds"] = definition["timeout_seconds"]
     meta["execution_policy"] = execution_policy
     before_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
+    tool_events_artifact = artifact_dir / "tool-use-events.json"
+    stdout_artifact = artifact_dir / "stdout.txt"
     before_tmp_prompts = set()
     if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
         before_tmp_prompts = list_files(ROOT / ".review-loop/tmp", "*-reviewer-prompt.txt")
@@ -578,6 +553,8 @@ def run_case(case_data, mapping_data):
         try:
             returncode, stdout, stderr = execute_command(command, ROOT, definition["timeout_seconds"], env=env)
         except RunnerError as exc:
+            if "tool_use_events" in capture_modes:
+                finalize_stream_capture_artifact(tool_events_artifact, stdout_artifact)
             if exc.label == "command-timeout" and execution_policy == "best_effort":
                 timeout_stderr = exc.message
                 reason = "best-effort smoke timed out"
@@ -605,8 +582,10 @@ def run_case(case_data, mapping_data):
             wrapper_tmp.cleanup()
 
     finished_at = now_iso()
-    write_text(artifact_dir / "stdout.txt", stdout)
-    artifacts["stdout"] = relative_to_root(artifact_dir / "stdout.txt", ROOT)
+    if "tool_use_events" in capture_modes:
+        finalize_stream_capture_artifact(tool_events_artifact, stdout_artifact)
+    write_text(stdout_artifact, stdout)
+    artifacts["stdout"] = relative_to_root(stdout_artifact, ROOT)
     if stderr:
         write_text(artifact_dir / "stderr.txt", stderr)
         artifacts["stderr"] = relative_to_root(artifact_dir / "stderr.txt", ROOT)
@@ -623,8 +602,7 @@ def run_case(case_data, mapping_data):
         smoke_uuid_marker.unlink()
     if session_path is None:
         after_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
-        new_sessions = sorted(after_sessions - before_sessions, key=lambda path: path.name)
-        session_path = new_sessions[-1] if new_sessions else None
+        session_path = select_primary_session_path(stdout, ROOT, before_sessions, after_sessions)
     if session_path is not None and {"session_path", "session_final"} & set(capture_modes):
         write_text(artifact_dir / "session-path.txt", relative_to_root(session_path, ROOT) + "\n")
         write_text(artifact_dir / "session-final.md", session_path.read_text(encoding="utf-8"))
@@ -651,7 +629,6 @@ def run_case(case_data, mapping_data):
             artifacts["reviewer_result"] = relative_to_root(result_artifact, ROOT)
 
     if "tool_use_events" in capture_modes:
-        tool_events_artifact = artifact_dir / "tool-use-events.json"
         if tool_events_artifact.exists():
             artifacts["tool_use_events"] = relative_to_root(tool_events_artifact, ROOT)
 

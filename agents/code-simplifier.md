@@ -2,6 +2,7 @@
 name: code-simplifier
 description: Use this agent when code has been written or modified and needs to be simplified for clarity, consistency, and maintainability while preserving all functionality. This agent should be triggered automatically after completing a coding task or writing a logical chunk of code. It simplifies code by following project best practices while retaining all functionality. The agent focuses only on recently modified code unless instructed otherwise.
 model: inherit
+tier: cheap
 tools: all
 # NOTE: This agent modifies files (applies simplifications). When invoking,
 # use subagent_type: general-purpose with this file's body as the prompt

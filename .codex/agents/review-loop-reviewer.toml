@@ -1,6 +1,7 @@
 name = "review_loop_reviewer"
 description = "Fallback reviewer for the Codex review-loop workflow. Returns the shared reviewer schema and never edits files."
 model = "gpt-5.4"
+tier = "judgment"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 developer_instructions = """

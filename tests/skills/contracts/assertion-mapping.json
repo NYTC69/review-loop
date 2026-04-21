@@ -32,6 +32,11 @@
       "artifact": "session-final.md",
       "needle": "### Round 1 — Execution"
     },
+    "execution_round_recorded_exec_review_only_form": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Exec Round 1 (review-only)"
+    },
     "reviewer_round_1_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -224,7 +229,8 @@
       "members": [
         "execution_round_recorded_roleform",
         "execution_round_recorded_numbered",
-        "execution_round_recorded_appended_form"
+        "execution_round_recorded_appended_form",
+        "execution_round_recorded_exec_review_only_form"
       ]
     },
     "reviewer_round_1_recorded": {
@@ -260,6 +266,29 @@
       "members": [
         "execution_round_recorded",
         "noop_execution_outcome_recorded"
+      ]
+    },
+    "review_loop_planning_or_review_only_route_recorded": {
+      "mode": "any",
+      "members": [
+        "review_loop_planning_route_recorded",
+        "review_loop_review_only_route_recorded"
+      ]
+    },
+    "review_loop_planning_route_recorded": {
+      "mode": "all",
+      "members": [
+        "planning_round_recorded",
+        "plan_source_reviewer_approved"
+      ]
+    },
+    "review_loop_review_only_route_recorded": {
+      "mode": "all",
+      "members": [
+        "plan_source_review_only",
+        "review_only_sentinel_literal_two_line",
+        "review_target_section_present",
+        "execution_round_recorded"
       ]
     },
     "reviewer_backend_behavior_mentioned": {
@@ -336,11 +365,11 @@
     "reviewer_model": [
       {
         "path": "review-loop-config.example.md",
-        "needle": "reviewer_model: \"\"              # shared Claude/plugin key; in Codex Stage 1 this still applies to the default Claude CLI reviewer path"
+        "needle": "reviewer_model: \"\"              # shared path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path"
       },
       {
         "path": "README.md",
-        "needle": "`reviewer_model` controls the default Claude CLI reviewer"
+        "needle": "`reviewer_model` overrides that Claude reviewer path"
       },
       {
         "path": ".agents/skills/guide/SKILL.md",
@@ -362,7 +391,7 @@
       },
       {
         "path": ".agents/skills/guide/SKILL.md",
-        "needle": "You can force that fallback path with:"
+        "needle": "You can force the local Codex reviewer with:"
       },
       {
         "path": ".agents/skills/guide/SKILL.md",
@@ -376,11 +405,11 @@
     "codex_reviewer_model": [
       {
         "path": "review-loop-config.example.md",
-        "needle": "# codex_reviewer_model: \"\"            # model override for Codex fallback reviewer"
+        "needle": "# codex_reviewer_model: \"\"            # model override for the local Codex reviewer when codex_reviewer_backend: codex"
       },
       {
         "path": "README.md",
-        "needle": "and `codex_reviewer_model` overrides the model used by that Codex fallback"
+        "needle": "| `codex_reviewer_model` | `\"\"` | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |"
       },
       {
         "path": ".agents/skills/guide/SKILL.md",
@@ -388,17 +417,17 @@
       },
       {
         "path": ".agents/skills/review-loop/SKILL.md",
-        "needle": "`codex_reviewer_model` applies only to the Codex fallback reviewer path."
+        "needle": "`codex_reviewer_model` applies only to the local Codex reviewer path."
       }
     ],
     "executor_model": [
       {
         "path": "review-loop-config.example.md",
-        "needle": "executor_model: inherit         # shared Claude/plugin key; ignored by Codex Stage 1"
+        "needle": "executor_model: inherit         # shared Claude/plugin executor override; \"\" and inherit fall through to judgment_model; ignored by Codex Stage 1"
       },
       {
         "path": "README.md",
-        "needle": "The `reviewer` and `executor_model` entries above still"
+        "needle": "The shared `reviewer` and `executor_model` keys do not actively control"
       },
       {
         "path": ".agents/skills/review-loop/SKILL.md",
@@ -573,6 +602,310 @@
       {
         "path": ".codex/agents/review-loop-reviewer.toml",
         "needle": "### Questions"
+      }
+    ],
+    "judgment_model": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "judgment_model: \"\"              # shared tier override for judgment-tier agents; Codex Stage 1 uses this as the fallback for the default Claude reviewer path"
+      },
+      {
+        "path": "README.md",
+        "needle": "| `judgment_model` | `\"\"` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`judgment_model` is the shared-tier fallback for that Claude CLI reviewer"
+      }
+    ],
+    "cheap_model": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-haiku-4-5-20251001 and is accepted-but-no-op in Codex Stage 1"
+      },
+      {
+        "path": "README.md",
+        "needle": "| `cheap_model` | `\"\"` | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`cheap_model` is accepted in shared config but is a documented no-op in"
+      }
+    ],
+    "cheap_model_backstop_haiku_4_5": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "Cheap-tier backstop is always `claude-haiku-4-5-20251001`."
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "Cheap-tier backstop is `claude-haiku-4-5-20251001`."
+      },
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "claude-haiku-4-5-20251001"
+      }
+    ],
+    "executor_model_falls_through_to_judgment": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "`executor_model: \"\"` and `executor_model: inherit` both mean \"this path"
+      },
+      {
+        "path": "README.md",
+        "needle": "| `executor_model` | `inherit` | Path-specific Claude executor override; `\"\"` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |"
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "executor_model: inherit         # shared Claude/plugin executor override; \"\" and inherit fall through to judgment_model; ignored by Codex Stage 1"
+      }
+    ],
+    "missing_tier_defaults_to_judgment": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "Missing `tier` defaults to `judgment`."
+      },
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "missing `tier` defaults to `judgment`."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "treat it as `judgment`."
+      }
+    ],
+    "codex_claude_reviewer_backstop_gpt54": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "`reviewer_model` > `judgment_model` > `gpt-5.4`"
+      },
+      {
+        "path": "README.md",
+        "needle": "as `reviewer_model` > `judgment_model` > `gpt-5.4` and passes it via"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "--model {reviewer_model if set; else judgment_model if set; else gpt-5.4}"
+      }
+    ],
+    "codex_reviewer_requires_explicit_opt_in": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "unless `codex_reviewer_backend: codex` is explicitly set."
+      },
+      {
+        "path": "README.md",
+        "needle": "The local Codex reviewer is opt-in only."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "unless the user explicitly opts into the local Codex reviewer."
+      }
+    ],
+    "codex_claude_reviewer_outside_sandbox": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "Run **outside** the Codex sandbox."
+      },
+      {
+        "path": "README.md",
+        "needle": "outside-sandbox Claude path"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Run the Claude call outside the sandbox."
+      }
+    ],
+    "codex_stage1_cheap_model_noop": [
+      {
+        "path": "README.md",
+        "needle": "The shared `cheap_model` key is accepted for cross-runtime config"
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-haiku-4-5-20251001 and is accepted-but-no-op in Codex Stage 1"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "`cheap_model` is accepted in the shared config so Claude and Codex can share"
+      }
+    ],
+    "codex_stage1_claude_reviewer_default": [
+      {
+        "path": "README.md",
+        "needle": "The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "Codex Stage 1 defaults to the outside-sandbox Claude CLI reviewer path."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "keep review on the outside-sandbox Claude CLI reviewer path"
+      }
+    ],
+    "codex_stage1_explicit_codex_opt_in_only": [
+      {
+        "path": "README.md",
+        "needle": "The local Codex reviewer is opt-in only."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "explicitly opts into the local Codex reviewer."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "do not auto-fall back to the local Codex reviewer"
+      }
+    ],
+    "plan_executor_dispatch_skill": [
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "Dispatch anchor: `plan_executor_dispatch_skill`."
+      }
+    ],
+    "protocol_planning_executor_dispatch": [
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "Concrete dispatch anchor: `protocol_planning_executor_dispatch`."
+      }
+    ],
+    "protocol_execution_executor_dispatch": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "`protocol_execution_executor_dispatch`"
+      }
+    ],
+    "execute_executor_dispatch_skill": [
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "Dispatch anchor: `execute_executor_dispatch_skill`."
+      }
+    ],
+    "codex_execution_executor_dispatch": [
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Concrete dispatch anchor: `codex_execution_executor_dispatch`."
+      }
+    ],
+    "review_pr_code_reviewer_dispatch": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "`review_pr_code_reviewer_dispatch` -> `code-reviewer`;"
+      }
+    ],
+    "review_pr_silent_failure_hunter_dispatch": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "`review_pr_silent_failure_hunter_dispatch` -> `silent-failure-hunter`;"
+      }
+    ],
+    "review_pr_comment_analyzer_dispatch": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "`review_pr_comment_analyzer_dispatch` -> `comment-analyzer`;"
+      }
+    ],
+    "review_pr_type_design_analyzer_dispatch": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "`review_pr_type_design_analyzer_dispatch` -> `type-design-analyzer`;"
+      }
+    ],
+    "review_pr_pr_test_analyzer_dispatch": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "`review_pr_pr_test_analyzer_dispatch` -> `pr-test-analyzer`;"
+      }
+    ],
+    "review_pr_code_simplifier_dispatch": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "Concrete dispatch anchor: `review_pr_code_simplifier_dispatch`."
+      }
+    ],
+    "code_quality_go_reviewer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_go_reviewer_dispatch` -> `go-reviewer`;"
+      }
+    ],
+    "code_quality_rust_reviewer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_rust_reviewer_dispatch` -> `rust-reviewer`;"
+      }
+    ],
+    "code_quality_python_reviewer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_python_reviewer_dispatch` -> `python-reviewer`;"
+      }
+    ],
+    "code_quality_frontend_security_reviewer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_frontend_security_reviewer_dispatch` -> `frontend-security-reviewer`;"
+      }
+    ],
+    "code_quality_code_reviewer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_code_reviewer_dispatch` -> `code-reviewer`;"
+      }
+    ],
+    "code_quality_silent_failure_hunter_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_silent_failure_hunter_dispatch` -> `silent-failure-hunter`;"
+      }
+    ],
+    "code_quality_comment_analyzer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_comment_analyzer_dispatch` -> `comment-analyzer`;"
+      }
+    ],
+    "code_quality_type_design_analyzer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "`code_quality_type_design_analyzer_dispatch` -> `type-design-analyzer`;"
+      }
+    ],
+    "code_quality_code_simplifier_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "Concrete dispatch anchor: `code_quality_code_simplifier_dispatch`."
+      }
+    ],
+    "code_quality_pr_test_analyzer_dispatch": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "Concrete dispatch anchor: `code_quality_pr_test_analyzer_dispatch`."
+      }
+    ],
+    "protocol_execution_language_static_analysis_dispatch": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Concrete dispatch anchor: `protocol_execution_language_static_analysis_dispatch`."
+      }
+    ],
+    "protocol_execution_code_review_loop_dispatch": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Concrete dispatch anchor: `protocol_execution_code_review_loop_dispatch`."
+      }
+    ],
+    "protocol_execution_code_simplifier_dispatch": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Concrete dispatch anchor: `protocol_execution_code_simplifier_dispatch`."
+      }
+    ],
+    "protocol_execution_pr_test_analyzer_dispatch": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Concrete dispatch anchor: `protocol_execution_pr_test_analyzer_dispatch`."
       }
     ]
   }

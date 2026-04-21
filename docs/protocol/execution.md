@@ -46,6 +46,23 @@ on what is different in execution.
 
 ---
 
+## Shared model-tier contract
+
+Execution uses the same shared model-tier contract defined in
+[planning.md §Shared model-tier contract](./planning.md#shared-model-tier-contract).
+The execution-phase implications are:
+
+- Execution-phase Executor dispatch remains a `judgment`-tier dispatch.
+- Missing `tier` still defaults to `judgment`.
+- Cheap-tier agent dispatches still backstop to `claude-haiku-4-5-20251001`.
+- Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path
+  unless `codex_reviewer_backend: codex` is explicitly set.
+- Codex Stage 1 accepts `cheap_model` in shared config, but Stage 1
+  currently has no cheap-tier Codex agent consumers, so that key is
+  accepted-but-no-op there.
+
+---
+
 ## `--stop-after` enum
 
 `--stop-after <stage>` controls where the orchestrator performs a clean
@@ -125,6 +142,11 @@ The execution round loop mirrors the planning round loop (see
    ## Code Review Feedback (address each point)
    {reviewer_cr_feedback — passed directly for immediacy}
    ```
+
+   Execution-phase executor dispatch (dispatch anchor:
+   `protocol_execution_executor_dispatch`) uses the same judgment-tier
+   resolver as planning-phase Executor dispatch: `executor_model` if set and
+   not `inherit`, else `judgment_model` if set, else the runtime default.
 
    Executor dispatch — see
    [planning.md §Executor dispatch](./planning.md#executor-dispatch-claude_codecodex).
@@ -323,6 +345,10 @@ Map extensions to agents:
 
 For each detected language, invoke the corresponding agent.
 
+Concrete dispatch anchor: `protocol_execution_language_static_analysis_dispatch`.
+These language agents are `cheap` tier dispatches and therefore resolve
+`model` as `cheap_model` if set, else `claude-haiku-4-5-20251001`.
+
 #### Dispatch {{claude_code|codex}}
 
 {{claude_code}}
@@ -379,6 +405,11 @@ continue to 3.5.3.
 Invoke `code-reviewer` and `silent-failure-hunter` on the changed code.
 Report-only; they do not modify files.
 
+Concrete dispatch anchor: `protocol_execution_code_review_loop_dispatch`.
+These review agents are `judgment` tier dispatches and therefore resolve
+`model` as `judgment_model` if set, else omit it and use the runtime
+default.
+
 ```
 Agent prompt:
   {contents of agents/code-reviewer.md body}  # or silent-failure-hunter.md
@@ -413,6 +444,10 @@ Agent prompt:
 
 Invoke `code-simplifier` (it needs Write/Edit tools).
 
+Concrete dispatch anchor: `protocol_execution_code_simplifier_dispatch`.
+`code-simplifier` is a `cheap` tier dispatch and therefore resolves
+`model` as `cheap_model` if set, else `claude-haiku-4-5-20251001`.
+
 #### Dispatch {{claude_code|codex}}
 
 {{claude_code}}
@@ -446,6 +481,10 @@ and report to the user.
 ### 3.5.5 — Test consolidation
 
 Invoke `pr-test-analyzer`.
+
+Concrete dispatch anchor: `protocol_execution_pr_test_analyzer_dispatch`.
+`pr-test-analyzer` is a `cheap` tier dispatch and therefore resolves
+`model` as `cheap_model` if set, else `claude-haiku-4-5-20251001`.
 
 #### Dispatch {{claude_code|codex}}
 

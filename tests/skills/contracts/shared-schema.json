@@ -152,6 +152,51 @@
       "id": "codex_executor_model_semantics_target",
       "kind": "consistent_with",
       "mapping_id": "codex_executor_model"
+    },
+    {
+      "id": "judgment_model_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "judgment_model"
+    },
+    {
+      "id": "cheap_model_semantics_target",
+      "kind": "consistent_with",
+      "mapping_id": "cheap_model"
+    },
+    {
+      "id": "cheap_model_backstop_target",
+      "kind": "consistent_with",
+      "mapping_id": "cheap_model_backstop_haiku_4_5"
+    },
+    {
+      "id": "executor_model_falls_through_to_judgment_target",
+      "kind": "consistent_with",
+      "mapping_id": "executor_model_falls_through_to_judgment"
+    },
+    {
+      "id": "missing_tier_defaults_to_judgment_target",
+      "kind": "consistent_with",
+      "mapping_id": "missing_tier_defaults_to_judgment"
+    },
+    {
+      "id": "codex_claude_reviewer_backstop_gpt54_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_claude_reviewer_backstop_gpt54"
+    },
+    {
+      "id": "codex_reviewer_requires_explicit_opt_in_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_reviewer_requires_explicit_opt_in"
+    },
+    {
+      "id": "codex_claude_reviewer_outside_sandbox_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_claude_reviewer_outside_sandbox"
+    },
+    {
+      "id": "codex_stage1_cheap_model_noop_target",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_cheap_model_noop"
     }
   ]
 }

@@ -34,23 +34,28 @@ It does not yet migrate:
 
 ## Reviewer Behavior
 
-Codex Stage 1 defaults to the Claude CLI reviewer path. In practice, that means
-Codex tries `claude -p` first for review work.
+Codex Stage 1 defaults to the outside-sandbox Claude CLI reviewer path. In
+practice, that means review stays on `claude -p --model ...` unless the user
+explicitly opts into the local Codex reviewer.
 
-If the Claude CLI reviewer path is not available or cannot be used, Codex can
-fall back to its local reviewer backend. You can force that fallback path with:
+You can force the local Codex reviewer with:
 
 - `codex_reviewer_backend: codex`
 
 This is the override to use when you want Codex to skip the Claude CLI reviewer
 and use the Codex reviewer directly. In that case, `codex_reviewer_model` is
 the paired model override, while `reviewer_model` still applies to the Claude
-CLI reviewer path.
+CLI reviewer path and `judgment_model` is its shared-tier fallback before the
+explicit `gpt-5.4` backstop.
+
+`cheap_model` is accepted in the shared config so Claude and Codex can share
+the same file, but in Codex Stage 1 it is a documented no-op because only
+judgment-tier Codex agents are currently shipped.
 
 ## Usage Notes
 
 - Codex repo skills live under `.agents/skills/` in the Codex workspace.
 - Keep the shared review-loop config in `.review-loop/config.md`.
 - Keep session logs in `.review-loop/sessions/`.
-- Use the Codex fallback reviewer only when you need to bypass the default
-  Claude CLI reviewer path.
+- Use the local Codex reviewer only when you need to bypass the default
+  Claude CLI reviewer path explicitly.

@@ -151,8 +151,13 @@ Create `.review-loop/config.md` in your project to customize:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
-| `reviewer_model` | "" | codex: `-m` flag; subagent: Agent model (empty = inherit) |
-| `executor_model` | inherit | `"inherit"` \| `"sonnet"` \| `"opus"` |
+| `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
+| `judgment_model` | "" | Shared tier override for judgment-tier agents |
+| `cheap_model` | "" | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `executor_model` | inherit | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model` |
+| `codex_reviewer_backend` | claude_cli | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
+| `codex_reviewer_model` | "" | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
+| `codex_executor_model` | "" | Reserved and ignored in Codex Stage 1 |
 | `soft_limit_plan` | 3 | Rounds before asking to continue |
 | `soft_limit_exec` | 3 | Same for execution phase |
 | `auto_commit` | false | Commit after delivery |
@@ -163,6 +168,11 @@ Create `.review-loop/config.md` in your project to customize:
 | `quality_focus` | "" | What to prioritize in Quality Polish (Step 3.5) |
 | `review_style` | "" | Tone/rules for ALL reviews — adversarial + quality agents |
 | `skip_quality_polish` | false | Skip Step 3.5 entirely |
+
+Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path by
+default. The local Codex reviewer is explicit opt-in only via
+`codex_reviewer_backend: codex`. `cheap_model` remains accepted-but-no-op in
+Codex Stage 1 because only judgment-tier Codex agents are shipped today.
 
 ### review_focus examples
 

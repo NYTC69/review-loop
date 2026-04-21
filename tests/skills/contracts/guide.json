@@ -27,15 +27,18 @@
     },
     {
       "id": "guide_mentions_default_and_fallback_reviewer_behavior",
-      "kind": "contains",
-      "path": ".agents/skills/guide/SKILL.md",
-      "needle": "Codex Stage 1 defaults to the Claude CLI reviewer path."
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_claude_reviewer_default"
     },
     {
       "id": "guide_mentions_fallback_reviewer_behavior",
-      "kind": "contains",
-      "path": ".agents/skills/guide/SKILL.md",
-      "needle": "fall back to its local reviewer backend"
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_explicit_codex_opt_in_only"
+    },
+    {
+      "id": "guide_mentions_cheap_model_noop_behavior",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_cheap_model_noop"
     },
     {
       "id": "readme_marks_codex_stage1_surface",

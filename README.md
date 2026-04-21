@@ -32,11 +32,18 @@ The rest of this README primarily documents the current Claude Code plugin
 surface; Codex Stage 1 currently exposes only `review-loop` and `guide`.
 
 The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
-(`claude -p`). If you need to force the Codex fallback reviewer, set
+(`claude -p`) and stays on that outside-sandbox Claude path unless you
+explicitly opt into the local Codex reviewer with
 `codex_reviewer_backend: codex` in `.review-loop/config.md`.
+In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
+`judgment_model` is its shared-tier fallback, and the empty backstop is an
+explicit `--model gpt-5.4`.
+The shared `cheap_model` key is accepted for cross-runtime config
+compatibility, but Stage 1 currently has no cheap-tier Codex agents, so it is
+a documented no-op there.
 The shared `reviewer` and `executor_model` keys do not actively control
-Stage 1 Codex reviewer/backend selection.
-In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains reserved.
+Stage 1 Codex reviewer/backend selection. In Codex Stage 1,
+`executor_model` is ignored and `codex_executor_model` remains reserved.
 
 Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
 
@@ -228,8 +235,13 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
-| `reviewer_model` | `""` | codex: `-m` flag; subagent: Agent `model` param (empty = inherit) |
-| `executor_model` | `inherit` | Shared Claude/plugin executor-model key; ignored by Codex Stage 1 |
+| `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
+| `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |
+| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `executor_model` | `inherit` | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |
+| `codex_reviewer_backend` | `claude_cli` | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
+| `codex_reviewer_model` | `""` | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
+| `codex_executor_model` | `""` | Reserved and ignored in Codex Stage 1 |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
 | `auto_commit` | `false` | Stage changed files and commit after delivery |
@@ -241,12 +253,13 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `review_style` | `""` | Tone and rules for all reviews (free text) |
 | `skip_quality_polish` | `false` | Skip Quality Polish (Step 3.5) entirely |
 
-For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
-path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,
-and `codex_reviewer_model` overrides the model used by that Codex fallback
-reviewer path. The `reviewer` and `executor_model` entries above still
-describe shared Claude/plugin-side behavior and do not actively control
-Stage 1 Codex behavior.
+For Codex Stage 1, the reviewer separation policy is explicit: unless
+`codex_reviewer_backend: codex` is set, review stays on the
+outside-sandbox Claude CLI reviewer path. That default path resolves its model
+as `reviewer_model` > `judgment_model` > `gpt-5.4` and passes it via
+`--model`. The local Codex reviewer is opt-in only. The `cheap_model` entry is
+accepted in the shared config but remains a no-op in Stage 1 because only
+judgment-tier Codex agents are currently shipped.
 
 ### Natural language config examples
 
