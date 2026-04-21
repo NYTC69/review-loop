@@ -1,4 +1,8 @@
 import json
+import multiprocessing
+import os
+import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -8,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.run_skill_smoke_lib import finalize_stream_capture_artifact, select_primary_session_path
+from scripts.run_skill_smoke_lib import cleanup_timed_out_process, finalize_stream_capture_artifact, select_primary_session_path
 
 
 def write_session(root: Path, session_id: str, entry_point: str) -> Path:
@@ -92,6 +96,75 @@ class FinalizeStreamCaptureArtifactTest(unittest.TestCase):
             self.assertEqual(payload["events"], [{"tool": "Read", "target": "docs/protocol/execution.md"}])
             self.assertIn("no 'type=result' event observed", payload["schema_errors"][0])
             self.assertEqual(text_path.read_text(encoding="utf-8"), "")
+
+
+def timeout_cleanup_worker(pid_path: str, queue: multiprocessing.Queue) -> None:
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import pathlib, subprocess, sys, time\n"
+            "pid_path = pathlib.Path(sys.argv[1])\n"
+            "child = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(30)'],\n"
+            "    start_new_session=True,\n"
+            "    stdout=sys.stdout,\n"
+            "    stderr=sys.stderr,\n"
+            ")\n"
+            "pid_path.write_text(str(child.pid), encoding='utf-8')\n"
+            "time.sleep(30)\n"
+        ),
+        pid_path,
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        process.communicate(timeout=1)
+        queue.put({"status": "unexpected-pass"})
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = cleanup_timed_out_process(process, exc, terminate_grace_seconds=1)
+        queue.put(
+            {
+                "status": "timeout-cleaned",
+                "stdout": stdout,
+                "stderr": stderr,
+                "returncode": process.returncode,
+            }
+        )
+
+
+class CleanupTimedOutProcessTest(unittest.TestCase):
+    def test_returns_after_timeout_when_detached_descendant_keeps_pipe_open(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pid_path = Path(tmpdir) / "detached.pid"
+            queue: multiprocessing.Queue = multiprocessing.Queue()
+            worker = multiprocessing.Process(target=timeout_cleanup_worker, args=(str(pid_path), queue))
+            worker.start()
+            worker.join(timeout=5)
+
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=1)
+                self.fail("cleanup_timed_out_process hung while pipes were still held by a detached descendant")
+
+            try:
+                result = queue.get(timeout=1)
+            finally:
+                if pid_path.exists():
+                    try:
+                        os.kill(int(pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+                    except (OSError, ValueError):
+                        pass
+
+            self.assertEqual(result["status"], "timeout-cleaned")
+            self.assertIsInstance(result["stdout"], str)
+            self.assertIsInstance(result["stderr"], str)
+            self.assertIsNotNone(result["returncode"])
 
 
 if __name__ == "__main__":

@@ -9,14 +9,13 @@ exec python3 - "$WORKTREE" "$@" <<'PY'
 import datetime
 import json
 import os
-import signal
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from scripts.run_skill_smoke_lib import finalize_stream_capture_artifact, select_primary_session_path
+from scripts.run_skill_smoke_lib import cleanup_timed_out_process, finalize_stream_capture_artifact, select_primary_session_path
 
 
 class RunnerError(Exception):
@@ -415,14 +414,7 @@ def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            stdout, stderr = process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = process.communicate()
-        partial_stdout = exc.stdout or stdout or ""
-        partial_stderr = exc.stderr or stderr or ""
+        partial_stdout, partial_stderr = cleanup_timed_out_process(process, exc)
         raise RunnerError(
             "command-timeout",
             f"command timed out after {timeout_seconds}s\nSTDOUT:\n{partial_stdout}\nSTDERR:\n{partial_stderr}",

@@ -1,5 +1,8 @@
 import json
+import os
 import re
+import signal
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -111,3 +114,36 @@ def finalize_stream_capture_artifact(artifact_path: Path, text_path: Path) -> bo
 
     text_path.write_text(result_text, encoding="utf-8")
     return True
+
+
+def cleanup_timed_out_process(
+    process: subprocess.Popen,
+    timeout_exc: subprocess.TimeoutExpired,
+    terminate_grace_seconds: int = 5,
+) -> tuple[str, str]:
+    partial_stdout = timeout_exc.stdout or ""
+    partial_stderr = timeout_exc.stderr or ""
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+    try:
+        process.wait(timeout=terminate_grace_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+
+    return partial_stdout, partial_stderr
