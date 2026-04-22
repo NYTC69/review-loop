@@ -296,7 +296,10 @@ round temp files; preserve the session file. Clear
   dispatch, Claude Code block. Two modes (`codex` / `subagent`).
   `subagent` uses `subagent_type: general-purpose` with
   `agents/reviewer.md` inlined plus a "Report only" instruction. Never
-  `subagent_type: review-loop:<name>`.
+  `subagent_type: review-loop:<name>`. For Claude reviewer prompts,
+  explicitly tell the reviewer to ignore unrelated SessionStart /
+  UserPromptSubmit injections (for example HANDOFF pickup banners or
+  LEARNINGS sync text) that do not pertain to the current session file.
 - **Question Classification** — per `docs/protocol/planning.md`
   §Question classification. External-info always pauses.
   Decision-type pauses by default; `--handsfree` forwards to Reviewer

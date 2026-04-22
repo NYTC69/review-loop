@@ -131,6 +131,18 @@
       "needle": "Reject malformed Executor or Reviewer output instead of guessing."
     },
     {
+      "id": "codex_reviewer_prompt_ignores_unrelated_hook_injections",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "ignore unrelated startup or prompt-hook"
+    },
+    {
+      "id": "claude_reviewer_prompt_ignores_unrelated_hook_injections",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "ignore unrelated SessionStart /"
+    },
+    {
       "id": "claude_plugin_agent_type_forbidden",
       "kind": "forbidden_pattern",
       "applies_to": "claude-plugin-agent-invocations",
