@@ -238,6 +238,11 @@ strictness level from `plan_source`:
 
 Soft limit is `soft_limit_exec` (default 3). On APPROVE, mint `exec`
 into `completed_stages` and proceed to Step 3.5.
+`completed_stages` is the required protocol field for a clean execution
+pass. Do not replace it with ad hoc metadata such as `completed_at`.
+Both edit rounds and reviewed no-op rounds must write
+`completed_stages: [exec]` (or the appropriate later-stage superset) to
+`## Session Metadata`.
 
 ### Step 3.5 — Quality Polish
 
@@ -308,6 +313,10 @@ round temp files; preserve the session file. Clear
   and reviewing to the Reviewer.
 - **Keep the session file up to date** — both agents read it each
   round.
+- **Use protocol metadata only** — do not invent session completion
+  fields such as `completed_at`; the shared lifecycle state must be
+  represented through `completed_stages`, `delivery_blocked_by`, and
+  the baseline metadata defined by the protocol docs.
 - **Preserve the Reviewer's VERDICT** — never override APPROVE,
   never skip REQUEST_CHANGES.
 - **Surface blockers immediately** — pause and ask on unrecoverable

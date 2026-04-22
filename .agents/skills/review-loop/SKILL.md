@@ -95,6 +95,9 @@ and keep the shared `.review-loop` session file accurate.
 - Rewrite `Session Metadata` in full on each orchestrator update, and keep it
   last.
 - Remain the only writer of the session file for the entire run.
+- Do not invent ad hoc session metadata fields outside the shared protocol
+  schema. In particular, never substitute custom keys such as `completed_at`
+  for lifecycle fields like `completed_stages`.
 
 ### Session Metadata
 
@@ -266,6 +269,12 @@ Rules:
 - Record each execution round in `## Review History` and `## Timing Log`.
 - Record which reviewer backend was used for each review round in `## Review
   History` for traceability: `claude-cli` or `codex`.
+- When an execution round reaches reviewer `APPROVE`, mint `exec` into
+  `completed_stages` in `## Session Metadata` per the shared session-file
+  lifecycle. This applies to both edit rounds and reviewed no-op rounds.
+- Do not represent execution completion with custom metadata keys such as
+  `completed_at`; the shared protocol completion state is carried by
+  `completed_stages` and related baseline metadata.
 - When `soft_limit_exec` is reached and blocking issues remain, surface the
   situation to the user instead of silently continuing or silently stopping.
 - Respect the configured execution soft limit, but do not bypass review

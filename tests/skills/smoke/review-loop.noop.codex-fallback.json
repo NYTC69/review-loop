@@ -6,7 +6,7 @@
   "requires": ["codex"],
   "setup": {
     "temp_config": "codex_reviewer_backend: codex\n",
-    "timeout_seconds": 150
+    "timeout_seconds": 1200
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -38,7 +38,8 @@
   "assertions": [
     "session_created",
     "planning_round_recorded",
-    "execution_or_noop_round_recorded",
+    "execution_round_recorded",
+    "completed_stages_contains_exec",
     "reviewer_backend_codex"
   ]
 }

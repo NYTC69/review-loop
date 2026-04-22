@@ -5,7 +5,8 @@
   "runtime": "claude",
   "requires": ["codex", "claude"],
   "setup": {
-    "temp_config": ""
+    "temp_config": "",
+    "timeout_seconds": 900
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -34,6 +35,8 @@
   ],
   "assertions": [
     "session_created",
-    "reviewer_prompt_exists"
+    "reviewer_prompt_exists",
+    "execution_round_recorded",
+    "completed_stages_contains_exec"
   ]
 }

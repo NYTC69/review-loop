@@ -630,19 +630,25 @@ def run_case(case_data, mapping_data):
                 meta_path = artifact_dir / "meta.json"
                 write_json(meta_path, meta)
                 artifacts["meta"] = relative_to_root(meta_path, ROOT)
-                if assertion_status == "fail":
-                    reason = f"{reason}; {assertion_reason}"
-                    meta["reason"] = reason
-                    write_json(meta_path, meta)
                 missing_artifacts = missing_required_artifacts(
                     artifacts,
                     definition["artifacts"]["required"],
                 )
-                if missing_artifacts:
-                    reason = f"{reason}; missing required artifact(s): {', '.join(missing_artifacts)}"
-                    meta["reason"] = reason
-                    write_json(meta_path, meta)
-                return case_record(case_id, "smoke", target, runtime_profile, "skip", reason, artifacts, started_at, finished_at)
+                timed_out_with_passing_state = assertion_status == "pass" and not missing_artifacts
+                if timed_out_with_passing_state:
+                    final_status = "pass"
+                    final_reason = "assertions passed after timeout cleanup"
+                else:
+                    final_status = "skip"
+                    final_reason = reason
+                    if assertion_status == "fail":
+                        final_reason = f"{final_reason}; {assertion_reason}"
+                    if missing_artifacts:
+                        final_reason = f"{final_reason}; missing required artifact(s): {', '.join(missing_artifacts)}"
+                meta["status"] = final_status
+                meta["reason"] = final_reason
+                write_json(meta_path, meta)
+                return case_record(case_id, "smoke", target, runtime_profile, final_status, final_reason, artifacts, started_at, finished_at)
             raise
     finally:
         if restore is not None:

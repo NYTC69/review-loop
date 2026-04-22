@@ -243,12 +243,12 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
             )
 
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn(f"SKIP {case_id} - best-effort smoke timed out", run.stdout)
+            self.assertIn(f"PASS {case_id} - assertions passed after timeout cleanup", run.stdout)
 
             payload = json.loads(last_run_path.read_text(encoding="utf-8"))
             record = next(candidate for candidate in payload["results"] if candidate.get("id") == case_id)
-            self.assertEqual(record["status"], "skip")
-            self.assertEqual(record["reason"], "best-effort smoke timed out")
+            self.assertEqual(record["status"], "pass")
+            self.assertEqual(record["reason"], "assertions passed after timeout cleanup")
 
             artifacts = record["artifacts"]
             for key in ("session_path", "session_final", "reviewer_prompt", "assertions", "meta", "stdout"):
@@ -273,7 +273,7 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
                 if path.exists():
                     path.unlink()
 
-    def test_best_effort_timeout_salvages_required_artifacts_before_skip(self):
+    def test_best_effort_timeout_promotes_to_pass_when_assertions_salvage(self):
         case_id = "zz.timeout.best-effort-salvage"
         session_id = "99999999-9999-4999-8999-999999999999"
         case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
@@ -344,7 +344,7 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(first_run.returncode, 0, first_run.stdout + first_run.stderr)
-            self.assertIn(f"SKIP {case_id} - best-effort smoke timed out", first_run.stdout)
+            self.assertIn(f"PASS {case_id} - assertions passed after timeout cleanup", first_run.stdout)
 
             record = None
             payload = json.loads(last_run_path.read_text(encoding="utf-8"))
@@ -353,7 +353,8 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
                     record = candidate
                     break
             self.assertIsNotNone(record)
-            self.assertEqual(record["status"], "skip")
+            self.assertEqual(record["status"], "pass")
+            self.assertEqual(record["reason"], "assertions passed after timeout cleanup")
 
             artifacts = record["artifacts"]
             for key in ("session_path", "session_final", "reviewer_prompt", "assertions", "meta"):
