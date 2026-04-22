@@ -8,6 +8,8 @@ from typing import Optional
 
 
 SESSION_PATH_PATTERN = re.compile(r"\.review-loop/sessions/[0-9a-fA-F-]{8,}\.md")
+LOCK_PATH_PATTERN = re.compile(r"^(?P<session_id>.+)\.lock$")
+REVIEWER_PROMPT_PATTERN = re.compile(r"^(?P<session_id>.+)-reviewer-prompt\.txt$")
 
 
 def _coerce_timeout_text(value) -> str:
@@ -16,6 +18,84 @@ def _coerce_timeout_text(value) -> str:
     if isinstance(value, str):
         return value
     return ""
+
+
+def _extract_lock_pid(lock_path: Path) -> Optional[int]:
+    try:
+        text = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        pid = payload.get("pid")
+        return pid if isinstance(pid, int) else None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        if key.strip() != "pid":
+            continue
+        value = value.strip()
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _pid_is_alive(pid: Optional[int]) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def cleanup_stale_review_loop_runtime(root: Path) -> dict[str, list[Path]]:
+    sessions_dir = root / ".review-loop" / "sessions"
+    tmp_dir = root / ".review-loop" / "tmp"
+    removed_locks: list[Path] = []
+    removed_prompts: list[Path] = []
+    live_session_ids: set[str] = set()
+
+    if sessions_dir.exists():
+        for lock_path in sorted(sessions_dir.glob("*.lock")):
+            match = LOCK_PATH_PATTERN.match(lock_path.name)
+            session_id = match.group("session_id") if match else None
+            pid = _extract_lock_pid(lock_path)
+            if session_id and _pid_is_alive(pid):
+                live_session_ids.add(session_id)
+                continue
+            try:
+                lock_path.unlink()
+                removed_locks.append(lock_path)
+            except OSError:
+                continue
+
+    if tmp_dir.exists():
+        for prompt_path in sorted(tmp_dir.glob("*-reviewer-prompt.txt")):
+            match = REVIEWER_PROMPT_PATTERN.match(prompt_path.name)
+            session_id = match.group("session_id") if match else None
+            if session_id and session_id in live_session_ids:
+                continue
+            try:
+                prompt_path.unlink()
+                removed_prompts.append(prompt_path)
+            except OSError:
+                continue
+
+    return {
+        "removed_locks": removed_locks,
+        "removed_prompts": removed_prompts,
+    }
 
 
 def session_paths_from_stdout(stdout: str, root: Path) -> list[Path]:

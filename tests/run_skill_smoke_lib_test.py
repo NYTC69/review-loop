@@ -13,7 +13,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.run_skill_smoke_lib import cleanup_timed_out_process, finalize_stream_capture_artifact, select_primary_session_path
+from scripts.run_skill_smoke_lib import (
+    cleanup_stale_review_loop_runtime,
+    cleanup_timed_out_process,
+    finalize_stream_capture_artifact,
+    select_primary_session_path,
+)
 
 
 def write_session(root: Path, session_id: str, entry_point: str) -> Path:
@@ -168,7 +173,164 @@ class CleanupTimedOutProcessTest(unittest.TestCase):
             self.assertIsNotNone(result["returncode"])
 
 
+class CleanupStaleReviewLoopRuntimeTest(unittest.TestCase):
+    def test_removes_stale_locks_and_orphaned_reviewer_prompts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sessions_dir = root / ".review-loop" / "sessions"
+            tmp_dir = root / ".review-loop" / "tmp"
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+
+            stale_lock = sessions_dir / "11111111-1111-4111-8111-111111111111.lock"
+            stale_lock.write_text(
+                json.dumps(
+                    {
+                        "pid": 999999,
+                        "started_at": "2026-04-22T00:00:00Z",
+                        "entry_point": "review-loop",
+                        "stop_after": "delivery",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stale_prompt = tmp_dir / "11111111-1111-4111-8111-111111111111-reviewer-prompt.txt"
+            stale_prompt.write_text("stale\n", encoding="utf-8")
+
+            live_session_id = "22222222-2222-4222-8222-222222222222"
+            live_lock = sessions_dir / f"{live_session_id}.lock"
+            live_lock.write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "started_at": "2026-04-22T00:00:00Z",
+                        "entry_point": "review-loop",
+                        "stop_after": "delivery",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            live_prompt = tmp_dir / f"{live_session_id}-reviewer-prompt.txt"
+            live_prompt.write_text("live\n", encoding="utf-8")
+
+            malformed_lock = sessions_dir / "33333333-3333-4333-8333-333333333333.lock"
+            malformed_lock.write_text("", encoding="utf-8")
+            malformed_prompt = tmp_dir / "33333333-3333-4333-8333-333333333333-reviewer-prompt.txt"
+            malformed_prompt.write_text("malformed\n", encoding="utf-8")
+
+            summary = cleanup_stale_review_loop_runtime(root)
+
+            self.assertFalse(stale_lock.exists())
+            self.assertFalse(stale_prompt.exists())
+            self.assertFalse(malformed_lock.exists())
+            self.assertFalse(malformed_prompt.exists())
+            self.assertTrue(live_lock.exists())
+            self.assertTrue(live_prompt.exists())
+
+            removed_lock_names = {path.name for path in summary["removed_locks"]}
+            removed_prompt_names = {path.name for path in summary["removed_prompts"]}
+            self.assertEqual(
+                removed_lock_names,
+                {
+                    "11111111-1111-4111-8111-111111111111.lock",
+                    "33333333-3333-4333-8333-333333333333.lock",
+                },
+            )
+            self.assertEqual(
+                removed_prompt_names,
+                {
+                    "11111111-1111-4111-8111-111111111111-reviewer-prompt.txt",
+                    "33333333-3333-4333-8333-333333333333-reviewer-prompt.txt",
+                },
+            )
+
+
 class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
+    def test_completed_stages_exec_assertion_rejects_empty_list_even_when_execution_text_exists(self):
+        case_id = "zz.timeout.completed-stages-empty-list"
+        session_id = "77777777-7777-4777-8777-777777777777"
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        session_path = ROOT / ".review-loop/sessions" / f"{session_id}.md"
+        smoke_uuid_marker = ROOT / ".review-loop/tmp/smoke-session-uuid"
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+
+        for path in (case_path, smoke_uuid_marker):
+            if path.exists():
+                path.unlink()
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text(
+            "## Current Phase\n\nexecution\n\n"
+            "## Review History\n\n"
+            "### Execution Round 1 — Executor\n"
+            "- no-op\n\n"
+            "## Session Metadata\n"
+            "- entry_point: review-loop\n"
+            "- completed_stages: []\n",
+            encoding="utf-8",
+        )
+
+        case_data = {
+            "id": case_id,
+            "type": "smoke",
+            "target": "review-loop",
+            "runtime": "shared",
+            "requires": ["python3"],
+            "setup": {"timeout_seconds": 1},
+            "execution_policy": "best_effort",
+            "artifacts": {
+                "capture": {
+                    "session_path": "latest_session",
+                    "session_final": "latest_session",
+                },
+                "required": ["session_path", "session_final", "assertions", "meta"],
+            },
+            "command": [
+                "python3",
+                "-c",
+                (
+                    "import pathlib, sys, time\n"
+                    f"session_id = {session_id!r}\n"
+                    "root = pathlib.Path(sys.argv[1])\n"
+                    "tmp = root / '.review-loop' / 'tmp'\n"
+                    "tmp.mkdir(parents=True, exist_ok=True)\n"
+                    "(tmp / 'smoke-session-uuid').write_text(session_id, encoding='utf-8')\n"
+                    "print(f'.review-loop/sessions/{session_id}.md', flush=True)\n"
+                    "time.sleep(30)\n"
+                ),
+                "__WORKTREE__",
+            ],
+            "assertions": ["completed_stages_contains_exec"],
+        }
+
+        try:
+            case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+            run = subprocess.run(
+                ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn(f"SKIP {case_id} - best-effort smoke timed out; completed_stages_contains_exec", run.stdout)
+
+            payload = json.loads(last_run_path.read_text(encoding="utf-8"))
+            record = next(candidate for candidate in payload["results"] if candidate.get("id") == case_id)
+            self.assertEqual(record["status"], "skip")
+            self.assertIn("completed_stages_contains_exec", record["reason"])
+        finally:
+            if case_path.exists():
+                case_path.unlink()
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+            for path in (session_path, smoke_uuid_marker):
+                if path.exists():
+                    path.unlink()
+
     def test_best_effort_timeout_uses_partial_stdout_to_salvage_session_artifacts(self):
         case_id = "zz.timeout.partial-stdout-session-salvage"
         session_id = "88888888-8888-4888-8888-888888888888"

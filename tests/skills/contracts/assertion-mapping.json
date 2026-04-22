@@ -146,10 +146,15 @@
       "artifact": "session-final.md",
       "needle": "completed_stages:"
     },
-    "completed_stages_contains_exec_token": {
+    "completed_stages_list_exec_inline": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "exec"
+      "needle": "- completed_stages: [exec]"
+    },
+    "completed_stages_list_exec_block": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages:\n  - exec\n- "
     },
     "completed_stages_contains_polish_token": {
       "kind": "artifact_contains",
@@ -299,17 +304,19 @@
       ]
     },
     "completed_stages_contains_exec": {
-      "mode": "all",
+      "mode": "any",
       "members": [
-        "completed_stages_field_present",
-        "completed_stages_contains_exec_token"
+        "completed_stages_list_exec_inline",
+        "completed_stages_list_exec_block",
+        "completed_stages_list_exec_polish",
+        "completed_stages_list_exec_polish_docs_security"
       ]
     },
     "completed_stages_contains_polish": {
-      "mode": "all",
+      "mode": "any",
       "members": [
-        "completed_stages_field_present",
-        "completed_stages_contains_polish_token"
+        "completed_stages_list_exec_polish",
+        "completed_stages_list_exec_polish_docs_security"
       ]
     },
     "completed_stages_ordered_exec_polish": {

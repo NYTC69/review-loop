@@ -15,7 +15,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from scripts.run_skill_smoke_lib import cleanup_timed_out_process, finalize_stream_capture_artifact, select_primary_session_path
+from scripts.run_skill_smoke_lib import (
+    cleanup_stale_review_loop_runtime,
+    cleanup_timed_out_process,
+    finalize_stream_capture_artifact,
+    select_primary_session_path,
+)
 
 
 class RunnerError(Exception):
@@ -518,6 +523,7 @@ def run_case(case_data, mapping_data):
     meta["expected_artifacts"] = definition["artifacts"]["required"]
     meta["timeout_seconds"] = definition["timeout_seconds"]
     meta["execution_policy"] = execution_policy
+    cleanup_stale_review_loop_runtime(ROOT)
     before_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
     tool_events_artifact = artifact_dir / "tool-use-events.json"
     stdout_artifact = artifact_dir / "stdout.txt"
@@ -648,6 +654,7 @@ def run_case(case_data, mapping_data):
                 meta["status"] = final_status
                 meta["reason"] = final_reason
                 write_json(meta_path, meta)
+                cleanup_stale_review_loop_runtime(ROOT)
                 return case_record(case_id, "smoke", target, runtime_profile, final_status, final_reason, artifacts, started_at, finished_at)
             raise
     finally:
@@ -735,6 +742,7 @@ def run_case(case_data, mapping_data):
     meta_path = artifact_dir / "meta.json"
     write_json(meta_path, meta)
     artifacts["meta"] = relative_to_root(meta_path, ROOT)
+    cleanup_stale_review_loop_runtime(ROOT)
 
     missing_artifacts = missing_required_artifacts(
         artifacts,
