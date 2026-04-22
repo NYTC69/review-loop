@@ -6,7 +6,7 @@
   "requires": ["codex", "claude"],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 900
+    "timeout_seconds": 1200
   },
   "execution_policy": "best_effort",
   "artifacts": {
