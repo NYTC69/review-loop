@@ -19,10 +19,13 @@ from scripts.run_skill_smoke_lib import cleanup_timed_out_process, finalize_stre
 
 
 class RunnerError(Exception):
-    def __init__(self, label: str, message: str):
+    def __init__(self, label: str, message: str, *, partial_stdout: str = "", partial_stderr: str = "", returncode=None):
         super().__init__(message)
         self.label = label
         self.message = message
+        self.partial_stdout = partial_stdout
+        self.partial_stderr = partial_stderr
+        self.returncode = returncode
 
 
 ENVIRONMENT_ERROR_SNIPPETS = [
@@ -418,6 +421,9 @@ def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
         raise RunnerError(
             "command-timeout",
             f"command timed out after {timeout_seconds}s\nSTDOUT:\n{partial_stdout}\nSTDERR:\n{partial_stderr}",
+            partial_stdout=partial_stdout,
+            partial_stderr=partial_stderr,
+            returncode=process.returncode,
         ) from exc
     return process.returncode, stdout, stderr
 
@@ -548,6 +554,8 @@ def run_case(case_data, mapping_data):
             if "tool_use_events" in capture_modes:
                 finalize_stream_capture_artifact(tool_events_artifact, stdout_artifact)
             if exc.label == "command-timeout" and execution_policy == "best_effort":
+                partial_stdout = exc.partial_stdout or ""
+                partial_stderr = exc.partial_stderr or ""
                 timeout_stderr = exc.message
                 reason = "best-effort smoke timed out"
                 for snippet in ENVIRONMENT_ERROR_SNIPPETS:
@@ -555,16 +563,85 @@ def run_case(case_data, mapping_data):
                         reason = "best-effort smoke hit environment limitation"
                         break
                 finished_at = now_iso()
+                if stdout_artifact.exists():
+                    artifacts["stdout"] = relative_to_root(stdout_artifact, ROOT)
+                elif partial_stdout:
+                    write_text(stdout_artifact, partial_stdout)
+                    artifacts["stdout"] = relative_to_root(stdout_artifact, ROOT)
                 write_text(artifact_dir / "stderr.txt", timeout_stderr)
                 artifacts["stderr"] = relative_to_root(artifact_dir / "stderr.txt", ROOT)
                 write_text(artifact_dir / "git-status-after.txt", git_status(ROOT))
                 artifacts["git_status_after"] = relative_to_root(artifact_dir / "git-status-after.txt", ROOT)
+                session_path = None
+                if smoke_uuid_marker.is_file():
+                    tracked_uuid = smoke_uuid_marker.read_text(encoding="utf-8").strip()
+                    if tracked_uuid:
+                        candidate = ROOT / f".review-loop/sessions/{tracked_uuid}.md"
+                        if candidate.is_file():
+                            session_path = candidate
+                    smoke_uuid_marker.unlink()
+                if session_path is None:
+                    after_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
+                    session_path = select_primary_session_path(partial_stdout, ROOT, before_sessions, after_sessions)
+                if session_path is not None and {"session_path", "session_final"} & set(capture_modes):
+                    write_text(artifact_dir / "session-path.txt", relative_to_root(session_path, ROOT) + "\n")
+                    write_text(artifact_dir / "session-final.md", session_path.read_text(encoding="utf-8"))
+                    if capture_modes.get("session_path") == "latest_session":
+                        artifacts["session_path"] = relative_to_root(artifact_dir / "session-path.txt", ROOT)
+                    if capture_modes.get("session_final") == "latest_session":
+                        artifacts["session_final"] = relative_to_root(artifact_dir / "session-final.md", ROOT)
+
+                if capture_modes.get("response") == "stdout" and artifacts.get("stdout"):
+                    write_text(
+                        artifact_dir / "response.txt",
+                        (ROOT / artifacts["stdout"]).read_text(encoding="utf-8"),
+                    )
+                    artifacts["response"] = relative_to_root(artifact_dir / "response.txt", ROOT)
+
+                if {"reviewer_prompt", "reviewer_result"} & set(capture_modes):
+                    prompt_artifact = artifact_dir / "reviewer-prompt.txt"
+                    if not prompt_artifact.exists():
+                        after_tmp_prompts = list_files(ROOT / ".review-loop/tmp", "*-reviewer-prompt.txt")
+                        prompt_candidates = sorted(after_tmp_prompts - before_tmp_prompts, key=lambda path: path.name)
+                        if prompt_candidates:
+                            write_text(prompt_artifact, prompt_candidates[-1].read_text(encoding="utf-8"))
+                    if capture_modes.get("reviewer_prompt") == "reviewer_prompt_file" and prompt_artifact.exists():
+                        artifacts["reviewer_prompt"] = relative_to_root(prompt_artifact, ROOT)
+                    result_artifact = artifact_dir / "reviewer-result.json"
+                    if capture_modes.get("reviewer_result") == "reviewer_result_file" and result_artifact.exists():
+                        artifacts["reviewer_result"] = relative_to_root(result_artifact, ROOT)
+
+                if "tool_use_events" in capture_modes and tool_events_artifact.exists():
+                    artifacts["tool_use_events"] = relative_to_root(tool_events_artifact, ROOT)
+
+                assertion_results, assertion_status, assertion_reason = evaluate_mapping(
+                    case_id,
+                    definition["assertions"],
+                    mapping_data,
+                    artifact_dir,
+                )
+                write_json(artifact_dir / "assertions.json", assertion_results)
+                artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
                 meta["finished_at"] = finished_at
                 meta["status"] = "skip"
                 meta["reason"] = reason
+                if exc.returncode is not None:
+                    meta["returncode"] = exc.returncode
                 meta_path = artifact_dir / "meta.json"
                 write_json(meta_path, meta)
                 artifacts["meta"] = relative_to_root(meta_path, ROOT)
+                if assertion_status == "fail":
+                    reason = f"{reason}; {assertion_reason}"
+                    meta["reason"] = reason
+                    write_json(meta_path, meta)
+                missing_artifacts = missing_required_artifacts(
+                    artifacts,
+                    definition["artifacts"]["required"],
+                )
+                if missing_artifacts:
+                    reason = f"{reason}; missing required artifact(s): {', '.join(missing_artifacts)}"
+                    meta["reason"] = reason
+                    write_json(meta_path, meta)
                 return case_record(case_id, "smoke", target, runtime_profile, "skip", reason, artifacts, started_at, finished_at)
             raise
     finally:

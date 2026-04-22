@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -165,6 +166,213 @@ class CleanupTimedOutProcessTest(unittest.TestCase):
             self.assertIsInstance(result["stdout"], str)
             self.assertIsInstance(result["stderr"], str)
             self.assertIsNotNone(result["returncode"])
+
+
+class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
+    def test_best_effort_timeout_uses_partial_stdout_to_salvage_session_artifacts(self):
+        case_id = "zz.timeout.partial-stdout-session-salvage"
+        session_id = "88888888-8888-4888-8888-888888888888"
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        session_path = ROOT / ".review-loop/sessions" / f"{session_id}.md"
+        prompt_path = ROOT / ".review-loop/tmp" / f"{session_id}-reviewer-prompt.txt"
+        smoke_uuid_marker = ROOT / ".review-loop/tmp/smoke-session-uuid"
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+
+        for path in (case_path, prompt_path, smoke_uuid_marker):
+            if path.exists():
+                path.unlink()
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text(
+            "## Session Metadata\n"
+            "- entry_point: review-loop\n"
+            "- terminal: deterministic\n",
+            encoding="utf-8",
+        )
+
+        case_data = {
+            "id": case_id,
+            "type": "smoke",
+            "target": "review-loop",
+            "runtime": "shared",
+            "requires": ["python3"],
+            "setup": {"timeout_seconds": 1},
+            "execution_policy": "best_effort",
+            "artifacts": {
+                "capture": {
+                    "session_path": "latest_session",
+                    "session_final": "latest_session",
+                    "reviewer_prompt": "reviewer_prompt_file",
+                },
+                "required": [
+                    "session_path",
+                    "session_final",
+                    "reviewer_prompt",
+                    "assertions",
+                    "meta",
+                ],
+            },
+            "command": [
+                "python3",
+                "-c",
+                (
+                    "import pathlib, sys, time\n"
+                    f"session_id = {session_id!r}\n"
+                    "root = pathlib.Path(sys.argv[1])\n"
+                    "tmp = root / '.review-loop' / 'tmp'\n"
+                    "tmp.mkdir(parents=True, exist_ok=True)\n"
+                    "(tmp / f'{session_id}-reviewer-prompt.txt').write_text('reviewer prompt\\n', encoding='utf-8')\n"
+                    "print(f'.review-loop/sessions/{session_id}.md', flush=True)\n"
+                    "time.sleep(30)\n"
+                ),
+                "__WORKTREE__",
+            ],
+            "assertions": ["session_created", "reviewer_prompt_exists"],
+        }
+
+        try:
+            case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+            run = subprocess.run(
+                ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn(f"SKIP {case_id} - best-effort smoke timed out", run.stdout)
+
+            payload = json.loads(last_run_path.read_text(encoding="utf-8"))
+            record = next(candidate for candidate in payload["results"] if candidate.get("id") == case_id)
+            self.assertEqual(record["status"], "skip")
+            self.assertEqual(record["reason"], "best-effort smoke timed out")
+
+            artifacts = record["artifacts"]
+            for key in ("session_path", "session_final", "reviewer_prompt", "assertions", "meta", "stdout"):
+                self.assertIn(key, artifacts)
+                self.assertTrue((ROOT / artifacts[key]).exists(), key)
+
+            self.assertEqual(
+                (ROOT / artifacts["session_path"]).read_text(encoding="utf-8").strip(),
+                f".review-loop/sessions/{session_id}.md",
+            )
+            self.assertIn("- terminal: deterministic", (ROOT / artifacts["session_final"]).read_text(encoding="utf-8"))
+            self.assertEqual((ROOT / artifacts["stdout"]).read_text(encoding="utf-8"), f".review-loop/sessions/{session_id}.md\n")
+
+            assertion_payload = json.loads((ROOT / artifacts["assertions"]).read_text(encoding="utf-8"))
+            self.assertEqual([entry["status"] for entry in assertion_payload], ["pass", "pass"])
+        finally:
+            if case_path.exists():
+                case_path.unlink()
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+            for path in (session_path, prompt_path, smoke_uuid_marker):
+                if path.exists():
+                    path.unlink()
+
+    def test_best_effort_timeout_salvages_required_artifacts_before_skip(self):
+        case_id = "zz.timeout.best-effort-salvage"
+        session_id = "99999999-9999-4999-8999-999999999999"
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        session_path = ROOT / ".review-loop/sessions" / f"{session_id}.md"
+        prompt_path = ROOT / ".review-loop/tmp" / f"{session_id}-reviewer-prompt.txt"
+        smoke_uuid_marker = ROOT / ".review-loop/tmp/smoke-session-uuid"
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+
+        for path in (case_path, session_path, prompt_path, smoke_uuid_marker):
+            if path.exists():
+                path.unlink()
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+
+        case_data = {
+            "id": case_id,
+            "type": "smoke",
+            "target": "review-loop",
+            "runtime": "shared",
+            "requires": ["python3"],
+            "setup": {"timeout_seconds": 1},
+            "execution_policy": "best_effort",
+            "artifacts": {
+                "capture": {
+                    "session_path": "latest_session",
+                    "session_final": "latest_session",
+                    "reviewer_prompt": "reviewer_prompt_file",
+                },
+                "required": [
+                    "session_path",
+                    "session_final",
+                    "reviewer_prompt",
+                    "assertions",
+                    "meta",
+                ],
+            },
+            "command": [
+                "python3",
+                "-c",
+                (
+                    "import pathlib, sys, time\n"
+                    f"session_id = {session_id!r}\n"
+                    "root = pathlib.Path(sys.argv[1])\n"
+                    "sessions = root / '.review-loop' / 'sessions'\n"
+                    "tmp = root / '.review-loop' / 'tmp'\n"
+                    "sessions.mkdir(parents=True, exist_ok=True)\n"
+                    "tmp.mkdir(parents=True, exist_ok=True)\n"
+                    "session_path = sessions / f'{session_id}.md'\n"
+                    "session_path.write_text('## Session Metadata\\n- entry_point: review-loop\\n', encoding='utf-8')\n"
+                    "(tmp / 'smoke-session-uuid').write_text(session_id, encoding='utf-8')\n"
+                    "(tmp / f'{session_id}-reviewer-prompt.txt').write_text('reviewer prompt\\n', encoding='utf-8')\n"
+                    "print(f'.review-loop/sessions/{session_id}.md', flush=True)\n"
+                    "time.sleep(30)\n"
+                ),
+                "__WORKTREE__",
+            ],
+            "assertions": ["session_created", "reviewer_prompt_exists"],
+        }
+
+        try:
+            case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+            first_run = subprocess.run(
+                ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first_run.returncode, 0, first_run.stdout + first_run.stderr)
+            self.assertIn(f"SKIP {case_id} - best-effort smoke timed out", first_run.stdout)
+
+            record = None
+            payload = json.loads(last_run_path.read_text(encoding="utf-8"))
+            for candidate in payload["results"]:
+                if candidate.get("id") == case_id:
+                    record = candidate
+                    break
+            self.assertIsNotNone(record)
+            self.assertEqual(record["status"], "skip")
+
+            artifacts = record["artifacts"]
+            for key in ("session_path", "session_final", "reviewer_prompt", "assertions", "meta"):
+                self.assertIn(key, artifacts)
+                self.assertTrue((ROOT / artifacts[key]).exists(), key)
+
+            assertion_payload = json.loads((ROOT / artifacts["assertions"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                [entry["status"] for entry in assertion_payload],
+                ["pass", "pass"],
+            )
+        finally:
+            if case_path.exists():
+                case_path.unlink()
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+            for path in (session_path, prompt_path, smoke_uuid_marker):
+                if path.exists():
+                    path.unlink()
 
 
 if __name__ == "__main__":

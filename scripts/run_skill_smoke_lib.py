@@ -10,6 +10,14 @@ from typing import Optional
 SESSION_PATH_PATTERN = re.compile(r"\.review-loop/sessions/[0-9a-fA-F-]{8,}\.md")
 
 
+def _coerce_timeout_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def session_paths_from_stdout(stdout: str, root: Path) -> list[Path]:
     matches = []
     for match in SESSION_PATH_PATTERN.finditer(stdout):
@@ -121,8 +129,8 @@ def cleanup_timed_out_process(
     timeout_exc: subprocess.TimeoutExpired,
     terminate_grace_seconds: int = 5,
 ) -> tuple[str, str]:
-    partial_stdout = timeout_exc.stdout or ""
-    partial_stderr = timeout_exc.stderr or ""
+    partial_stdout = _coerce_timeout_text(timeout_exc.stdout)
+    partial_stderr = _coerce_timeout_text(timeout_exc.stderr)
 
     try:
         os.killpg(process.pid, signal.SIGTERM)
