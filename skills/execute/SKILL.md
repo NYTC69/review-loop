@@ -32,6 +32,9 @@ schemas.
 Do not re-derive any rule that already lives in a protocol doc. When a
 step below says "see `docs/protocol/<doc>.md` §Foo", follow that doc
 verbatim.
+The startup read set is complete only after all 4 docs above have been read
+explicitly; the embedded executor/reviewer prompt bodies are not a substitute
+for reading `executor-output.md` and `reviewer-output.md`.
 
 ## Orchestrator rules
 
@@ -67,6 +70,9 @@ run execute: --review-only [--description <what was done>] [--stop-after <stage>
 ---
 
 ## Step 0 — Parse and validate flags
+
+Before parsing flags or touching session state, Read the 4 Protocol Imports
+docs listed above.
 
 Execute before any lock or session write.
 

@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis",
-    "version": "2.6.15"
+    "version": "2.6.16"
   },
   "plugins": [
     {
       "name": "review-loop",
       "source": "./",
       "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 5 skills, full Plan-Execute-Review-Polish pipeline.",
-      "version": "2.6.15",
+      "version": "2.6.16",
       "author": {
         "name": "NYTC69"
       },

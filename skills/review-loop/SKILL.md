@@ -43,6 +43,10 @@ session schema, and output schemas.
 Do not re-derive any rule that already lives in a protocol doc. When a
 step below says "see `docs/protocol/<doc>.md` §Foo", follow that doc
 verbatim.
+Reading only `session-file` / `planning` / `execution` is insufficient for
+this umbrella skill. The startup read set is complete only after all 5 docs
+above have been read explicitly; embedded schemas in agent bodies are not a
+substitute for reading `executor-output.md` and `reviewer-output.md`.
 
 ## Orchestrator rules
 
@@ -116,6 +120,9 @@ Reviewer; enforce the loop; keep the user informed via Live Reports.
 Never do the planning or coding yourself.
 
 ### Step 0 — Load config and parse flags
+
+Before loading config or doing any routing, Read the 5 Protocol Imports docs
+listed above.
 
 Read `.review-loop/config.md` (or defaults). Detect `--handsfree`.
 Reviewer backend availability check (`which codex` for

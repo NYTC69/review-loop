@@ -217,7 +217,29 @@
       "paths": [
         "docs/protocol/session-file.md",
         "docs/protocol/planning.md",
-        "docs/protocol/execution.md"
+        "docs/protocol/execution.md",
+        "docs/protocol/executor-output.md",
+        "docs/protocol/reviewer-output.md"
+      ]
+    },
+    "plan_protocol_imports_read": {
+      "kind": "tool_use_read_covers_paths",
+      "artifact": "tool-use-events.json",
+      "paths": [
+        "docs/protocol/session-file.md",
+        "docs/protocol/planning.md",
+        "docs/protocol/executor-output.md",
+        "docs/protocol/reviewer-output.md"
+      ]
+    },
+    "execute_protocol_imports_read": {
+      "kind": "tool_use_read_covers_paths",
+      "artifact": "tool-use-events.json",
+      "paths": [
+        "docs/protocol/session-file.md",
+        "docs/protocol/execution.md",
+        "docs/protocol/executor-output.md",
+        "docs/protocol/reviewer-output.md"
       ]
     }
   },

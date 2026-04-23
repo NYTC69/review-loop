@@ -29,6 +29,9 @@ single source of truth for this skill's planning loop and output schemas.
 Do not re-derive any rule that already lives in a protocol doc. When a
 step below says "see `docs/protocol/<doc>.md` §Foo", follow that doc
 verbatim.
+The startup read set is complete only after all 4 docs above have been read
+explicitly; the embedded executor/reviewer prompt bodies are not a substitute
+for reading `executor-output.md` and `reviewer-output.md`.
 
 ## Orchestrator rules
 
@@ -57,6 +60,9 @@ classification.
 ---
 
 ## Step 0 — Load config and parse flags
+
+Before loading config or checking backend availability, Read the 4 Protocol
+Imports docs listed above.
 
 1. Read `.review-loop/config.md` if present; otherwise fall back to the
    defaults documented in `skills/review-loop/SKILL.md` §Configuration.

@@ -16,12 +16,14 @@
     "capture": {
       "session_path": "latest_session",
       "session_final": "latest_session",
-      "reviewer_prompt": "reviewer_prompt_file"
+      "reviewer_prompt": "reviewer_prompt_file",
+      "tool_use_events": "stream_json_read_events"
     },
     "required": [
       "session_path",
       "session_final",
       "reviewer_prompt",
+      "tool_use_events",
       "assertions",
       "meta"
     ]
@@ -42,6 +44,7 @@
     "execution_or_noop_round_recorded",
     "source_user_supplied_under_approved_plan",
     "entry_point_execute_from_plan",
-    "reviewer_prompt_user_supplied_provenance_marker"
+    "reviewer_prompt_user_supplied_provenance_marker",
+    "execute_protocol_imports_read"
   ]
 }

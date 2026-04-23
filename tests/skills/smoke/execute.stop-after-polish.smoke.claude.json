@@ -16,11 +16,13 @@
     "capture": {
       "session_path": "latest_session",
       "session_final": "latest_session",
-      "reviewer_prompt": "reviewer_prompt_file"
+      "reviewer_prompt": "reviewer_prompt_file",
+      "tool_use_events": "stream_json_read_events"
     },
     "required": [
       "session_path",
       "session_final",
+      "tool_use_events",
       "assertions",
       "meta"
     ]
@@ -36,6 +38,7 @@
     "session_created",
     "execution_or_noop_round_recorded",
     "completed_stages_ordered_exec_polish",
-    "delivery_blocked_by_null"
+    "delivery_blocked_by_null",
+    "execute_protocol_imports_read"
   ]
 }

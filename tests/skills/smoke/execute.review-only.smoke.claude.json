@@ -16,11 +16,13 @@
     "capture": {
       "session_path": "latest_session",
       "session_final": "latest_session",
-      "reviewer_prompt": "reviewer_prompt_file"
+      "reviewer_prompt": "reviewer_prompt_file",
+      "tool_use_events": "stream_json_read_events"
     },
     "required": [
       "session_path",
       "session_final",
+      "tool_use_events",
       "assertions",
       "meta"
     ]
@@ -42,6 +44,7 @@
     "review_only_sentinel_literal_two_line",
     "review_target_section_has_scope_content",
     "entry_point_review_only",
-    "execute_round_1_reviewer_only"
+    "execute_round_1_reviewer_only",
+    "execute_protocol_imports_read"
   ]
 }
