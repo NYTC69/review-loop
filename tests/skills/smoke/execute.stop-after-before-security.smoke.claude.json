@@ -39,6 +39,7 @@
     "execution_or_noop_round_recorded",
     "completed_stages_ordered_exec_polish_docs",
     "delivery_blocked_by_null",
-    "execute_protocol_imports_read"
+    "execute_protocol_imports_read",
+    "no_forbidden_review_loop_subagent_types_in_agent_calls"
   ]
 }

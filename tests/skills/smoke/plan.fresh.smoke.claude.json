@@ -41,6 +41,7 @@
     "plan_source_reviewer_approved",
     "entry_point_plan",
     "approved_plan_section_present",
-    "plan_protocol_imports_read"
+    "plan_protocol_imports_read",
+    "no_forbidden_review_loop_subagent_types_in_agent_calls"
   ]
 }

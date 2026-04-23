@@ -135,7 +135,7 @@ def select_primary_session_path(stdout: str, root: Path, before_sessions: set[Pa
 
 
 def parse_stream_json_capture(text: str) -> tuple[dict, str]:
-    read_events = []
+    tool_events = []
     result_text = ""
     assistant_seen = False
     result_seen = False
@@ -159,10 +159,18 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
             for block in message.get("content") or []:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "tool_use" and block.get("name") == "Read":
-                    file_path = (block.get("input") or {}).get("file_path")
+                if block.get("type") != "tool_use":
+                    continue
+                tool_name = block.get("name")
+                tool_input = block.get("input") or {}
+                if tool_name == "Read":
+                    file_path = tool_input.get("file_path")
                     if isinstance(file_path, str) and file_path:
-                        read_events.append({"tool": "Read", "target": file_path})
+                        tool_events.append({"tool": "Read", "target": file_path})
+                    continue
+                subagent_type = tool_input.get("subagent_type")
+                if isinstance(tool_name, str) and tool_name and isinstance(subagent_type, str) and subagent_type:
+                    tool_events.append({"tool": tool_name, "subagent_type": subagent_type})
         elif etype == "result":
             result_seen = True
             if event.get("subtype") == "success" and isinstance(event.get("result"), str):
@@ -176,7 +184,7 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
 
     payload = {
         "schema_version": 1,
-        "events": read_events,
+        "events": tool_events,
         "schema_errors": schema_errors,
         "parse_errors": parse_errors,
     }

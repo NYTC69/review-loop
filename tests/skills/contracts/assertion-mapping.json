@@ -276,6 +276,13 @@
         "docs/protocol/executor-output.md",
         "docs/protocol/reviewer-output.md"
       ]
+    },
+    "no_forbidden_review_loop_subagent_types_in_agent_calls": {
+      "kind": "tool_use_agent_subagent_type_forbidden",
+      "artifact": "tool-use-events.json",
+      "forbidden_prefixes": [
+        "review-loop:"
+      ]
     }
   },
   "smoke_groups": {

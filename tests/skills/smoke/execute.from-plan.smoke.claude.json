@@ -45,6 +45,7 @@
     "source_user_supplied_under_approved_plan",
     "entry_point_execute_from_plan",
     "reviewer_prompt_user_supplied_provenance_marker",
-    "execute_protocol_imports_read"
+    "execute_protocol_imports_read",
+    "no_forbidden_review_loop_subagent_types_in_agent_calls"
   ]
 }

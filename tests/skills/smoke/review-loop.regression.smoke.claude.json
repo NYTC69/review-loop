@@ -43,6 +43,7 @@
     "approved_plan_section_present",
     "completed_stages_ordered_exec_polish_docs_security",
     "delivery_blocked_by_null",
-    "review_loop_protocol_imports_read"
+    "review_loop_protocol_imports_read",
+    "no_forbidden_review_loop_subagent_types_in_agent_calls"
   ]
 }

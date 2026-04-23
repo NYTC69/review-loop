@@ -103,6 +103,53 @@ class FinalizeStreamCaptureArtifactTest(unittest.TestCase):
             self.assertIn("no 'type=result' event observed", payload["schema_errors"][0])
             self.assertEqual(text_path.read_text(encoding="utf-8"), "")
 
+    def test_writes_agent_subagent_type_events_from_stream(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            artifact_path = root / "tool-use-events.json"
+            text_path = root / "stdout.txt"
+            artifact_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_use",
+                                            "name": "Agent",
+                                            "input": {"subagent_type": "review-loop:executor"},
+                                        },
+                                        {
+                                            "type": "tool_use",
+                                            "name": "Task",
+                                            "input": {"subagent_type": "general-purpose"},
+                                        },
+                                    ]
+                                },
+                            }
+                        ),
+                        json.dumps({"type": "result", "subtype": "success", "result": "ok"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            finalized = finalize_stream_capture_artifact(artifact_path, text_path)
+
+            self.assertTrue(finalized)
+            payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["events"],
+                [
+                    {"tool": "Agent", "subagent_type": "review-loop:executor"},
+                    {"tool": "Task", "subagent_type": "general-purpose"},
+                ],
+            )
+            self.assertEqual(text_path.read_text(encoding="utf-8"), "ok")
+
 
 def timeout_cleanup_worker(pid_path: str, queue: multiprocessing.Queue) -> None:
     command = [
@@ -243,6 +290,134 @@ class CleanupStaleReviewLoopRuntimeTest(unittest.TestCase):
                     "33333333-3333-4333-8333-333333333333-reviewer-prompt.txt",
                 },
             )
+
+
+class RunSkillSmokeForbiddenSubagentTypeAssertionTest(unittest.TestCase):
+    def _write_fake_claude(self, bin_dir: Path, stream_lines: list[dict]) -> None:
+        script_path = bin_dir / "claude"
+        payload = "\n".join(json.dumps(line) for line in stream_lines)
+        script_path.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "cat >/dev/null",
+                    f"printf '%s\\n' '{payload}'",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        script_path.chmod(0o755)
+
+    def _run_case_with_fake_claude(self, case_id: str, stream_lines: list[dict]):
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = Path(tmpdir)
+            self._write_fake_claude(fake_bin, stream_lines)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            case_data = {
+                "id": case_id,
+                "type": "smoke",
+                "target": "review-loop",
+                "runtime": "claude",
+                "requires": ["claude"],
+                "setup": {"timeout_seconds": 10},
+                "execution_policy": "strict",
+                "artifacts": {
+                    "capture": {
+                        "tool_use_events": "stream_json_read_events",
+                    },
+                    "required": [
+                        "tool_use_events",
+                        "assertions",
+                        "meta",
+                    ],
+                },
+                "command": [
+                    "claude",
+                    "-p",
+                    "--no-session-persistence",
+                    "--",
+                    "Emit one synthetic Agent call for smoke-runner testing.",
+                ],
+                "assertions": [
+                    "no_forbidden_review_loop_subagent_types_in_agent_calls",
+                ],
+            }
+
+            try:
+                case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+                completed = subprocess.run(
+                    ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                payload = json.loads(last_run_path.read_text(encoding="utf-8"))
+                record = next(candidate for candidate in payload["results"] if candidate.get("id") == case_id)
+                return completed, record
+            finally:
+                if case_path.exists():
+                    case_path.unlink()
+                if artifact_dir.exists():
+                    shutil.rmtree(artifact_dir)
+
+    def test_fails_when_agent_call_uses_review_loop_subagent_type(self):
+        case_id = "zz.tool-use-events.forbidden-subagent-type"
+        completed, record = self._run_case_with_fake_claude(
+            case_id,
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Agent",
+                                "input": {"subagent_type": "review-loop:executor"},
+                            }
+                        ]
+                    },
+                },
+                {"type": "result", "subtype": "success", "result": "ok"},
+            ],
+        )
+
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("FAIL zz.tool-use-events.forbidden-subagent-type", completed.stdout)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("review-loop:executor", record["reason"])
+
+    def test_passes_when_agent_calls_stay_on_general_purpose(self):
+        case_id = "zz.tool-use-events.allowed-subagent-type"
+        completed, record = self._run_case_with_fake_claude(
+            case_id,
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Agent",
+                                "input": {"subagent_type": "general-purpose"},
+                            }
+                        ]
+                    },
+                },
+                {"type": "result", "subtype": "success", "result": "ok"},
+            ],
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("PASS zz.tool-use-events.allowed-subagent-type", completed.stdout)
+        self.assertEqual(record["status"], "pass")
+        self.assertIn("assertions passed", record["reason"])
 
 
 class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):

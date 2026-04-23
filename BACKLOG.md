@@ -1,14 +1,17 @@
 **Last updated**: 2026-04-23
 
+> Temporary constraint (2026-04-23 night): any task that requires a live Claude smoke run is deferred until 2026-04-24 after token reset.
+
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
 
 - [partial] Orchestrator conformance for `skills/review-loop/SKILL.md` / `skills/{plan,execute}/SKILL.md` §Protocol Imports MUST directive. Landed contract = **require explicit startup Read of all declared protocol docs** (umbrella 5 docs; plan/execute 4 docs), strengthened the skill wording, expanded `assertion-mapping.json` to protocol-import-specific read assertions, and wired `tool_use_events` + imports-read assertions into the 6 real Claude smoke cases (`plan.fresh.smoke`, `execute.{from-plan,review-only,session-resume,stop-after-polish}.smoke`, `review-loop.regression.smoke`). Remaining work: run a fresh Claude smoke pass after token reset to prove the live runtime now actually satisfies the stronger 5/5 and 4/4 read contracts. (added 2026-04-20, refreshed 2026-04-23)
+- [new] Tomorrow after token reset, run a fresh Claude smoke pass for the `tool_use_events` cases to validate the newly wired `no_forbidden_review_loop_subagent_types_in_agent_calls` assertion on live stream output (currently attached to `plan.fresh.smoke`, `execute.{from-plan,review-only,session-resume,stop-after-before-polish,stop-after-polish,stop-after-before-security}.smoke`, and `review-loop.regression.smoke`). (added 2026-04-23)
 
 ## P2 — normal
 
-- [partial] Extend scripts/run-skill-smoke to assert no subagent_type: review-loop:* appears in any Agent call during replay — replay harness exists but performs no subagent_type check today. (added 2026-04-19)
+- [partial] Extend scripts/run-skill-smoke to assert no subagent_type: review-loop:* appears in any Agent call during replay — landed today: stream capture now preserves `Agent`/`Task` `subagent_type` events, `assertion-mapping.json` has `no_forbidden_review_loop_subagent_types_in_agent_calls`, and the 8 Claude `tool_use_events` smoke cases now require it. Remaining work: live Claude smoke verification after token reset. (added 2026-04-19, refreshed 2026-04-23)
 - [new] Add a dry-run Orchestrator mode that executes /review-loop against a fixture repo and validates the Agent-call sequence without writing files, so sandbox/agent-type bugs are caught pre-merge instead of via live tool_uses: 0 symptoms. (added 2026-04-19)
 - [partial] Expand the claude_plugin_agent_type_forbidden assertion (tests/skills/contracts/review-loop.json:134-140) into context-aware lint coverage: distinguish forbidden Agent-invocation call-sites from legitimate "Never use subagent_type: review-loop:<name>" warnings already present in skills/execute/SKILL.md (L38-41) and skills/review-loop/SKILL.md (L49-52), extend applies_to across all SKILL.md bodies plus Codex-side agent-invocation surfaces, and add a paired assertion that every sandbox-affected agent name must carry an adjacent CRITICAL warning. (added 2026-04-19)
 - [new] Build a session-replay parser over .review-loop/sessions/*.md that reconstructs which subagent_type values were used per Agent call and flags any review-loop:* occurrences as anomalies, giving a post-hoc audit channel independent of live observation. (added 2026-04-19)

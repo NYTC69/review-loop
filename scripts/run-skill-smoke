@@ -236,6 +236,46 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
                 return {"id": assertion_id, "status": "fail", "message": f"paths not read: {missing}"}
             return {"id": assertion_id, "status": "pass", "message": f"all {len(declared_paths)} declared paths observed as Read events"}
 
+        if kind == "tool_use_agent_subagent_type_forbidden":
+            if artifact_path is None or not artifact_path.exists():
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+            forbidden_prefixes = assertion.get("forbidden_prefixes")
+            if (
+                not isinstance(forbidden_prefixes, list)
+                or not forbidden_prefixes
+                or any(not isinstance(prefix, str) or not prefix for prefix in forbidden_prefixes)
+            ):
+                return {"id": assertion_id, "status": "fail", "message": "forbidden_prefixes must be a non-empty list of strings"}
+            try:
+                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is not valid JSON: {exc}"}
+            if not isinstance(payload, dict):
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} payload must be an object"}
+            schema_errors = payload.get("schema_errors") or []
+            if schema_errors:
+                return {"id": assertion_id, "status": "fail", "message": f"CLI stream schema drift: {'; '.join(schema_errors)}"}
+            events = payload.get("events")
+            if not isinstance(events, list):
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} missing 'events' list"}
+            offenders = []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                subagent_type = event.get("subagent_type")
+                if not isinstance(subagent_type, str) or not subagent_type:
+                    continue
+                if any(subagent_type.startswith(prefix) for prefix in forbidden_prefixes):
+                    offenders.append(subagent_type)
+            if offenders:
+                unique_offenders = sorted(set(offenders))
+                return {
+                    "id": assertion_id,
+                    "status": "fail",
+                    "message": f"forbidden subagent_type observed: {unique_offenders}",
+                }
+            return {"id": assertion_id, "status": "pass", "message": "no forbidden subagent_type values observed"}
+
         return {"id": assertion_id, "status": "fail", "message": f"unsupported smoke assertion kind {kind!r}"}
 
     for assertion_id in assertion_ids:
