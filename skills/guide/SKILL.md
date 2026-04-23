@@ -50,6 +50,7 @@ All three skills write the same session-file schema under
 `.review-loop/sessions/{uuid}.md`, so you can hand off between them (and
 between runtimes — plan on one, execute on the other).
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
+Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
 ## Usage
 
@@ -129,6 +130,7 @@ the full set:
 Unsupported values are rejected at parse time, before any lock is
 acquired or session field is written.
 Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
+Executor-created hidden worktrees are forbidden in Codex Stage 1.
 
 ## `--accept-external-state` (unsafe opt-in)
 

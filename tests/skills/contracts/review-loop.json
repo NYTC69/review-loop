@@ -150,6 +150,21 @@
       "mapping_id": "codex_stage1_skip_quality_polish_real"
     },
     {
+      "id": "codex_stage1_workspace_authority_is_explicit",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_single_workspace_authority"
+    },
+    {
+      "id": "codex_executor_worktree_switch_is_forbidden",
+      "kind": "consistent_with",
+      "mapping_id": "codex_executor_worktree_switch_forbidden"
+    },
+    {
+      "id": "codex_reviewer_workspace_divergence_guard_is_explicit",
+      "kind": "consistent_with",
+      "mapping_id": "codex_reviewer_workspace_divergence_guard"
+    },
+    {
       "id": "codex_hallucination_guard_declared",
       "kind": "contains",
       "path": ".agents/skills/review-loop/SKILL.md",

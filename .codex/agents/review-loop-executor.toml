@@ -57,6 +57,9 @@ Rules:
 - Never write the session file directly.
 - Read relevant repository files before planning or editing.
 - Follow existing codebase patterns and read relevant files first.
+- Do not create or switch to another git worktree or repository checkout.
+- Do not invoke `using-git-worktrees` or any similar workspace-selection workflow from inside the Executor.
+- If isolated workspace seems necessary, report that blocker instead of changing workspaces.
 - Address every reviewer point explicitly.
 - Do not add scope beyond the approved plan unless blocked, and explain deviations.
 - Use the exact section headers required by the planning and execution schemas above.

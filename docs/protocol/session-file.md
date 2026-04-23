@@ -9,6 +9,10 @@ This document is the authoritative schema + lifecycle reference for that
 file. Runtime-agnostic: nothing here depends on whether the orchestrator is
 Claude Code or Codex.
 
+Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
+Until a future protocol revision adds explicit orchestrator-managed worktree
+binding, there is no executor-side workspace override in Stage 1.
+
 ---
 
 ## Canonical sections

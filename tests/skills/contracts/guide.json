@@ -61,6 +61,11 @@
       "mapping_id": "codex_stage1_skip_quality_polish_real"
     },
     {
+      "id": "guide_mentions_workspace_authority",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_single_workspace_authority"
+    },
+    {
       "id": "readme_marks_codex_stage1_surface",
       "kind": "contains",
       "path": "README.md",
@@ -119,6 +124,12 @@
       "kind": "contains",
       "path": "tests/skills/smoke/guide.shared-state.codex.json",
       "needle": "\"skip_quality_polish_real_behavior_mentioned\""
+    },
+    {
+      "id": "guide_shared_state_codex_smoke_mentions_workspace_authority",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.shared-state.codex.json",
+      "needle": "\"workspace_authority_mentioned\""
     }
   ]
 }

@@ -31,7 +31,9 @@ with Claude Code, so both runtimes work against the same project state.
 The rest of this README primarily documents the current Claude Code plugin
 surface; Codex Stage 1 currently exposes only `review-loop` and `guide`.
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
+Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
+Executor-created hidden worktrees are forbidden in Codex Stage 1.
 
 The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
 (`claude -p`) and stays on that outside-sandbox Claude path unless you

@@ -40,6 +40,13 @@ loop_state.phase = "execution"
 loop_state.round = 0
 ```
 
+## Workspace authority
+
+Codex Stage 1 execution is bound to the orchestrator's current workspace.
+Do not create or switch to another git worktree or repository checkout.
+If isolated workspace seems necessary, the orchestrator must surface that as
+a blocker instead of letting the Executor choose a hidden worktree.
+
 Wall-clock timing, `loop_state.findings`, and the context-persist sub-step
 follow the same pattern documented in
 [planning.md §Round loop](./planning.md#round-loop). This document focuses
@@ -172,6 +179,10 @@ The execution round loop mirrors the planning round loop (see
    pickup banners, LEARNINGS sync text, or other user-level
    `additionalContext`) that do not pertain to this session file and review
    task.
+   The current orchestrator-owned workspace is the only authoritative review
+   scope for this round. If implementation appears to exist only in a
+   different git worktree or repository path than the current workspace,
+   return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue.
 
    ## Changes Made (summary from Executor)
    {executor_change_summary}
@@ -295,6 +306,7 @@ test coverage.
 Pure CR mode. No plan-conformance language. The reviewer is explicitly
 told the Approved Plan body is the canonical sentinel defined in
 [session-file.md §Canonical sentinel for `review-only`](./session-file.md#canonical-sentinel-for-review-only).
+If implementation appears to exist only in a different git worktree or repository path than the current workspace, return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue.
 
 ### review-only first-round skip
 

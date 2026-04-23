@@ -19,6 +19,7 @@ Codex reads and writes the same review-loop state as Claude Code:
 
 That means a project can keep one shared config file and one shared session log
 history across both runtimes.
+Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
 ## Stage 1 Scope
 
@@ -57,6 +58,7 @@ judgment-tier Codex agents are currently shipped.
 
 ## Usage Notes
 
+- Executor-created hidden worktrees are forbidden in Codex Stage 1.
 - Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
 - Codex repo skills live under `.agents/skills/` in the Codex workspace.
 - Keep the shared review-loop config in `.review-loop/config.md`.

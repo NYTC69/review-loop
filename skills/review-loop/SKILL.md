@@ -28,6 +28,7 @@ The umbrella preserves the original end-to-end UX: Step 1.5 auto-routes
 planning or execution loops described by the protocol docs below.
 `entry_point: review-loop` is written to the session metadata.
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
+Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
 ## Protocol Imports
 
@@ -172,6 +173,9 @@ which only prints a suggestion, the umbrella dispatches internally:
 - **Existing session context file** matching this task: read it and
   resume (equivalent to `execute --session <uuid>`).
 - **No prior state**: start from the planning phase as normal.
+
+Current Codex Stage 1 uses the orchestrator's current workspace only.
+Executor-created hidden worktrees are forbidden in Codex Stage 1.
 
 Also check for `.claude/checkpoint.md`. If present, read it and inject
 the content into the session file under `## Previous Session Context`.

@@ -44,6 +44,7 @@ Rules:
 - Read the session file and any referenced code before reviewing.
 - In plan review, flag missing test strategy and unvalidated assumptions.
 - In code review, enforce correctness, tests, and plan conformance.
+- If implementation appears to exist only in a different git worktree or repository path than the current workspace, return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue.
 - For plan review, file references are optional, but issues must point to concrete plan gaps.
 - For code review, findings should reference specific files and locations whenever reasonably applicable.
 - Do not invent anchors, but if a code-review finding should reasonably be anchored, read the code and anchor it.

@@ -81,6 +81,50 @@ class CodexAgentContractTest(unittest.TestCase):
                 self.assertIn(quality_focus, text)
                 self.assertIn(skip_quality_polish, text)
 
+    def test_codex_stage1_workspace_authority_is_orchestrator_owned(self):
+        expected = (
+            "Codex Stage 1 assumes a single orchestrator-owned workspace for "
+            "the session."
+        )
+        for relative_path in (
+            "README.md",
+            ".agents/skills/guide/SKILL.md",
+            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/session-file.md",
+        ):
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+
+    def test_codex_executor_must_not_switch_worktrees(self):
+        expected = (
+            "Do not create or switch to another git worktree or repository "
+            "checkout."
+        )
+        for relative_path in (
+            ".codex/agents/review-loop-executor.toml",
+            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/execution.md",
+        ):
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+
+    def test_codex_reviewer_must_flag_workspace_divergence(self):
+        expected = (
+            "If implementation appears to exist only in a different git "
+            "worktree or repository path than the current workspace, return "
+            "REQUEST_CHANGES with a [CRITICAL] workspace divergence issue."
+        )
+        for relative_path in (
+            ".codex/agents/review-loop-reviewer.toml",
+            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/execution.md",
+        ):
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+
 
 if __name__ == "__main__":
     unittest.main()

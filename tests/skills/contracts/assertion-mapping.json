@@ -111,6 +111,11 @@
       "artifact": "response.txt",
       "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
     },
+    "workspace_authority_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+    },
     "plan_source_reviewer_approved": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -961,6 +966,52 @@
       {
         "path": "skills/review-loop/SKILL.md",
         "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+      }
+    ],
+    "codex_stage1_single_workspace_authority": [
+      {
+        "path": "README.md",
+        "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+      },
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+      }
+    ],
+    "codex_executor_worktree_switch_forbidden": [
+      {
+        "path": ".codex/agents/review-loop-executor.toml",
+        "needle": "Do not create or switch to another git worktree or repository checkout."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Do not create or switch to another git worktree or repository checkout."
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Do not create or switch to another git worktree or repository checkout."
+      }
+    ],
+    "codex_reviewer_workspace_divergence_guard": [
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "If implementation appears to exist only in a different git worktree or repository path than the current workspace, return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "If implementation appears to exist only in a different git worktree or repository path than the current workspace, return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue."
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "If implementation appears to exist only in a different git worktree or repository path than the current workspace, return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue."
       }
     ],
     "plan_executor_dispatch_skill": [
