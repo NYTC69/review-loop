@@ -40,3 +40,5 @@ handsfree: false
 
 # Skip Quality Polish (Step 3.5) entirely.
 skip_quality_polish: false
+
+# context_persist_threshold: 25   # trigger planning.md §3.5 persist when context_pct >= N; default 70
