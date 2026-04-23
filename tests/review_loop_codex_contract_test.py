@@ -31,6 +31,56 @@ class CodexAgentContractTest(unittest.TestCase):
                     text,
                 )
 
+    def test_codex_delivery_gate_requires_full_downstream_stage_set(self):
+        expectations = {
+            "docs/protocol/execution.md": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.",
+            "docs/protocol/session-file.md": "Codex Stage 1: `{exec, polish, docs, security}`.",
+            "skills/execute/SKILL.md": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.",
+        }
+        legacy = "Codex Stage 1: `{exec} ⊆ completed_stages`."
+        for relative_path, expected in expectations.items():
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+                self.assertNotIn(legacy, text)
+
+    def test_codex_downstream_stop_points_are_documented(self):
+        expected = (
+            "Codex Stage 1 supports `before-polish`, `before-docs`, and "
+            "`before-security` as clean stop points."
+        )
+        for relative_path in (
+            "docs/protocol/execution.md",
+            "README.md",
+            ".agents/skills/guide/SKILL.md",
+            "skills/guide/SKILL.md",
+        ):
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+
+    def test_codex_quality_focus_and_skip_quality_polish_are_real_behavior(self):
+        quality_focus = (
+            "`quality_focus` applies only when Step 3.5 Quality Polish "
+            "actually runs."
+        )
+        skip_quality_polish = (
+            "`skip_quality_polish: true` mints `polish` as a no-op completion "
+            "and still continues through docs and security."
+        )
+        for relative_path in (
+            "README.md",
+            "review-loop-config.example.md",
+            ".agents/skills/guide/SKILL.md",
+            ".agents/skills/review-loop/SKILL.md",
+            "skills/guide/SKILL.md",
+            "skills/review-loop/SKILL.md",
+        ):
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(quality_focus, text)
+                self.assertIn(skip_quality_polish, text)
+
 
 if __name__ == "__main__":
     unittest.main()

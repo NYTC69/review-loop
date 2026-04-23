@@ -1,0 +1,44 @@
+{
+  "id": "execute.stop-after-before-security.smoke.claude",
+  "type": "smoke",
+  "target": "execute",
+  "runtime": "claude",
+  "requires": [
+    "claude",
+    "codex"
+  ],
+  "setup": {
+    "temp_config": "",
+    "timeout_seconds": 900
+  },
+  "execution_policy": "best_effort",
+  "artifacts": {
+    "capture": {
+      "session_path": "latest_session",
+      "session_final": "latest_session",
+      "reviewer_prompt": "reviewer_prompt_file",
+      "tool_use_events": "stream_json_read_events"
+    },
+    "required": [
+      "session_path",
+      "session_final",
+      "tool_use_events",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "bash",
+    "-lc",
+    "set -eu; WT=\"$1\"; cd \"$WT\"; UUID=$(python3 -c 'import uuid; print(uuid.uuid4())'); mkdir -p .review-loop/sessions .review-loop/tmp; cp tests/skills/fixtures/sessions/v2.6.0-approved-session.md \".review-loop/sessions/${UUID}.md\"; printf '%s' \"${UUID}\" > .review-loop/tmp/smoke-session-uuid; cleanup() { rm -f \".review-loop/sessions/${UUID}.lock\"; }; trap cleanup EXIT; exec claude -p --no-session-persistence --permission-mode bypassPermissions --add-dir \"$WT\" -- \"Use the review-loop:execute skill with --session ${UUID} --stop-after before-security --accept-external-state. The preseeded session is a valid v2.6.0 session whose Approved Plan is already satisfied by the current working tree, so the execution round should APPROVE as a no-op, Step 3.5 Quality Polish should pass, Step 3.6 Documentation Consistency should pass, and the orchestrator must stop cleanly before Step 3.7 Security Preflight — completed_stages must be the YAML list [exec, polish, docs] and the session must not contain a ## Delivery section. Do NOT deliver.\"",
+    "--",
+    "__WORKTREE__"
+  ],
+  "assertions": [
+    "session_created",
+    "execution_or_noop_round_recorded",
+    "completed_stages_ordered_exec_polish_docs",
+    "delivery_blocked_by_null",
+    "execute_protocol_imports_read"
+  ]
+}

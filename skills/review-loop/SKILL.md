@@ -27,6 +27,7 @@ The umbrella preserves the original end-to-end UX: Step 1.5 auto-routes
 (plan-exists / code-exists / fresh) and hands off internally into the
 planning or execution loops described by the protocol docs below.
 `entry_point: review-loop` is written to the session metadata.
+Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 
 ## Protocol Imports
 
@@ -91,9 +92,9 @@ commit_message_prefix: "feat"
 docs_file: CHANGELOG.md
 handsfree: false
 review_focus: ""                # free text injected into code-review prompts only
-quality_focus: ""               # free text injected into Quality Polish (Step 3.5) prompts
+quality_focus: ""               # `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 review_style: ""                # free text injected into ALL reviewer prompts
-skip_quality_polish: false      # skip Step 3.5 entirely
+skip_quality_polish: false      # `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 ```
 
 `--handsfree` flag at invocation overrides the config value.
@@ -253,8 +254,12 @@ Both edit rounds and reviewed no-op rounds must write
 
 ### Step 3.5 — Quality Polish
 
-Run Step 3.5 per `docs/protocol/execution.md` §Step 3.5. Skip entirely
-if `skip_quality_polish: true`. All substeps use
+Run Step 3.5 per `docs/protocol/execution.md` §Step 3.5.
+`quality_focus` applies only when Step 3.5 Quality Polish actually runs.
+If `skip_quality_polish: true`, mint `polish` as a no-op completion and
+continue to Step 3.6. `skip_quality_polish: true` mints `polish` as a
+no-op completion and still continues through docs and security. All
+substeps use
 `subagent_type: general-purpose` with the agent body inlined — never
 plugin-defined agent types. Hallucination guard on `tool_uses: 0`.
 

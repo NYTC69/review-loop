@@ -1,5 +1,5 @@
 {
-  "id": "review-loop.noop.codex-fallback",
+  "id": "review-loop.review-only.codex-fallback",
   "type": "smoke",
   "target": "review-loop",
   "runtime": "codex",
@@ -33,12 +33,13 @@
     "-s",
     "workspace-write",
     "--ephemeral",
-    "Use the repo skill review-loop to handle this task end-to-end: add one concise sentence to the Codex Stage 1 section of README.md clarifying that executor_model is ignored in Codex Stage 1 and codex_executor_model remains reserved. If the task is already satisfied, complete the loop as a no-op round rather than making a duplicate edit."
+    "Use the repo skill review-loop to handle this task end-to-end in review-only mode: review the existing Codex Stage 1 README.md wording about executor_model and codex_executor_model, treat the current tree as already implemented, copy REVIEW_TARGET_SMOKE_TOKEN verbatim into the ## Review Target section, and do not make new edits unless the reviewer finds a real defect. The first round should be reviewer-only, and if that reviewer APPROVEs, continue through polish + docs + security + delivery."
   ],
   "assertions": [
     "session_created",
-    "planning_round_recorded",
-    "execution_round_recorded",
+    "review_loop_review_only_route_recorded",
+    "entry_point_review_loop",
+    "execute_round_1_reviewer_only",
     "completed_stages_ordered_exec_polish_docs_security",
     "delivery_blocked_by_null",
     "reviewer_backend_codex"

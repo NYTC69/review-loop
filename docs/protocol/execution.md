@@ -6,9 +6,10 @@ through quality polish, documentation consistency, and security preflight,
 and finally to delivery.
 
 This document is runtime-agnostic. Runtime-specific dispatch is marked with
-`{{claude_code|codex}}` placeholder blocks. Codex Stage 1 has a reduced
-scope (no polish / docs / security / non-delivery `--stop-after` stages);
-all reductions are called out inline.
+`{{claude_code|codex}}` placeholder blocks. Codex Stage 1 now shares the
+same downstream lifecycle contract for Quality Polish, Documentation
+Consistency, Security Preflight, and delivery; runtime-specific dispatch
+differences are called out inline.
 
 For session-file schema, lock, moving baseline, dirty map, drift check,
 `completed_stages` lifecycle, `delivery_blocked_by` lifecycle, and
@@ -87,9 +88,7 @@ baseline update on a clean `--stop-after` exit follow the normal rules in
 ### Runtime-supported subsets
 
 - **Claude Code**: full set (all six values).
-- **Codex Stage 1**: `exec-round`, `before-delivery`, `delivery` only.
-  Steps 3.5 / 3.6 / 3.7 are out of scope, so `before-polish`,
-  `before-docs`, and `before-security` are invalid on Codex.
+- **Codex Stage 1**: full set (all six values). Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
 
 ### Parse-time validation
 
@@ -210,9 +209,8 @@ The execution round loop mirrors the planning round loop (see
 
 6. **Parse, update loop state, display Live Report** — same as planning.
 7. **Loop control** — APPROVE exits Step 3 and enters the downstream stages
-   (Step 3.5 on Claude Code, Step 4 on Codex Stage 1). `REQUEST_CHANGES`
-   feeds feedback to the next round. Soft limit + stuck detection per the
-   caps below.
+   starting at Step 3.5 on both runtimes. `REQUEST_CHANGES` feeds feedback
+   to the next round. Soft limit + stuck detection per the caps below.
 
 ### No-op execution round validation
 
@@ -315,13 +313,18 @@ Executor call**:
 
 ---
 
-## Step 3.5 — Quality Polish (Claude Code only)
+## Step 3.5 — Quality Polish
 
-> **Codex Stage 1 excludes Step 3.5 entirely.** On Codex, after Step 3
-> APPROVEs, the orchestrator jumps straight to Step 4 delivery gate check.
+> Codex Stage 1 and Claude Code both run Step 3.5 before delivery.
 
-> **Skip condition** (Claude Code): if `skip_quality_polish: true` in
-> `.review-loop/config.md`, skip all of Step 3.5 and proceed to Step 3.6.
+> Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
+
+> **Skip condition** (all runtimes): if `skip_quality_polish: true` in
+> `.review-loop/config.md`, mint `polish` as a no-op completion and proceed
+> to Step 3.6. `skip_quality_polish: true` mints `polish` as a no-op
+> completion and still continues through docs and security.
+
+> `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 
 Step 3.5 is supplementary polish, not a replacement for the adversarial CR
 loop. It runs language-specific static analysis, generic code review,
@@ -393,7 +396,9 @@ Agent prompt:
 
 {{codex}}
 
-N/A — Stage 1 scope excludes Quality Polish.
+Use the Codex Stage 1 local runtime path for the same stage. Read the
+changed files, pass `quality_focus` and `review_style` through unchanged,
+and apply the same replay semantics described for Claude Code.
 
 **Hallucination guard**: after each agent returns, check
 `tool_uses` in metadata. If `tool_uses: 0`, the agent did not actually read
@@ -481,7 +486,9 @@ Agent prompt:
 
 {{codex}}
 
-N/A — Stage 1 scope excludes Quality Polish.
+Use the Codex Stage 1 local runtime path for the same stage. Read the
+changed files, pass `quality_focus` and `review_style` through unchanged,
+and apply the same replay semantics described for Claude Code.
 
 **Single pass** — not looped. If simplify makes changes, run a quick build
 check to ensure nothing broke. If build fails, revert the simplify changes
@@ -521,7 +528,9 @@ Agent prompt:
 
 {{codex}}
 
-N/A — Stage 1 scope excludes Quality Polish.
+Use the Codex Stage 1 local runtime path for the same stage. Read the
+changed files, pass `quality_focus` and `review_style` through unchanged,
+and apply the same replay semantics described for Claude Code.
 
 If gaps found, invoke the Executor via the same Executor dispatch used by
 Step 3 (see
@@ -549,9 +558,7 @@ finish with no writes at all in this Step 3.5 invocation, mint `polish` into
 
 ---
 
-## Step 3.6 — Documentation Consistency (Claude Code only)
-
-> Codex Stage 1 excludes Step 3.6.
+## Step 3.6 — Documentation Consistency
 
 **Single pass** — not looped.
 
@@ -593,17 +600,14 @@ terminal state; Step 3.7 still has to run.
 
 ---
 
-## Step 3.7 — Security Preflight (Claude Code only)
-
-> Codex Stage 1 excludes Step 3.7.
+## Step 3.7 — Security Preflight
 
 **Single scan** — runs on every delivery regardless of `auto_commit`.
-Step 3.7 runs **unconditionally** after Step 3.6 on every Claude Code
-invocation that reaches this point, regardless of whether any prior
-stage wrote files. A no-op session (zero code changes, zero doc
-updates) still runs this scan — it is a security gate, not a
-content-dependent step. The only exits before 3.7 are
-`--stop-after before-security` / `before-docs` / `before-polish` /
+Step 3.7 runs **unconditionally** after Step 3.6 on every invocation that
+reaches this point, regardless of whether any prior stage wrote files. A
+no-op session (zero code changes, zero doc updates) still runs this scan —
+it is a security gate, not a content-dependent step. The only exits before
+3.7 are `--stop-after before-security` / `before-docs` / `before-polish` /
 `exec-round`.
 
 ### 3.7.1 — Check for tracked or staged sensitive files
@@ -714,7 +718,7 @@ runtime_supported_set ⊆ completed_stages
 ```
 
 - Claude Code: `{exec, polish, docs, security} ⊆ completed_stages`.
-- Codex Stage 1: `{exec} ⊆ completed_stages`.
+- Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
 Because invalidation + replay guarantee that set entries only exist when
 they are valid for the current state, no separate final reviewer pass is

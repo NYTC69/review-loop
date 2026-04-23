@@ -25,11 +25,15 @@
     "-s",
     "workspace-write",
     "--ephemeral",
-    "Use the repo skill guide to explain the current Stage 1 behavior in this repository. Include the shared config path, shared sessions path, and reviewer backend behavior."
+    "Use the repo skill guide to explain the current Stage 1 behavior in this repository. Include the shared config path, shared sessions path, reviewer backend behavior, the downstream exec -> polish -> docs -> security -> delivery lifecycle, the supported clean stop points before-polish/before-docs/before-security, and the real Codex semantics for quality_focus and skip_quality_polish."
   ],
   "assertions": [
     "shared_config_path_mentioned",
     "shared_sessions_path_mentioned",
-    "reviewer_backend_behavior_mentioned"
+    "reviewer_backend_behavior_mentioned",
+    "codex_stage1_downstream_lifecycle_mentioned",
+    "codex_stage1_downstream_stop_points_mentioned",
+    "quality_focus_real_behavior_mentioned",
+    "skip_quality_polish_real_behavior_mentioned"
   ]
 }

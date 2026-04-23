@@ -17,6 +17,7 @@ and keep the shared `.review-loop` session file accurate.
   reviewer, shared reviewer schema, Stage 1 hallucination guards.
 - Excluded: `code-quality-loop`, `review-pr`, `reorganize`, plugin packaging,
   Stage 2 behavior, concurrent writers to one session file.
+Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 
 ## Runtime Identity
 
@@ -55,6 +56,8 @@ and keep the shared `.review-loop` session file accurate.
   path before the explicit `claude-sonnet-4-6` backstop.
 - `cheap_model` is accepted in shared config but is a documented no-op in
   Codex Stage 1 because Stage 1 currently ships no cheap-tier Codex agents.
+- `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
+- `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 - `codex_reviewer_model` applies only to the local Codex reviewer path.
 - `executor_model` is ignored by the Codex runtime in Stage 1.
 - `codex_executor_model` is reserved only and ignored in Stage 1.

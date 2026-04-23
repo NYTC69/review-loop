@@ -125,6 +125,31 @@
       "needle": "When `soft_limit_exec` is reached and blocking issues remain"
     },
     {
+      "id": "codex_stage1_downstream_lifecycle_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_downstream_lifecycle"
+    },
+    {
+      "id": "codex_stage1_stop_points_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_downstream_stop_points"
+    },
+    {
+      "id": "codex_stage1_full_delivery_gate_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_full_delivery_gate"
+    },
+    {
+      "id": "codex_stage1_quality_focus_is_real_behavior",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_quality_focus_real"
+    },
+    {
+      "id": "codex_stage1_skip_quality_polish_is_real_behavior",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_skip_quality_polish_real"
+    },
+    {
       "id": "codex_hallucination_guard_declared",
       "kind": "contains",
       "path": ".agents/skills/review-loop/SKILL.md",
@@ -292,6 +317,68 @@
       "id": "reviewer_schema_parity",
       "kind": "consistent_with",
       "mapping_id": "reviewer_schema_parity"
+    },
+    {
+      "id": "noop_claude_default_smoke_requires_full_downstream_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/review-loop.noop.claude-default.json",
+      "needle": "\"completed_stages_ordered_exec_polish_docs_security\""
+    },
+    {
+      "id": "noop_codex_fallback_smoke_requires_full_downstream_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/review-loop.noop.codex-fallback.json",
+      "needle": "\"completed_stages_ordered_exec_polish_docs_security\""
+    },
+    {
+      "id": "execute_stop_after_before_polish_smoke_exists",
+      "kind": "exists",
+      "path": "tests/skills/smoke/execute.stop-after-before-polish.smoke.claude.json"
+    },
+    {
+      "id": "execute_stop_after_before_polish_smoke_requires_exec_only_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/execute.stop-after-before-polish.smoke.claude.json",
+      "needle": "\"completed_stages_ordered_exec\""
+    },
+    {
+      "id": "execute_stop_after_before_security_smoke_exists",
+      "kind": "exists",
+      "path": "tests/skills/smoke/execute.stop-after-before-security.smoke.claude.json"
+    },
+    {
+      "id": "execute_stop_after_before_security_smoke_requires_exec_polish_docs_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/execute.stop-after-before-security.smoke.claude.json",
+      "needle": "\"completed_stages_ordered_exec_polish_docs\""
+    },
+    {
+      "id": "review_loop_review_only_codex_smoke_exists",
+      "kind": "exists",
+      "path": "tests/skills/smoke/review-loop.review-only.codex-fallback.json"
+    },
+    {
+      "id": "review_loop_review_only_codex_smoke_requires_review_only_route_and_full_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/review-loop.review-only.codex-fallback.json",
+      "needle": "\"review_loop_review_only_route_recorded\""
+    },
+    {
+      "id": "review_loop_review_only_codex_smoke_requires_full_downstream_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/review-loop.review-only.codex-fallback.json",
+      "needle": "\"completed_stages_ordered_exec_polish_docs_security\""
+    },
+    {
+      "id": "review_loop_skip_quality_polish_codex_smoke_exists",
+      "kind": "exists",
+      "path": "tests/skills/smoke/review-loop.skip-quality-polish.codex-fallback.json"
+    },
+    {
+      "id": "review_loop_skip_quality_polish_codex_smoke_requires_full_downstream_completion",
+      "kind": "contains",
+      "path": "tests/skills/smoke/review-loop.skip-quality-polish.codex-fallback.json",
+      "needle": "\"completed_stages_ordered_exec_polish_docs_security\""
     }
   ]
 }

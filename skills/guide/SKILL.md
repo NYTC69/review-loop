@@ -49,6 +49,7 @@ one that matches where your work currently is:
 All three skills write the same session-file schema under
 `.review-loop/sessions/{uuid}.md`, so you can hand off between them (and
 between runtimes — plan on one, execute on the other).
+Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 
 ## Usage
 
@@ -113,7 +114,8 @@ show me the review-loop guide
 remains `<work item description> [--handsfree]` for backward compatibility.
 If you need mid-flow stops, invoke `/review-loop:execute` directly.
 
-Stop cleanly at a seam between stages. Claude Code supports the full set:
+Stop cleanly at a seam between stages. Claude Code and Codex Stage 1 support
+the full set:
 
 | Value | Stops |
 |---|---|
@@ -126,6 +128,7 @@ Stop cleanly at a seam between stages. Claude Code supports the full set:
 
 Unsupported values are rejected at parse time, before any lock is
 acquired or session field is written.
+Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
 
 ## `--accept-external-state` (unsafe opt-in)
 
@@ -165,9 +168,9 @@ Create `.review-loop/config.md` in your project to customize:
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | false | Default to handsfree mode |
 | `review_focus` | "" | Project-specific review priorities (free text) |
-| `quality_focus` | "" | What to prioritize in Quality Polish (Step 3.5) |
+| `quality_focus` | "" | `quality_focus` applies only when Step 3.5 Quality Polish actually runs. |
 | `review_style` | "" | Tone/rules for ALL reviews — adversarial + quality agents |
-| `skip_quality_polish` | false | Skip Step 3.5 entirely |
+| `skip_quality_polish` | false | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security. |
 
 Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path by
 default. The local Codex reviewer is explicit opt-in only via
@@ -175,6 +178,8 @@ default. The local Codex reviewer is explicit opt-in only via
 Codex Stage 1 because only judgment-tier Codex agents are shipped today. When
 neither `reviewer_model` nor `judgment_model` is set, that default Claude
 reviewer path backstops to `claude-sonnet-4-6`.
+`quality_focus` applies only when Step 3.5 Quality Polish actually runs.
+`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 
 ### review_focus examples
 

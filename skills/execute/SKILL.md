@@ -324,11 +324,13 @@ Orchestrator compares the Executor's claimed file list against the
 current-round delta (pre-round vs post-round). Same path sets alone do
 not prove a no-op.
 
-## Step 3.5 — Quality Polish (Claude Code only)
+## Step 3.5 — Quality Polish
 
 Per `docs/protocol/execution.md` §Step 3.5. Runs language-specific
 static analysis, code-quality review-fix loop, simplify, test
-consolidation. Skip entirely if `skip_quality_polish: true` in config.
+consolidation. `quality_focus` applies only when Step 3.5 Quality Polish
+actually runs. If `skip_quality_polish: true` in config, mint `polish`
+as a no-op completion and continue to Step 3.6.
 
 - Any substep that writes code clears `completed_stages` and the
   Orchestrator replays from `exec` per
@@ -345,7 +347,7 @@ All Step 3.5 invocations use `subagent_type: general-purpose` with the
 agent body inlined, per `docs/protocol/execution.md` §3.5.2 /
 §3.5.3 / §3.5.4 / §3.5.5.
 
-## Step 3.6 — Documentation Consistency (Claude Code only)
+## Step 3.6 — Documentation Consistency
 
 Per `docs/protocol/execution.md` §Step 3.6. Single pass. Update project
 docs + fix stale code comments. Writes → clear `completed_stages`,
@@ -354,7 +356,7 @@ proceed to Step 3.7** — a no-op docs stage is not a terminal state.
 
 `--stop-after before-security` → exit after Step 3.6 and before Step 3.7.
 
-## Step 3.7 — Security Preflight (Claude Code only)
+## Step 3.7 — Security Preflight
 
 Per `docs/protocol/execution.md` §Step 3.7. Single scan. Check for
 tracked/staged sensitive files; audit `.gitignore` for missing
@@ -375,7 +377,8 @@ gate, not a content-dependent step. The only exits before 3.7 are
 Per `docs/protocol/execution.md` §Step 4 — Delivery, gated by the
 delivery gate in §Delivery gate: `runtime_supported_set ⊆
 completed_stages`. For Claude Code the runtime set is
-`{exec, polish, docs, security}`; for Codex Stage 1 it is `{exec}`.
+`{exec, polish, docs, security}`; for Codex Stage 1 it is
+`{exec, polish, docs, security}`. Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
 On gate failure, hard-stop per §Delivery gate: set
 `delivery_blocked_by ← <first missing stage>`, exit without delivering.

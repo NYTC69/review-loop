@@ -10,6 +10,7 @@ description: Codex Stage 1 guide for review-loop and the shared Claude/Codex sta
 In Codex Stage 1, `review-loop` is a repo skill that follows the same broad
 review workflow used in Claude Code. It coordinates planning, implementation,
 and review while keeping the shared session log current.
+Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 
 Codex reads and writes the same review-loop state as Claude Code:
 
@@ -51,9 +52,12 @@ explicit `claude-sonnet-4-6` backstop.
 `cheap_model` is accepted in the shared config so Claude and Codex can share
 the same file, but in Codex Stage 1 it is a documented no-op because only
 judgment-tier Codex agents are currently shipped.
+`quality_focus` applies only when Step 3.5 Quality Polish actually runs.
+`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 
 ## Usage Notes
 
+- Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
 - Codex repo skills live under `.agents/skills/` in the Codex workspace.
 - Keep the shared review-loop config in `.review-loop/config.md`.
 - Keep session logs in `.review-loop/sessions/`.

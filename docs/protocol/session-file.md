@@ -406,7 +406,7 @@ guaranteed by the per-stage caps documented in
 ### Runtime-supported sets
 
 - Claude Code: `{exec, polish, docs, security}`.
-- Codex Stage 1: `{exec}`.
+- Codex Stage 1: `{exec, polish, docs, security}`.
 
 The runtime-supported set is the gate for delivery
 (see [execution.md §Delivery gate](./execution.md#delivery-gate)).

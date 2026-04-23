@@ -41,6 +41,26 @@
       "mapping_id": "codex_stage1_cheap_model_noop"
     },
     {
+      "id": "guide_mentions_codex_downstream_lifecycle",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_downstream_lifecycle"
+    },
+    {
+      "id": "guide_mentions_codex_downstream_stop_points",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_downstream_stop_points"
+    },
+    {
+      "id": "guide_mentions_quality_focus_real_behavior",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_quality_focus_real"
+    },
+    {
+      "id": "guide_mentions_skip_quality_polish_real_behavior",
+      "kind": "consistent_with",
+      "mapping_id": "codex_stage1_skip_quality_polish_real"
+    },
+    {
       "id": "readme_marks_codex_stage1_surface",
       "kind": "contains",
       "path": "README.md",
@@ -75,6 +95,30 @@
       "kind": "contains",
       "path": "tests/skills/smoke/guide.plugin-surface.readme.json",
       "needle": "\"target\": \"guide"
+    },
+    {
+      "id": "guide_shared_state_codex_smoke_mentions_downstream_lifecycle",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.shared-state.codex.json",
+      "needle": "\"codex_stage1_downstream_lifecycle_mentioned\""
+    },
+    {
+      "id": "guide_shared_state_codex_smoke_mentions_downstream_stop_points",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.shared-state.codex.json",
+      "needle": "\"codex_stage1_downstream_stop_points_mentioned\""
+    },
+    {
+      "id": "guide_shared_state_codex_smoke_mentions_quality_focus_semantics",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.shared-state.codex.json",
+      "needle": "\"quality_focus_real_behavior_mentioned\""
+    },
+    {
+      "id": "guide_shared_state_codex_smoke_mentions_skip_quality_polish_semantics",
+      "kind": "contains",
+      "path": "tests/skills/smoke/guide.shared-state.codex.json",
+      "needle": "\"skip_quality_polish_real_behavior_mentioned\""
     }
   ]
 }

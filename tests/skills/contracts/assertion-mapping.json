@@ -91,6 +91,26 @@
       "artifact": "response.txt",
       "needle": "local Codex reviewer"
     },
+    "codex_stage1_downstream_lifecycle_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+    },
+    "codex_stage1_downstream_stop_points_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
+    },
+    "quality_focus_real_behavior_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+    },
+    "skip_quality_polish_real_behavior_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+    },
     "plan_source_reviewer_approved": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -155,6 +175,16 @@
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "- completed_stages:\n  - exec\n- "
+    },
+    "completed_stages_list_exec_polish_docs_inline": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages: [exec, polish, docs]"
+    },
+    "completed_stages_list_exec_polish_docs_block": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- completed_stages:\n  - exec\n  - polish\n  - docs\n- "
     },
     "completed_stages_contains_polish_token": {
       "kind": "artifact_contains",
@@ -274,11 +304,25 @@
         "reviewer_prompt_user_supplied_provenance_marker_plan_source_key"
       ]
     },
+    "completed_stages_list_exec": {
+      "mode": "any",
+      "members": [
+        "completed_stages_list_exec_inline",
+        "completed_stages_list_exec_block"
+      ]
+    },
     "completed_stages_list_exec_polish": {
       "mode": "any",
       "members": [
         "completed_stages_list_exec_polish_inline",
         "completed_stages_list_exec_polish_block"
+      ]
+    },
+    "completed_stages_list_exec_polish_docs": {
+      "mode": "any",
+      "members": [
+        "completed_stages_list_exec_polish_docs_inline",
+        "completed_stages_list_exec_polish_docs_block"
       ]
     },
     "completed_stages_list_exec_polish_docs_security": {
@@ -346,6 +390,20 @@
       "members": [
         "completed_stages_field_present",
         "completed_stages_list_exec_polish"
+      ]
+    },
+    "completed_stages_ordered_exec": {
+      "mode": "all",
+      "members": [
+        "completed_stages_field_present",
+        "completed_stages_list_exec"
+      ]
+    },
+    "completed_stages_ordered_exec_polish_docs": {
+      "mode": "all",
+      "members": [
+        "completed_stages_field_present",
+        "completed_stages_list_exec_polish_docs"
       ]
     },
     "completed_stages_ordered_exec_polish_docs_security": {
@@ -801,6 +859,108 @@
       {
         "path": ".agents/skills/review-loop/SKILL.md",
         "needle": "do not auto-fall back to the local Codex reviewer"
+      }
+    ],
+    "codex_stage1_downstream_lifecycle": [
+      {
+        "path": "README.md",
+        "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+      }
+    ],
+    "codex_stage1_downstream_stop_points": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
+      },
+      {
+        "path": "README.md",
+        "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
+      }
+    ],
+    "codex_stage1_full_delivery_gate": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`."
+      },
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "Codex Stage 1: `{exec, polish, docs, security}`."
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`."
+      }
+    ],
+    "codex_stage1_quality_focus_real": [
+      {
+        "path": "README.md",
+        "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+      }
+    ],
+    "codex_stage1_skip_quality_polish_real": [
+      {
+        "path": "README.md",
+        "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
       }
     ],
     "plan_executor_dispatch_skill": [

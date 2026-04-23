@@ -37,6 +37,7 @@
     "session_created",
     "reviewer_prompt_exists",
     "execution_round_recorded",
-    "completed_stages_contains_exec"
+    "completed_stages_ordered_exec_polish_docs_security",
+    "delivery_blocked_by_null"
   ]
 }
