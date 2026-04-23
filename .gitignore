@@ -12,3 +12,70 @@ node_modules/
 tests/skills/.artifacts/
 tests/skills/.last-run.json
 HANDOFF.md
+
+# Environment & config
+.env
+.env.*
+*.env
+!.env.example
+!.env.sample
+
+# Keys & certificates
+*.pem
+*.key
+*.crt
+*.cert
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# SSH key files
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*.ppk
+
+# PGP / GPG
+*.asc
+*.gpg
+*.pgp
+
+# Cloud credentials
+*credentials*
+!*credentials.example*
+!*credentials.sample*
+service-account*.json
+.aws/
+.gcloud/
+
+# Generic secret files
+*secret*
+!*secret.example*
+!*secret.sample*
+secrets.*
+!secrets.example*
+!secrets.sample*
+
+# Database & dumps
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+
+# Compiled source maps
+*.map
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+
+# Logs
+*.log
+logs/

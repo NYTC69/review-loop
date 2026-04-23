@@ -175,8 +175,8 @@ Separate ship unit. Ships after Phase 2 and before Phase 3. No runtime behavior 
 
 - [ ] Create `.agents/skills/plan/SKILL.md` with the same entry/exit semantics as Phase 2 plan skill but Codex-native dispatch (fresh self-contained Codex subagent prompts; `claude -p --no-session-persistence` reviewer default with Codex reviewer fallback).
 - [ ] Create `.agents/skills/execute/SKILL.md`:
-  - Stage 1 scope: Step 3 exec + Step 4 delivery only. Steps 3.5 / 3.6 / 3.7 are explicitly out of scope and the skill rejects `--stop-after` values that reference them.
-  - Implement the same three entry modes, lock, drift check, `completed_stages` invalidation + replay (trivially terminates since supported set is `{exec}`), hard-stop, `delivery_blocked_by`.
+  - Stage 1 scope must match the current downstream lifecycle contract: `exec -> polish -> docs -> security -> delivery`, including support for `before-polish`, `before-docs`, and `before-security`.
+  - Implement the same three entry modes, lock, drift check, `completed_stages` invalidation + replay across `{exec, polish, docs, security}`, hard-stop, `delivery_blocked_by`.
 - [ ] Refactor `.agents/skills/review-loop/SKILL.md`:
   - Thin wrapper referencing the same four protocol docs.
   - Update `## Stage 1 Scope` list to `review-loop`, `plan`, `execute`, `guide`.

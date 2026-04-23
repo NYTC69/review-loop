@@ -32,15 +32,12 @@
 - In `codex exec --ephemeral`, subagent calls should use fresh self-contained
   prompts instead of relying on forked parent-thread context.
 - `.review-loop/config.md` and `.review-loop/sessions/*.md` remain the shared protocol.
-- **Stage 1 scope (v2.6.0 plan/execute split)** — Stage 1 scope is
-  expanding in Phase 3 to cover `review-loop`, `plan`, `execute`,
-  `guide`. Phase 2 (this release) lands the Claude-side skills and the
-  shared `docs/protocol/*.md` single source of truth; Phase 3 will
-  mirror the split on the Codex side with Stage 1 scope limited to
-  Step 3 exec + Step 4 delivery (no Steps 3.5 / 3.6 / 3.7 — those
-  remain Claude Code only). Until Phase 3 lands, Codex continues to
-  expose only the pre-split `review-loop` + `guide` skills under
-  `.agents/skills/`.
+- **Stage 1 scope (current)** — Codex continues to expose only the
+  repo-local `review-loop` + `guide` skills under `.agents/skills/`,
+  but the shared Stage 1 runtime contract now carries the same broad
+  `exec -> polish -> docs -> security -> delivery` lifecycle as Claude
+  Code. Phase 3 split-skill work remains future Codex surface work, not
+  a limitation of the current downstream lifecycle.
 
 ## Design Philosophy
 
@@ -156,9 +153,9 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
 | `review_focus` | `""` | Project-specific review priorities (free text) |
-| `quality_focus` | `""` | What to prioritize in quality polish (free text) |
+| `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs |
 | `review_style` | `""` | Tone and rules for all reviews (free text) |
-| `skip_quality_polish` | `false` | Skip Quality Polish (Step 3.5) entirely |
+| `skip_quality_polish` | `false` | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security |
 
 For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
 path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,

@@ -221,9 +221,9 @@ Mode behavior:
   round** and go straight to Reviewer; later rounds follow the standard
   CR→fix loop.
 
-Quality Polish / Docs / Security / Delivery: Claude Code runs Steps 3.5 /
-3.6 / 3.7 / 4 in full; Codex Stage 1 runs Step 3 + Step 4 only (Stage 1
-scope excludes polish/docs/security).
+Quality Polish / Docs / Security / Delivery: Claude Code and Codex Stage 1
+both run Steps 3.5 / 3.6 / 3.7 / 4 in full. Runtime differences are in
+dispatch details, not in the downstream lifecycle contract.
 
 ### `--stop-after <stage>`
 
@@ -232,7 +232,7 @@ Legal values (full set): `exec-round`, `before-polish`, `before-docs`,
 
 Runtime-supported subsets:
 - Claude Code: full set.
-- Codex Stage 1: `exec-round`, `before-delivery`, `delivery`.
+- Codex Stage 1: full set.
 
 Unsupported-on-runtime values are rejected at Step 0 flag parsing, before any
 lock is acquired or session field is written.
@@ -313,7 +313,7 @@ Resume from a non-null `delivery_blocked_by`:
 ## Delivery gate
 
 Step 4 enters only when `runtime_supported_set ⊆ completed_stages`. Claude
-Code needs `{exec, polish, docs, security}`; Codex Stage 1 needs `{exec}`.
+Code and Codex Stage 1 both need `{exec, polish, docs, security}`.
 Because invalidation + replay guarantees entries only exist when valid for
 the current state, the gate needs no separate final reviewer pass.
 
@@ -326,7 +326,7 @@ only in each runtime's SKILL.md:
   agent bodies (workaround for the plugin agent-type sandbox bug).
 - Codex: Codex subagents via fresh self-contained prompts;
   `claude -p --no-session-persistence` default reviewer with Codex fallback;
-  Stage 1 excludes polish/docs/security.
+  same downstream lifecycle contract as Claude Code.
 
 The shared session file is the only cross-runtime contract. A user can run
 `plan` on one runtime and `execute --session {uuid}` on the other.
