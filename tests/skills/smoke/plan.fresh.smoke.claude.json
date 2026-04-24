@@ -33,7 +33,7 @@
     "--add-dir",
     "__WORKTREE__",
     "--",
-    "Use the review-loop:plan skill on the following trivial work item: Document that running `/review-loop:plan` initializes a session file with `## Current Phase: planning`. The goal of this invocation is to validate that the plan skill creates a session file under .review-loop/sessions/{uuid}.md and produces at least one reviewer prompt before exiting. Treat any existing context as sufficient; run a single planning round and stop as soon as the Reviewer responds."
+    "Use the review-loop:plan skill on the following trivial work item: Add a user-facing documentation guarantee that includes the exact distinctive phrase `Planning session header guarantee` and states that `/review-loop:plan` initializes `.review-loop/sessions/{uuid}.md` with the exact literal full-line header `## Current Phase: planning`. The plan must include an explicit verification step that checks both (a) the documentation change by grepping for that distinctive new phrase, and (b) the generated session file for the exact literal header. That verification step must use the known current session file path for this invocation, not `ls -t` or any newest-file heuristic, and it must use exact full-line matching such as `grep -nxF` plus an exact-count check for the session-file header. The goal of this invocation is to validate that the plan skill creates a session file under .review-loop/sessions/{uuid}.md and produces at least one reviewer prompt before exiting. Treat any existing context as sufficient; run a single planning round and stop as soon as the Reviewer responds."
   ],
   "assertions": [
     "session_created",
