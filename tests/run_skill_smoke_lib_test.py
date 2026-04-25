@@ -491,7 +491,7 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
             "`quality_focus` only matters when Step 3.5 Quality Polish actually runs.\n"
             "`skip_quality_polish: true` does not skip the rest of the lifecycle. "
             "It records `polish` as a no-op completion, then continues through docs and security.\n"
-            "Codex Stage 1 assumes one orchestrator-owned workspace.\n"
+            "Codex Stage 1 uses one orchestrator-owned workspace.\n"
         )
 
         if artifact_dir.exists():

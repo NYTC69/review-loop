@@ -291,6 +291,11 @@
       "artifact": "response.txt",
       "needle": "Codex Stage 1 assumes one orchestrator-owned workspace"
     },
+    "workspace_authority_uses_one_workspace": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 uses one orchestrator-owned workspace"
+    },
     "workspace_authority_exact": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
@@ -569,7 +574,8 @@
         "workspace_authority_exact",
         "workspace_authority_paraphrase",
         "workspace_authority_one_workspace",
-        "workspace_authority_assumes_one_workspace"
+        "workspace_authority_assumes_one_workspace",
+        "workspace_authority_uses_one_workspace"
       ]
     },
     "reviewer_prompt_user_supplied_provenance_marker": {
