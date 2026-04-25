@@ -219,9 +219,25 @@ The execution round loop mirrors the planning round loop (see
    [planning.md §Reviewer dispatch](./planning.md#reviewer-dispatch-claude_codecodex).
 
 6. **Parse, update loop state, display Live Report** — same as planning.
+   After the Executor and Reviewer outputs for an execution round have been validated and persisted to the session file, close completed Codex subagents for that round before the next round, downstream stage, or delivery step.
 7. **Loop control** — APPROVE exits Step 3 and enters the downstream stages
    starting at Step 3.5 on both runtimes. `REQUEST_CHANGES` feeds feedback
    to the next round. Soft limit + stuck detection per the caps below.
+
+### Codex completed-agent cleanup
+
+Codex orchestrators run completed-agent cleanup before every new
+`spawn_agent` call in the execution loop. Close completed
+`review_loop_executor` and local `review_loop_reviewer` ids from earlier
+rounds unless the orchestrator explicitly intends to reuse that exact id.
+Cleanup happens only after the agent output has been captured, validated or
+rejected, and the round result or failure has been persisted to the session
+file or surfaced to the user.
+
+The default Claude CLI reviewer path is a child process, not a Codex subagent,
+so this completed-agent cleanup policy does not apply to that reviewer path.
+Keep deleting `.review-loop/tmp/{session_id}-reviewer-prompt.txt` as the
+Claude-path cleanup step.
 
 ### No-op execution round validation
 

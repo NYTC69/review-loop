@@ -47,15 +47,30 @@
       "artifact": "session-final.md",
       "needle": "### Round 1 — Execution (review-only)"
     },
+    "reviewer_round_1_recorded_execution_round_review_only_form": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Execution Round 1\n- Executor backend: skipped (review-only first round)"
+    },
+    "reviewer_round_1_recorded_execution_round_parenthetical_review_only_form": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Execution Round 1 (review-only)\n- Executor backend: skipped (review-only first round)"
+    },
     "noop_execution_outcome_recorded": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "no-op execution round"
     },
-    "reviewer_backend_codex": {
+    "reviewer_backend_codex_metadata": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "- reviewer_backend: codex"
+    },
+    "reviewer_backend_codex_review_history": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Reviewer backend: codex"
     },
     "reviewer_prompt_exists": {
       "kind": "artifact_exists",
@@ -86,12 +101,37 @@
       "artifact": "response.txt",
       "needle": "Claude CLI reviewer"
     },
+    "reviewer_backend_default_path_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Claude CLI path"
+    },
     "reviewer_backend_fallback_mentioned": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "local Codex reviewer"
     },
+    "reviewer_backend_local_codex_review_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "local Codex review"
+    },
     "codex_stage1_downstream_lifecycle_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+    },
+    "codex_stage1_downstream_lifecycle_paraphrase": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`exec -> polish -> docs -> security -> delivery`"
+    },
+    "codex_stage1_downstream_lifecycle_codeblock": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "exec -> polish -> docs -> security -> delivery"
+    },
+    "codex_stage1_downstream_lifecycle_exact": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
@@ -101,7 +141,77 @@
       "artifact": "response.txt",
       "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
     },
+    "codex_stage1_downstream_stop_points_paraphrase": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Supported clean stop points"
+    },
+    "codex_stage1_downstream_stop_points_guide_phrase": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Clean stop points called out by the guide"
+    },
+    "codex_stage1_downstream_stop_points_heading": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Clean stop points:"
+    },
+    "codex_stage1_downstream_stop_points_supports_at": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "supports clean stop points at"
+    },
+    "codex_stage1_stop_point_before_polish_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "before-polish"
+    },
+    "codex_stage1_stop_point_before_docs_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "before-docs"
+    },
+    "codex_stage1_stop_point_before_security_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "before-security"
+    },
+    "codex_stage1_downstream_stop_points_exact": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points."
+    },
     "quality_focus_real_behavior_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
+    },
+    "quality_focus_real_behavior_paraphrase": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`quality_focus` only matters if Step 3.5 Quality Polish actually runs."
+    },
+    "quality_focus_real_behavior_meaningful": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`quality_focus` is only meaningful when Step 3.5 Quality Polish actually runs."
+    },
+    "quality_focus_real_behavior_matters_when": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`quality_focus` only matters when Step 3.5 Quality Polish actually runs."
+    },
+    "quality_focus_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "quality_focus"
+    },
+    "quality_polish_step_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Quality Polish"
+    },
+    "quality_focus_real_behavior_exact": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs."
@@ -111,7 +221,77 @@
       "artifact": "response.txt",
       "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
     },
+    "skip_quality_polish_real_behavior_paraphrase": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` marks `polish` as a no-op completion"
+    },
+    "skip_quality_polish_real_behavior_mints": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` does not skip the downstream lifecycle. It mints `polish` as a no-op completion"
+    },
+    "skip_quality_polish_real_behavior_records": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` records `polish` as a no-op completion, then still continues through docs and security."
+    },
+    "skip_quality_polish_real_behavior_does_not_skip_records": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` does not skip the downstream lifecycle. It records `polish` as a no-op completion and still continues through docs and security."
+    },
+    "skip_quality_polish_real_behavior_rest_of_lifecycle": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` does not skip the rest of the lifecycle. It records `polish` as a no-op completion, then continues through docs and security."
+    },
+    "skip_quality_polish_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "skip_quality_polish"
+    },
+    "no_op_completion_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "no-op"
+    },
+    "docs_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "docs"
+    },
+    "security_token": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "security"
+    },
+    "skip_quality_polish_real_behavior_exact": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security."
+    },
     "workspace_authority_mentioned": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+    },
+    "workspace_authority_paraphrase": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 stays in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_one_workspace": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 stays in one orchestrator-owned workspace"
+    },
+    "workspace_authority_assumes_one_workspace": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 assumes one orchestrator-owned workspace"
+    },
+    "workspace_authority_exact": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
@@ -306,7 +486,90 @@
       "mode": "any",
       "members": [
         "reviewer_round_1_recorded_roleform",
-        "reviewer_round_1_recorded_review_only_form"
+        "reviewer_round_1_recorded_review_only_form",
+        "reviewer_round_1_recorded_execution_round_review_only_form",
+        "reviewer_round_1_recorded_execution_round_parenthetical_review_only_form"
+      ]
+    },
+    "reviewer_backend_codex": {
+      "mode": "any",
+      "members": [
+        "reviewer_backend_codex_metadata",
+        "reviewer_backend_codex_review_history"
+      ]
+    },
+    "codex_stage1_downstream_lifecycle_mentioned": {
+      "mode": "any",
+      "members": [
+        "codex_stage1_downstream_lifecycle_exact",
+        "codex_stage1_downstream_lifecycle_paraphrase",
+        "codex_stage1_downstream_lifecycle_codeblock"
+      ]
+    },
+    "codex_stage1_downstream_stop_points_mentioned": {
+      "mode": "any",
+      "members": [
+        "codex_stage1_downstream_stop_points_exact",
+        "codex_stage1_downstream_stop_points_paraphrase",
+        "codex_stage1_downstream_stop_points_guide_phrase",
+        "codex_stage1_downstream_stop_points_heading",
+        "codex_stage1_downstream_stop_points_supports_at",
+        "codex_stage1_downstream_stop_points_tokens"
+      ]
+    },
+    "codex_stage1_downstream_stop_points_tokens": {
+      "mode": "all",
+      "members": [
+        "codex_stage1_stop_point_before_polish_token",
+        "codex_stage1_stop_point_before_docs_token",
+        "codex_stage1_stop_point_before_security_token"
+      ]
+    },
+    "quality_focus_real_behavior_mentioned": {
+      "mode": "any",
+      "members": [
+        "quality_focus_real_behavior_exact",
+        "quality_focus_real_behavior_paraphrase",
+        "quality_focus_real_behavior_meaningful",
+        "quality_focus_real_behavior_matters_when",
+        "quality_focus_real_behavior_tokens"
+      ]
+    },
+    "quality_focus_real_behavior_tokens": {
+      "mode": "all",
+      "members": [
+        "quality_focus_token",
+        "quality_polish_step_token"
+      ]
+    },
+    "skip_quality_polish_real_behavior_mentioned": {
+      "mode": "any",
+      "members": [
+        "skip_quality_polish_real_behavior_exact",
+        "skip_quality_polish_real_behavior_paraphrase",
+        "skip_quality_polish_real_behavior_mints",
+        "skip_quality_polish_real_behavior_records",
+        "skip_quality_polish_real_behavior_does_not_skip_records",
+        "skip_quality_polish_real_behavior_rest_of_lifecycle",
+        "skip_quality_polish_real_behavior_tokens"
+      ]
+    },
+    "skip_quality_polish_real_behavior_tokens": {
+      "mode": "all",
+      "members": [
+        "skip_quality_polish_token",
+        "no_op_completion_token",
+        "docs_token",
+        "security_token"
+      ]
+    },
+    "workspace_authority_mentioned": {
+      "mode": "any",
+      "members": [
+        "workspace_authority_exact",
+        "workspace_authority_paraphrase",
+        "workspace_authority_one_workspace",
+        "workspace_authority_assumes_one_workspace"
       ]
     },
     "reviewer_prompt_user_supplied_provenance_marker": {
@@ -377,8 +640,22 @@
     "reviewer_backend_behavior_mentioned": {
       "mode": "all",
       "members": [
+        "reviewer_backend_default_behavior_mentioned",
+        "reviewer_backend_fallback_behavior_mentioned"
+      ]
+    },
+    "reviewer_backend_fallback_behavior_mentioned": {
+      "mode": "any",
+      "members": [
+        "reviewer_backend_fallback_mentioned",
+        "reviewer_backend_local_codex_review_mentioned"
+      ]
+    },
+    "reviewer_backend_default_behavior_mentioned": {
+      "mode": "any",
+      "members": [
         "reviewer_backend_default_mentioned",
-        "reviewer_backend_fallback_mentioned"
+        "reviewer_backend_default_path_mentioned"
       ]
     },
     "completed_stages_contains_exec": {

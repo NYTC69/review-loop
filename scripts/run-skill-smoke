@@ -35,6 +35,10 @@ class RunnerError(Exception):
 
 ENVIRONMENT_ERROR_SNIPPETS = [
     "Codex cannot access session files at /Users/yuanlei/.codex/sessions",
+    "You've hit your org's monthly usage limit",
+    "monthly usage limit",
+    "monthly usage-limit",
+    "api_error_status: 429",
 ]
 
 
@@ -125,6 +129,16 @@ def git_status(root: Path) -> str:
         text=True,
     )
     return completed.stdout
+
+
+def environment_limitation_reason(*values: str) -> str:
+    haystack = "\n".join(value for value in values if isinstance(value, str)).lower()
+    if not haystack:
+        return ""
+    for snippet in ENVIRONMENT_ERROR_SNIPPETS:
+        if snippet.lower() in haystack:
+            return f"best-effort smoke hit environment limitation: {snippet}"
+    return ""
 
 
 def load_existing_results(path: Path):
@@ -603,11 +617,7 @@ def run_case(case_data, mapping_data):
                 partial_stdout = exc.partial_stdout or ""
                 partial_stderr = exc.partial_stderr or ""
                 timeout_stderr = exc.message
-                reason = "best-effort smoke timed out"
-                for snippet in ENVIRONMENT_ERROR_SNIPPETS:
-                    if snippet in timeout_stderr:
-                        reason = "best-effort smoke hit environment limitation"
-                        break
+                reason = environment_limitation_reason(timeout_stderr) or "best-effort smoke timed out"
                 finished_at = now_iso()
                 if stdout_artifact.exists():
                     artifacts["stdout"] = relative_to_root(stdout_artifact, ROOT)
@@ -763,7 +773,24 @@ def run_case(case_data, mapping_data):
     write_json(artifact_dir / "assertions.json", assertion_results)
     artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
 
-    if returncode != 0:
+    environment_reason = ""
+    if execution_policy == "best_effort":
+        environment_texts = [stdout, stderr]
+        for optional_name in ("reviewer-result.json", "session-final.md", "response.txt"):
+            optional_path = artifact_dir / optional_name
+            if optional_path.exists():
+                try:
+                    environment_texts.append(optional_path.read_text(encoding="utf-8"))
+                except OSError:
+                    pass
+        environment_reason = environment_limitation_reason(*environment_texts)
+
+    if environment_reason:
+        status = "skip"
+        reason = environment_reason
+        if assertion_status == "fail":
+            reason = f"{reason}; {assertion_reason}"
+    elif returncode != 0:
         status = "fail"
         reason = f"command exited with status {returncode}"
         if assertion_status == "fail":

@@ -38,6 +38,35 @@ Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> deli
 - On explicit resume, do not reset the session to a fresh planning run and do
   not overwrite accumulated `## Review History` as if the session were new.
 
+## Completed Agent Cleanup
+
+- Track every Codex subagent id spawned for `review_loop_executor` and
+  `review_loop_reviewer` during the session.
+- Before every new `spawn_agent` call, call `close_agent` on any completed Codex subagent id from earlier planning, execution, or local-reviewer rounds unless the orchestrator explicitly intends to reuse that exact id.
+- Do not close a subagent until its output has been captured, validated or
+  rejected, and any information needed for the session-file update, retry
+  decision, or user-facing failure report has been copied into
+  orchestrator-owned state.
+- After each planning round, execution round, or local Codex reviewer retry
+  finishes, close the completed Executor and local Reviewer subagents for that
+  round before spawning the next agent or moving to the next phase.
+- The Claude CLI reviewer path is a child process, not a Codex subagent, so completed-agent cleanup does not apply to it. Continue deleting its temporary
+  prompt file immediately after the command returns.
+- If cleanup closes one or more obsolete completed agents, log a short live
+  update naming the cleanup count. Do not add cleanup details to the session
+  file unless they affect the round result.
+
+## Umbrella Completion
+
+- For the umbrella `review-loop` entry point, do not deliver, summarize success, or stop after the execution loop mints only `exec`; continue through Quality Polish, Documentation Consistency, Security Preflight, and delivery unless an explicit `--stop-after` value says otherwise.
+- A reviewed no-op execution round is still only the `exec` stage. It is not
+  a terminal success state for the umbrella command unless the caller asked
+  for `--stop-after exec-round` or `--stop-after before-polish`.
+- Before the final user-facing delivery summary, verify that Codex Stage 1 has
+  `{exec, polish, docs, security} ⊆ completed_stages`. If any downstream
+  stage is missing, continue running the missing stage or set
+  `delivery_blocked_by` instead of reporting completion.
+
 ## Config Loading
 
 - Read `.review-loop/config.md` if present. If it is absent, use Stage 1

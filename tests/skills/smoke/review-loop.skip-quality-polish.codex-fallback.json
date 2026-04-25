@@ -6,7 +6,7 @@
   "requires": ["codex"],
   "setup": {
     "temp_config": "codex_reviewer_backend: codex\nskip_quality_polish: true\n",
-    "timeout_seconds": 1200
+    "timeout_seconds": 120
   },
   "execution_policy": "best_effort",
   "artifacts": {

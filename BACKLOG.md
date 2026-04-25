@@ -14,6 +14,7 @@
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Fix completed-agent cleanup in the Codex Stage 1 review-loop orchestrator so normal planning/execution loops do not hit `agent thread limit reached (max 6)`.~~ (closed 2026-04-25 — Codex Stage 1 now documents completed subagent cleanup before new spawns and after planning/execution/local-reviewer rounds; protocol docs carry the shared rule; contract/unit coverage added; live smoke follow-up stabilized guide semantic assertions and bounded best-effort live smoke TTL to 120s.)
 - ~~Orchestrator conformance for `skills/review-loop/SKILL.md` / `skills/{plan,execute}/SKILL.md` §Protocol Imports MUST directive.~~ (closed 2026-04-25 — live Claude smoke validated the strengthened imports-read assertions on the target `tool_use_events` cases; current prompt tweak in `plan.fresh.smoke.claude` makes the single-round plan case reviewer-approvable again under the stricter Codex reviewer.)
 - ~~Run a fresh Claude smoke pass for the `tool_use_events` cases to validate `no_forbidden_review_loop_subagent_types_in_agent_calls` on live stream output.~~ (closed 2026-04-25 — main-based live Claude smoke passed on `plan.fresh`, `execute.{from-plan,review-only,session-resume,stop-after-before-polish,stop-after-polish,stop-after-before-security}`, and `review-loop.regression`.)
 - ~~Extend `scripts/run-skill-smoke` to assert no `subagent_type: review-loop:*` appears in any Agent call during replay.~~ (closed 2026-04-25 — stream capture, assertion wiring, and live Claude validation are all complete.)

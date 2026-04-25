@@ -335,6 +335,17 @@ the Claude command returns (success or failure).
   the retry / fallback path documented in
   [reviewer-output.md](./reviewer-output.md).
 
+#### Codex completed-agent cleanup
+
+After the Executor and Reviewer outputs for a planning round have been validated and persisted to the session file, close completed Codex subagents for that round before the next round or phase transition.
+
+Codex orchestrators also run cleanup before spawning the next Executor or local
+Reviewer: any completed `review_loop_executor` or `review_loop_reviewer` id
+from an earlier round should be closed unless the orchestrator explicitly
+intends to reuse that exact id. The default Claude CLI reviewer path is outside
+this cleanup policy because it is a child process rather than a Codex subagent;
+its temp prompt file cleanup remains the per-round responsibility.
+
 ---
 
 ### 6. Display Live Report

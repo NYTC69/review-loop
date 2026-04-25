@@ -125,6 +125,51 @@ class CodexAgentContractTest(unittest.TestCase):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertIn(expected, text)
 
+    def test_codex_completed_agents_are_closed_between_rounds(self):
+        expectations = {
+            ".agents/skills/review-loop/SKILL.md": (
+                "Before every new `spawn_agent` call, call `close_agent` on "
+                "any completed Codex subagent id from earlier planning, "
+                "execution, or local-reviewer rounds unless the orchestrator "
+                "explicitly intends to reuse that exact id."
+            ),
+            "docs/protocol/planning.md": (
+                "After the Executor and Reviewer outputs for a planning round "
+                "have been validated and persisted to the session file, close "
+                "completed Codex subagents for that round before the next "
+                "round or phase transition."
+            ),
+            "docs/protocol/execution.md": (
+                "After the Executor and Reviewer outputs for an execution "
+                "round have been validated and persisted to the session file, "
+                "close completed Codex subagents for that round before the "
+                "next round, downstream stage, or delivery step."
+            ),
+        }
+        claude_cli_exception = (
+            "The Claude CLI reviewer path is a child process, not a Codex "
+            "subagent, so completed-agent cleanup does not apply to it."
+        )
+
+        for relative_path, expected in expectations.items():
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+
+        text = (ROOT / ".agents/skills/review-loop/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn(claude_cli_exception, text)
+
+    def test_codex_umbrella_review_loop_must_not_stop_after_exec_approval(self):
+        expected = (
+            "For the umbrella `review-loop` entry point, do not deliver, "
+            "summarize success, or stop after the execution loop mints only "
+            "`exec`; continue through Quality Polish, Documentation "
+            "Consistency, Security Preflight, and delivery unless an explicit "
+            "`--stop-after` value says otherwise."
+        )
+        text = (ROOT / ".agents/skills/review-loop/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn(expected, text)
+
 
 if __name__ == "__main__":
     unittest.main()

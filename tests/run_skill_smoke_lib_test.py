@@ -421,6 +421,240 @@ class RunSkillSmokeForbiddenSubagentTypeAssertionTest(unittest.TestCase):
 
 
 class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
+    def test_best_effort_nonzero_monthly_usage_limit_is_environment_skip(self):
+        case_id = "zz.best-effort.monthly-usage-limit"
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+
+        case_data = {
+            "id": case_id,
+            "type": "smoke",
+            "target": "review-loop",
+            "runtime": "claude",
+            "requires": ["python3"],
+            "setup": {"timeout_seconds": 10},
+            "execution_policy": "best_effort",
+            "artifacts": {
+                "capture": {
+                    "response": "stdout",
+                },
+                "required": ["response", "assertions", "meta"],
+            },
+            "command": [
+                "python3",
+                "-c",
+                "print(\"You've hit your org's monthly usage limit\"); raise SystemExit(1)",
+            ],
+            "assertions": ["shared_config_path_mentioned"],
+        }
+
+        try:
+            case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+            run = subprocess.run(
+                ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn(f"SKIP {case_id} - best-effort smoke hit environment limitation", run.stdout)
+
+            payload = json.loads(last_run_path.read_text(encoding="utf-8"))
+            record = next(candidate for candidate in payload["results"] if candidate.get("id") == case_id)
+            self.assertEqual(record["status"], "skip")
+            self.assertIn("monthly usage limit", record["reason"])
+        finally:
+            if case_path.exists():
+                case_path.unlink()
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+
+    def test_guide_stage1_semantic_paraphrases_satisfy_smoke_assertions(self):
+        case_id = "zz.guide.semantic-paraphrase"
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+        response = (
+            "Codex Stage 1 `review-loop` mirrors the broad Claude Code workflow.\n"
+            "Default review stays on the Claude CLI path.\n"
+            "Use local Codex review only when explicitly configured.\n"
+            "The lifecycle is:\n\n"
+            "```text\nexec -> polish -> docs -> security -> delivery\n```\n\n"
+            "Codex Stage 1 supports clean stop points at:\n"
+            "- `before-polish`\n- `before-docs`\n- `before-security`\n\n"
+            "`quality_focus` only matters when Step 3.5 Quality Polish actually runs.\n"
+            "`skip_quality_polish: true` does not skip the rest of the lifecycle. "
+            "It records `polish` as a no-op completion, then continues through docs and security.\n"
+            "Codex Stage 1 assumes one orchestrator-owned workspace.\n"
+        )
+
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+
+        case_data = {
+            "id": case_id,
+            "type": "smoke",
+            "target": "guide",
+            "runtime": "shared",
+            "requires": ["python3"],
+            "setup": {"timeout_seconds": 10},
+            "artifacts": {
+                "capture": {"response": "stdout"},
+                "required": ["response", "assertions", "meta"],
+            },
+            "command": ["python3", "-c", f"print({response!r})"],
+            "assertions": [
+                "codex_stage1_downstream_lifecycle_mentioned",
+                "codex_stage1_downstream_stop_points_mentioned",
+                "reviewer_backend_behavior_mentioned",
+                "quality_focus_real_behavior_mentioned",
+                "skip_quality_polish_real_behavior_mentioned",
+                "workspace_authority_mentioned",
+            ],
+        }
+
+        try:
+            case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+            run = subprocess.run(
+                ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn(f"PASS {case_id} - ", run.stdout)
+
+            payload = json.loads(last_run_path.read_text(encoding="utf-8"))
+            record = next(candidate for candidate in payload["results"] if candidate.get("id") == case_id)
+            self.assertEqual(record["status"], "pass")
+        finally:
+            if case_path.exists():
+                case_path.unlink()
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+
+    def test_plan_fresh_single_round_smoke_does_not_require_reviewer_approval(self):
+        case_path = ROOT / "tests/skills/smoke/plan.fresh.smoke.claude.json"
+        case_data = json.loads(case_path.read_text(encoding="utf-8"))
+
+        self.assertIn("planning_round_recorded", case_data["assertions"])
+        self.assertIn("reviewer_prompt_exists", case_data["assertions"])
+        self.assertNotIn("plan_source_reviewer_approved", case_data["assertions"])
+        self.assertLessEqual(case_data["setup"]["timeout_seconds"], 120)
+
+    def test_live_best_effort_smoke_cases_use_short_timeout_budget(self):
+        smoke_dir = ROOT / "tests/skills/smoke"
+        live_cases = []
+        for case_path in sorted(smoke_dir.glob("*.smoke.claude.json")):
+            live_cases.append(case_path)
+        live_cases.extend(
+            smoke_dir / name
+            for name in [
+                "review-loop.noop.claude-default.json",
+                "review-loop.noop.codex-fallback.json",
+                "review-loop.regression.smoke.claude.json",
+                "review-loop.review-only.codex-fallback.json",
+                "review-loop.skip-quality-polish.codex-fallback.json",
+            ]
+        )
+
+        for case_path in live_cases:
+            with self.subTest(case=case_path.name):
+                case_data = json.loads(case_path.read_text(encoding="utf-8"))
+                self.assertEqual(case_data.get("execution_policy"), "best_effort")
+                self.assertLessEqual(case_data["setup"]["timeout_seconds"], 120)
+
+    def test_review_only_execution_round_heading_counts_as_reviewer_round(self):
+        case_id = "zz.review-only.execution-round-heading"
+        session_id = "99999999-9999-4999-8999-999999999999"
+        case_path = ROOT / "tests/skills/smoke" / f"{case_id}.json"
+        artifact_dir = ROOT / "tests/skills/.artifacts" / case_id
+        session_path = ROOT / ".review-loop/sessions" / f"{session_id}.md"
+        smoke_uuid_marker = ROOT / ".review-loop/tmp/smoke-session-uuid"
+        last_run_path = ROOT / "tests/skills/.last-run.json"
+
+        for path in (case_path, smoke_uuid_marker):
+            if path.exists():
+                path.unlink()
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text(
+            "## Approved Plan\n\n- Source: review-only\n\n"
+            "(none — review-only mode)\n\n"
+            "Scope: see `## Review Target` section below.\n\n"
+            "## Review Target\n\nREVIEW_TARGET_SMOKE_TOKEN\n\n"
+            "## Review History\n\n"
+            "### Execution Round 1 (review-only)\n"
+            "- Executor backend: skipped (review-only first round)\n"
+            "- Reviewer backend: codex\n"
+            "- Reviewer verdict: APPROVE\n\n"
+            "## Session Metadata\n"
+            "- entry_point: review-loop\n"
+            "- completed_stages: [exec, polish, docs, security]\n"
+            "- delivery_blocked_by: null\n",
+            encoding="utf-8",
+        )
+
+        case_data = {
+            "id": case_id,
+            "type": "smoke",
+            "target": "review-loop",
+            "runtime": "shared",
+            "requires": ["python3"],
+            "setup": {"timeout_seconds": 10},
+            "artifacts": {
+                "capture": {
+                    "session_path": "latest_session",
+                    "session_final": "latest_session",
+                },
+                "required": ["session_path", "session_final", "assertions", "meta"],
+            },
+            "command": [
+                "python3",
+                "-c",
+                (
+                    "import pathlib, sys\n"
+                    "root = pathlib.Path(sys.argv[1])\n"
+                    "tmp = root / '.review-loop' / 'tmp'\n"
+                    "tmp.mkdir(parents=True, exist_ok=True)\n"
+                    f"(tmp / 'smoke-session-uuid').write_text({session_id!r}, encoding='utf-8')\n"
+                    f"print('.review-loop/sessions/{session_id}.md')\n"
+                ),
+                "__WORKTREE__",
+            ],
+            "assertions": ["execute_round_1_reviewer_only", "reviewer_backend_codex"],
+        }
+
+        try:
+            case_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+            run = subprocess.run(
+                ["bash", "scripts/run-skill-smoke", "--case", case_id],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn(f"PASS {case_id} - ", run.stdout)
+        finally:
+            if case_path.exists():
+                case_path.unlink()
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+            for path in (session_path, smoke_uuid_marker):
+                if path.exists():
+                    path.unlink()
+
     def test_completed_stages_exec_assertion_rejects_empty_list_even_when_execution_text_exists(self):
         case_id = "zz.timeout.completed-stages-empty-list"
         session_id = "77777777-7777-4777-8777-777777777777"

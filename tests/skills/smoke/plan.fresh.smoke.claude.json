@@ -6,7 +6,7 @@
   "requires": ["claude", "codex"],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 900
+    "timeout_seconds": 120
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -38,7 +38,7 @@
   "assertions": [
     "session_created",
     "reviewer_prompt_exists",
-    "plan_source_reviewer_approved",
+    "planning_round_recorded",
     "entry_point_plan",
     "approved_plan_section_present",
     "plan_protocol_imports_read",

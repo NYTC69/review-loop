@@ -9,7 +9,7 @@
   ],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 900
+    "timeout_seconds": 120
   },
   "execution_policy": "best_effort",
   "artifacts": {
