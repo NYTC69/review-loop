@@ -292,11 +292,13 @@ including Review History in the prompt.
 {{codex}}
 
 Default reviewer path: `claude -p --no-session-persistence --output-format
-json --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}`
+stream-json --include-partial-messages --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}`
 with stdin fed from
 `.review-loop/tmp/{session_id}-reviewer-prompt.txt`. Run **outside** the
-Codex sandbox. Parse the first JSON result object from stdout; validate its
-`result` field against the shared reviewer schema.
+Codex sandbox. Read stdout line by line; find the event where `type ==
+"result"` and use its `result` field. Intermediate events (thinking deltas,
+rate limit events) are heartbeat signals — do not treat as output. Validate
+the `result` field against the shared reviewer schema.
 
 This outside-sandbox requirement is not cosmetic. A sandboxed rehearsal of
 the same `claude -p` command is **not** equivalent for diagnosis and may fail
