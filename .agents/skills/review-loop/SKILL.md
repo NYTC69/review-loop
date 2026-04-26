@@ -323,7 +323,7 @@ Rules:
 Unless `codex_reviewer_backend: codex` is set, use this default reviewer path:
 
 ```bash
-claude -p --no-session-persistence --output-format json --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
+claude -p --no-session-persistence --output-format stream-json --include-partial-messages --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
 ```
 
 Rules:
@@ -335,8 +335,12 @@ Rules:
   switching to fallback.
 - Render the full reviewer prompt into
   `.review-loop/tmp/{session_id}-reviewer-prompt.txt`.
-- Parse the first JSON result object from stdout.
-- Ignore trailing non-JSON lines after that first JSON result object.
+- Read stdout line by line. Each line is a JSON event object. Find the line
+  where `type == "result"` and use its `result` field as the reviewer output.
+  Intermediate events (thinking deltas, assistant blocks, rate limit events)
+  are heartbeat signals confirming the process is alive — log them if helpful
+  but do not treat them as output. If no `type == "result"` line appears
+  before the process exits, treat that as a command execution failure.
 - Validate the `result` field against the shared reviewer schema.
 - If Claude invocation fails or validation fails, do not guess and do not retry
   Claude for that round.

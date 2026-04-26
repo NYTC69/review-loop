@@ -110,7 +110,7 @@
       "id": "codex_claude_reviewer_command_declared",
       "kind": "contains",
       "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "claude -p --no-session-persistence --output-format json"
+      "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
     },
     {
       "id": "codex_plan_soft_limit_behavior_declared",

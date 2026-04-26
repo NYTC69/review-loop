@@ -23,7 +23,7 @@
 
 - Codex skills live under `.agents/skills/`.
 - Codex subagents live under `.codex/agents/*.toml`.
-- The Claude reviewer contract for Codex uses `claude -p --no-session-persistence --output-format json < prompt-file`.
+- The Claude reviewer contract for Codex uses `claude -p --no-session-persistence --output-format stream-json --include-partial-messages < prompt-file`. Read stdout line-by-line; find the event where `type == "result"` and use its `result` field.
 - This reviewer call must run outside the Codex sandbox.
 - Sandbox diagnostic caveat: a sandboxed `claude -p` rehearsal is not a valid
   substitute for the real Codex reviewer path. If the sandboxed call fails,
