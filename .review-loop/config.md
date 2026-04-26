@@ -1,1 +1,1 @@
-reviewer_model: "claude-sonnet-4-6"
+reviewer_model: "gpt-5.5"
