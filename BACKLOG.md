@@ -1,10 +1,10 @@
-**Last updated**: 2026-04-25
+**Last updated**: 2026-04-26
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
 
-- [new] Debug Claude review stall in manual / review-loop review flows. Repro is now cross-session rather than isolated: trivial prompts return quickly on the host, but `claude -p` review runs can sit for minutes with no incremental output; `--bare` fails with `Not logged in`; `--setting-sources project` strips user-level plugins/hooks but does not eliminate the stall. Need a systematic repro matrix across TTY / non-TTY, `--setting-sources`, `--add-dir`, manual review prompts, and review-loop reviewer prompts; then pin down whether the stall is caused by plugins/hooks/statusline, auth, streaming, network, session persistence, or something in the review-loop default Claude reviewer path. (added 2026-04-25)
+~~Debug Claude review stall in manual / review-loop review flows.~~ (closed 2026-04-26 — root cause: `--output-format json` buffers all output until generation ends; sonnet-4-6 with extended thinking on 70k cached tokens takes 2-3 min, producing no visible output. With `--include-partial-messages` the first thinking_delta arrives at ~3.7s confirming the process is alive. Fix: switched Codex Stage 1 reviewer command to `--output-format stream-json --include-partial-messages`; orchestrator now scans line-by-line for `type == "result"` event. Updated SKILL.md, docs/protocol/planning.md, CLAUDE.md, and contract test needle.)
 
 ## P2 — normal
 
