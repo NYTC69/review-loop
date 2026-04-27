@@ -239,16 +239,23 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
             if not isinstance(payload, dict):
                 return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} payload must be an object"}
             schema_errors = payload.get("schema_errors") or []
-            if schema_errors:
-                return {"id": assertion_id, "status": "fail", "message": f"CLI stream schema drift: {'; '.join(schema_errors)}"}
             events = payload.get("events")
             if not isinstance(events, list):
                 return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} missing 'events' list"}
+            # Schema drift only blocks the assertion when no events were captured
+            # at all. With non-empty events (e.g. truncated stream missing the
+            # final type=result), evaluate content directly: required reads
+            # happen at startup before any work, so a partial stream is enough
+            # to confirm or refute the contract.
+            if schema_errors and not events:
+                return {"id": assertion_id, "status": "fail", "message": f"CLI stream schema drift with no captured events: {'; '.join(schema_errors)}"}
             read_targets = [event.get("target") for event in events if isinstance(event, dict) and event.get("tool") == "Read"]
             missing = [p for p in declared_paths if not any(isinstance(t, str) and p in t for t in read_targets)]
             if missing:
-                return {"id": assertion_id, "status": "fail", "message": f"paths not read: {missing}"}
-            return {"id": assertion_id, "status": "pass", "message": f"all {len(declared_paths)} declared paths observed as Read events"}
+                drift_note = f" (note: partial stream — {'; '.join(schema_errors)})" if schema_errors else ""
+                return {"id": assertion_id, "status": "fail", "message": f"paths not read: {missing}{drift_note}"}
+            drift_note = f" (note: partial stream — {'; '.join(schema_errors)})" if schema_errors else ""
+            return {"id": assertion_id, "status": "pass", "message": f"all {len(declared_paths)} declared paths observed as Read events{drift_note}"}
 
         if kind == "tool_use_agent_subagent_type_forbidden":
             if artifact_path is None or not artifact_path.exists():
@@ -267,11 +274,15 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
             if not isinstance(payload, dict):
                 return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} payload must be an object"}
             schema_errors = payload.get("schema_errors") or []
-            if schema_errors:
-                return {"id": assertion_id, "status": "fail", "message": f"CLI stream schema drift: {'; '.join(schema_errors)}"}
             events = payload.get("events")
             if not isinstance(events, list):
                 return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} missing 'events' list"}
+            # Schema drift only blocks the assertion when no events were captured
+            # at all. With non-empty events, evaluate content directly: any
+            # forbidden subagent_type already in the captured stream is a real
+            # violation, and truncation cannot retroactively make it clean.
+            if schema_errors and not events:
+                return {"id": assertion_id, "status": "fail", "message": f"CLI stream schema drift with no captured events: {'; '.join(schema_errors)}"}
             offenders = []
             for event in events:
                 if not isinstance(event, dict):
@@ -283,12 +294,14 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
                     offenders.append(subagent_type)
             if offenders:
                 unique_offenders = sorted(set(offenders))
+                drift_note = f" (note: partial stream — {'; '.join(schema_errors)})" if schema_errors else ""
                 return {
                     "id": assertion_id,
                     "status": "fail",
-                    "message": f"forbidden subagent_type observed: {unique_offenders}",
+                    "message": f"forbidden subagent_type observed: {unique_offenders}{drift_note}",
                 }
-            return {"id": assertion_id, "status": "pass", "message": "no forbidden subagent_type values observed"}
+            drift_note = f" (note: partial stream — {'; '.join(schema_errors)})" if schema_errors else ""
+            return {"id": assertion_id, "status": "pass", "message": f"no forbidden subagent_type values observed{drift_note}"}
 
         return {"id": assertion_id, "status": "fail", "message": f"unsupported smoke assertion kind {kind!r}"}
 

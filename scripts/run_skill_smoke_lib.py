@@ -191,6 +191,19 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
     return payload, result_text
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    # Truncate-in-place writes leave the destination's inode reachable to any
+    # writer still holding an inherited FD. A detached descendant of the
+    # smoke runner that survives SIGKILL keeps flushing buffered output to
+    # that FD, extending the file past the new payload with zero-fill in
+    # between (`<normalized-json>\n\x00…\x00<raw-stream-tail>`). Writing
+    # through a fresh sibling and renaming over the destination orphans the
+    # old inode, so any surviving writer's bytes land on the unlinked file.
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 def finalize_stream_capture_artifact(artifact_path: Path, text_path: Path) -> bool:
     if not artifact_path.exists():
         return False
@@ -206,9 +219,9 @@ def finalize_stream_capture_artifact(artifact_path: Path, text_path: Path) -> bo
         result_text = text_path.read_text(encoding="utf-8") if text_path.exists() else ""
     else:
         normalized, result_text = parse_stream_json_capture(text)
-        artifact_path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
+        _atomic_write_text(artifact_path, json.dumps(normalized, indent=2) + "\n")
 
-    text_path.write_text(result_text, encoding="utf-8")
+    _atomic_write_text(text_path, result_text)
     return True
 
 

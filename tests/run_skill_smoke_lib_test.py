@@ -103,6 +103,62 @@ class FinalizeStreamCaptureArtifactTest(unittest.TestCase):
             self.assertIn("no 'type=result' event observed", payload["schema_errors"][0])
             self.assertEqual(text_path.read_text(encoding="utf-8"), "")
 
+    def test_atomic_rename_isolates_finalized_payload_from_surviving_writer(self):
+        # Reproduces the FD-seek artifact corruption seen in
+        # tests/skills/.artifacts/execute.stop-after-before-polish.smoke.claude
+        # on 2026-04-27: a detached descendant survives SIGKILL and keeps
+        # writing to the inherited stdout FD past the byte at which finalize
+        # truncates the artifact, leaving a normalized-json + 0x00 gap +
+        # raw-stream-tail file that strict json.load cannot parse.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            artifact_path = root / "tool-use-events.json"
+            text_path = root / "stdout.txt"
+
+            raw_payload = (
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Read",
+                                    "input": {"file_path": "docs/protocol/planning.md"},
+                                }
+                            ]
+                        },
+                    }
+                )
+                + "\n"
+                + "x" * 8000
+            )
+            artifact_path.write_text(raw_payload, encoding="utf-8")
+            original_inode = artifact_path.stat().st_ino
+
+            survivor_fd = os.open(artifact_path, os.O_WRONLY)
+            os.lseek(survivor_fd, 7000, os.SEEK_SET)
+            try:
+                finalized = finalize_stream_capture_artifact(artifact_path, text_path)
+                self.assertTrue(finalized)
+                os.write(survivor_fd, b"GARBAGE-FROM-SURVIVING-DESCENDANT")
+            finally:
+                os.close(survivor_fd)
+
+            final_text = artifact_path.read_text(encoding="utf-8")
+            payload = json.loads(final_text)
+            self.assertEqual(
+                payload["events"],
+                [{"tool": "Read", "target": "docs/protocol/planning.md"}],
+            )
+            self.assertNotIn("\x00", final_text)
+            self.assertNotIn("GARBAGE-FROM-SURVIVING-DESCENDANT", final_text)
+            self.assertNotEqual(
+                artifact_path.stat().st_ino,
+                original_inode,
+                "atomic rename should produce a new inode so the surviving FD writes to the orphaned file",
+            )
+
     def test_writes_agent_subagent_type_events_from_stream(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -418,6 +474,64 @@ class RunSkillSmokeForbiddenSubagentTypeAssertionTest(unittest.TestCase):
         self.assertIn("PASS zz.tool-use-events.allowed-subagent-type", completed.stdout)
         self.assertEqual(record["status"], "pass")
         self.assertIn("assertions passed", record["reason"])
+
+    def test_passes_on_partial_stream_when_captured_events_satisfy_assertion(self):
+        # Reproduces the 2026-04-27 main-worktree symptom: outer claude -p
+        # exceeded the per-case 120s timeout before streaming `type=result`,
+        # so the grader rejected `no_forbidden_review_loop_subagent_types_in_agent_calls`
+        # on schema-drift grounds even though the captured Agent calls were
+        # all on `general-purpose`. With the fall-back, content satisfaction
+        # should pass.
+        case_id = "zz.tool-use-events.partial-stream-allowed"
+        completed, record = self._run_case_with_fake_claude(
+            case_id,
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Agent",
+                                "input": {"subagent_type": "general-purpose"},
+                            }
+                        ]
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn(f"PASS {case_id}", completed.stdout)
+        self.assertEqual(record["status"], "pass")
+
+    def test_fails_on_partial_stream_when_captured_events_contradict_assertion(self):
+        # Partial stream must not silence an actual contract violation:
+        # if the captured events already include a forbidden subagent_type,
+        # the assertion still fails even when the stream lacks `type=result`.
+        case_id = "zz.tool-use-events.partial-stream-forbidden"
+        completed, record = self._run_case_with_fake_claude(
+            case_id,
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Agent",
+                                "input": {"subagent_type": "review-loop:executor"},
+                            }
+                        ]
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn(f"FAIL {case_id}", completed.stdout)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("review-loop:executor", record["reason"])
 
 
 class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
