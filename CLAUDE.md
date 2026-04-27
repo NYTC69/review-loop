@@ -12,6 +12,12 @@
 
 **Rule**: When adding ANY new agent invocation, always use `subagent_type: general-purpose` with inlined body. Never use `subagent_type: review-loop:<name>`.
 
+### README.md must stay intact (lint SSOT dependency)
+
+`run-skill-lint`'s `guide:readme_marks_*` and `shared-schema:*` assertions treat several phrases inside `README.md` as the single source of truth (SSOT). Trimming or rewriting README content these assertions reach makes lint FAIL (5 cases observed during compass adopt Round 1). The compass-adopt migration handled this by **double-storing** the migrated blocks: ARCHITECTURE.md / CLAUDE.md / DESIGN.md gained `## Migrated — README.md:<lines>` blocks, but the README body was reverted to its full 370-line form so existing lint needles still resolve.
+
+**Rule**: do not trim or restructure README.md without first updating both the `guide` skill and the lint contract to point their needles at the new SSOT (e.g. the migrated blocks in CLAUDE.md). The `## Migrated —` blocks are intentional duplication, not a cleanup target.
+
 ### Plugin cache & version bump
 
 - `plugin.json` and `marketplace.json` version **must** be bumped with **every single push** that changes any file. Without a version bump, `plugin update` thinks cache is current and won't pull new files. This includes "just documentation" or "just guide" changes — ANY change requires a bump.

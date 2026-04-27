@@ -13,6 +13,9 @@ tests/skills/.artifacts/
 tests/skills/.last-run.json
 HANDOFF.md
 
+# compass /backlog → /close temp-id state file (ephemeral by spec)
+.compass/backlog-last-view.json
+
 # Environment & config
 .env
 .env.*
