@@ -196,7 +196,7 @@ Agent tool parameters:
     {reviewer_feedback}
 ```
 
-Never use `subagent_type: review-loop:executor`.
+**CRITICAL — plugin sandbox bug**: Never use `subagent_type: review-loop:executor`. That agent type has tools silently blocked — Executor will run with `tool_uses: 0` and hallucinate output. Always use `subagent_type: general-purpose` with the executor body inlined as shown above.
 
 ### Reviewer dispatch (Claude Code)
 

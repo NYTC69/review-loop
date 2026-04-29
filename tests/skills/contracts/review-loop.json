@@ -207,12 +207,36 @@
       "needle": "ignore unrelated SessionStart /"
     },
     {
+      "id": "claude_plugin_agent_type_guard_doc_present",
+      "kind": "contains",
+      "path": "CLAUDE.md",
+      "needle": "Never use `subagent_type: review-loop:<name>`."
+    },
+    {
       "id": "claude_plugin_agent_type_forbidden",
-      "kind": "forbidden_pattern",
-      "applies_to": "claude-plugin-agent-invocations",
-      "needle": "subagent_type: review-loop:",
-      "guard_path": "CLAUDE.md",
-      "guard_needle": "Never use `subagent_type: review-loop:<name>`."
+      "kind": "forbidden_line_pattern",
+      "applies_to": "all-skill-bodies",
+      "pattern": "^\\s*subagent_type:\\s*(?P<quote>['\\\"]?)review-loop:[^\\s'\\\"`#]+(?P=quote)\\s*(?:#.*)?$"
+    },
+    {
+      "id": "sandbox_affected_executor_name_requires_adjacent_critical_warning",
+      "kind": "pattern_requires_adjacent",
+      "applies_to": "all-skill-bodies",
+      "needle": "subagent_type: review-loop:executor",
+      "required_nearby": [
+        "CRITICAL"
+      ],
+      "window_lines": 1
+    },
+    {
+      "id": "sandbox_affected_code_simplifier_name_requires_adjacent_critical_warning",
+      "kind": "pattern_requires_adjacent",
+      "applies_to": "all-skill-bodies",
+      "needle": "subagent_type: review-loop:code-simplifier",
+      "required_nearby": [
+        "CRITICAL"
+      ],
+      "window_lines": 1
     },
     {
       "id": "codex_inherited_parent_context_forbidden",

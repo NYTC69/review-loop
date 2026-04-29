@@ -264,6 +264,7 @@ def forbidden_scope_files(root: Path, applies_to: str):
     scope_roots = {
         "claude-plugin-agent-invocations": [root / ".claude-plugin"],
         "codex-subagent-prompts": [root / ".codex/agents"],
+        "all-skill-bodies": [root / "skills", root / ".agents/skills"],
     }.get(applies_to)
 
     if not scope_roots:
@@ -273,9 +274,46 @@ def forbidden_scope_files(root: Path, applies_to: str):
     for scope_root in scope_roots:
         if not scope_root.exists():
             continue
-        for path in sorted(candidate for candidate in scope_root.rglob("*") if candidate.is_file()):
+        # `all-skill-bodies` scopes by SKILL.md only — sibling files
+        # (notes, fixtures, READMEs) are not invocation surfaces and would
+        # generate noise on the line-pattern + adjacent-warning checks.
+        if applies_to == "all-skill-bodies":
+            candidates = scope_root.rglob("SKILL.md")
+        else:
+            candidates = scope_root.rglob("*")
+        for path in sorted(candidate for candidate in candidates if candidate.is_file()):
             files.append(path)
     return files
+
+
+def _resolve_lint_scope_files(root: Path, label: str, assertion, kind_name: str):
+    # Both `forbidden_line_pattern` and `pattern_requires_adjacent` accept
+    # either a named `applies_to` scope (real-repo lint) or a `path` to a
+    # single file (single-file targeting from a contract / unit test fixture).
+    # Exactly one of the two must be present.
+    applies_to = assertion.get("applies_to")
+    path_value = assertion.get("path")
+    if applies_to and path_value:
+        return None, assertion_result(
+            "fail", label, f"{kind_name} requires exactly one of 'applies_to' or 'path', not both"
+        )
+    if applies_to:
+        if not isinstance(applies_to, str):
+            return None, assertion_result("fail", label, f"{kind_name} 'applies_to' must be a string")
+        files = forbidden_scope_files(root, applies_to)
+        if files is None:
+            return None, assertion_result("fail", label, f"unsupported {kind_name} scope {applies_to!r}")
+        return files, None
+    if path_value:
+        if not isinstance(path_value, str):
+            return None, assertion_result("fail", label, f"{kind_name} 'path' must be a string")
+        path, path_error = resolve_repo_path(root, label, path_value)
+        if path_error:
+            return None, path_error
+        if not path.exists():
+            return None, assertion_result("fail", label, f"{path_value} is missing")
+        return [path], None
+    return None, assertion_result("fail", label, f"{kind_name} requires 'applies_to' or 'path'")
 
 
 def evaluate_assertion(root: Path, mapping_data, assertion):
@@ -444,6 +482,92 @@ def evaluate_assertion(root: Path, mapping_data, assertion):
         if matches:
             return assertion_result("fail", label, f"forbidden text {needle!r} found in {', '.join(matches)}{guard_note}")
         return assertion_result("pass", label, f"forbidden text {needle!r} not found in {applies_to}{guard_note}")
+
+    if kind == "forbidden_line_pattern":
+        # Line-anchored counterpart to `forbidden_pattern`. Existing
+        # `forbidden_pattern` is whole-file substring search, so a SKILL.md
+        # warning like "Never use `subagent_type: review-loop:<name>`"
+        # would be flagged just for documenting the rule. The line-anchored
+        # regex distinguishes actual invocation lines (column-0 key) from
+        # prose mentioning the same string inside backticks or other
+        # surrounding glyphs.
+        field_error = require_string_fields(assertion, label, "pattern")
+        if field_error:
+            return field_error
+        files, scope_error = _resolve_lint_scope_files(root, label, assertion, "forbidden_line_pattern")
+        if scope_error:
+            return scope_error
+        try:
+            compiled = re.compile(assertion["pattern"])
+        except re.error as exc:
+            return assertion_result("fail", label, f"invalid regex {assertion['pattern']!r}: {exc}")
+
+        matches = []
+        for path in files:
+            contents, read_error = safe_read_text(path, label, path.relative_to(root).as_posix())
+            if read_error:
+                return read_error
+            for lineno, line in enumerate(contents.splitlines(), start=1):
+                if compiled.search(line):
+                    matches.append(f"{path.relative_to(root).as_posix()}:{lineno}")
+
+        scope_label = assertion.get("applies_to") or assertion.get("path")
+        if matches:
+            return assertion_result(
+                "fail",
+                label,
+                f"forbidden line pattern {assertion['pattern']!r} matched {', '.join(matches)}",
+            )
+        return assertion_result("pass", label, f"forbidden line pattern {assertion['pattern']!r} not found in {scope_label}")
+
+    if kind == "pattern_requires_adjacent":
+        # Soft companion to `forbidden_line_pattern`: any line that mentions
+        # `needle` (in prose, code samples, anywhere) must carry every
+        # `required_nearby` term within `window_lines` lines on either side.
+        # Lets the docs reference a sandbox-affected agent name as long as
+        # CRITICAL warning text sits next to it, so a copy-paste reader sees
+        # the hazard without us forbidding the mention itself.
+        field_error = require_string_fields(assertion, label, "needle")
+        if field_error:
+            return field_error
+        required_nearby = assertion.get("required_nearby")
+        list_error = require_string_list(required_nearby, label, "required_nearby")
+        if list_error:
+            return list_error
+        window_lines = assertion.get("window_lines", 1)
+        if not isinstance(window_lines, int) or window_lines < 0:
+            return assertion_result("fail", label, "window_lines must be a non-negative integer")
+
+        files, scope_error = _resolve_lint_scope_files(root, label, assertion, "pattern_requires_adjacent")
+        if scope_error:
+            return scope_error
+
+        needle = assertion["needle"]
+        failures = []
+        for path in files:
+            contents, read_error = safe_read_text(path, label, path.relative_to(root).as_posix())
+            if read_error:
+                return read_error
+            lines = contents.splitlines()
+            for lineno, line in enumerate(lines, start=1):
+                if needle not in line:
+                    continue
+                start = max(0, lineno - 1 - window_lines)
+                end = min(len(lines), lineno + window_lines)
+                window = "\n".join(lines[start:end])
+                missing = [required for required in required_nearby if required not in window]
+                if missing:
+                    rel_path = path.relative_to(root).as_posix()
+                    failures.append(f"{rel_path}:{lineno} missing nearby {missing}")
+
+        scope_label = assertion.get("applies_to") or assertion.get("path")
+        if failures:
+            return assertion_result(
+                "fail",
+                label,
+                f"{needle!r} mentions without required_nearby={required_nearby} (window±{window_lines}): {'; '.join(failures)}",
+            )
+        return assertion_result("pass", label, f"all {needle!r} mentions in {scope_label} carry {required_nearby} within ±{window_lines} lines")
 
     if kind == "consistent_with":
         field_error = require_string_fields(assertion, label, "mapping_id")
