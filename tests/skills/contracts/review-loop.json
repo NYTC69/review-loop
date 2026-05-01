@@ -55,6 +55,166 @@
       "path": ".agents/skills/review-loop/SKILL.md"
     },
     {
+      "id": "codex_plan_skill_exists",
+      "kind": "exists",
+      "path": ".agents/skills/plan/SKILL.md"
+    },
+    {
+      "id": "codex_execute_skill_exists",
+      "kind": "exists",
+      "path": ".agents/skills/execute/SKILL.md"
+    },
+    {
+      "id": "codex_plan_protocol_import_session_file",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "docs/protocol/session-file.md"
+    },
+    {
+      "id": "codex_plan_protocol_import_planning",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "docs/protocol/planning.md"
+    },
+    {
+      "id": "codex_plan_protocol_import_executor_output",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "docs/protocol/executor-output.md"
+    },
+    {
+      "id": "codex_plan_protocol_import_reviewer_output",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "docs/protocol/reviewer-output.md"
+    },
+    {
+      "id": "codex_plan_executor_reference_declared",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "review_loop_executor"
+    },
+    {
+      "id": "codex_plan_claude_reviewer_command_declared",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+    },
+    {
+      "id": "codex_plan_completed_agent_cleanup_before_spawn_declared",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Before every new `spawn_agent` call, call `close_agent` on any completed Codex subagent id"
+    },
+    {
+      "id": "codex_plan_no_auto_dispatch_documented",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "`plan` does not auto-route into execution"
+    },
+    {
+      "id": "codex_plan_lock_first_ordering",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "2. Acquire the single-writer lock per"
+    },
+    {
+      "id": "codex_execute_protocol_import_session_file",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "docs/protocol/session-file.md"
+    },
+    {
+      "id": "codex_execute_protocol_import_execution",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "docs/protocol/execution.md"
+    },
+    {
+      "id": "codex_execute_protocol_import_executor_output",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "docs/protocol/executor-output.md"
+    },
+    {
+      "id": "codex_execute_protocol_import_reviewer_output",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "docs/protocol/reviewer-output.md"
+    },
+    {
+      "id": "codex_execute_executor_reference_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "review_loop_executor"
+    },
+    {
+      "id": "codex_execute_claude_reviewer_command_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+    },
+    {
+      "id": "codex_execute_completed_agent_cleanup_before_spawn_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Before every new `spawn_agent` call, call `close_agent` on any completed Codex subagent id"
+    },
+    {
+      "id": "codex_execute_three_entry_modes_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "three mutually-exclusive entry modes"
+    },
+    {
+      "id": "codex_execute_dispatch_anchor_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Concrete dispatch anchor: `codex_execution_executor_dispatch`"
+    },
+    {
+      "id": "codex_execute_workspace_authority_explicit",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session"
+    },
+    {
+      "id": "codex_execute_executor_worktree_forbidden",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Executor-created hidden worktrees are forbidden in Codex Stage 1"
+    },
+    {
+      "id": "codex_execute_no_op_round_validation_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "unchanged path sets alone do not prove a no-op"
+    },
+    {
+      "id": "codex_execute_quality_focus_real_behavior_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs"
+    },
+    {
+      "id": "codex_execute_skip_quality_polish_real_behavior_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security"
+    },
+    {
+      "id": "codex_execute_provenance_aware_plan_conformance_bullet",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "- explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)"
+    },
+    {
+      "id": "codex_execute_step4_gate_failure_lock_release",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "lock per `docs/protocol/session-file.md` §Lock file lifecycle, and exit"
+    },
+    {
       "id": "codex_executor_agent_exists",
       "kind": "exists",
       "path": ".codex/agents/review-loop-executor.toml"
@@ -111,6 +271,12 @@
       "kind": "contains",
       "path": ".agents/skills/review-loop/SKILL.md",
       "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+    },
+    {
+      "id": "codex_umbrella_provenance_aware_plan_conformance_bullet",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "- explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)"
     },
     {
       "id": "codex_plan_soft_limit_behavior_declared",
