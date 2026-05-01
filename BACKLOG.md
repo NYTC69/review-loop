@@ -11,6 +11,7 @@
 - [new] Add a dry-run Orchestrator mode that executes /review-loop against a fixture repo and validates the Agent-call sequence without writing files, so sandbox/agent-type bugs are caught pre-merge instead of via live tool_uses: 0 symptoms. (added 2026-04-19)
 - [new] Build a session-replay parser over .review-loop/sessions/*.md that reconstructs which subagent_type values were used per Agent call and flags any review-loop:* occurrences as anomalies, giving a post-hoc audit channel independent of live observation. (added 2026-04-19)
 - [new] Bring back a conflict-aware parallel CR scheduler (`scripts/review_verification.py` + wrapper + tests). The pruned `feat/lint-agent-type-context-guard` branch (ref via git reflog) prototyped one in mid-April: a per-job scheduler that runs review-loop CRs in parallel under a strict per-job timeout, with returncode propagation, drain-on-timeout, and immutability of finished jobs. Useful when one orchestrator wants to fan out N independent reviewer rounds without serial wall-clock cost. Current main has no such scheduler — every CR is sequential. Reimplement against current protocol (stream-json reviewer command, gpt-5.5 default reviewer_model) rather than cherry-picking the stale prototype. (added 2026-04-29)
+
 ## P3 — nice to have / someday
 
 ## Done (recent, trimmed quarterly)
