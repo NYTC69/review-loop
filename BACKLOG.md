@@ -14,6 +14,9 @@
 
 ## P3 — nice to have / someday
 
+- Harden Codex plan/execute SKILL.md error-path documentation (silent-failure-hunter follow-ups + stop-points wording). (added 2026-05-01)
+  - Note: silent-failure-hunter (3.5.3) flagged 6 MINOR documentation gaps where the protocol's unrecoverable-error trap covers correctness implicitly but the SKILL bodies don't restate it: (1) plan SKILL Executor/Reviewer "stop and surface the failure" exits don't say "release the lock" (~lines 213-215, 239-242, 247-249); (2) execute SKILL same asymmetry on Executor/Reviewer retry-exhausted exits (~lines 328-329, 350-355, 360-362); (3) execute SKILL Step 3.6/3.7 don't document agent timeout / tool_uses=0 / hallucination handling like Step 3.5 does; (4) neither skill says what to do if `git diff --name-only HEAD` itself fails when computing the changed-set; (5) lint contract has no needle asserting "release the lock" appears on stop-and-surface paths so a future regression on the Step 4 fix from cbe47c7 wouldn't be statically caught; (6) plan SKILL Step 1.6 MemPalace 10s timeout doesn't specify kill-not-await semantics. Plus a code-reviewer MINOR: execute SKILL.md ~lines 114-115 stop-points sentence reads as exhaustive but `exec-round` and `before-delivery` are also supported — clarify wording. All MINOR — protocol unrecoverable-error trap covers correctness today, this is hardening. Reference session 995b25b0-eb15-4f37-8064-7c9fc3d46798.
+
 ## Done (recent, trimmed quarterly)
 
 - ~~给 subagent 配置不同的模型. 简单的工作用便宜的模型去做，只有复杂的 plan review 和 code review 用复杂的模型做.~~ (closed 2026-04-23 — cross-runtime judgment/cheap tiering landed across Codex Stage 1 + Claude paths; follow-up fixes included reviewer backstop alignment, unsupported `tier` field removal in `.codex/agents/*.toml`, noop smoke hardening, stale runtime cleanup, hook-injection guardrails, and timeout-budget tuning.)
