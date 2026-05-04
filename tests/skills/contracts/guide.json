@@ -130,6 +130,9 @@
       "kind": "contains",
       "path": "tests/skills/smoke/guide.shared-state.codex.json",
       "needle": "\"workspace_authority_mentioned\""
+    },
+    {
+      "id": "subagent_types_used_in_skills_match_whitelist"
     }
   ]
 }

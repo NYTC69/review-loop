@@ -32,15 +32,17 @@ def normalize_phrase(value: str) -> str:
 
 
 def normalize_text(value: str) -> str:
+    # Alias for normalize_phrase, used in consistent_with kind.
     return normalize_phrase(value)
 
 
 def scalar_runtime(value):
-    if isinstance(value, list):
-        if not value:
-            return "shared"
-        if len(value) == 1:
-            return value[0]
+    if not isinstance(value, list):
+        return value
+    if not value:
+        return "shared"
+    if len(value) == 1:
+        return value[0]
     return value
 
 
@@ -63,7 +65,7 @@ def assertion_result(status: str, label: str, message: str):
 
 
 def require_fields(assertion, label: str, *field_names):
-    missing = [field_name for field_name in field_names if assertion.get(field_name) in (None, "")]
+    missing = [fn for fn in field_names if assertion.get(fn) in (None, "")]
     if missing:
         return assertion_result("fail", label, f"missing required field(s): {', '.join(missing)}")
     return None
@@ -73,7 +75,7 @@ def require_string_fields(assertion, label: str, *field_names):
     field_error = require_fields(assertion, label, *field_names)
     if field_error:
         return field_error
-    wrong_types = [field_name for field_name in field_names if not isinstance(assertion.get(field_name), str)]
+    wrong_types = [fn for fn in field_names if not isinstance(assertion.get(fn), str)]
     if wrong_types:
         return assertion_result("fail", label, f"field(s) must be strings: {', '.join(wrong_types)}")
     return None
@@ -121,7 +123,7 @@ def safe_read_text(path: Path, label: str, display_path: str):
 
 def validate_assertion_mapping(mapping_data):
     errors = []
-    for section_name in ("smoke_assertions", "smoke_groups", "consistency_mappings"):
+    for section_name in ("smoke_assertions", "smoke_groups", "consistency_mappings", "lint_assertions"):
         if not isinstance(mapping_data.get(section_name), dict):
             errors.append(f"{section_name} must be an object")
     return errors
@@ -140,16 +142,16 @@ def extract_case_metadata(case_data, fallback_case_id: str, fallback_target: str
     target = fallback_target
 
     raw_case_id = case_data.get("id", fallback_case_id)
-    if raw_case_id is not None and not isinstance(raw_case_id, str):
-        errors.append(assertion_result("fail", "id", "case id must be a string"))
-    elif isinstance(raw_case_id, str):
+    if isinstance(raw_case_id, str):
         case_id = raw_case_id
+    elif raw_case_id is not None:
+        errors.append(assertion_result("fail", "id", "case id must be a string"))
 
     raw_target = case_data.get("target", fallback_target)
-    if raw_target is not None and not isinstance(raw_target, str):
-        errors.append(assertion_result("fail", "target", "case target must be a string"))
-    elif isinstance(raw_target, str):
+    if isinstance(raw_target, str):
         target = raw_target
+    elif raw_target is not None:
+        errors.append(assertion_result("fail", "target", "case target must be a string"))
 
     return case_id, target, errors
 
@@ -158,13 +160,16 @@ def extract_strict_routed_case_metadata(case_data, fallback_case_id: str):
     errors = []
     case_id = fallback_case_id
     allowed_runtimes = {"claude", "codex", "shared"}
+    allowed_runtimes_str = ", ".join(sorted(allowed_runtimes))
 
+    # Extract case_id
     raw_case_id = case_data.get("id", fallback_case_id)
-    if raw_case_id is not None and not isinstance(raw_case_id, str):
-        errors.append(assertion_result("fail", "id", "case id must be a string"))
-    elif isinstance(raw_case_id, str):
+    if isinstance(raw_case_id, str):
         case_id = raw_case_id
+    elif raw_case_id is not None:
+        errors.append(assertion_result("fail", "id", "case id must be a string"))
 
+    # Extract target
     target = None
     raw_target = case_data.get("target")
     if not isinstance(raw_target, str) or not raw_target:
@@ -174,24 +179,25 @@ def extract_strict_routed_case_metadata(case_data, fallback_case_id: str):
     else:
         target = raw_target
 
+    # Extract runtime
     runtime = None
     raw_runtime = case_data.get("runtime")
     if isinstance(raw_runtime, str):
         if raw_runtime in allowed_runtimes:
             runtime = raw_runtime
         else:
-            errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {', '.join(sorted(allowed_runtimes))}"))
+            errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {allowed_runtimes_str}"))
     elif isinstance(raw_runtime, list):
         if not raw_runtime:
             errors.append(assertion_result("fail", "runtime", "routed lint case runtime must be a non-empty list of strings"))
         elif len(raw_runtime) != 1:
             errors.append(assertion_result("fail", "runtime", "routed lint case runtime list must contain exactly one value"))
         elif not isinstance(raw_runtime[0], str) or raw_runtime[0] not in allowed_runtimes:
-            errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {', '.join(sorted(allowed_runtimes))}"))
+            errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {allowed_runtimes_str}"))
         else:
             runtime = raw_runtime[0]
     else:
-        errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {', '.join(sorted(allowed_runtimes))}"))
+        errors.append(assertion_result("fail", "runtime", f"routed lint case runtime must be one of: {allowed_runtimes_str}"))
 
     return case_id, target, runtime, errors
 
@@ -261,6 +267,21 @@ def find_last_heading(markdown_text: str):
 
 
 def forbidden_scope_files(root: Path, applies_to: str):
+    # `all-skill-bodies-and-protocol-docs` is the union of `all-skill-bodies`
+    # (SKILL.md files under skills/ and .agents/skills/) plus every
+    # `docs/protocol/*.md` file. Used by lint kinds whose target prose can
+    # appear in either skill bodies or shared protocol docs (e.g. the
+    # `claude -p` reviewer command for kind A1).
+    if applies_to == "all-skill-bodies-and-protocol-docs":
+        skill_files = forbidden_scope_files(root, "all-skill-bodies") or []
+        protocol_dir = root / "docs/protocol"
+        protocol_files = []
+        if protocol_dir.exists():
+            for path in sorted(protocol_dir.glob("*.md")):
+                if path.is_file():
+                    protocol_files.append(path)
+        return skill_files + protocol_files
+
     scope_roots = {
         "claude-plugin-agent-invocations": [root / ".claude-plugin"],
         "codex-subagent-prompts": [root / ".codex/agents"],
@@ -316,9 +337,83 @@ def _resolve_lint_scope_files(root: Path, label: str, assertion, kind_name: str)
     return None, assertion_result("fail", label, f"{kind_name} requires 'applies_to' or 'path'")
 
 
+# Allowed override keys for lint assertion id-resolver (ADR-3 whitelist).
+# No current contract instance uses lint-side overrides — keeping this set
+# empty enforces the strict "any non-`_`-prefixed override key is rejected"
+# semantic (as opposed to the previous truthy-guard form, which silently
+# accepted everything when the set was empty). When a future contract needs
+# a lint override, add its field name here explicitly.
+_LINT_ASSERTION_ALLOWED_OVERRIDE_KEYS: frozenset[str] = frozenset()
+
+
+def _resolve_lint_assertion_id(mapping_data, assertion):
+    # Centralized id-resolver mirroring the smoke-side resolver around
+    # `run-skill-smoke:686-689`. Inputs of the shape `{"id": "<id>"}`
+    # (single key `id`, no `kind`, optional `overrides`) get rewritten to
+    # the registered entry under `lint_assertions.<id>`. Override keys
+    # whose name starts with `_` (underscore) are silently dropped — they
+    # are treated as schema-stable metadata (`_comment`, `_reason`, etc.)
+    # rather than configuration. The shared id is preserved as the resolved
+    # entry's `id` so failure messages still point to the registry name.
+    if not isinstance(assertion, dict):
+        return assertion, None
+    if "kind" in assertion:
+        return assertion, None
+    if "id" not in assertion:
+        return assertion, None
+
+    extra_keys = set(assertion.keys()) - {"id", "overrides"}
+    if extra_keys:
+        return assertion, None
+
+    assertion_id = assertion.get("id")
+    if not isinstance(assertion_id, str) or not assertion_id:
+        return None, assertion_result("fail", "lint_assertion_id", "lint assertion id must be a non-empty string")
+
+    lint_assertions = mapping_data.get("lint_assertions")
+    if not isinstance(lint_assertions, dict):
+        return None, assertion_result("fail", assertion_id, "lint_assertions section is missing")
+
+    resolved = lint_assertions.get(assertion_id)
+    if not isinstance(resolved, dict):
+        return None, assertion_result("fail", assertion_id, f"unknown lint assertion id {assertion_id!r}")
+
+    overrides = assertion.get("overrides", {})
+    if overrides is None:
+        overrides = {}
+    if not isinstance(overrides, dict):
+        return None, assertion_result("fail", assertion_id, "lint assertion overrides must be an object")
+
+    merged = dict(resolved)
+    for key, value in overrides.items():
+        if isinstance(key, str) and key.startswith("_"):
+            # Silently drop metadata-shaped keys (`_comment`, `_reason`, …)
+            # so rationale fields can live next to the override without
+            # reaching field-validation. Only registered contract keys flow
+            # into the resolved entry.
+            continue
+        if key not in _LINT_ASSERTION_ALLOWED_OVERRIDE_KEYS:
+            # Strict whitelist enforcement (ADR-3). Empty whitelist means
+            # "no overrides allowed" — every non-`_`-prefixed key fails.
+            return None, assertion_result(
+                "fail",
+                assertion_id,
+                f"lint assertion override key {key!r} is not in the allowed list",
+            )
+        merged[key] = value
+
+    merged.setdefault("id", assertion_id)
+    return merged, None
+
+
 def evaluate_assertion(root: Path, mapping_data, assertion):
     if not isinstance(assertion, dict):
         return assertion_result("fail", "assertion", f"assertion entry must be an object, got {type(assertion).__name__}")
+
+    resolved, resolve_error = _resolve_lint_assertion_id(mapping_data, assertion)
+    if resolve_error:
+        return resolve_error
+    assertion = resolved
 
     kind = assertion.get("kind")
     label = assertion.get("id", kind or "assertion")
@@ -569,6 +664,322 @@ def evaluate_assertion(root: Path, mapping_data, assertion):
             )
         return assertion_result("pass", label, f"all {needle!r} mentions in {scope_label} carry {required_nearby} within ±{window_lines} lines")
 
+    if kind == "command_flag_co_occurrence":
+        # Static guard for the kind of "single command line, broken across
+        # several display lines for readability" case where every required
+        # flag must appear at least once in the same logical command block
+        # as the anchor (e.g. `claude -p`). Implemented as a three-pass
+        # algorithm:
+        #   Pass 1 — collapse explicit backslash line-continuations
+        #             (`\\\n` -> ` `) so shell snippets remain debuggable.
+        #   Pass 2 — split the file into blank-line-delimited paragraph
+        #             blocks; merge adjacent fenced code blocks (``` … ```)
+        #             into the preceding block so prose-then-fence shapes
+        #             count as one logical unit.
+        #   Pass 3 — collapse all whitespace runs (`\s+` -> ` `) before
+        #             substring matching so plain-newline-split commands
+        #             (no backslash continuation) match too.
+        anchor = assertion.get("anchor")
+        if anchor is None:
+            anchor = "claude -p"
+        if not isinstance(anchor, str) or not anchor:
+            return assertion_result("fail", label, "command_flag_co_occurrence 'anchor' must be a non-empty string")
+
+        required_flags = assertion.get("required_flags")
+        list_error = require_string_list(required_flags, label, "required_flags")
+        if list_error:
+            return list_error
+
+        files, scope_error = _resolve_lint_scope_files(root, label, assertion, "command_flag_co_occurrence")
+        if scope_error:
+            return scope_error
+
+        scope_label = assertion.get("applies_to") or assertion.get("path")
+        failures = []
+        anchor_seen = False
+
+        for path in files:
+            contents, read_error = safe_read_text(path, label, path.relative_to(root).as_posix())
+            if read_error:
+                # Accumulate per-file read errors instead of bailing the whole
+                # assertion — a single unreadable file shouldn't silently mask
+                # whatever the rest of the scope might be hiding.
+                failures.append(read_error["message"])
+                continue
+
+            collapsed = re.sub(r"\\\n", " ", contents)
+            collapsed_lines = collapsed.splitlines(keepends=False)
+            blocks = []
+            current: list[str] | None = None
+            current_start = 0
+            in_fence = False
+            for index, line in enumerate(collapsed_lines, start=1):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if not in_fence:
+                        if current is None:
+                            current = []
+                            current_start = index
+                        current.append(line)
+                        in_fence = True
+                    else:
+                        if current is None:
+                            current = []
+                            current_start = index
+                        current.append(line)
+                        in_fence = False
+                    continue
+                if in_fence:
+                    if current is None:
+                        current = []
+                        current_start = index
+                    current.append(line)
+                    continue
+                if not stripped:
+                    if current is not None:
+                        blocks.append((current_start, current))
+                        current = None
+                    continue
+                if current is None:
+                    current = []
+                    current_start = index
+                current.append(line)
+            if current is not None:
+                blocks.append((current_start, current))
+
+            for block_start, block_lines in blocks:
+                merged_text = "\n".join(block_lines)
+                normalized = re.sub(r"\s+", " ", merged_text).strip()
+                if anchor not in normalized:
+                    continue
+                # Anchor mentions wrapped in *single-line* single-backtick
+                # prose (e.g. `claude -p` paraphrase on one source line) are
+                # documentation-style mentions, not real command bodies, and
+                # are skipped. Triple-backtick fences (``` … ```) and
+                # *multi-line* single-backtick inline code (backticks span
+                # ≥2 source lines, like `docs/protocol/planning.md:294-295`)
+                # ARE real command bodies and MUST be checked.
+                #
+                # Strategy: for every anchor occurrence in the original
+                # (pre-normalization) block text, decide whether it sits
+                # inside a `…` pair on the SAME source line. If ALL
+                # occurrences are same-line-backticked, skip the block; if
+                # ANY occurrence is real, treat the block as real.
+                #
+                # Triple-backticks count as "code fence" markers, not as
+                # prose wrappers; strip them per-line first so the
+                # single-backtick parity logic isn't confused by ```.
+                anchor_pattern = re.compile(re.escape(anchor))
+                has_real_anchor = False
+                # Build a per-line list of (line_text, anchor_match_starts)
+                # plus a flat scan of the merged (un-normalized) text that
+                # tracks single-backtick state across lines, so we can tell
+                # "currently inside a multi-line `…` pair" apart from
+                # "inside a single-line `…` pair".
+                # Simpler equivalent: walk the merged_text character by
+                # character; track (line_no, span_open_line, in_span). When
+                # the anchor starts at some position, the occurrence is
+                # "same-line-backticked" iff in_span AND the span opened on
+                # the same line as the anchor start AND the span will close
+                # on that same line.
+                # First strip ``` per line so they don't flip parity.
+                cleaned_lines = [line.replace("```", "") for line in block_lines]
+                # Build a flat string with explicit line-of-origin per char.
+                flat_chars = []
+                char_lines = []
+                for line_offset, line in enumerate(cleaned_lines):
+                    for ch in line:
+                        flat_chars.append(ch)
+                        char_lines.append(line_offset)
+                    flat_chars.append("\n")
+                    char_lines.append(line_offset)
+                flat_text = "".join(flat_chars)
+                # Pair backticks left-to-right: positions 0-1, 2-3, ...
+                # Unpaired trailing tick → no pair (treated as not enclosing).
+                backtick_positions = [i for i, c in enumerate(flat_text) if c == "`"]
+                pairs = []
+                for pi in range(0, len(backtick_positions) - 1, 2):
+                    pairs.append((backtick_positions[pi], backtick_positions[pi + 1]))
+                # For each anchor occurrence in flat_text, find the innermost
+                # enclosing pair (open < a_start < close). If no pair encloses,
+                # the anchor is real (unquoted, fenced, or otherwise outside
+                # single-backticks). If the enclosing pair opens and closes
+                # on the SAME source line, treat as prose paraphrase. If the
+                # enclosing pair spans multiple source lines, treat as a real
+                # multi-line inline-code command body.
+                for amatch in anchor_pattern.finditer(flat_text):
+                    a_start = amatch.start()
+                    enclosing = None
+                    for open_idx, close_idx in pairs:
+                        if open_idx < a_start < close_idx:
+                            enclosing = (open_idx, close_idx)
+                            # keep iterating — last match is innermost
+                    if enclosing is None:
+                        # Anchor not inside any backtick pair → real.
+                        has_real_anchor = True
+                        break
+                    open_idx, close_idx = enclosing
+                    if char_lines[open_idx] == char_lines[close_idx]:
+                        # Same-line `…` — prose paraphrase. Skip this
+                        # occurrence; keep checking the rest.
+                        continue
+                    # Multi-line single-backtick inline code → real.
+                    has_real_anchor = True
+                    break
+                if not has_real_anchor:
+                    continue
+                anchor_seen = True
+                missing = [flag for flag in required_flags if flag not in normalized]
+                if missing:
+                    rel_path = path.relative_to(root).as_posix()
+                    failures.append(f"{rel_path}:{block_start} missing flag(s) {missing}")
+
+        if failures:
+            return assertion_result(
+                "fail",
+                label,
+                f"anchor {anchor!r} block(s) missing required flags: {'; '.join(failures)}",
+            )
+        if not anchor_seen:
+            return assertion_result(
+                "pass",
+                label,
+                f"anchor {anchor!r} not found in {scope_label} (vacuous pass)",
+            )
+        return assertion_result(
+            "pass",
+            label,
+            f"anchor {anchor!r} blocks in {scope_label} all contain required flags {required_flags}",
+        )
+
+    if kind == "agent_subagent_type_whitelist":
+        # Positive whitelist counterpart to `forbidden_line_pattern`. Scans
+        # every `subagent_type: <value>` mention and fails if `<value>` is
+        # outside the whitelist. The default `ignore_negated_examples: true`
+        # suppresses anti-pattern documentation prose (`Never use …`,
+        # blockquoted warnings, CRITICAL-block headers) so the heuristic
+        # catches real invocation lines without red-lighting the SKILL.md /
+        # protocol doc warnings that already discuss the sandbox bug.
+        whitelist = assertion.get("whitelist", ["general-purpose"])
+        list_error = require_string_list(whitelist, label, "whitelist")
+        if list_error:
+            return list_error
+
+        ignore_negated_examples = assertion.get("ignore_negated_examples", True)
+        if not isinstance(ignore_negated_examples, bool):
+            return assertion_result(
+                "fail",
+                label,
+                "ignore_negated_examples must be a boolean",
+            )
+
+        files, scope_error = _resolve_lint_scope_files(root, label, assertion, "agent_subagent_type_whitelist")
+        if scope_error:
+            return scope_error
+
+        match_re = re.compile(
+            r"subagent_type\s*:\s*(?P<q>['\"]?)(?P<value>[^\s'\"`#)\]]+)(?P=q)"
+        )
+
+        # Negation tokens (case-insensitive). Heuristic suppresses a match
+        # if any of these appear in [match_lineno-5, match_lineno].
+        NEGATION_TOKENS = (
+            "Never",
+            "never",
+            "do not",
+            "DO NOT",
+            "don't",
+            "MUST NOT",
+            "must not",
+            "forbidden",
+            "avoid",
+            "sandbox bug",
+            "silently blocked",
+            "plugin-defined",
+            "blocks tools",
+            "off-limits",
+        )
+        ANTI_BLOCK_PREFIXES = (
+            "**CRITICAL**",
+            "**CRITICAL ",
+            "**Important**",
+            "**Note**",
+            "**Warning**",
+            "**MANDATORY**",
+            "> ",
+            "<!--",
+        )
+        ANTI_BLOCK_HEADER_TOKENS = ("pitfall", "anti-pattern", "bug")
+        SAME_LINE_GUARD_TOKENS = (
+            "plugin-defined",
+            "silently blocked",
+            "sandbox bug",
+            "blocks tools",
+            "placeholder",
+            "example",
+        )
+
+        def _suppressed(lines, lineno_one_indexed: int, line_text: str, value: str) -> bool:
+            if not ignore_negated_examples:
+                return False
+            window_start = max(0, lineno_one_indexed - 1 - 5)
+            window_end = lineno_one_indexed
+            window_lines = lines[window_start:window_end]
+            window_lower = "\n".join(window_lines).lower()
+            for token in NEGATION_TOKENS:
+                if token.lower() in window_lower:
+                    return True
+            for window_line in window_lines:
+                stripped = window_line.lstrip()
+                for prefix in ANTI_BLOCK_PREFIXES:
+                    if stripped.startswith(prefix):
+                        return True
+                if stripped.startswith("#"):
+                    header_lower = stripped.lower()
+                    for token in ANTI_BLOCK_HEADER_TOKENS:
+                        if token in header_lower:
+                            return True
+            backticked = f"`{value}`" in line_text
+            if backticked:
+                line_lower = line_text.lower()
+                for token in SAME_LINE_GUARD_TOKENS:
+                    if token in line_lower:
+                        return True
+            return False
+
+        scope_label = assertion.get("applies_to") or assertion.get("path")
+        failures = []
+        for path in files:
+            contents, read_error = safe_read_text(path, label, path.relative_to(root).as_posix())
+            if read_error:
+                # Accumulate per-file read errors instead of bailing the whole
+                # assertion — a single unreadable file shouldn't silently mask
+                # whatever the rest of the scope might be hiding.
+                failures.append(read_error["message"])
+                continue
+            lines = contents.splitlines()
+            for lineno, line in enumerate(lines, start=1):
+                for match in match_re.finditer(line):
+                    value = match.group("value")
+                    if value in whitelist:
+                        continue
+                    if _suppressed(lines, lineno, line, value):
+                        continue
+                    rel_path = path.relative_to(root).as_posix()
+                    failures.append(f"{rel_path}:{lineno} subagent_type={value!r}")
+
+        if failures:
+            return assertion_result(
+                "fail",
+                label,
+                f"non-whitelisted subagent_type values in {scope_label} (whitelist={whitelist}): {'; '.join(failures)}",
+            )
+        return assertion_result(
+            "pass",
+            label,
+            f"all subagent_type values in {scope_label} match whitelist {whitelist}",
+        )
+
     if kind == "consistent_with":
         field_error = require_string_fields(assertion, label, "mapping_id")
         if field_error:
@@ -727,8 +1138,8 @@ def resolve_routed_smoke_assertion(mapping_data, target: str, assertion_id: str)
 
 
 def expand_routed_assertions(mapping_data, target: str, raw_assertions):
-    expanded = []
-    errors = []
+    expanded: list[dict] = []
+    errors: list = []
     smoke_groups, mapping_error = require_mapping_section(mapping_data, "smoke_groups")
     if mapping_error:
         return expanded, [mapping_error]
@@ -753,6 +1164,7 @@ def expand_routed_assertions(mapping_data, target: str, raw_assertions):
             if list_error:
                 errors.append(f"smoke group {entry!r}: {list_error['message']}")
                 continue
+            assert isinstance(members, list)  # narrowed by require_string_list above
             resolved_members = []
             for member_id in members:
                 resolved, error = resolve_routed_smoke_assertion(mapping_data, target, member_id)

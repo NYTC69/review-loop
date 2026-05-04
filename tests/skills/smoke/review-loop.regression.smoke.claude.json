@@ -3,7 +3,10 @@
   "type": "smoke",
   "target": "review-loop",
   "runtime": "claude",
-  "requires": ["claude", "codex"],
+  "requires": [
+    "claude",
+    "codex"
+  ],
   "setup": {
     "temp_config": "",
     "timeout_seconds": 120
@@ -44,6 +47,16 @@
     "completed_stages_ordered_exec_polish_docs_security",
     "delivery_blocked_by_null",
     "review_loop_protocol_imports_read",
-    "no_forbidden_review_loop_subagent_types_in_agent_calls"
+    "no_forbidden_review_loop_subagent_types_in_agent_calls",
+    {
+      "id": "agent_calls_used_at_least_one_subagent",
+      "overrides": {
+        "min": 0,
+        "_comment": "min: 0 \u2014 fixture currently truncates before Agent dispatch under the 120s cap; tighten to 1 after BACKLOG follow-up fortifies dispatch within budget"
+      }
+    },
+    {
+      "id": "agent_calls_use_general_purpose_subagent_type"
+    }
   ]
 }

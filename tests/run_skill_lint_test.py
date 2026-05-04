@@ -1,6 +1,5 @@
 import json
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -198,6 +197,362 @@ class AllSkillBodiesScopeTest(unittest.TestCase):
             entry for entry in last_run["results"] if entry.get("id") == "review-loop"
         )
         self.assertEqual(review_loop_record["status"], "pass", review_loop_record["reason"])
+
+    def test_real_repo_passes_under_new_kinds(self):
+        # Integration smoke: A1 + A2 wired into review-loop.json + guide.json
+        # all green against the real repo. Locks against regressions of
+        # the new `command_flag_co_occurrence` and
+        # `agent_subagent_type_whitelist` heuristics.
+        completed = subprocess.run(
+            ["bash", "scripts/run-skill-lint"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        last_run = json.loads((ROOT / "tests/skills/.last-run.json").read_text(encoding="utf-8"))
+        for contract_id in ("review-loop", "guide"):
+            record = next(entry for entry in last_run["results"] if entry.get("id") == contract_id)
+            self.assertEqual(record["status"], "pass", f"{contract_id}: {record['reason']}")
+
+
+class LintAssertionOverrideWhitelistTest(unittest.TestCase):
+    """Regression: the lint-side id-resolver must reject any
+    non-`_`-prefixed override key. Earlier the whitelist was an empty
+    `frozenset()` paired with a truthy guard (`if WHITELIST and key not in
+    WHITELIST: fail`), which silently accepted every override key. The
+    fixed semantic is strict: empty whitelist = no overrides allowed."""
+
+    def test_unwhitelisted_lint_override_key_is_rejected(self):
+        contract_id = "zz.lint-override-whitelist.unwhitelisted"
+        case = LintAssertionFixtureCase(
+            contract_id=contract_id,
+            assertions=[
+                {
+                    "id": "claude_reviewer_command_flags_present",
+                    "overrides": {"definitely_not_an_allowed_key": "x"},
+                }
+            ],
+            fixture_dir=Path(ROOT),
+        )
+        try:
+            case.write_contract()
+            completed, record = case.run_lint()
+        finally:
+            case.cleanup()
+        self.assertIsNotNone(record)
+        self.assertEqual(record["status"], "fail", record)
+        # Per-assertion detail lives on stdout; record["reason"] is summary.
+        self.assertIn("definitely_not_an_allowed_key", completed.stdout)
+        self.assertIn("not in the allowed list", completed.stdout)
+
+    def test_underscore_prefixed_override_key_is_silently_dropped(self):
+        # `_comment` and other `_`-prefixed keys are metadata and must NOT
+        # trip the whitelist check. The assertion resolves and runs against
+        # the real repo with no overrides applied.
+        contract_id = "zz.lint-override-whitelist.underscore-ignored"
+        case = LintAssertionFixtureCase(
+            contract_id=contract_id,
+            assertions=[
+                {
+                    "id": "claude_reviewer_command_flags_present",
+                    "overrides": {"_comment": "rationale"},
+                }
+            ],
+            fixture_dir=Path(ROOT),
+        )
+        try:
+            case.write_contract()
+            completed, record = case.run_lint()
+        finally:
+            case.cleanup()
+        self.assertIsNotNone(record)
+        self.assertEqual(record["status"], "pass", record)
+
+
+class CommandFlagCoOccurrenceTest(unittest.TestCase):
+    REQUIRED_FLAGS = [
+        "--no-session-persistence",
+        "--output-format stream-json",
+        "--include-partial-messages",
+    ]
+
+    def _run(self, fixture_content: str, contract_id: str, *, anchor=None, required_flags=None, applies_to=None):
+        with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
+            fixture = write_fixture(Path(tmpdir), "SKILL.md", fixture_content)
+            relative = fixture.relative_to(ROOT).as_posix()
+            assertion = {
+                "id": "test_command_flag_co_occurrence",
+                "kind": "command_flag_co_occurrence",
+                "required_flags": required_flags if required_flags is not None else self.REQUIRED_FLAGS,
+            }
+            if applies_to is not None:
+                assertion["applies_to"] = applies_to
+            else:
+                assertion["path"] = relative
+            if anchor is not None:
+                assertion["anchor"] = anchor
+            case = LintAssertionFixtureCase(
+                contract_id=contract_id,
+                assertions=[assertion],
+                fixture_dir=Path(tmpdir),
+            )
+            try:
+                case.write_contract()
+                return case.run_lint()
+            finally:
+                case.cleanup()
+
+    def test_passes_when_all_flags_on_single_line(self):
+        content = (
+            "```bash\n"
+            "claude -p --no-session-persistence --output-format stream-json "
+            "--include-partial-messages --model X < prompt\n"
+            "```\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.single-line")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_passes_when_all_flags_with_backslash_continuation(self):
+        content = (
+            "```bash\n"
+            "claude -p --no-session-persistence \\\n"
+            "  --output-format stream-json \\\n"
+            "  --include-partial-messages --model X < prompt\n"
+            "```\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.backslash")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_passes_when_prose_followed_by_fence_block(self):
+        content = (
+            "Default reviewer path:\n"
+            "```bash\n"
+            "claude -p --no-session-persistence --output-format stream-json "
+            "--include-partial-messages\n"
+            "```\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.fence-adjacent")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_passes_when_flag_straddles_plain_newline_no_backslash(self):
+        # Synthetic R3-CRITICAL fixture: required flag spans a plain
+        # newline with no backslash continuation. Pass 3 whitespace
+        # normalization must collapse `\n` into ` ` so the flag matches.
+        content = (
+            "Default reviewer path: `claude -p --no-session-persistence --output-format\n"
+            "stream-json --include-partial-messages --model X` with stdin fed from foo.\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.plain-newline")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_passes_for_planning_md_lines_294_to_295_real_repo_shape(self):
+        # Real-repo ground truth for `docs/protocol/planning.md:294-295`:
+        # line 294 opens a SINGLE backtick `claude -p --no-session-persistence
+        # --output-format` and that backtick stays open; line 295 begins
+        # `stream-json …` and closes the single backtick. This is multi-line
+        # single-backtick inline code — A1 must treat the wrapped span as a
+        # real command body (NOT prose paraphrase) and verify all three
+        # required flags resolve as substrings after Pass 3 normalization.
+        content = (
+            "Default reviewer path: `claude -p --no-session-persistence --output-format\n"
+            "stream-json --include-partial-messages --model {x}`\n"
+            "with stdin fed from foo.\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.planning-md-shape")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_fails_when_flag_missing_regression_for_bug_b(self):
+        content = (
+            "```bash\n"
+            "claude -p --no-session-persistence --output-format json --include-partial-messages\n"
+            "```\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.missing-flag")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("--output-format stream-json", completed.stdout)
+
+    def test_fails_for_single_backtick_inline_command_missing_flag(self):
+        # Pin the narrowed backtick-prose guard: multi-line single-backtick
+        # inline code IS a real command body. A regression that drops
+        # `--include-partial-messages` from such an inline-code block must
+        # be caught (not silently treated as prose paraphrase). This proves
+        # the guard only suppresses *same-line* `…` wrappers and still
+        # detects regressions in multi-line single-backtick inline form.
+        content = (
+            "Default reviewer path: `claude -p --no-session-persistence --output-format\n"
+            "stream-json --model {x}`\n"
+            "with stdin fed from foo.\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.inline-missing-flag")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("--include-partial-messages", completed.stdout)
+
+    def test_passes_when_anchor_absent_vacuous(self):
+        content = "Some unrelated docs without any reviewer command.\n"
+        completed, record = self._run(content, "zz.lint.cmdflags.no-anchor")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_default_anchor_when_anchor_field_omitted(self):
+        # Field-validation order: anchor is optional; default `claude -p`
+        # is substituted before validation. With no anchor field passed,
+        # the default still finds and validates the command block.
+        content = (
+            "```bash\n"
+            "claude -p --no-session-persistence --output-format stream-json "
+            "--include-partial-messages\n"
+            "```\n"
+        )
+        completed, record = self._run(content, "zz.lint.cmdflags.default-anchor")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_read_error_accumulation_multiple_files(self):
+        # When 2+ files in scope are unreadable (invalid UTF-8 bytes),
+        # the final lint failure message must concatenate ALL file read-error
+        # messages. This proves the read-error accumulation in
+        # scripts/run-skill-lint:702-708 works. We test by creating a contract
+        # with command_flag_co_occurrence kind and two unreadable fixture files.
+        with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
+            tmppath = Path(tmpdir)
+            # Create two files with invalid UTF-8 leading bytes
+            file1 = tmppath / "bad1.md"
+            file2 = tmppath / "bad2.md"
+            file1.write_bytes(b'\xff\xfe\x00\x00')
+            file2.write_bytes(b'\xff\xfe\x00\x00')
+
+            relative1 = file1.relative_to(ROOT).as_posix()
+            relative2 = file2.relative_to(ROOT).as_posix()
+
+            case = LintAssertionFixtureCase(
+                contract_id="zz.lint.cmdflags.read-error-accumulation",
+                assertions=[
+                    {
+                        "id": "test_command_flag_co_occurrence_1",
+                        "kind": "command_flag_co_occurrence",
+                        "path": relative1,
+                        "required_flags": ["--test-flag"],
+                    },
+                    {
+                        "id": "test_command_flag_co_occurrence_2",
+                        "kind": "command_flag_co_occurrence",
+                        "path": relative2,
+                        "required_flags": ["--test-flag"],
+                    },
+                ],
+                fixture_dir=tmppath,
+            )
+            try:
+                case.write_contract()
+                completed, record = case.run_lint()
+            finally:
+                case.cleanup()
+
+            # Expect failure because files are unreadable
+            self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+            self.assertEqual(record["status"], "fail")
+            # Both file read errors should appear in stdout (per-assertion output)
+            # The output will mention "unable to read" for both file paths
+            output = completed.stdout + completed.stderr
+            self.assertIn("unable to read", output)
+            # Verify both files are mentioned in the output
+            self.assertIn("bad1.md", output)
+            self.assertIn("bad2.md", output)
+
+
+class AgentSubagentTypeWhitelistTest(unittest.TestCase):
+    def _run(self, fixture_content: str, contract_id: str, *, ignore_negated_examples=True, whitelist=None):
+        with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
+            fixture = write_fixture(Path(tmpdir), "SKILL.md", fixture_content)
+            relative = fixture.relative_to(ROOT).as_posix()
+            case = LintAssertionFixtureCase(
+                contract_id=contract_id,
+                assertions=[
+                    {
+                        "id": "test_agent_subagent_type_whitelist",
+                        "kind": "agent_subagent_type_whitelist",
+                        "path": relative,
+                        "whitelist": whitelist if whitelist is not None else ["general-purpose"],
+                        "ignore_negated_examples": ignore_negated_examples,
+                    }
+                ],
+                fixture_dir=Path(tmpdir),
+            )
+            try:
+                case.write_contract()
+                return case.run_lint()
+            finally:
+                case.cleanup()
+
+    def test_passes_when_only_general_purpose_used(self):
+        content = "Agent dispatch:\n  subagent_type: general-purpose\n  prompt: ...\n"
+        completed, record = self._run(content, "zz.lint.subagent-whitelist.allowed")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_fails_when_review_loop_executor_at_column_zero(self):
+        # Real invocation line, no negation token nearby, no anti-block
+        # heading, value not backticked. Should fail.
+        content = (
+            "Agent dispatch follows.\n"
+            "subagent_type: review-loop:executor\n"
+            "prompt: ...\n"
+        )
+        completed, record = self._run(content, "zz.lint.subagent-whitelist.bad")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("review-loop:executor", completed.stdout)
+
+    def test_passes_when_same_line_never_use_negation(self):
+        content = "Never use `subagent_type: review-loop:executor` — sandbox bug.\n"
+        completed, record = self._run(content, "zz.lint.subagent-whitelist.never-use")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_passes_in_blockquote(self):
+        content = "> subagent_type: review-loop:executor (anti-pattern)\n"
+        completed, record = self._run(content, "zz.lint.subagent-whitelist.blockquote")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_ignore_negated_examples_false_overrides_suppression(self):
+        # With suppression off, even a "Never use" prose mention fails.
+        content = "Never use `subagent_type: review-loop:executor`.\n"
+        completed, record = self._run(
+            content, "zz.lint.subagent-whitelist.no-suppress", ignore_negated_examples=False
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+
+    def test_passes_for_skill_review_loop_lines_314_to_315(self):
+        # Real-repo prose shape: `Never \`subagent_type: review-loop:<name>\`.`
+        content = (
+            "  `subagent` uses `subagent_type: general-purpose` with\n"
+            "  `agents/reviewer.md` inlined plus a \"Report only\" instruction. Never\n"
+            "  `subagent_type: review-loop:<name>`. For Claude reviewer prompts,\n"
+        )
+        completed, record = self._run(content, "zz.lint.subagent-whitelist.review-loop-prose")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_passes_for_planning_md_lines_279_to_280(self):
+        # Real-repo prose shape with "Never fall back to" mention.
+        content = (
+            "  back to subagent mode **for this round only**; do not ask the user and do\n"
+            "  not stop the loop. Never fall back to `subagent_type: review-loop:reviewer`\n"
+            "  — plugin agent types have tools silently blocked.\n"
+        )
+        completed, record = self._run(content, "zz.lint.subagent-whitelist.planning-prose")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
 
 
 if __name__ == "__main__":

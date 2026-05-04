@@ -468,6 +468,40 @@
       "forbidden_prefixes": [
         "review-loop:"
       ]
+    },
+    "agent_calls_used_at_least_one_subagent": {
+      "kind": "tool_use_min_count",
+      "artifact": "tool-use-events.json",
+      "min": 1,
+      "tool": "Agent",
+      "requires_subagent_type": true
+    },
+    "agent_calls_use_general_purpose_subagent_type": {
+      "kind": "tool_use_agent_subagent_type_whitelist",
+      "artifact": "tool-use-events.json",
+      "whitelist": [
+        "general-purpose"
+      ]
+    }
+  },
+  "lint_assertions": {
+    "claude_reviewer_command_flags_present": {
+      "kind": "command_flag_co_occurrence",
+      "applies_to": "all-skill-bodies-and-protocol-docs",
+      "anchor": "claude -p",
+      "required_flags": [
+        "--no-session-persistence",
+        "--output-format stream-json",
+        "--include-partial-messages"
+      ]
+    },
+    "subagent_types_used_in_skills_match_whitelist": {
+      "kind": "agent_subagent_type_whitelist",
+      "applies_to": "all-skill-bodies",
+      "whitelist": [
+        "general-purpose"
+      ],
+      "ignore_negated_examples": true
     }
   },
   "smoke_groups": {

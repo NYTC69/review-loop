@@ -608,6 +608,50 @@
       "kind": "contains",
       "path": "tests/skills/smoke/review-loop.skip-quality-polish.codex-fallback.json",
       "needle": "\"completed_stages_ordered_exec_polish_docs_security\""
+    },
+    {
+      "id": "claude_reviewer_command_flags_present"
+    },
+    {
+      "id": "subagent_types_used_in_skills_match_whitelist"
+    },
+    {
+      "id": "review_loop_skill_reviewer_command_flags",
+      "kind": "command_flag_co_occurrence",
+      "path": "skills/review-loop/SKILL.md",
+      "anchor": "claude -p",
+      "required_flags": [
+        "--no-session-persistence",
+        "--output-format stream-json",
+        "--include-partial-messages"
+      ]
+    },
+    {
+      "id": "plan_skill_subagent_whitelist",
+      "kind": "agent_subagent_type_whitelist",
+      "path": "skills/plan/SKILL.md",
+      "whitelist": [
+        "general-purpose"
+      ],
+      "ignore_negated_examples": true
+    },
+    {
+      "id": "execute_skill_subagent_whitelist",
+      "kind": "agent_subagent_type_whitelist",
+      "path": "skills/execute/SKILL.md",
+      "whitelist": [
+        "general-purpose"
+      ],
+      "ignore_negated_examples": true
+    },
+    {
+      "id": "guide_skill_subagent_whitelist",
+      "kind": "agent_subagent_type_whitelist",
+      "path": "skills/guide/SKILL.md",
+      "whitelist": [
+        "general-purpose"
+      ],
+      "ignore_negated_examples": true
     }
   ]
 }

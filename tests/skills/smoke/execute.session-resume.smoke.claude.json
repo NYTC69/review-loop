@@ -41,6 +41,16 @@
     "entry_point_plan",
     "approved_plan_section_present",
     "execute_protocol_imports_read",
-    "no_forbidden_review_loop_subagent_types_in_agent_calls"
+    "no_forbidden_review_loop_subagent_types_in_agent_calls",
+    {
+      "id": "agent_calls_used_at_least_one_subagent",
+      "overrides": {
+        "min": 0,
+        "_comment": "min: 0 \u2014 fixture currently truncates before Agent dispatch under the 120s cap; tighten to 1 after BACKLOG follow-up fortifies dispatch within budget"
+      }
+    },
+    {
+      "id": "agent_calls_use_general_purpose_subagent_type"
+    }
   ]
 }

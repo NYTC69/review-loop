@@ -42,6 +42,8 @@
     "entry_point_plan",
     "approved_plan_section_present",
     "plan_protocol_imports_read",
-    "no_forbidden_review_loop_subagent_types_in_agent_calls"
+    "no_forbidden_review_loop_subagent_types_in_agent_calls",
+    {"id": "agent_calls_used_at_least_one_subagent"},
+    {"id": "agent_calls_use_general_purpose_subagent_type"}
   ]
 }
