@@ -170,8 +170,9 @@ integrations must fail silently".
 2. Resume dedup: if the session file already carries a
    `## Historical Context` section, skip.
 3. Extract 1-2 specific search terms from the work item.
-4. Call the memory tool with a 10-second timeout. Any error / hang /
-   timeout / non-zero exit / stderr / malformed output → silently skip.
+4. Call the memory tool with a 10-second timeout; kill the probe at the
+   deadline rather than awaiting it. Any error / hang / timeout /
+   non-zero exit / stderr / malformed output → silently skip.
 5. If the top results parse cleanly, append up to 3 bullets under a
    `## Historical Context` section. Otherwise skip — no empty section.
 
@@ -211,8 +212,8 @@ Executor remains a `judgment`-tier dispatch; missing `tier` defaults to
 
 Validate the Executor output against the shared schema before persisting
 to `## Draft Plan`. If invalid, retry once with explicit correction
-instructions. If still invalid, stop and surface the failure to the
-user.
+instructions. If still invalid, stop and surface the failure to the user.
+Then release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 
 ### Reviewer dispatch (Codex Stage 1)
 
@@ -239,14 +240,16 @@ claude -p --no-session-persistence --output-format stream-json --include-partial
   `## Review History` (command execution / JSON parsing / missing
   `result` / reviewer schema validation). If
   `codex_reviewer_backend: codex` is not set, surface the Claude-path
-  failure to the user instead of auto-falling back.
+  failure to the user instead of auto-falling back. Then
+  release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 
 Optional local Codex reviewer path: spawn `review_loop_reviewer` only
 if `codex_reviewer_backend: codex` is set, or if the user has otherwise
 explicitly opted in. Use a fresh self-contained prompt with the same
 review content and the same reviewer schema rules. If invalid, retry
 once with explicit correction instructions. If still invalid, stop and
-surface the failure.
+surface the failure. Then
+release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 
 ### Plan Review Content
 

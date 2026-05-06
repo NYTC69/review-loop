@@ -111,8 +111,12 @@ Execute before any lock or session write.
    - `before-delivery`
    - `delivery` (default when flag is absent)
 
-   Codex Stage 1 supports `before-polish`, `before-docs`, and
-   `before-security` as clean stop points.
+   Codex Stage 1 accepts every value listed above for `--stop-after`;
+   `before-polish`, `before-docs`, and `before-security` are the most
+   common request points and are highlighted here for that reason.
+   `exec-round` and `before-delivery` are also accepted. `delivery` is
+   the default no-early-stop value (run through delivery), not a stop
+   point.
 
    Any other value → reject at parse time. Error message must list the
    supported subset. Do not create the lock, do not touch the session
@@ -326,7 +330,8 @@ Codex execution-phase Executor remains a `judgment`-tier local agent.
 
 Validate the Executor output against the shared schema. If invalid,
 retry once with explicit correction instructions. If still invalid,
-stop and surface the failure.
+stop and surface the failure. Then
+release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 
 ### Reviewer dispatch (Codex Stage 1)
 
@@ -352,14 +357,16 @@ claude -p --no-session-persistence --output-format stream-json --include-partial
   `## Review History` (command execution / JSON parsing / missing
   `result` / reviewer schema validation). If
   `codex_reviewer_backend: codex` is not set, surface the Claude-path
-  failure to the user instead of auto-falling back.
+  failure to the user instead of auto-falling back. Then
+  release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 
 Optional local Codex reviewer path: spawn `review_loop_reviewer` only
 if `codex_reviewer_backend: codex` is set, or if the user has otherwise
 explicitly opted in. Use a fresh self-contained prompt with the same
 review content and the same reviewer schema rules. If invalid, retry
 once with explicit correction instructions. If still invalid, stop and
-surface the failure.
+surface the failure. Then
+release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 
 ### Code Review Content
 
@@ -420,6 +427,8 @@ Per `docs/protocol/execution.md` §No-op execution round validation.
 - For a no-op or unchanged run, do not invent new file changes in
   `## Files Changed`. Reject the result if the Executor claims changes
   that cannot be tied to a meaningful current-round delta.
+- If git diff --name-only HEAD itself fails (non-zero exit, missing repo, etc.) when computing the pre-Executor or post-Executor changed set, stop and surface the failure to the user.
+  Then release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting. Do not proceed with a partial or invented changed-set.
 
 ### Stage minting
 
@@ -452,6 +461,8 @@ docs + fix stale code comments. Writes → clear `completed_stages`,
 replay from `exec`. No-write → mint `docs`. After minting `docs`,
 proceed to Step 3.7 — a no-op docs stage is not a terminal state.
 
+- Hallucination guard: for every documentation-stage agent returning `tool_uses: 0`, discard and retry once; if retry is also 0, skip and report.
+
 `--stop-after before-security` → exit after Step 3.6 and before Step
 3.7.
 
@@ -468,6 +479,8 @@ updates) still runs this scan — it is a security gate, not a
 content-dependent step. The only exits before 3.7 are
 `--stop-after before-security` / `before-docs` / `before-polish` /
 `exec-round`.
+
+- Hallucination guard: for every security-stage agent returning `tool_uses: 0`, discard and retry once; if retry is also 0, skip and report.
 
 `--stop-after before-delivery` → exit after Step 3.7 and before Step 4.
 

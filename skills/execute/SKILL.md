@@ -324,6 +324,9 @@ Orchestrator compares the Executor's claimed file list against the
 current-round delta (pre-round vs post-round). Same path sets alone do
 not prove a no-op.
 
+- If `git diff --name-only HEAD` itself fails (non-zero exit, missing repo, etc.) when computing the pre-Executor or post-Executor changed set, stop and surface the failure to the user.
+  Then release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting. Do not proceed with a partial or invented changed-set.
+
 ## Step 3.5 — Quality Polish
 
 Per `docs/protocol/execution.md` §Step 3.5. Runs language-specific
@@ -354,6 +357,8 @@ docs + fix stale code comments. Writes → clear `completed_stages`,
 replay from `exec`. No-write → mint `docs`. **After minting `docs`,
 proceed to Step 3.7** — a no-op docs stage is not a terminal state.
 
+- Hallucination guard: for every documentation-stage agent returning `tool_uses: 0`, discard and retry once; if retry is also 0, skip and report.
+
 `--stop-after before-security` → exit after Step 3.6 and before Step 3.7.
 
 ## Step 3.7 — Security Preflight
@@ -370,6 +375,8 @@ gate, not a content-dependent step. The only exits before 3.7 are
 `--stop-after before-security` / `before-docs` / `before-polish` /
 `exec-round`.
 
+- Hallucination guard: for every security-stage agent returning `tool_uses: 0`, discard and retry once; if retry is also 0, skip and report.
+
 `--stop-after before-delivery` → exit after Step 3.7 and before Step 4.
 
 ## Step 4 — Delivery
@@ -381,7 +388,7 @@ completed_stages`. For Claude Code the runtime set is
 `{exec, polish, docs, security}`. Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
 On gate failure, hard-stop per §Delivery gate: set
-`delivery_blocked_by ← <first missing stage>`, exit without delivering.
+`delivery_blocked_by ← <first missing stage>`, release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle, and exit without delivering.
 The stuck summary is printed from `docs/protocol/execution.md`
 §Per-stage max-round caps.
 

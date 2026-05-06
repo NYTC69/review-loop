@@ -142,9 +142,10 @@ integrations must fail silently".
    `## Historical Context` section (should not happen for `plan` fresh
    init — guard anyway), skip.
 3. Extract 1-2 specific search terms from the work item.
-4. Call the memory tool with a **10-second timeout**. If the call
-   errors, hangs, times out, returns non-zero, produces stderr, or
-   returns malformed output, **silently skip this step and continue.**
+4. Call the memory tool with a **10-second timeout**; kill the probe at
+   the deadline rather than awaiting it. If the call errors, hangs,
+   times out, returns non-zero, produces stderr, or returns malformed
+   output, **silently skip this step and continue.**
 5. If the top results parse cleanly, append up to 3 bullets under a
    `## Historical Context` section. Otherwise skip — no empty section.
 

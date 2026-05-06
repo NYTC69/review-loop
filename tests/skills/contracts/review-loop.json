@@ -652,6 +652,94 @@
         "general-purpose"
       ],
       "ignore_negated_examples": true
+    },
+    {
+      "id": "codex_plan_executor_stop_surface_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Validate the Executor output against the shared schema before persisting",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 5
+    },
+    {
+      "id": "codex_plan_reviewer_claude_path_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Record a short failure reason summary in",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 6
+    },
+    {
+      "id": "codex_plan_reviewer_codex_path_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Optional local Codex reviewer path: spawn",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 7
+    },
+    {
+      "id": "codex_execute_executor_stop_surface_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Validate the Executor output against the shared schema. If invalid,",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 4
+    },
+    {
+      "id": "codex_execute_reviewer_claude_path_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Record a short failure reason summary in",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 6
+    },
+    {
+      "id": "codex_execute_reviewer_codex_path_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Optional local Codex reviewer path: spawn",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 7
+    },
+    {
+      "id": "codex_plan_lock_release_present",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+    },
+    {
+      "id": "codex_execute_lock_release_present",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+    },
+    {
+      "id": "codex_execute_git_diff_failure_present",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "If git diff --name-only HEAD itself fails"
+    },
+    {
+      "id": "codex_execute_git_diff_failure_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "If git diff --name-only HEAD itself fails",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 2
     }
   ]
 }
