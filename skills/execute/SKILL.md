@@ -324,7 +324,7 @@ Orchestrator compares the Executor's claimed file list against the
 current-round delta (pre-round vs post-round). Same path sets alone do
 not prove a no-op.
 
-- If `git diff --name-only HEAD` itself fails (non-zero exit, missing repo, etc.) when computing the pre-Executor or post-Executor changed set, stop and surface the failure to the user.
+- If git diff --name-only HEAD itself fails (non-zero exit, missing repo, etc.) when computing the pre-Executor or post-Executor changed set, stop and surface the failure to the user.
   Then release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting. Do not proceed with a partial or invented changed-set.
 
 ## Step 3.5 — Quality Polish

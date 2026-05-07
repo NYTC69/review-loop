@@ -125,6 +125,7 @@ Check:
 - **Neither** → proceed to Step 1.6.
 
 Print the suggestion and exit. Do **not** dispatch Executor / Reviewer.
+Before exiting on the suggest-and-exit branch, release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
 The user can rerun with the suggested command if they agree.
 
 ## Step 1.6 — Historical context retrieval (optional, fail-silently)

@@ -740,6 +740,34 @@
         "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
       ],
       "window_lines": 2
+    },
+    {
+      "id": "claude_plan_lock_release_present",
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+    },
+    {
+      "id": "claude_execute_lock_release_present",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+    },
+    {
+      "id": "claude_execute_git_diff_failure_present",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "If git diff --name-only HEAD itself fails"
+    },
+    {
+      "id": "claude_execute_git_diff_failure_lock_release",
+      "kind": "pattern_requires_adjacent",
+      "path": "skills/execute/SKILL.md",
+      "needle": "If git diff --name-only HEAD itself fails",
+      "required_nearby": [
+        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      ],
+      "window_lines": 2
     }
   ]
 }
