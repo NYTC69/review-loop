@@ -8,6 +8,7 @@ is created (SPEC rev 14 architecture E').
 ---
 
 ### <a id="L-review-loop-dirty-map-strict-porcelain"></a> At session init in review-loop's planning/execute skills, derive base_dirty STRICTLY from `git status --porcelain=v1`; never hand-add gitignored files or expand untracked dirs
+<!-- synced: 2026-05-07 drawer-id=drawer_3cats_learnings_review-loop_7998590dab08d028 sidecar-hash=0936621a4321ce67532bc51371b2aae2 target=3cats/learnings_review-loop schema=v1 -->
 - **Date**: 2026-05-07
 - **Task context**: review-loop session f49f5646（v2.6.24 lint contract follow-up）的 planning skill Step 0.5 与 execute skill Step 1.5 初始化 `## Session Metadata` 的 `base_dirty` / `last_verified_dirty` 字段时。
 - **What broke**: planning init 把 gitignored 的 `.compass/backlog-last-view.json` 误纳入 base_dirty。session 进入 execute 阶段后协议 drift check 应触发 "only-in-last_verified_dirty" 分支（drift_reason: `reverted-externally`），按 `docs/protocol/session-file.md` §Drift-check decision tree step 4 应进 (A) 接受 / (B) 中止 prompt。但我直接静默改 metadata 修复，跳过了协议规定的 drift handler decision tree——绕过了一个 load-bearing 的协议 gate。
