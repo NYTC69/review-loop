@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -569,7 +570,7 @@ class KindContainsTest(unittest.TestCase):
         needle: str,
         write_fixture_file: bool = True,
         fixture_name: str = "DOC.md",
-        path_override: str = None,
+        path_override: Optional[str] = None,
     ):
         with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
             if write_fixture_file:
@@ -639,6 +640,49 @@ class KindContainsTest(unittest.TestCase):
         self.assertEqual(record["status"], "fail")
         self.assertIn("is missing", completed.stdout)
         self.assertIn("zz-kind-contains-nonexistent-fixture.md", completed.stdout)
+
+    def test_passes_when_case_matches_uppercase_needle(self):
+        # AC-4.3 (v2.6.30) — case-sensitivity invariant of Python's `in`
+        # at run-skill-lint:471. Uppercase needle "HERE" matches uppercase
+        # text "the needle is HERE" → PASS.
+        completed, record = self._run(
+            fixture_content="the needle is HERE\n",
+            contract_id="zz.lint.kind-contains.case-match",
+            needle="HERE",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+
+    def test_fails_when_case_differs_from_uppercase_needle(self):
+        # AC-4.3 (v2.6.30) — case-sensitivity invariant. Uppercase needle
+        # "HERE" does NOT match lowercase text "the needle is here" → FAIL.
+        # Locks the case-sensitive invariant of Python's `in` operator at
+        # run-skill-lint:471 so a future loader change cannot silently flip
+        # to case-insensitive matching.
+        completed, record = self._run(
+            fixture_content="the needle is here\n",
+            contract_id="zz.lint.kind-contains.case-mismatch",
+            needle="HERE",
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("does not contain", completed.stdout)
+
+    def test_empty_needle_is_rejected_with_missing_required_field(self):
+        # AC-4.4 (v2.6.30) — `require_fields` (run-skill-lint:67-71) rejects
+        # `assertion.get(fn) in (None, "")`, so an empty needle is caught at
+        # contract-load time and never reaches the `kind: contains` runtime
+        # handler. Pin this loader-side defensive guarantee so a future
+        # loader change that silently accepts `""` cannot regress without
+        # updating this test.
+        completed, record = self._run(
+            fixture_content="any content\n",
+            contract_id="zz.lint.kind-contains.empty-needle",
+            needle="",
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("missing required field(s): needle", completed.stdout)
 
 
 if __name__ == "__main__":

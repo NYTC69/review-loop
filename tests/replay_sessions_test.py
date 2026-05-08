@@ -45,7 +45,14 @@ def write_fixture(dirpath: Path, name: str, content: str) -> Path:
 
 
 def run_parser(root_dir: Path, *flags: str):
-    """Shell out to the parser; return (exit_code, parsed_stdout_or_text, raw_stdout)."""
+    """Shell out to the parser; return (exit_code, parsed_stdout_or_text, raw_stdout).
+
+    Raises AssertionError on JSON parse failure with stdout/stderr embedded
+    in the message, so a parser-side regression that breaks JSON output
+    surfaces a clean failure at the assertion site rather than a confusing
+    downstream `TypeError: 'NoneType' object is not subscriptable` from a
+    caller indexing `parsed["..."]`.
+    """
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--root", str(root_dir), *flags],
         capture_output=True,
@@ -57,7 +64,11 @@ def run_parser(root_dir: Path, *flags: str):
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        parsed = None
+        raise AssertionError(
+            f"replay_sessions parser produced non-JSON stdout (returncode={completed.returncode!r}):\n"
+            f"--- stdout ---\n{raw}\n"
+            f"--- stderr ---\n{completed.stderr}"
+        )
     return completed.returncode, parsed, raw
 
 
@@ -67,6 +78,37 @@ def _file_record(report: dict, basename: str) -> dict:
         if entry["path"].endswith(basename):
             return entry
     raise AssertionError(f"no file record for {basename} in {report}")
+
+
+class RunParserHelperContractTest(unittest.TestCase):
+    """AC-3b.3 — locks the helper contract that `run_parser` raises
+    AssertionError carrying subprocess stdout/stderr when the parser
+    produces non-JSON stdout. Replaces the prior silent `parsed = None`
+    fallback that surfaced as a confusing downstream `TypeError` at the
+    caller's `parsed["summary"][...]` site."""
+
+    def test_run_parser_raises_assertionerror_on_non_json_stdout(self):
+        global SCRIPT
+        original_script = SCRIPT
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            fake_script = tmpdir / "fake_parser.py"
+            fake_script.write_text(
+                "import sys\n"
+                'print("not json")\n'
+                'print("oops", file=sys.stderr)\n'
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
+            SCRIPT = fake_script
+            try:
+                with self.assertRaises(AssertionError) as cm:
+                    run_parser(tmpdir)
+                msg = str(cm.exception)
+                self.assertIn("not json", msg)
+                self.assertIn("oops", msg)
+            finally:
+                SCRIPT = original_script
 
 
 class AcceptanceCriteriaTest(unittest.TestCase):
@@ -643,7 +685,13 @@ class BuildReportUnitTest(unittest.TestCase):
 
 
 class SecondTierCoverageTest(unittest.TestCase):
-    """Six MEDIUM second-tier coverage gaps surfaced by pr-test-analyzer during v2.6.26 Step 3.5.5."""
+    """Second-tier coverage tests (v2.6.26 + v2.6.30 third-tier additions).
+
+    v2.6.26 Step 3.5.5 surfaced six MEDIUM gaps closed in v2.6.28; v2.6.30
+    extends with `bt` quoted branch, secondary-regex left-boundary
+    behavior pin (negative + positive), and render_text path-truncation
+    branch.
+    """
 
     def test_sq_quoted_value_general_purpose(self):
         # Gap (1A): pin SUBAGENT_TYPE_RE `sq` (single-quoted) branch for the
@@ -666,6 +714,102 @@ class SecondTierCoverageTest(unittest.TestCase):
         )
         self.assertEqual(hits, {"review-loop:executor": 1})
         self.assertEqual(sites, [{"value": "review-loop:executor", "line": 7}])
+
+    def test_bt_quoted_value_review_loop_executor(self):
+        # AC-4.1 (Gap 1, v2.6.30) — pin SUBAGENT_TYPE_RE `bt` (backtick)
+        # branch for the `review-loop:executor` value. Symmetric with the
+        # `sq` and `dq` branches above. In-process scan_line.
+        #
+        # NOTE (test-theater fix, R1 CRITICAL): the `hits`/`sites`
+        # assertions below remain valid integration coverage, but they
+        # are NOT sufficient to pin the `bt` branch in isolation —
+        # `BARE_REVIEW_LOOP_RE` (the secondary regex) ALSO matches
+        # `review-loop:executor` inside the backticks, so removing the
+        # `bt` arm from `SUBAGENT_TYPE_RE` would still leave hits/sites
+        # populated. The white-box `SUBAGENT_TYPE_RE` assertions below
+        # close that hole by directly checking the named-capture groups.
+        line = "  subagent_type: `review-loop:executor`"
+
+        # White-box: assert the primary regex `bt` arm fires standalone.
+        m = replay_sessions.SUBAGENT_TYPE_RE.search(line)
+        self.assertIsNotNone(
+            m,
+            "SUBAGENT_TYPE_RE must match the backtick-wrapped value",
+        )
+        self.assertEqual(
+            m.group("bt"),
+            "review-loop:executor",
+            "the `bt` named-capture group must fire on backtick-quoted value",
+        )
+        self.assertIsNone(
+            m.group("sq"),
+            "the `sq` group must NOT fire on backtick-quoted value",
+        )
+        self.assertIsNone(
+            m.group("dq"),
+            "the `dq` group must NOT fire on backtick-quoted value",
+        )
+
+        # Integration: hits/sites still populated end-to-end (kept as
+        # additional coverage, but NOT the primary assertion for this AC).
+        hits: dict = {}
+        sites: list = []
+        replay_sessions.scan_line(line, 11, hits, sites)
+        self.assertEqual(hits, {"review-loop:executor": 1})
+        self.assertEqual(sites, [{"value": "review-loop:executor", "line": 11}])
+
+    def test_secondary_regex_left_boundary_NOT_enforced_pins_current_behavior(self):
+        # AC-4.2 (Gap 2 negative, v2.6.30) — pins current behavior that the
+        # secondary regex `BARE_REVIEW_LOOP_RE` (replay_sessions.py:49-52)
+        # lacks a left-boundary lookbehind. A future tightening to add
+        # `(?<![A-Za-z0-9_\-])` would intentionally fail this test, prompting
+        # the right conversation. Out of bundle scope per AC-3b.4.
+        hits: dict = {}
+        sites: list = []
+        replay_sessions.scan_line(
+            "the xreview-loop:executor briefly", 1, hits, sites
+        )
+        self.assertEqual(hits, {"review-loop:executor": 1})
+        self.assertEqual(
+            sites, [{"value": "review-loop:executor", "line": 1}]
+        )
+
+    def test_secondary_regex_left_boundary_matches_after_whitespace(self):
+        # AC-4.2 (Gap 2 positive, v2.6.30) — pin the legitimate
+        # whitespace-prefixed left-boundary occurrence: a real bare-form
+        # `review-loop:executor` mention preceded by a space matches.
+        hits: dict = {}
+        sites: list = []
+        replay_sessions.scan_line(
+            "talking about review-loop:executor briefly", 3, hits, sites
+        )
+        self.assertEqual(hits, {"review-loop:executor": 1})
+        self.assertEqual(
+            sites, [{"value": "review-loop:executor", "line": 3}]
+        )
+
+    def test_render_text_truncates_path_when_over_fifty_chars(self):
+        # AC-4.5 (Gap 5, v2.6.30) — pin the render_text path-truncation
+        # branch at scripts/replay_sessions.py:153-154
+        # (`if len(path_short) > 50: path_short = "..." + path_short[-47:]`).
+        # `build_report` uses single-level `root.glob("*.md")`, so the long
+        # path is a long *filename* directly under tmpdir, not a long subdir.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            fixture = write_fixture(
+                tmpdir,
+                "a" * 60 + ".md",
+                "  subagent_type: review-loop:executor\n",
+            )
+            self.assertGreater(
+                len(str(fixture)),
+                50,
+                "fixture path must exceed 50 chars to exercise the truncation branch",
+            )
+            _, _, raw = run_parser(tmpdir, "--text")
+            truncated = "..." + str(fixture)[-47:]
+            self.assertIn(truncated, raw)
+            self.assertNotIn(str(fixture), raw)
 
     def test_secondary_regex_right_boundary_blocks_extended_token(self):
         # Gap (2): pin BARE_REVIEW_LOOP_RE right-boundary lookahead
@@ -714,6 +858,10 @@ class SecondTierCoverageTest(unittest.TestCase):
                 tmpdir,
                 "sub/nested.md",
                 "  subagent_type: review-loop:reviewer\n",
+            )
+            self.assertTrue(
+                (tmpdir / "sub" / "nested.md").exists(),
+                "fixture file must exist on disk to validate the glob skip is real",
             )
             report = replay_sessions.build_report(tmpdir)
             self.assertEqual(len(report["files"]), 1)

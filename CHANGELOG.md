@@ -2,6 +2,11 @@
 
 ## 2026-05-08
 
+### v2.6.30
+
+- 8 new tests close 2 P3 backlog items in a bundled delivery (per v2.6.28 controlled-deviation precedent — pure-test, mutually independent, no shared mutation surface): `RunParserHelperContractTest` (1 method, P3 [3b] — `tests/replay_sessions_test.py::run_parser` helper hardening: replaces silent `parsed = None` JSONDecodeError fallback with `AssertionError` carrying subprocess stdout/stderr/returncode, so a parser regression surfaces a clean failure at the assertion site instead of a confusing downstream `TypeError`); `SecondTierCoverageTest` extended with 4 methods (P3 [4] gaps 1, 2 negative + positive, 5 — `bt` quoted regex branch isolated; secondary regex `BARE_REVIEW_LOOP_RE` left-boundary current behavior pinned (negative + positive); `render_text` `>50`-char path-truncation branch); `KindContainsTest` extended with 3 methods (P3 [4] gaps 3, 4 — case-sensitivity invariant pin (uppercase needle matches uppercase, fails on lowercase); empty-needle rejected at contract-load time by `require_fields`). `test_glob_is_single_level_not_recursive` augmented with positive existence assertion (Gap 6). No script-under-test, contract-loader, or lint contract JSON edits. Test count 67 → 75. Lint baseline 288 case-level PASS / 0 FAIL preserved.
+- Closes BACKLOG P3 [3b] (`run_parser` helper hardening) and P3 [4] (six third-tier coverage gaps).
+
 ### v2.6.28
 
 - 10 new tests close 2 P3 backlog items: `KindContainsTest` (3 methods, isolates `kind: contains` lint mechanic from integration smoke) and `SecondTierCoverageTest` (7 methods covering 6 gaps — gap 1 split into sq + dq quote branches; plus secondary-regex right-boundary, errors=replace UTF-8 decode, *.md non-recursive glob, anomaly_values set-dedup, --text rendering pinning). No script-under-test changes. Test count 57 → 67.
