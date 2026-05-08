@@ -100,15 +100,24 @@ def scan_line(line: str, line_no: int, hits: dict, sites: list) -> None:
         sites.append({"value": value, "line": line_no})
 
 
-def scan_file(path: Path) -> dict:
-    """Scan a single .md file; return a per-file record."""
-    text = path.read_text(encoding="utf-8", errors="replace")
+def scan_file(path: Path) -> dict | None:
+    """Scan a single .md file; return a per-file record.
+
+    Returns None and emits one stderr line if the file is unreadable
+    (any OSError on read_text or stat — covers PermissionError,
+    FileNotFoundError race-vs-glob, IsADirectoryError, transient FS).
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    except OSError as exc:
+        sys.stderr.write(f"replay_sessions: unreadable file: {path}: {exc}\n")
+        return None
     hits: dict = {}
     sites: list = []
     for line_no, line in enumerate(text.splitlines(), start=1):
         scan_line(line, line_no, hits, sites)
     anomaly_values = sorted({s["value"] for s in sites})
-    mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
     return {
         "path": str(path),
         "mtime": mtime,
@@ -124,8 +133,12 @@ def build_report(root: Path) -> dict:
     files = []
     files_with_anomaly = 0
     total_anomaly_occurrences = 0
+    unreadable = 0
     for path in sorted(root.glob("*.md")):
         record = scan_file(path)
+        if record is None:
+            unreadable += 1
+            continue
         files.append(record)
         if record["anomaly"]:
             files_with_anomaly += 1
@@ -136,6 +149,7 @@ def build_report(root: Path) -> dict:
             "files_scanned": len(files),
             "files_with_anomaly": files_with_anomaly,
             "total_anomaly_occurrences": total_anomaly_occurrences,
+            "unreadable_files": unreadable,
         },
     }
 
@@ -163,7 +177,8 @@ def render_text(report: dict) -> str:
     lines.append(
         f"Summary: scanned={s['files_scanned']}  "
         f"with_anomaly={s['files_with_anomaly']}  "
-        f"total_anomaly_occurrences={s['total_anomaly_occurrences']}"
+        f"total_anomaly_occurrences={s['total_anomaly_occurrences']}  "
+        f"unreadable={s['unreadable_files']}"
     )
     return "\n".join(lines) + "\n"
 
@@ -203,6 +218,8 @@ def main(argv: list | None = None) -> int:
 
     if args.exit_zero:
         return 0
+    if report["summary"]["unreadable_files"] > 0:
+        return 3
     return 1 if report["summary"]["files_with_anomaly"] > 0 else 0
 
 

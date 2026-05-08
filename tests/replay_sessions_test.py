@@ -1,6 +1,6 @@
 """Unit tests for scripts/replay_sessions.py.
 
-36 cases:
+47 cases:
   - 4 AC tests (clean / anomaly / mixed / no-tokens)
   - 7 corpus-grounded regex-locking tests (FP1, FP2, WC1, WC2, BP1, KN1, LEG)
   - 1 dedup test (primary + secondary span overlap)
@@ -9,17 +9,28 @@
     directory, multi-line counts, anomaly-site fidelity, JSON shape invariants)
   - 5 in-process scan_line unit tests
   - 3 in-process build_report unit tests
-  - 7 second-tier coverage tests (sq/dq quoted regex branches,
-    secondary-regex right-boundary, errors=replace UTF-8 decode,
-    *.md non-recursive glob, anomaly_values set-dedup, --text rendering
-    pinning)
+  - 11 second-tier and third-tier coverage tests (sq/dq/bt quoted regex
+    branches with white-box named-group assertions, secondary-regex
+    left-boundary NOT-enforced + matches-after-whitespace pins,
+    secondary-regex right-boundary extended-token block, render_text
+    path-truncation branch, errors=replace UTF-8 decode, *.md
+    non-recursive glob, anomaly_values set-dedup, --text full layout
+    rendering pinning)
+  - 1 run_parser helper contract test (AssertionError on non-JSON stdout)
+  - 6 unreadable-file tests (OSError parent-class catch, exit-3 vs
+    exit-1 priority, --exit-zero suppression, files-list omission,
+    stderr line format + glob-sort order, FileNotFoundError race
+    falls through OSError catch)
 
 Stdlib unittest. Mirrors tests/run_skill_lint_test.py style: subprocess.run
-+ tempfile + a small write_fixture helper. The plumbing-edge, unit, and
-second-tier classes also exercise replay_sessions module functions directly
-via sys.path injection.
++ tempfile + a small write_fixture helper. The plumbing-edge, unit,
+second-tier, run-parser-helper-contract, and unreadable-file classes
+also exercise replay_sessions module functions directly via sys.path
+injection.
 """
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -28,6 +39,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -449,9 +461,10 @@ class PlumbingEdgeTest(unittest.TestCase):
                     "files_scanned": 0,
                     "files_with_anomaly": 0,
                     "total_anomaly_occurrences": 0,
+                    "unreadable_files": 0,
                 },
             )
-            self.assertEqual(len(report["summary"]), 3)
+            self.assertEqual(len(report["summary"]), 4)
             # Anti-assertion: mtime is per-file, never in summary.
             self.assertNotIn("mtime", report["summary"])
 
@@ -551,6 +564,7 @@ class PlumbingEdgeTest(unittest.TestCase):
                     "files_scanned",
                     "files_with_anomaly",
                     "total_anomaly_occurrences",
+                    "unreadable_files",
                 ],
             )
 
@@ -631,6 +645,7 @@ class BuildReportUnitTest(unittest.TestCase):
                         "files_scanned": 0,
                         "files_with_anomaly": 0,
                         "total_anomaly_occurrences": 0,
+                        "unreadable_files": 0,
                     },
                 },
             )
@@ -933,6 +948,175 @@ class SecondTierCoverageTest(unittest.TestCase):
             )
             # Horizontal rule pinning (rendered twice in the layout).
             self.assertIn("-" * 60, raw)
+
+
+class UnreadableFileTest(unittest.TestCase):
+    """P3-3a coverage: unreadable-file handling, exit-3 contract, stderr format.
+
+    All tests run in-process via replay_sessions.scan_file / build_report /
+    main with unittest.mock.patch.object(Path, "read_text", side_effect=...).
+    Subprocess can't see Python-side patches, so the in-process style mirrors
+    BuildReportUnitTest above (lines 620-684). The side_effect callable
+    inspects `self.name` and raises selectively for targeted basenames,
+    falling through to the original Path.read_text for other files.
+    """
+
+    @staticmethod
+    def _selective_read_text(targets, exc_factory):
+        """Return a side_effect callable that raises `exc_factory(self)` when
+        `self.name` is in `targets`, otherwise delegates to the real
+        Path.read_text. `targets` is an iterable of basename strings.
+        """
+        original = Path.read_text
+        target_set = set(targets)
+
+        def side_effect(self, *args, **kwargs):
+            if self.name in target_set:
+                raise exc_factory(self)
+            return original(self, *args, **kwargs)
+
+        return side_effect
+
+    def test_unreadable_file_alone_exits_3(self):
+        # Single unreadable file -> exit 3, summary["unreadable_files"]==1.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(tmpdir, "locked.md", "  subagent_type: general-purpose\n")
+            side_effect = self._selective_read_text(
+                {"locked.md"},
+                lambda p: PermissionError(13, "Permission denied", str(p)),
+            )
+            buf_out = io.StringIO()
+            buf_err = io.StringIO()
+            with patch.object(Path, "read_text", autospec=True, side_effect=side_effect), \
+                 contextlib.redirect_stdout(buf_out), \
+                 contextlib.redirect_stderr(buf_err):
+                code = replay_sessions.main([
+                    "--root", str(tmpdir),
+                ])
+            self.assertEqual(code, 3)
+            report = json.loads(buf_out.getvalue())
+            self.assertEqual(report["summary"]["unreadable_files"], 1)
+            self.assertEqual(report["summary"]["files_scanned"], 0)
+
+    def test_unreadable_with_anomaly_still_exits_3(self):
+        # Q2 pin: exit-3 outranks exit-1 when both anomaly and unreadable
+        # are present.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(
+                tmpdir,
+                "anom.md",
+                "  subagent_type: review-loop:executor\n",
+            )
+            write_fixture(
+                tmpdir,
+                "clean.md",
+                "  subagent_type: general-purpose\n",
+            )
+            write_fixture(tmpdir, "locked.md", "irrelevant body\n")
+            side_effect = self._selective_read_text(
+                {"locked.md"},
+                lambda p: PermissionError(13, "Permission denied", str(p)),
+            )
+            buf_out = io.StringIO()
+            buf_err = io.StringIO()
+            with patch.object(Path, "read_text", autospec=True, side_effect=side_effect), \
+                 contextlib.redirect_stdout(buf_out), \
+                 contextlib.redirect_stderr(buf_err):
+                code = replay_sessions.main(["--root", str(tmpdir)])
+            self.assertEqual(code, 3)
+            report = json.loads(buf_out.getvalue())
+            self.assertGreaterEqual(report["summary"]["files_with_anomaly"], 1)
+            self.assertEqual(report["summary"]["unreadable_files"], 1)
+
+    def test_exit_zero_suppresses_unreadable_exit_3(self):
+        # Q3 pin: --exit-zero forces 0 even when unreadable_files > 0.
+        # JSON still reports the count truthfully.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(tmpdir, "locked.md", "  subagent_type: general-purpose\n")
+            side_effect = self._selective_read_text(
+                {"locked.md"},
+                lambda p: PermissionError(13, "Permission denied", str(p)),
+            )
+            buf_out = io.StringIO()
+            buf_err = io.StringIO()
+            with patch.object(Path, "read_text", autospec=True, side_effect=side_effect), \
+                 contextlib.redirect_stdout(buf_out), \
+                 contextlib.redirect_stderr(buf_err):
+                code = replay_sessions.main([
+                    "--root", str(tmpdir), "--exit-zero",
+                ])
+            self.assertEqual(code, 0)
+            report = json.loads(buf_out.getvalue())
+            self.assertEqual(report["summary"]["unreadable_files"], 1)
+
+    def test_unreadable_files_skipped_from_report_files_list(self):
+        # Q4 pin: unreadable files do NOT appear in report["files"].
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(tmpdir, "good.md", "  subagent_type: general-purpose\n")
+            write_fixture(tmpdir, "bad.md", "irrelevant body\n")
+            side_effect = self._selective_read_text(
+                {"bad.md"},
+                lambda p: PermissionError(13, "Permission denied", str(p)),
+            )
+            buf_err = io.StringIO()
+            with patch.object(Path, "read_text", autospec=True, side_effect=side_effect), \
+                 contextlib.redirect_stderr(buf_err):
+                report = replay_sessions.build_report(tmpdir)
+            self.assertEqual(len(report["files"]), 1)
+            self.assertTrue(report["files"][0]["path"].endswith("good.md"))
+            self.assertEqual(report["summary"]["unreadable_files"], 1)
+            self.assertEqual(report["summary"]["files_scanned"], 1)
+
+    def test_stderr_line_format_and_glob_sort_order(self):
+        # AC-3 pin: one stderr line per unreadable file, stable prefix
+        # `replay_sessions: unreadable file: `, in glob-sort order.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(tmpdir, "a.md", "irrelevant\n")
+            write_fixture(tmpdir, "b.md", "  subagent_type: general-purpose\n")
+            write_fixture(tmpdir, "c.md", "irrelevant\n")
+            side_effect = self._selective_read_text(
+                {"a.md", "c.md"},
+                lambda p: PermissionError(13, "Permission denied", str(p)),
+            )
+            buf_err = io.StringIO()
+            with patch.object(Path, "read_text", autospec=True, side_effect=side_effect), \
+                 contextlib.redirect_stderr(buf_err):
+                replay_sessions.build_report(tmpdir)
+            err = buf_err.getvalue()
+            err_lines = [ln for ln in err.splitlines() if ln]
+            self.assertEqual(len(err_lines), 2)
+            for line in err_lines:
+                self.assertTrue(
+                    line.startswith("replay_sessions: unreadable file: "),
+                    f"unexpected stderr line prefix: {line!r}",
+                )
+            # Glob-sort order: a.md before c.md.
+            a_idx = next(i for i, ln in enumerate(err_lines) if "a.md" in ln)
+            c_idx = next(i for i, ln in enumerate(err_lines) if "c.md" in ln)
+            self.assertLess(a_idx, c_idx)
+
+    def test_filenotfound_race_falls_through_oserror(self):
+        # AC-1 enumeration pin: catch is `OSError`, not `PermissionError`-only.
+        # FileNotFoundError (a glob/delete race) must also be handled.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(tmpdir, "racer.md", "  subagent_type: general-purpose\n")
+            side_effect = self._selective_read_text(
+                {"racer.md"},
+                lambda p: FileNotFoundError(2, "No such file or directory", str(p)),
+            )
+            buf_err = io.StringIO()
+            with patch.object(Path, "read_text", autospec=True, side_effect=side_effect), \
+                 contextlib.redirect_stderr(buf_err):
+                report = replay_sessions.build_report(tmpdir)
+            self.assertEqual(report["summary"]["unreadable_files"], 1)
+            self.assertEqual(len(report["files"]), 0)
+            self.assertIn("racer.md", buf_err.getvalue())
 
 
 if __name__ == "__main__":
