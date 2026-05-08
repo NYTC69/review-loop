@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-08
+
+### v2.6.28
+
+- 10 new tests close 2 P3 backlog items: `KindContainsTest` (3 methods, isolates `kind: contains` lint mechanic from integration smoke) and `SecondTierCoverageTest` (7 methods covering 6 gaps — gap 1 split into sq + dq quote branches; plus secondary-regex right-boundary, errors=replace UTF-8 decode, *.md non-recursive glob, anomaly_values set-dedup, --text rendering pinning). No script-under-test changes. Test count 57 → 67.
+- Closes BACKLOG P3 (KindContainsTest unit class + second-tier replay_sessions coverage).
+
 ## 2026-05-07
 
 ### v2.6.26

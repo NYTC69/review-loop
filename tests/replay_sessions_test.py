@@ -1,6 +1,6 @@
 """Unit tests for scripts/replay_sessions.py.
 
-29 cases:
+36 cases:
   - 4 AC tests (clean / anomaly / mixed / no-tokens)
   - 7 corpus-grounded regex-locking tests (FP1, FP2, WC1, WC2, BP1, KN1, LEG)
   - 1 dedup test (primary + secondary span overlap)
@@ -9,11 +9,15 @@
     directory, multi-line counts, anomaly-site fidelity, JSON shape invariants)
   - 5 in-process scan_line unit tests
   - 3 in-process build_report unit tests
+  - 7 second-tier coverage tests (sq/dq quoted regex branches,
+    secondary-regex right-boundary, errors=replace UTF-8 decode,
+    *.md non-recursive glob, anomaly_values set-dedup, --text rendering
+    pinning)
 
 Stdlib unittest. Mirrors tests/run_skill_lint_test.py style: subprocess.run
-+ tempfile + a small write_fixture helper. The plumbing-edge and unit
-classes also exercise replay_sessions module functions directly via
-sys.path injection.
++ tempfile + a small write_fixture helper. The plumbing-edge, unit, and
+second-tier classes also exercise replay_sessions module functions directly
+via sys.path injection.
 """
 
 import json
@@ -636,6 +640,151 @@ class BuildReportUnitTest(unittest.TestCase):
                 summary["total_anomaly_occurrences"],
                 sum(len(f["anomaly_sites"]) for f in report["files"]),
             )
+
+
+class SecondTierCoverageTest(unittest.TestCase):
+    """Six MEDIUM second-tier coverage gaps surfaced by pr-test-analyzer during v2.6.26 Step 3.5.5."""
+
+    def test_sq_quoted_value_general_purpose(self):
+        # Gap (1A): pin SUBAGENT_TYPE_RE `sq` (single-quoted) branch for the
+        # `general-purpose` allowlist value. In-process scan_line.
+        hits: dict = {}
+        sites: list = []
+        replay_sessions.scan_line(
+            "  subagent_type: 'general-purpose'", 1, hits, sites
+        )
+        self.assertEqual(hits, {"general-purpose": 1})
+        self.assertEqual(sites, [])
+
+    def test_dq_quoted_value_review_loop_executor(self):
+        # Gap (1B): pin SUBAGENT_TYPE_RE `dq` (double-quoted) branch for the
+        # `review-loop:executor` value. In-process scan_line.
+        hits: dict = {}
+        sites: list = []
+        replay_sessions.scan_line(
+            '  subagent_type: "review-loop:executor"', 7, hits, sites
+        )
+        self.assertEqual(hits, {"review-loop:executor": 1})
+        self.assertEqual(sites, [{"value": "review-loop:executor", "line": 7}])
+
+    def test_secondary_regex_right_boundary_blocks_extended_token(self):
+        # Gap (2): pin BARE_REVIEW_LOOP_RE right-boundary lookahead
+        # `(?![A-Za-z0-9_\-])` at scripts/replay_sessions.py:51. Appending
+        # an alpha char to a closed-set agent name must block the match.
+        hits: dict = {}
+        sites: list = []
+        replay_sessions.scan_line(
+            "talking about review-loop:executorx briefly", 1, hits, sites
+        )
+        self.assertEqual(hits, {})
+        self.assertEqual(sites, [])
+
+    def test_decode_errors_replace_does_not_crash_on_invalid_utf8(self):
+        # Gap (3): pin `errors="replace"` decode at scan_file line 105.
+        # Surrounding lines parse normally even with invalid UTF-8 bytes
+        # in between.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            bad = tmpdir / "bad.md"
+            bad.write_bytes(
+                b"  subagent_type: review-loop:executor\n"
+                b"\xff\xfeoops\n"
+                b"  subagent_type: general-purpose\n"
+            )
+            rec = replay_sessions.scan_file(bad)
+            self.assertEqual(
+                rec["counts"],
+                {"review-loop:executor": 1, "general-purpose": 1},
+            )
+            self.assertTrue(rec["anomaly"])
+            self.assertEqual(rec["anomaly_values"], ["review-loop:executor"])
+
+    def test_glob_is_single_level_not_recursive(self):
+        # Gap (4): pin single-level `sorted(root.glob("*.md"))` at
+        # scripts/replay_sessions.py:127. Files inside subdirectories
+        # must be ignored.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(
+                tmpdir,
+                "top.md",
+                "  subagent_type: review-loop:executor\n",
+            )
+            write_fixture(
+                tmpdir,
+                "sub/nested.md",
+                "  subagent_type: review-loop:reviewer\n",
+            )
+            report = replay_sessions.build_report(tmpdir)
+            self.assertEqual(len(report["files"]), 1)
+            self.assertTrue(report["files"][0]["path"].endswith("top.md"))
+            self.assertEqual(report["summary"]["files_scanned"], 1)
+
+    def test_anomaly_values_dedups_and_sorts(self):
+        # Gap (5): pin `sorted({s["value"] for s in sites})` at scan_file
+        # line 110 — set-dedup + alphabetical sort. Drives scan_file
+        # end-to-end with a 5-line fixture (3 executor, 2 reviewer
+        # interleaved). If line 110 ever changes from `sorted({...})` to
+        # `list({...})` (no sort) or `sorted(s["value"] for s in sites)`
+        # (no dedup), only this test would fail.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            fixture = write_fixture(
+                tmpdir,
+                "fix.md",
+                "  subagent_type: review-loop:executor\n"
+                "  subagent_type: review-loop:reviewer\n"
+                "  subagent_type: review-loop:executor\n"
+                "  subagent_type: review-loop:reviewer\n"
+                "  subagent_type: review-loop:executor\n",
+            )
+            rec = replay_sessions.scan_file(fixture)
+            self.assertEqual(
+                rec["anomaly_values"],
+                ["review-loop:executor", "review-loop:reviewer"],
+            )
+            self.assertEqual(len(rec["anomaly_sites"]), 5)
+            self.assertEqual(
+                rec["counts"],
+                {"review-loop:executor": 3, "review-loop:reviewer": 2},
+            )
+
+    def test_render_text_full_layout_pinning(self):
+        # Gap (6): pin render_text full layout via subprocess --text path.
+        # Title + separator, header f-string, per-site arrow lines, footer
+        # summary string, plus two horizontal rules.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            write_fixture(
+                tmpdir,
+                "a.md",
+                "  subagent_type: review-loop:executor\n"
+                "  subagent_type: review-loop:reviewer\n",
+            )
+            write_fixture(
+                tmpdir,
+                "b.md",
+                "  subagent_type: general-purpose\n",
+            )
+            code, _, raw = run_parser(tmpdir, "--text")
+            self.assertEqual(code, 1)
+            # Title + separator pinning.
+            self.assertTrue(
+                raw.startswith("Session-replay parser report\n" + "=" * 60 + "\n"),
+                f"unexpected stdout prefix: {raw[:80]!r}",
+            )
+            # Header f-string pinning.
+            self.assertIn(f"{'PATH':<50}  {'ANOM':<5}  COUNTS", raw)
+            # Per-site arrow lines pinning.
+            self.assertIn("  -> line 1: review-loop:executor", raw)
+            self.assertIn("  -> line 2: review-loop:reviewer", raw)
+            # Footer summary string pinning.
+            self.assertIn(
+                "Summary: scanned=2  with_anomaly=1  total_anomaly_occurrences=2",
+                raw,
+            )
+            # Horizontal rule pinning (rendered twice in the layout).
+            self.assertIn("-" * 60, raw)
 
 
 if __name__ == "__main__":

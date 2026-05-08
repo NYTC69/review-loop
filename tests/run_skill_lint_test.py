@@ -555,5 +555,91 @@ class AgentSubagentTypeWhitelistTest(unittest.TestCase):
         self.assertEqual(record["status"], "pass")
 
 
+class KindContainsTest(unittest.TestCase):
+    """Isolates the `kind: contains` lint mechanic from the integration smoke
+    in AllSkillBodiesScopeTest. Three branches: needle-present (PASS),
+    needle-absent (FAIL with "does not contain"), missing path (FAIL with
+    "is missing"). Mirrors ForbiddenLinePatternTest._run convention."""
+
+    def _run(
+        self,
+        *,
+        fixture_content: str,
+        contract_id: str,
+        needle: str,
+        write_fixture_file: bool = True,
+        fixture_name: str = "DOC.md",
+        path_override: str = None,
+    ):
+        with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
+            if write_fixture_file:
+                fixture = write_fixture(Path(tmpdir), fixture_name, fixture_content)
+                relative = fixture.relative_to(ROOT).as_posix()
+            else:
+                relative = None
+            assertion_path = path_override if path_override is not None else relative
+            case = LintAssertionFixtureCase(
+                contract_id=contract_id,
+                assertions=[
+                    {
+                        "id": "test_contains",
+                        "kind": "contains",
+                        "path": assertion_path,
+                        "needle": needle,
+                    }
+                ],
+                fixture_dir=Path(tmpdir),
+            )
+            try:
+                case.write_contract()
+                return case.run_lint()
+            finally:
+                case.cleanup()
+
+    def test_passes_when_needle_present_in_path(self):
+        # Locks the PASS branch of `kind: contains` (run-skill-lint:471-472).
+        # Per-assertion message "contains expected text" is emitted by
+        # print_case() to stdout; record["reason"] is the case-level
+        # aggregate ("1 passed") so we assert against completed.stdout.
+        completed, record = self._run(
+            fixture_content="hello world\nthe needle is HERE\n",
+            contract_id="zz.lint.kind-contains.present",
+            needle="the needle is HERE",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "pass")
+        self.assertIn("contains expected text", completed.stdout)
+
+    def test_fails_when_needle_absent_from_path(self):
+        # Locks the FAIL-when-absent branch (run-skill-lint:473).
+        needle = "the needle is HERE"
+        completed, record = self._run(
+            fixture_content="hello world without the magic phrase\n",
+            contract_id="zz.lint.kind-contains.absent",
+            needle=needle,
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("does not contain", completed.stdout)
+        self.assertIn(needle, completed.stdout)
+
+    def test_fails_when_path_is_missing(self):
+        # Locks the FAIL-when-missing-path branch (run-skill-lint:466).
+        # No fixture file is written; path_override points at a path that
+        # does not exist on disk.
+        bogus_path = "tests/skills/contracts/zz-kind-contains-nonexistent-fixture.md"
+        completed, record = self._run(
+            fixture_content="",
+            contract_id="zz.lint.kind-contains.missing-path",
+            needle="anything",
+            write_fixture_file=False,
+            path_override=bogus_path,
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("is missing", completed.stdout)
+        self.assertIn("zz-kind-contains-nonexistent-fixture.md", completed.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
