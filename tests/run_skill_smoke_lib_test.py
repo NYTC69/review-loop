@@ -665,6 +665,31 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
         self.assertLessEqual(case_data["setup"]["timeout_seconds"], 120)
 
     def test_live_best_effort_smoke_cases_use_short_timeout_budget(self):
+        # Per ADR-4 (Branch B), each fixture's timeout_seconds is locked to a
+        # tier-specific value: control fixtures stay at 120s, NEAR_DISPATCH-tier
+        # truncating fixtures use 240s, IN_DOC_RECON-tier use 360s, and the
+        # full-pipeline regression fixture uses 600s. review-loop infrastructure
+        # cases stay on the legacy 120s budget (out of P3-2 scope).
+        expected_timeout_by_fixture = {
+            # Control fixture (no B3 override; inherits shared min: 1)
+            "plan.fresh.smoke.claude.json": 120,
+            # NEAR_DISPATCH tier (B3 override min: 1, ADR-4 tier value 240s)
+            "execute.session-resume.smoke.claude.json": 240,
+            "execute.stop-after-before-security.smoke.claude.json": 240,
+            "execute.stop-after-polish.smoke.claude.json": 240,
+            # IN_DOC_RECON tier (B3 override min: 1, ADR-4 tier value 360s)
+            "execute.from-plan.smoke.claude.json": 360,
+            "execute.review-only.smoke.claude.json": 360,
+            "execute.stop-after-before-polish.smoke.claude.json": 360,
+            # full-pipeline tier (B3 override min: 1, ADR-4 tier value 600s)
+            "review-loop.regression.smoke.claude.json": 600,
+            # review-loop infrastructure cases (kept on legacy 120s; not in P3-2 scope)
+            "review-loop.noop.claude-default.json": 120,
+            "review-loop.noop.codex-fallback.json": 120,
+            "review-loop.review-only.codex-fallback.json": 120,
+            "review-loop.skip-quality-polish.codex-fallback.json": 120,
+        }
+
         smoke_dir = ROOT / "tests/skills/smoke"
         live_cases = []
         for case_path in sorted(smoke_dir.glob("*.smoke.claude.json")):
@@ -674,7 +699,6 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
             for name in [
                 "review-loop.noop.claude-default.json",
                 "review-loop.noop.codex-fallback.json",
-                "review-loop.regression.smoke.claude.json",
                 "review-loop.review-only.codex-fallback.json",
                 "review-loop.skip-quality-polish.codex-fallback.json",
             ]
@@ -684,7 +708,40 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
             with self.subTest(case=case_path.name):
                 case_data = json.loads(case_path.read_text(encoding="utf-8"))
                 self.assertEqual(case_data.get("execution_policy"), "best_effort")
-                self.assertLessEqual(case_data["setup"]["timeout_seconds"], 120)
+                self.assertIn(
+                    case_path.name, expected_timeout_by_fixture,
+                    f"{case_path.name}: no expected timeout pinned; update "
+                    f"expected_timeout_by_fixture to cover this fixture per ADR-4"
+                )
+                self.assertEqual(
+                    case_data["setup"]["timeout_seconds"],
+                    expected_timeout_by_fixture[case_path.name],
+                    f"{case_path.name}: timeout_seconds drift from ADR-4 tier value"
+                )
+
+    def test_live_best_effort_smoke_cases_b3_override_min_is_one(self):
+        """AC-6 invariant: post-v2.6.32, no live `*.smoke.claude.json` may carry
+        a B3 (`agent_calls_used_at_least_one_subagent`) override with `min: 0`.
+        Either the fixture has no override on B3 (inherits shared `min: 1` from
+        assertion-mapping.json) OR it carries an explicit override with `min: 1`.
+        Per ADR-4 (Branch B), all 7 truncating fixtures carry the explicit
+        override; plan.fresh inherits the shared default."""
+        smoke_dir = ROOT / "tests/skills/smoke"
+        for case_path in sorted(smoke_dir.glob("*.smoke.claude.json")):
+            with self.subTest(case=case_path.name):
+                case_data = json.loads(case_path.read_text(encoding="utf-8"))
+                for assertion in case_data.get("assertions", []):
+                    if (
+                        isinstance(assertion, dict)
+                        and assertion.get("id") == "agent_calls_used_at_least_one_subagent"
+                    ):
+                        overrides = assertion.get("overrides", {})
+                        if "min" in overrides:
+                            self.assertEqual(
+                                overrides["min"], 1,
+                                f"{case_path.name}: B3 override has min={overrides['min']}, "
+                                f"expected 1 per AC-6/ADR-4 invariant"
+                            )
 
     def test_review_only_execution_round_heading_counts_as_reviewer_round(self):
         case_id = "zz.review-only.execution-round-heading"
