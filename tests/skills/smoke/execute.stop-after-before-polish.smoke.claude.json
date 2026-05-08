@@ -9,7 +9,7 @@
   ],
   "setup": {
     "temp_config": "",
-    "timeout_seconds": 120
+    "timeout_seconds": 360
   },
   "execution_policy": "best_effort",
   "artifacts": {
@@ -44,8 +44,8 @@
     {
       "id": "agent_calls_used_at_least_one_subagent",
       "overrides": {
-        "min": 0,
-        "_comment": "min: 0 \u2014 fixture currently truncates before Agent dispatch under the 120s cap; tighten to 1 after BACKLOG follow-up fortifies dispatch within budget"
+        "min": 1,
+        "_comment": "min: 1 enforced at 360s per ADR-4"
       }
     },
     {

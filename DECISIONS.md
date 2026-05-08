@@ -54,3 +54,29 @@ entry; never edit history.
 - **Consequences**: Resolver in both `scripts/run-skill-lint` (lint side) and `scripts/run-skill-smoke` (smoke side) now silently drops any override key starting with `_` during merge, before the whitelist check. New unit test `test_underscore_prefixed_override_key_is_ignored_silently` pins behavior. Convention applies repo-wide for any future override metadata. `_comment` becomes the canonical rationale field but is not blessed in code — only the prefix rule is.
 
 ---
+
+### ADR-4: ADR-2 follow-up — lock per-fixture B3 timeout bumps
+
+- **Date**: 2026-05-08
+- **Status**: Accepted
+- **Context**: ADR-2 introduced per-fixture `min: 0` overrides as a vacuous-pass shim for the 7 of 8 `tool_use_events`-capturing smoke fixtures that truncated before Agent dispatch under the 120s wall-clock cap, and recorded a P3 BACKLOG follow-up to "tighten B3 min from 0 to 1 by addressing pre-Agent stream truncation." The spike at `.compass/results/2026-05-08_b3-truncation-spike.json` (committed at 368210a) tabulates per-fixture truncation profiles (NEAR_DISPATCH / IN_DOC_RECON / full-pipeline) and identifies SKILL doc-recon as the bottleneck (NOT user-prompt size — `plan.fresh.smoke.claude` carries the largest user prompt at 1089 chars yet is the only fixture that already passes B3). The spike empirically proposed bumps of 180s / 240s / 480s by tier. Single-fixture re-measurement at v2.6.31 (`execute.session-resume.smoke.claude`, NEAR_DISPATCH tier) showed: 180s → returncode -15 / status skip; 240s → status pass with 1 Agent event (`subagent_type: general-purpose`). Branch B (linear scale-up) selected per the Approved Plan's deterministic Step 2 fork table. The pass/fail criterion under which Branch B was locked is `meta.status == "pass"` AND ≥1 Agent event with `subagent_type: general-purpose`, NOT literal `returncode == 0`: under `execution_policy: best_effort` the runner is by-design permitted to return SIGTERM at the timeout cap (`returncode == -15`) while still stamping `meta.status="pass"` if assertions hold on the captured partial event stream. `meta.status` is the runner's official assertion-completion signal; literal returncode is not. The runner branch this criterion relies on lives in `scripts/run-skill-smoke` lines 967–1002: on `TimeoutExpired`, `evaluate_mapping(...)` runs over the captured partial event stream (line 967), `meta["status"]` is initially stamped `"skip"` (line 976), then upgraded to `"pass"` at line 989 iff `assertion_status == "pass" and not missing_artifacts` — the `timed_out_with_passing_state` gate at line 987 — emitting `final_reason = "assertions passed after timeout cleanup"` (line 990).
+- **Options considered**:
+  - **(i) Trim user prompt** — rejected up-front per the spike's bottleneck-finding (doc-recon dominates; user-prompt size is not the constraint).
+  - **(ii) Bump per-fixture `setup.timeout_seconds`** — chosen. Each fixture's `command` block, `setup.temp_config`, and assertion list preserve their distinct entry-point/stop-point/provenance signals. `min: 0 → 1` flip is atomic with the timeout bump in the same Edit.
+  - **(iii) Agent-only stub fallback** — reserved as the uniform Branch C escalation path if Step 2 had double-failed at both 180s and 240s. Not adopted in the active Branch B; would have sacrificed 6 distinct non-B3 signals to recover B3.
+- **Decision**: Branch B linear scale-up. Per-fixture lock table:
+
+  | Fixture | Tier | timeout_seconds | B3 override min |
+  |---|---|---|---|
+  | execute.session-resume.smoke.claude | NEAR_DISPATCH | 240 | 1 |
+  | execute.stop-after-before-security.smoke.claude | NEAR_DISPATCH | 240 | 1 |
+  | execute.stop-after-polish.smoke.claude | NEAR_DISPATCH | 240 | 1 |
+  | execute.from-plan.smoke.claude | IN_DOC_RECON | 360 | 1 |
+  | execute.review-only.smoke.claude | IN_DOC_RECON | 360 | 1 |
+  | execute.stop-after-before-polish.smoke.claude | IN_DOC_RECON | 360 | 1 |
+  | review-loop.regression.smoke.claude | full-pipeline | 600 | 1 |
+
+  `plan.fresh.smoke.claude` is unchanged (control fixture; already passes B3 with implicit shared `min: 1`). Each fixture's `_comment` is refreshed to `min: 1 enforced at <Ns> per ADR-4`.
+- **Consequences**: Worst-case CI wall time per the active Branch B is approximately 41 minutes (plan-quoted figure). Branch A figure (29 min) and Branch C figure (10.5 min) are recorded for completeness but do not apply. The B3 shared-mapping default (`min: 1`) is unchanged (AC-5). AC-6 is mechanically pinned via JSON-parse verification: shared `min: 1`, every per-fixture B3 override has `min: 1`, NO fixture retains `min: 0`. Per Round-1 reviewer MINOR #2 explicit framing: 240s and 480s values are extrapolated from the spike's event-rate model, validated empirically only at the NEAR_DISPATCH tier (180s probe at v2.6.31, falsified; 240s probe at v2.6.31, confirmed). The IN_DOC_RECON 360s and full-pipeline 600s values (Branch B linear scale-up) remain best-guess until a future re-measurement falsifies them; this is recorded as an explicit consequence of single-probe scoping per HANDOFF Codex-hang practice. ADR-2 is NOT mutated (append-only).
+
+---
