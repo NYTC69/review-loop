@@ -773,9 +773,15 @@ After the gate passes:
    includes: status, reviewer backend, rounds, quality-polish summary,
    review findings table, files changed, autonomous decisions if any,
    unresolved minor issues if any, time breakdown, token usage, suggested
-   next steps).
+   next steps). **Language: render the Delivery Summary in 中文 (Simplified
+   Chinese)** — section headings, prose, and prose-style field values use
+   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model
+   names, status enums such as `APPROVE` / `CRITICAL`) stay in their
+   original form. This rule is runtime-agnostic: both Claude Code and
+   Codex Stage 1 must render the summary in 中文.
 3. **If `docs_file` is set**: append the delivery summary (without the box
-   borders) to that file.
+   borders) to that file. The appended copy preserves the same 中文
+   rendering as the terminal summary.
 4. **Cleanup temp files**: delete round output files for this session, e.g.
    `rm -f .review-loop/sessions/{session_id}-round-*.txt` (Claude Code),
    `rm -f .review-loop/tmp/{session_id}-reviewer-prompt.txt` (Codex —
