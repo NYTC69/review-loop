@@ -44,6 +44,10 @@
   `exec -> polish -> docs -> security -> delivery` lifecycle as Claude
   Code. Phase 3 split-skill work remains future Codex surface work, not
   a limitation of the current downstream lifecycle.
+- **Parallel-CR library entry point** — `scripts/review_verification.py`
+  is the conflict-aware parallel reviewer-fan-out scheduler (Codex
+  Stage 1 scope only; orchestrator wiring at the three Codex Stage 1
+  reviewer-dispatch sites is a deferred follow-up).
 
 ## Design Philosophy
 

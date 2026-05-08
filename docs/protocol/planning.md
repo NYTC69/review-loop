@@ -264,6 +264,10 @@ instructions above.
 
 #### Reviewer dispatch {{claude_code|codex}}
 
+> Forward pointer: for parallel multi-job dispatch (Codex Stage 1 only this
+> round), see `scripts/review_verification.py`; orchestrator wiring lands in a
+> follow-up.
+
 {{claude_code}}
 
 Two modes, controlled by `reviewer:` in `.review-loop/config.md`.
