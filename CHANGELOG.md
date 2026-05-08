@@ -2,6 +2,13 @@
 
 ## 2026-05-07
 
+### v2.6.26
+
+- 15 new tests in `tests/replay_sessions_test.py` close 7 MEDIUM coverage gaps from pr-test-analyzer's v2.6.25 quality-polish pass — `--root` non-directory / non-existent exit-code-2 path, multi-file aggregation, empty-directory contract, same-value-multi-line counts, `anomaly_sites` line-number fidelity, JSON `sort_keys` / per-file `mtime` ISO 8601 invariants, plus in-process `ScanLineUnitTest` and `BuildReportUnitTest` covering `scan_line` / `build_report` directly. No parser change. Test count 14 → 29.
+- Closes BACKLOG P3 (replay_sessions test plumbing-edge gaps).
+
+## 2026-05-07
+
 - review-loop v2.6.25: new `scripts/replay_sessions.py` — stdlib-only post-hoc audit channel that walks `.review-loop/sessions/*.md`, enumerates every `subagent_type` value per file, and flags `review-loop:*` occurrences as anomalies. Uses an anchored primary regex (`\bsubagent_type:`) plus a closed-set bare-form secondary regex over the 12 known agent names, with span-overlap dedup so a single occurrence isn't double-counted. Emits JSON by default (`--text` for a human table); exit 1 on anomaly, 0 otherwise (`--exit-zero` overrides). Complements the existing static lint contract for `SKILL.md` / protocol-doc files. Backed by 14 unittest cases (4 acceptance + 7 corpus-grounded with verbatim file:line citations + 1 dedup + 2 CLI).
 - Closes BACKLOG P2 (session-replay parser).
 
