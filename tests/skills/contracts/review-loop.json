@@ -664,6 +664,294 @@
       "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
     },
     {
+      "id": "plugin_version_pinned_plugin_json",
+      "kind": "contains",
+      "path": ".claude-plugin/plugin.json",
+      "needle": "\"version\": \"2.7.2\""
+    },
+    {
+      "id": "plugin_version_pinned_marketplace_metadata",
+      "kind": "contains",
+      "path": ".claude-plugin/marketplace.json",
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.2\""
+    },
+    {
+      "id": "plugin_version_pinned_marketplace_plugins_first",
+      "kind": "contains",
+      "path": ".claude-plugin/marketplace.json",
+      "needle": "\"version\": \"2.7.2\",\n      \"author\""
+    },
+    {
+      "id": "codex_parallel_runtime_codex_label_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
+    },
+    {
+      "id": "codex_parallel_runtime_codex_label_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
+    },
+    {
+      "id": "codex_parallel_runtime_codex_label_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
+    },
+    {
+      "id": "codex_parallel_runtime_claude_code_label_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
+    },
+    {
+      "id": "codex_parallel_runtime_claude_code_label_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
+    },
+    {
+      "id": "codex_parallel_runtime_claude_code_label_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
+    },
+    {
+      "id": "codex_parallel_reviewer_output_template_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
+    },
+    {
+      "id": "codex_parallel_reviewer_output_template_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
+    },
+    {
+      "id": "codex_parallel_reviewer_output_template_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
+    },
+    {
+      "id": "codex_parallel_edit_c_trigger_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
+    },
+    {
+      "id": "codex_parallel_edit_c_trigger_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
+    },
+    {
+      "id": "codex_parallel_edit_c_trigger_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
+    },
+    {
+      "id": "codex_parallel_edit_c_classification_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "classify as a **command-execution failure**"
+    },
+    {
+      "id": "codex_parallel_edit_c_classification_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "classify as a **command-execution failure**"
+    },
+    {
+      "id": "codex_parallel_edit_c_classification_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "classify as a **command-execution failure**"
+    },
+    {
+      "id": "codex_parallel_edit_c_precedence_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "diagnostic fields take precedence over stream-json parse outcome."
+    },
+    {
+      "id": "codex_parallel_edit_c_precedence_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "diagnostic fields take precedence over stream-json parse outcome."
+    },
+    {
+      "id": "codex_parallel_edit_c_precedence_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "diagnostic fields take precedence over stream-json parse outcome."
+    },
+    {
+      "id": "codex_parallel_edit_c_skip_parse_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Do not attempt to parse `stdout` for that entry"
+    },
+    {
+      "id": "codex_parallel_edit_c_skip_parse_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Do not attempt to parse `stdout` for that entry"
+    },
+    {
+      "id": "codex_parallel_edit_c_skip_parse_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Do not attempt to parse `stdout` for that entry"
+    },
+    {
+      "id": "codex_parallel_edit_d_enoent_scheduler_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
+    },
+    {
+      "id": "codex_parallel_edit_d_enoent_scheduler_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
+    },
+    {
+      "id": "codex_parallel_edit_d_enoent_scheduler_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
+    },
+    {
+      "id": "codex_parallel_edit_d_orchestrator_warning_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "non-ENOENT failure to delete them"
+    },
+    {
+      "id": "codex_parallel_edit_d_orchestrator_warning_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "non-ENOENT failure to delete them"
+    },
+    {
+      "id": "codex_parallel_edit_d_orchestrator_warning_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "non-ENOENT failure to delete them"
+    },
+    {
+      "id": "codex_parallel_edit_d_policy_clauses_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
+    },
+    {
+      "id": "codex_parallel_edit_d_policy_clauses_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
+    },
+    {
+      "id": "codex_parallel_edit_d_policy_clauses_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
+    },
+    {
+      "id": "codex_scheduler_best_effort_caveat_source",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "Stream-json parsing here is intentionally a *best-effort* duplicate of"
+    },
+    {
+      "id": "codex_parallel_best_effort_caveat_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
+    },
+    {
+      "id": "codex_parallel_best_effort_caveat_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
+    },
+    {
+      "id": "codex_parallel_best_effort_caveat_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
+    },
+    {
+      "id": "f_load_jobs_field_session_id",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry[\"session_id\"]"
+    },
+    {
+      "id": "f_load_jobs_field_job_id",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry[\"job_id\"]"
+    },
+    {
+      "id": "f_load_jobs_field_runtime",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"runtime\", \"codex\")"
+    },
+    {
+      "id": "f_load_jobs_field_prompt_text",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"prompt_text\", \"\")"
+    },
+    {
+      "id": "f_load_jobs_field_reviewer_model",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"reviewer_model\", \"\")"
+    },
+    {
+      "id": "f_load_jobs_field_timeout_secs",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"timeout_secs\", 300.0)"
+    },
+    {
+      "id": "f_load_jobs_field_conflict_keys",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"conflict_keys\")"
+    },
+    {
+      "id": "f_load_jobs_field_capacity_keys",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"capacity_keys\")"
+    },
+    {
+      "id": "f_load_jobs_field_extra_argv",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"extra_argv\")"
+    },
+    {
+      "id": "f_load_jobs_field_worktree",
+      "kind": "contains",
+      "path": "scripts/review_verification.py",
+      "needle": "entry.get(\"worktree\")"
+    },
+    {
+      "id": "protocol_planning_parallel_fanout_forward_pointer",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "Parallel Reviewer Fan-Out (N>1)` subsection in each"
+    },
+    {
       "id": "claude_reviewer_command_flags_present"
     },
     {

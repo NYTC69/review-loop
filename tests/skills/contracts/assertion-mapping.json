@@ -37,6 +37,11 @@
       "artifact": "session-final.md",
       "needle": "### Exec Round 1 (review-only)"
     },
+    "execution_round_recorded_parenthetical_review_only_form": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "### Round 1 (Execution / review-only)"
+    },
     "reviewer_round_1_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -518,7 +523,8 @@
         "execution_round_recorded_roleform",
         "execution_round_recorded_numbered",
         "execution_round_recorded_appended_form",
-        "execution_round_recorded_exec_review_only_form"
+        "execution_round_recorded_exec_review_only_form",
+        "execution_round_recorded_parenthetical_review_only_form"
       ]
     },
     "reviewer_round_1_recorded": {
