@@ -19,6 +19,17 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-codex-exec-overwrites-review-loop-config"></a> codex exec from review-loop cwd overwrites `.review-loop/config.md` with `codex_reviewer_backend: codex / skip_quality_polish: true` as a sandbox bootstrap side effect; restore via `git checkout HEAD -- .review-loop/config.md` after each call (orchestrator-side, not the agent's fault)
+- **Date**: 2026-05-09
+- **Task context**: review-loop session ac3fd787（v2.7.1 wire-scheduler delivery）的 plan + execute 各 round 末尾，调用 `codex exec --skip-git-repo-check --sandbox read-only --model gpt-5.5 -o ... -` 跑 reviewer round，每次返回后 `.review-loop/config.md` 被静默覆写为 `codex_reviewer_backend: codex\nskip_quality_polish: true`，原始 `reviewer_model: "gpt-5.5"` 丢失。
+- **What broke**: exec round 1 reviewer 直接 flag CRITICAL "scope creep — `.review-loop/config.md` deleted"（实为 modified，但 git status 报 ` D` 因为 codex sandbox 在 cwd 上某种 race 删/改）。本来要交付 8 文件，git diff stat 错变成 9 文件。后续每次子 agent + codex exec 调用都触发同一行为，每跑一次就要 `git checkout HEAD -- .review-loop/config.md` 复位一次。同样的 bug 在 v2.7.0 session f1c0fa2f 已经撞过一次（HANDOFF observation 6089）但当时归因为 "Executor subagent accidentally deleted"，这次定位到真正的 root cause 是 codex sandbox 自身行为，不是 agent 删的。
+- **Root cause**: `codex exec` 启动时似乎会以当前 cwd 作 reviewer-config 来源，向 `.review-loop/config.md` 写入它认为合理的 reviewer 配置（`codex_reviewer_backend: codex` + `skip_quality_polish: true`），属 codex CLI 的沙箱 bootstrap 副作用。Read-only sandbox flag 不阻止它写自己的 config 区域。本仓库 `.review-loop/config.md` 与 codex 期望的 config 路径冲突。子 agent 内部跑 codex exec 时也会触发，因此最初被错误归因为 agent 行为。
+- **Rule going forward**: codex exec from review-loop cwd overwrites `.review-loop/config.md` with `codex_reviewer_backend: codex / skip_quality_polish: true` as a sandbox bootstrap side effect; restore via `git checkout HEAD -- .review-loop/config.md` after each call (orchestrator-side, not the agent's fault).
+- **Scope**: codex,review-loop,sandbox,reviewer-config
+- **Promotion candidacy**: project-only
+
+---
+
 Entry template (copy as you add each new learning):
 
 ```markdown

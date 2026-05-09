@@ -1,4 +1,4 @@
-**Last updated**: 2026-05-09 (v2.7.1 close P2 wire scheduler into Codex Stage 1)
+**Last updated**: 2026-05-09 (v2.7.1 close P2 + spawn P3 polish-tier follow-ups bundle)
 
 ## P0 — blocker / must-do-now
 
@@ -11,6 +11,8 @@
 (none)
 
 ## P3 — nice to have / someday
+
+- [new] v2.7.1 polish-tier follow-ups bundled (8 items, all surfaced during the wire-scheduler session ac3fd787, none blocking). (a) Plugin version-consistency lint — assert `plugin.json:.version` matches both `marketplace.json:.metadata.version` and `marketplace.json:.plugins[0].version` so a future bump in only one file breaks lint instead of shipping a broken plugin. (b) Lint-protect the `runtime: "codex"` vs `runtime: "claude_code"` split in the new `Parallel Reviewer Fan-Out (N>1)` subsection (3 SKILLs × the runtime split needles + `reviewer-output.{job_id}.txt` template). (c) Lint-protect the Edit C precedence rule (`error` / `timed_out` / `returncode != 0` → command-execution failure) — protects the failure-mode taxonomy from silent drift. (d) Lint-protect the Edit D ENOENT-as-success cleanup discipline. (e) Lint-protect the `parsed_verdict` / `parsed_issues` "best-effort metadata only" caveat (`scripts/review_verification.py:12-17` boundary). (f) Lint-protect the `_load_jobs` 10-field schema list (`session_id` / `job_id` / `runtime` / `prompt_text` / `reviewer_model` / `timeout_secs` / `conflict_keys` / `capacity_keys` / `extra_argv` / `worktree`). (g) Lint-protect the `docs/protocol/planning.md` forward-pointer anchor (`Parallel Reviewer Fan-Out (N>1)`) — bind protocol-side to the same string the 3 SKILLs already protect. (h) Root-cause and fix `review-loop.regression.smoke.claude` pre-existing fixture FAIL — has been failing for ≥2 sessions; either fix the fixture or document why it is intentionally failing in `tests/skills/smoke/`. P3. (added 2026-05-09)
 
 ~~Mirror the 10 stop-and-surface lint assertions to the Claude-side `skills/plan/SKILL.md` and `skills/execute/SKILL.md` so Claude-side regressions of lock-release, hallucination guards, and the git-diff failure bullet are statically caught. (added 2026-05-06)~~ (closed 2026-05-07, see 6c0dfd7 — 4 of the 10 mirrored as Claude-side `claude_*` cases (3 `contains` companions + 1 per-site `pattern_requires_adjacent`) implementing the v2.6.22 three-layer defense. The other 6 dispatch-site assertions are deliberately NOT mirrored: Claude SKILLs delegate Executor/Reviewer dispatch to `docs/protocol/planning.md` so the analogous needles are absent on Claude bodies and `pattern_requires_adjacent` would silently vacuous-pass per `tests/run_skill_lint_test.py:176-180`. Plan via review-loop:plan session 8fac7f57 (R1 REQUEST_CHANGES → R2 APPROVE, codex gpt-5.5); execute Round 1 first-pass APPROVE; lint 268→272 case-level PASS / 0 FAIL; unit tests 28/28 OK. Plugin v2.6.22 → v2.6.23.)
 
