@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-09
+
+### v2.7.1
+
+- 将 v2.7.0 引入的 conflict-aware parallel CR scheduler (`scripts/review_verification.py`) 接入 Codex Stage 1 三个 reviewer-dispatch site：`.agents/skills/{review-loop,plan,execute}/SKILL.md` 各新增一节 `Parallel Reviewer Fan-Out (N>1)`，明确 N=1 走原 `claude -p` 单次 shell-out 路径不变（argv/stdin/模型解析/临时文件生命周期 byte-identical），N>1 走 `python3 scripts/review_verification.py --jobs <path> --output <path>` 单次外部 fan-out。
+- 文档化 jobs.json schema（`session_id`/`job_id`/`runtime`/`prompt_text`/`reviewer_model`/`timeout_secs`/`conflict_keys`/`capacity_keys`/`extra_argv`/`worktree`，由 `scripts/review_verification.py` `_load_jobs` 决定）；明确 `prompt_text` 由 orchestrator 内联到 jobs.json，scheduler 自己渲染 `.review-loop/tmp/{session_id}-reviewer-prompt.{job_id}.txt` 并以 file-FD handoff 喂 stdin（避免 large-prompt deadlock）。
+- 明确 orchestrator 是 verdict 提取与 schema 校验的唯一权威：每个 `<results.json>` 条目的 `stdout` 字段按 `docs/protocol/reviewer-output.md` shared schema 解析；scheduler 自己的 `parsed_verdict` / `parsed_issues` 仅作 metadata，per `scripts/review_verification.py:12-17`。
+- `docs/protocol/planning.md` §Reviewer dispatch 的 forward pointer 由 "wiring lands in a follow-up" 改为指向上述三个具体 anchor，protocol→skill 链接保留，debt marker 解除。
+- 新增 9 条 lint 断言（`codex_parallel_reviewer_fanout_anchor_*` / `codex_parallel_reviewer_scheduler_invocation_*` / `codex_parallel_reviewer_perjob_prompt_path_*`，3 needle × 3 file，inline `kind: contains`）静态守护新 prose；lint baseline 由 288 PASS / 0 FAIL 扩展到 297 PASS / 0 FAIL（无 FAIL）。
+- AC narrowing 复述：本轮 wiring 仅作用于 Codex Stage 1。Claude/plugin-side `skills/{review-loop,plan,execute}/SKILL.md` 的 reviewer dispatch 是 in-process Agent-tool 调用，不走 subprocess，无法外部包装；不在本次改动范围。
+- BACKLOG P2[1] follow-up "wire scheduler into Codex Stage 1 reviewer dispatch (3 sites)" 关闭。
+
 ## 2026-05-08
 
 ### v2.7.0

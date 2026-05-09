@@ -264,9 +264,13 @@ instructions above.
 
 #### Reviewer dispatch {{claude_code|codex}}
 
-> Forward pointer: for parallel multi-job dispatch (Codex Stage 1 only this
-> round), see `scripts/review_verification.py`; orchestrator wiring lands in a
-> follow-up.
+> Forward pointer: for parallel multi-job dispatch (Codex Stage 1 only),
+> the orchestrator shells out to `scripts/review_verification.py`. Wiring
+> prose lives at the `Parallel Reviewer Fan-Out (N>1)` subsection in each
+> of `.agents/skills/review-loop/SKILL.md`,
+> `.agents/skills/plan/SKILL.md`, and `.agents/skills/execute/SKILL.md`.
+> Claude/plugin-side reviewer dispatch is in-process Agent-tool dispatch
+> and is not externally wrappable.
 
 {{claude_code}}
 

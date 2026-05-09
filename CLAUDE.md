@@ -46,8 +46,14 @@
   a limitation of the current downstream lifecycle.
 - **Parallel-CR library entry point** — `scripts/review_verification.py`
   is the conflict-aware parallel reviewer-fan-out scheduler (Codex
-  Stage 1 scope only; orchestrator wiring at the three Codex Stage 1
-  reviewer-dispatch sites is a deferred follow-up).
+  Stage 1 scope only). Orchestrator wiring lives at the
+  `Parallel Reviewer Fan-Out (N>1)` subsection in each of the three
+  Codex Stage 1 SKILL files (`.agents/skills/{review-loop,plan,
+  execute}/SKILL.md`); single-shot N=1 dispatch keeps the existing
+  `claude -p` shell-out byte-identical and only N>1 fans out via
+  `python3 scripts/review_verification.py --jobs <path> --output <path>`.
+  Claude/plugin-side reviewer dispatch is in-process Agent-tool
+  dispatch and is not externally wrappable.
 
 ## Design Philosophy
 

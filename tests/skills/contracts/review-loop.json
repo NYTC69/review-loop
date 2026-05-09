@@ -610,6 +610,60 @@
       "needle": "\"completed_stages_ordered_exec_polish_docs_security\""
     },
     {
+      "id": "codex_parallel_reviewer_fanout_anchor_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Parallel Reviewer Fan-Out (N>1)"
+    },
+    {
+      "id": "codex_parallel_reviewer_fanout_anchor_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "#### Parallel Reviewer Fan-Out (N>1)"
+    },
+    {
+      "id": "codex_parallel_reviewer_fanout_anchor_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "#### Parallel Reviewer Fan-Out (N>1)"
+    },
+    {
+      "id": "codex_parallel_reviewer_scheduler_invocation_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "python3 scripts/review_verification.py --jobs"
+    },
+    {
+      "id": "codex_parallel_reviewer_scheduler_invocation_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "python3 scripts/review_verification.py --jobs"
+    },
+    {
+      "id": "codex_parallel_reviewer_scheduler_invocation_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "python3 scripts/review_verification.py --jobs"
+    },
+    {
+      "id": "codex_parallel_reviewer_perjob_prompt_path_review_loop",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
+    },
+    {
+      "id": "codex_parallel_reviewer_perjob_prompt_path_plan",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
+    },
+    {
+      "id": "codex_parallel_reviewer_perjob_prompt_path_execute",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
+    },
+    {
       "id": "claude_reviewer_command_flags_present"
     },
     {
