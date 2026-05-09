@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-10
+
+### v2.7.3 — Codex umbrella startup-banner parity (post-v2.7.2 drift audit)
+
+- 镜像 Claude umbrella `skills/review-loop/SKILL.md:218-225` 的 `── review-loop: Starting ──` 启动 banner 到 Codex umbrella `.agents/skills/review-loop/SKILL.md`：在 `## Runtime Identity` 和 `## Completed Agent Cleanup` 之间新增 `## Startup Banner` 节，5 行固定字段（work item / problem / reviewer backend / mode / soft-limit）+ 1 行条件 `Historical context`，跨运行时 UX parity 修复（drift audit `.compass/results/2026-05-10_cross-runtime-skill-drift-audit.json` `drift-finding-2-startup-banner`）。`Reviewer backend` 行使用 backend-appropriate label（`claude-cli ({reviewer_model | judgment_model | claude-sonnet-4-6})` vs `codex (review_loop_reviewer / {codex_reviewer_model})`），不复用 Claude 的 `reviewer` 配置 key 因为 Codex Stage 1 不用它选 backend。
+- 同 banner 节内文字化历史上下文委托关系（companion #1，drift audit `drift-finding-1-historical-context`）：明确 Codex umbrella 不内联跑 Step 1.6，由 `.agents/skills/plan/SKILL.md` Step 1.6 负责 historical-context 拉取，resume-dedup 保证 end-to-end 1 fetch/session — 防止未来审计再次误判为 drift。
+- 在 `skills/execute/SKILL.md` 与 `.agents/skills/execute/SKILL.md` 的 "On gate pass" item 2 后追加 Delivery Summary 中文 rendering 规则（companion #2，drift audit `drift-finding-3-delivery-summary-zhcn-shared-gap`）：把 `docs/protocol/execution.md §Step 4` 已有的 SSOT 规则显式写入两个 SKILL body，使其可被 lint 静态守护。文本两边 byte-identical，单条 needle 跨两个 record 复用。
+- 新增 7 条 `kind: contains` lint records 到 `tests/skills/contracts/review-loop.json`：4 条 banner（section / reviewer-backend label / soft-limit label / print-once rule）+ 1 条 companion #1 委托说明 + 2 条 companion #2 中文 rule（每个 SKILL body 各 1）。3 条现有 `plugin_version_pinned_*` records 更新为 `"2.7.3"`。
+- Plugin v2.7.2 → v2.7.3（parity-only patch tier；无 reviewer 派发或 protocol 行为变更）。Lint baseline 345 → 352 PASS / 0 FAIL，`tests/review_verification_test.py` 57/57 不变。
+- BACKLOG P3 "Codex umbrella startup-banner parity" 关闭。
+
 ## 2026-05-09
 
 ### v2.7.2

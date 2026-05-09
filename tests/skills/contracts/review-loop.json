@@ -667,19 +667,19 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.2\""
+      "needle": "\"version\": \"2.7.3\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.2\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.3\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.2\",\n      \"author\""
+      "needle": "\"version\": \"2.7.3\",\n      \"author\""
     },
     {
       "id": "codex_parallel_runtime_codex_label_review_loop",
@@ -950,6 +950,48 @@
       "kind": "contains",
       "path": "docs/protocol/planning.md",
       "needle": "Parallel Reviewer Fan-Out (N>1)` subsection in each"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Startup Banner"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_reviewer_backend_label_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Reviewer backend: {claude-cli ({reviewer_model | judgment_model | claude-sonnet-4-6}) | codex (review_loop_reviewer / {codex_reviewer_model})}"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_soft_limit_label_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_print_once_rule_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Print this banner once per session, immediately after entry-point"
+    },
+    {
+      "id": "codex_umbrella_historical_context_delegation_note_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "the umbrella does not run Step 1.6\ninline. The plan sub-skill at `.agents/skills/plan/SKILL.md` Step 1.6\nowns historical-context retrieval"
+    },
+    {
+      "id": "claude_execute_delivery_summary_zhcn_rule_declared",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Render the Delivery Summary in 中文 (Simplified\n   Chinese) per `docs/protocol/execution.md` §Step 4: section\n   headings, prose, and prose-style field values use 中文; ASCII\n   tokens stay in original form."
+    },
+    {
+      "id": "codex_execute_delivery_summary_zhcn_rule_declared",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Render the Delivery Summary in 中文 (Simplified\n   Chinese) per `docs/protocol/execution.md` §Step 4: section\n   headings, prose, and prose-style field values use 中文; ASCII\n   tokens stay in original form."
     },
     {
       "id": "claude_reviewer_command_flags_present"

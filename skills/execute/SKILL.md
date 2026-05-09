@@ -399,7 +399,10 @@ On gate pass:
    `{commit_message_prefix}: {title}`, append sha to `session_commits`.
 2. Print the Delivery Summary (format in
    `docs/protocol/execution.md` §Step 4 — Delivery — this skill reuses
-   the same format).
+   the same format). Render the Delivery Summary in 中文 (Simplified
+   Chinese) per `docs/protocol/execution.md` §Step 4: section
+   headings, prose, and prose-style field values use 中文; ASCII
+   tokens stay in original form.
 3. Append to `docs_file` if set.
 4. Cleanup round temp files; preserve the session file.
 5. Clear `delivery_blocked_by ← null`. Release the lock.
