@@ -667,19 +667,19 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.3\""
+      "needle": "\"version\": \"2.7.4\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.3\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.4\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.3\",\n      \"author\""
+      "needle": "\"version\": \"2.7.4\",\n      \"author\""
     },
     {
       "id": "codex_parallel_runtime_codex_label_review_loop",
@@ -980,6 +980,54 @@
       "kind": "contains",
       "path": ".agents/skills/review-loop/SKILL.md",
       "needle": "the umbrella does not run Step 1.6\ninline. The plan sub-skill at `.agents/skills/plan/SKILL.md` Step 1.6\nowns historical-context retrieval"
+    },
+    {
+      "id": "claude_umbrella_startup_banner_section_header_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "── review-loop: Starting ──"
+    },
+    {
+      "id": "claude_umbrella_startup_banner_reviewer_label_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Reviewer: {codex | subagent} ({reviewer_model})"
+    },
+    {
+      "id": "claude_umbrella_startup_banner_soft_limit_label_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_top_border_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "── review-loop: Starting ──"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_work_item_label_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Work item: {title}"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_problem_label_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Problem: {problem_description}"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_mode_label_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Mode: {interactive | handsfree}"
+    },
+    {
+      "id": "codex_umbrella_startup_banner_historical_context_row_template_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Historical context: {N} relevant memories loaded"
     },
     {
       "id": "claude_execute_delivery_summary_zhcn_rule_declared",

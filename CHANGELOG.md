@@ -2,6 +2,15 @@
 
 ## 2026-05-10
 
+### v2.7.4 — Banner-parity polish-tier lint-mirror bundle
+
+- v2.7.3 banner parity 的 polish-tier follow-up（drift audit gap-closure session `8e3393e9-ff1b-4c34-ae0f-4a7943abc593`，源 `.compass/results/2026-05-10_v273-banner-parity-followup-gaps.json`）：新增 **8 条** 每行 `kind: contains` lint records 静态守护 umbrella startup banner 在两个 runtime 的字段，并把 3 条已有 `plugin_version_pinned_*` needles 与版本号 lockstep 升至 `"2.7.4"`。封堵 v2.7.3 留下的不对称——Claude 侧 0 条 per-line records，Codex 侧仍有 5 行（top border / work-item / problem / mode / historical-context template）silent 未守护。
+- **Claude umbrella +3**（target `skills/review-loop/SKILL.md:217-225`）：`claude_umbrella_startup_banner_section_header_declared`（`── review-loop: Starting ──` ASCII border）/ `claude_umbrella_startup_banner_reviewer_label_declared`（`Reviewer: {codex | subagent} ({reviewer_model})`，沿用 Claude 侧 `reviewer` 配置 key）/ `claude_umbrella_startup_banner_soft_limit_label_declared`（`Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)`）。
+- **Codex umbrella +5**（target `.agents/skills/review-loop/SKILL.md:73-110`）：`codex_umbrella_startup_banner_top_border_declared`（同 `── review-loop: Starting ──` ASCII border，跨 runtime 共享 needle 但锚定到不同 path）/ `codex_umbrella_startup_banner_work_item_label_declared`（`Work item: {title}`）/ `codex_umbrella_startup_banner_problem_label_declared`（`Problem: {problem_description}`）/ `codex_umbrella_startup_banner_mode_label_declared`（`Mode: {interactive | handsfree}`）/ `codex_umbrella_startup_banner_historical_context_row_template_declared`（`Historical context: {N} relevant memories loaded`，可选行模板）。
+- **版本号 lockstep +0/3**（target `.claude-plugin/`）：`plugin_version_pinned_plugin_json` / `plugin_version_pinned_marketplace_metadata` / `plugin_version_pinned_marketplace_plugins_first` needles 由 `"2.7.3"` 升至 `"2.7.4"`，与 `plugin.json:.version` + `marketplace.json:.metadata.version` / `.plugins[0].version` 同步。
+- Plugin v2.7.3 → v2.7.4（parity-only patch tier；无 reviewer 派发或 protocol 行为变更）。Lint baseline 352 → **360 PASS / 0 FAIL**（+8）。
+- BACKLOG P3 "v2.7.3 banner-parity follow-up gaps" 关闭。
+
 ### v2.7.3 — Codex umbrella startup-banner parity (post-v2.7.2 drift audit)
 
 - 镜像 Claude umbrella `skills/review-loop/SKILL.md:218-225` 的 `── review-loop: Starting ──` 启动 banner 到 Codex umbrella `.agents/skills/review-loop/SKILL.md`：在 `## Runtime Identity` 和 `## Completed Agent Cleanup` 之间新增 `## Startup Banner` 节，5 行固定字段（work item / problem / reviewer backend / mode / soft-limit）+ 1 行条件 `Historical context`，跨运行时 UX parity 修复（drift audit `.compass/results/2026-05-10_cross-runtime-skill-drift-audit.json` `drift-finding-2-startup-banner`）。`Reviewer backend` 行使用 backend-appropriate label（`claude-cli ({reviewer_model | judgment_model | claude-sonnet-4-6})` vs `codex (review_loop_reviewer / {codex_reviewer_model})`），不复用 Claude 的 `reviewer` 配置 key 因为 Codex Stage 1 不用它选 backend。
