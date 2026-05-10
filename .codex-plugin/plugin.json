@@ -18,11 +18,11 @@
     "agentic-coding",
     "codex"
   ],
-  "skills": "./skills/",
+  "skills": "./.agents/skills/",
   "interface": {
     "displayName": "review-loop",
-    "shortDescription": "Plan-Execute-Review pipeline with independent adversarial review and automated quality polish",
-    "longDescription": "review-loop drives work items from raw description through plan → execute → review → polish → delivery, with an independent reviewer agent (Codex CLI or Claude sub-agent) catching issues before merge. Skills cover full pipeline (review-loop), planning-only (plan), execution-only (execute), code review on changes (review-pr), iterative quality cleanup (code-quality-loop), structural reorganization (reorganize), and usage guidance (guide). Codex Stage 1 ships judgment-tier reviewer + executor as native Codex agents (.codex/agents/*.toml) for cwd-of-repo invocation; marketplace install exposes the skills globally.",
+    "shortDescription": "Plan-Execute-Review pipeline with independent adversarial review",
+    "longDescription": "review-loop drives work items from raw description through plan → execute → review → delivery, with an independent reviewer agent catching issues before merge. Codex marketplace install exposes the four Stage 1 native skills (guide, plan, execute, review-loop) under `.agents/skills/`, paired with the reviewer + executor agents at `.codex/agents/*.toml`. The top-level `./skills/` tree (review-pr, code-quality-loop, reorganize, etc.) is Claude Code-specific — it dispatches via the Claude Agent tool and is intentionally not exposed via this Codex manifest.",
     "developerName": "NYTC69",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Read", "Write"],
