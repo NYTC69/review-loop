@@ -383,8 +383,14 @@ tree+index state**. It is a set, not a historical log.
   state. In `--review-only` mode a reviewer-only APPROVE on the existing diff
   also mints `exec` (no Executor runs, by design — see
   [execution.md §`--review-only` first-round skip](./execution.md#review-only-first-round-skip)).
-- `polish` — Step 3.5 completed without unresolved issues.
-- `docs` — Step 3.6 completed.
+- `polish` — Step 3.5 completed without unresolved issues. A Step 3.5
+  `reviewer-only fast-replay` APPROVE preserves the current set but does not
+  itself mint `polish`; Step 3.5.6 mints `polish` only after the full Step
+  3.5 invocation finishes cleanly with either no writes, or only eligible
+  writes already approved via reviewer-only fast-replay.
+- `docs` — Step 3.6 completed. Eligible Step 3.6 prose/comment/metadata-only
+  writes may use reviewer-only fast-replay, but `docs` is still minted only
+  after the Step 3.6 reviewer APPROVE.
 - `security` — Step 3.7 completed.
 
 ### Invalidation rules (any of these clears the ENTIRE set)
@@ -393,11 +399,43 @@ tree+index state**. It is a set, not a historical log.
 2. Drift accepted in the decision tree step 4 → A.
 3. Old-session baseline backfill accepted
    (see [§Backward-compat fallback](#backward-compat-fallback)).
-4. Step 3.5 polish substep writes code (simplify / executor-fix /
-   test-consolidation).
-5. Step 3.6 docs write (code or stale-comment fix).
+4. Step 3.5 write that is not eligible for reviewer-only fast-replay.
+5. Step 3.6 write that is not eligible for reviewer-only fast-replay.
 6. Step 3.7 security preflight writes `.gitignore` or causes
    `git rm --cached`.
+
+### Reviewer-only fast-replay
+
+This is a narrow exception to the default clear-and-replay rule above. The
+orchestrator may preserve already-earned `completed_stages` for a
+`reviewer-only fast-replay` only when all of the following are true:
+
+- The write happened in Step 3.5.4 or Step 3.6.
+- The diff is limited to prose/comment/metadata-only updates.
+- The diff does not change runtime behavior, test behavior, or security
+  posture.
+- The diff does not touch lint-pinned needles or otherwise change the
+  `bash scripts/run-skill-lint` baseline.
+
+The exception is fail-closed. The following remain clear-and-replay writes:
+
+- Any code, test, or security-preflight write.
+- Any lint-pinned, contract, assertion-mapping, or other baseline-changing
+  write.
+- Drift acceptance, old-session baseline backfill, and Step 3.7 writes.
+
+Fast-replay outcomes:
+
+1. **Step 3.5.4 APPROVE**: preserve the current `completed_stages`, continue
+   through the remaining Step 3.5 substeps, and do **not** mint `polish`
+   yet.
+2. **Step 3.5.6 clean finish**: mint `polish` only if the Step 3.5
+   invocation finished cleanly and had either no writes, or only eligible
+   writes that already passed reviewer-only fast-replay.
+3. **Step 3.6 APPROVE**: preserve the current `completed_stages` and mint
+   `docs` for the current tree+index state.
+4. **REQUEST_CHANGES at fast-replay review**: clear `completed_stages`
+   entirely and replay from `exec`. Do not preserve earlier stage entries.
 
 ### Replay rule
 

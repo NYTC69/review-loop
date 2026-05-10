@@ -522,6 +522,15 @@ and apply the same replay semantics described for Claude Code.
 check to ensure nothing broke. If build fails, revert the simplify changes
 and report to the user.
 
+Eligible prose/comment/metadata-only writes from this substep may use
+`reviewer-only fast-replay` instead of immediately clearing
+`completed_stages`; the authoritative eligibility, exclusions,
+preserve-vs-clear behavior, and fail-closed `REQUEST_CHANGES` rule live in
+[session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle).
+A Step 3.5.4 reviewer-only fast-replay `APPROVE` preserves the current
+`completed_stages` but does not mint `polish` and does not skip Step 3.5.5
+or Step 3.5.6.
+
 ### 3.5.5 — Test consolidation
 
 Invoke `pr-test-analyzer`.
@@ -581,8 +590,10 @@ Tests:           {PASS (12 tests) / 2 added, 1 updated}
 ```
 
 Update the session file with Quality Polish results and timing. On a clean
-finish with no writes at all in this Step 3.5 invocation, mint `polish` into
-`completed_stages`.
+finish, mint `polish` into `completed_stages` only when this Step 3.5
+invocation had either no writes at all, or only eligible writes that already
+passed reviewer-only fast-replay. A Step 3.5.4 reviewer-only fast-replay
+`APPROVE` does not itself mint `polish`.
 
 ---
 
@@ -621,10 +632,16 @@ Comments fixed: {N} stale comments in {files / "none"}
 ─────────────────────────────────────────────────────
 ```
 
-If Step 3.6 performs any writes (doc or comment fixes), `completed_stages`
-is cleared and replay restarts from `exec`. On a no-write completion, mint
-`docs` — **then proceed to Step 3.7**. A no-op docs stage is not a
-terminal state; Step 3.7 still has to run.
+If Step 3.6 performs any writes (doc or comment fixes), the default rule is
+to clear `completed_stages` and replay from `exec`. Narrow exception:
+eligible prose/comment/metadata-only writes may use `reviewer-only
+fast-replay` per
+[session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle).
+On reviewer-only fast-replay `APPROVE`, preserve the current
+`completed_stages` and mint `docs`; on `REQUEST_CHANGES`, clear
+`completed_stages` and replay from `exec`. A no-write or approved
+fast-replay docs stage still proceeds to Step 3.7; Step 3.6 is not a
+terminal state.
 
 ---
 

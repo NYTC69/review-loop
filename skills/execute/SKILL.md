@@ -340,7 +340,15 @@ as a no-op completion and continue to Step 3.6.
   `docs/protocol/session-file.md` §`completed_stages` lifecycle. Each
   replay iteration that writes files clears the set and restarts from
   `exec`. Termination is guaranteed by the per-stage caps.
-- On a no-write clean finish, mint `polish` into `completed_stages`.
+- Narrow `reviewer-only fast-replay` exception: eligible Step 3.5.4
+  prose/comment/metadata-only writes that do not touch lint-pinned needles
+  or change the `bash scripts/run-skill-lint` baseline may preserve the
+  current `completed_stages` per
+  `docs/protocol/session-file.md` §`completed_stages` lifecycle.
+- Step 3.5.4 reviewer-only fast-replay `APPROVE` does not mint `polish`.
+  Step 3.5.6 mints `polish` only after the full Step 3.5 invocation finishes
+  cleanly with either no writes, or only eligible writes already approved by
+  reviewer-only fast-replay.
 - Hallucination guard: for every quality agent returning `tool_uses:
   0`, discard and retry once; if retry is also 0, skip and report.
 - `--stop-after before-polish` → exit before Step 3.5 starts.
@@ -354,8 +362,12 @@ agent body inlined, per `docs/protocol/execution.md` §3.5.2 /
 
 Per `docs/protocol/execution.md` §Step 3.6. Single pass. Update project
 docs + fix stale code comments. Writes → clear `completed_stages`,
-replay from `exec`. No-write → mint `docs`. **After minting `docs`,
-proceed to Step 3.7** — a no-op docs stage is not a terminal state.
+replay from `exec`, except for the narrow `reviewer-only fast-replay`
+exception above when the write is eligible prose/comment/metadata-only work
+that does not touch lint-pinned needles or change the
+`bash scripts/run-skill-lint` baseline. No-write or approved reviewer-only
+fast-replay → mint `docs`. **After minting `docs`, proceed to Step 3.7** —
+a no-op docs stage is not a terminal state.
 
 - Hallucination guard: for every documentation-stage agent returning `tool_uses: 0`, discard and retry once; if retry is also 0, skip and report.
 

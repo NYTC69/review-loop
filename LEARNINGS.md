@@ -31,6 +31,18 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-simplifier-prose-replay-precedent"></a> Step 3.5.4 / 3.6 simplifier or comment-analyzer prose-only writes that touch no lint-pinned needle and preserve lint baseline replay via fast-replay (reviewer-only, no Executor re-dispatch); orchestrator-applied factual fixes from comment-analyzer follow the same pattern when verified clean
+<!-- synced: 2026-05-10 drawer-id=drawer_3cats_learnings_review-loop_030a8f8539f7bd34 sidecar-hash=4342b41a0f46d4e09eda8e00b9e33f8c target=3cats/learnings_review-loop schema=v1 -->
+- **Date**: 2026-05-10
+- **Task context**: v2.7.4 polish-tier delivery（session `8e3393e9-ff1b-4c34-ae0f-4a7943abc593`）—— Step 3.5.4 simplifier 把 `CHANGELOG.md` v2.7.4 entry 翻成中文（与 v2.7.0/v2.7.1/v2.7.2/v2.7.3 cluster 一致）；Step 3.6 comment-analyzer 又触发一处 1-character 数字 fix（`CHANGELOG.md:7` `3 行` → `5 行`）由 orchestrator 直接 Edit。两次写都不动任何 lint-pinned needle，`bash scripts/run-skill-lint` 全程 360 PASS / 0 FAIL。同模式累积已 N=3：v2.7.2 session `1e6530e5-9b67-4e20-9266-775110854938`（simplifier BACKLOG.md `Last updated:` 戳）+ v2.7.3 session `5cf375f2-ae69-4004-9d5e-90669e3374ae`（simplifier BACKLOG.md 时间戳 2026-05-09 → 2026-05-10）+ v2.7.4 本 session（simplifier CHANGELOG 中文化 + comment-analyzer 数字 fix 两连发）。
+- **What broke**: 严格按 `docs/protocol/session-file.md` §`completed_stages` lifecycle "Each replay iteration that writes files clears the set and restarts from `exec`" 处理，每次 prose-only 写都要清空 `completed_stages` + 从 `exec` 重 replay → Executor 全套 + Reviewer 全套 → Polish 全套 → Docs → Security，每次 ~5–10 分钟 wall-clock + 数十 k token，对 prose-only 改动收益 / 成本严重失衡。N=1（v2.7.2）是 ad-hoc judgment，N=2（v2.7.3）已成 sub-pattern，N=3 仍按 ad-hoc 处理就是漏 LEARNING。
+- **Root cause**: protocol 用统一 "any write → full replay" 规则覆盖所有 substep 写，但 prose-only docs / metadata 改动其实不动 review-loop 的 exec semantics —— 风险面与代码改动正交。当改动同时满足 (a) 仅 prose / 数字 / 注释 / 元数据，(b) 不动任何 lint-pinned needle（grep `tests/skills/contracts/*.json` 的 needle 字段确认），(c) `bash scripts/run-skill-lint` 数字不变 三条时，reviewer-only fast-replay 已能建立 "still APPROVE for current state" 不变量，Executor 重跑无新增信息。orchestrator-applied factual fixes from comment-analyzer 性质相同（comment-analyzer 本就 read-only，fix 由 orchestrator Edit；从 simplifier 写还是 orchestrator-from-comment-analyzer 写不影响 invariant）。
+- **Rule going forward**: Step 3.5.4 / 3.6 simplifier or comment-analyzer prose-only writes that touch no lint-pinned needle and preserve lint baseline replay via fast-replay (reviewer-only, no Executor re-dispatch); orchestrator-applied factual fixes from comment-analyzer follow the same pattern when verified clean
+- **Scope**: review-loop, polish, simplifier, comment-analyzer, fast-replay, reviewer-only, prose-only, lint-baseline, completed-stages, replay
+- **Promotion candidacy**: project-only
+
+---
+
 Entry template (copy as you add each new learning):
 
 ```markdown

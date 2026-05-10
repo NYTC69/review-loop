@@ -548,6 +548,11 @@
       "mapping_id": "reviewer_schema_parity"
     },
     {
+      "id": "reviewer_only_fast_replay_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "reviewer_only_fast_replay"
+    },
+    {
       "id": "noop_claude_default_smoke_requires_full_downstream_completion",
       "kind": "contains",
       "path": "tests/skills/smoke/review-loop.noop.claude-default.json",
@@ -667,25 +672,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.5\""
+      "needle": "\"version\": \"2.7.6\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.5\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.6\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.5\",\n      \"author\""
+      "needle": "\"version\": \"2.7.6\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.5\""
+      "needle": "\"version\": \"2.7.6\""
     },
     {
       "id": "codex_marketplace_manifest_name",

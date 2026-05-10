@@ -2,6 +2,27 @@
 
 ## 2026-05-10
 
+### v2.7.6 — protocol↔LEARNING fast-replay alignment
+
+- Aligns `docs/protocol/session-file.md` and `docs/protocol/execution.md` with
+  `L-review-loop-simplifier-prose-replay-precedent`: eligible Step 3.5.4 /
+  Step 3.6 prose/comment/metadata-only writes can use reviewer-only
+  fast-replay instead of forcing Executor re-dispatch, while code writes,
+  lint-pinned changes, lint-baseline changes, security writes, accepted drift,
+  and baseline backfills still clear `completed_stages` and replay from `exec`.
+- Defines the conservative state machine explicitly: Step 3.5.4 fast-replay
+  APPROVE preserves existing stages but does not mint `polish`; Step 3.5.6
+  mints `polish` only after the full Step 3.5 invocation finishes cleanly with
+  either no writes or only eligible writes already approved by reviewer-only
+  fast-replay; Step 3.6 fast-replay APPROVE mints `docs`; fast-replay
+  REQUEST_CHANGES fails closed to normal replay from `exec`.
+- Mirrors the execution wording into both runtime skill surfaces
+  (`skills/execute/SKILL.md` and `.agents/skills/execute/SKILL.md`) and adds
+  `reviewer_only_fast_replay_consistent` lint coverage via
+  `tests/skills/contracts/assertion-mapping.json`.
+- Plugin v2.7.5 → v2.7.6. Lint baseline 369 → **370 PASS / 0 FAIL** (+1);
+  `python3 -m unittest tests.run_skill_lint_test` 34/34 PASS.
+
 ### v2.7.5 — Codex marketplace plugin surface (visible in `/plugins`, parallel to Claude install)
 
 - Goal: bring the Codex install/enable experience to compass parity. Before v2.7.5,

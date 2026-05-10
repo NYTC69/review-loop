@@ -1493,6 +1493,24 @@
         "path": "docs/protocol/execution.md",
         "needle": "Concrete dispatch anchor: `protocol_execution_pr_test_analyzer_dispatch`."
       }
+    ],
+    "reviewer_only_fast_replay": [
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "reviewer-only fast-replay"
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "reviewer-only fast-replay"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "reviewer-only fast-replay"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "reviewer-only fast-replay"
+      }
     ]
   }
 }
