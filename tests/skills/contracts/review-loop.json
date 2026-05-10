@@ -667,19 +667,73 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.4\""
+      "needle": "\"version\": \"2.7.5\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.4\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.5\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.4\",\n      \"author\""
+      "needle": "\"version\": \"2.7.5\",\n      \"author\""
+    },
+    {
+      "id": "plugin_version_pinned_codex_plugin_json",
+      "kind": "contains",
+      "path": ".codex-plugin/plugin.json",
+      "needle": "\"version\": \"2.7.5\""
+    },
+    {
+      "id": "codex_marketplace_manifest_name",
+      "kind": "contains",
+      "path": ".agents/plugins/marketplace.json",
+      "needle": "\"name\": \"review-loop-marketplace\""
+    },
+    {
+      "id": "codex_marketplace_manifest_plugin_entry",
+      "kind": "contains",
+      "path": ".agents/plugins/marketplace.json",
+      "needle": "\"name\": \"review-loop\""
+    },
+    {
+      "id": "codex_marketplace_manifest_source_local",
+      "kind": "contains",
+      "path": ".agents/plugins/marketplace.json",
+      "needle": "\"source\": \"local\""
+    },
+    {
+      "id": "codex_marketplace_manifest_source_path",
+      "kind": "contains",
+      "path": ".agents/plugins/marketplace.json",
+      "needle": "\"path\": \"./plugins/review-loop\""
+    },
+    {
+      "id": "codex_marketplace_manifest_installation_available",
+      "kind": "contains",
+      "path": ".agents/plugins/marketplace.json",
+      "needle": "\"installation\": \"AVAILABLE\""
+    },
+    {
+      "id": "codex_install_doc_present",
+      "kind": "contains",
+      "path": "docs/install-codex.md",
+      "needle": "## Install path: marketplace + `/plugins` TUI enable"
+    },
+    {
+      "id": "codex_install_doc_referenced_from_readme",
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "[`docs/install-codex.md`](docs/install-codex.md)"
+    },
+    {
+      "id": "codex_marketplace_manifest_referenced_in_claude_md",
+      "kind": "contains",
+      "path": "CLAUDE.md",
+      "needle": ".agents/plugins/marketplace.json"
     },
     {
       "id": "codex_parallel_runtime_codex_label_review_loop",

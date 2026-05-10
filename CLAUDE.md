@@ -25,6 +25,40 @@
 - `/reload-plugins` does NOT switch versions.
 - **Guide version is auto-bound**: `skills/guide/SKILL.md` reads version from `plugin.json` at runtime via `{VERSION}` placeholder. No manual sync needed.
 
+### Codex marketplace surface (parallel to Claude plugin surface)
+
+review-loop is a **dual-runtime plugin**. The Claude Code plugin path
+(`.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` + top-level
+`skills/`) and the Codex plugin path
+(`.codex-plugin/plugin.json` + `.agents/plugins/marketplace.json` + `.agents/skills/`)
+are independent install surfaces that share repo content (config + sessions).
+
+The Codex marketplace surface specifically requires:
+
+1. `.codex-plugin/plugin.json` — Codex plugin manifest.
+2. `.agents/plugins/marketplace.json` — Codex marketplace manifest. Lists
+   plugins available in this marketplace with `installation: AVAILABLE`
+   policy. Without this file, `codex plugin marketplace add` registers a
+   marketplace entry but no plugins surface in `/plugins`, so a fresh
+   Codex session cannot enable review-loop.
+3. `plugins/review-loop` symlink → `..` (the repo root). The marketplace
+   manifest points at `./plugins/review-loop` as the plugin source path;
+   the symlink is what makes the path resolve to the repo. Tracked in git
+   as a real symlink (mode `120000`), mirrors the compass plugin layout.
+
+Codex install + enable flow: `codex plugin marketplace add NYTC69/review-loop`
+registers the marketplace; then inside a fresh Codex session, `/plugins`
+opens a TUI panel where the user manually enables review-loop. Codex CLI
+0.130 has no `plugin install` / `plugin enable` subcommand — the TUI is
+the only path that writes
+`[plugins."review-loop@review-loop-marketplace"] enabled = true` to
+`~/.codex/config.toml`.
+
+Slash commands like `/review-loop:plan` are Claude-only. Codex matches
+plugin skills via their `SKILL.md` `description` field; trigger is
+natural-language only. Full step-by-step + verification:
+[`docs/install-codex.md`](docs/install-codex.md).
+
 ## Codex Stage 1 Notes
 
 - Codex skills live under `.agents/skills/`.

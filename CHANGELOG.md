@@ -2,6 +2,47 @@
 
 ## 2026-05-10
 
+### v2.7.5 — Codex marketplace plugin surface (visible in `/plugins`, parallel to Claude install)
+
+- Goal: bring the Codex install/enable experience to compass parity. Before v2.7.5,
+  `codex plugin marketplace add NYTC69/review-loop` registered a marketplace entry but no
+  plugin surfaced in `/plugins` — fresh Codex sessions could not see review-loop and fell
+  back to the legacy `~/.codex/skills/review-loop/SKILL.md` wrapper. Compass works because
+  it ships `.agents/plugins/marketplace.json` plus a `plugins/compass` symlink; review-loop
+  shipped neither.
+- **`.agents/plugins/marketplace.json`** — new Codex marketplace manifest mirroring
+  compass's pattern. Lists review-loop with `installation: AVAILABLE` /
+  `authentication: ON_INSTALL` policy and source `{ source: "local", path: "./plugins/review-loop" }`.
+  Marketplace name `review-loop-marketplace` matches the existing `.claude-plugin/marketplace.json`
+  name so users see one consistent marketplace identifier across both runtimes.
+- **`plugins/review-loop` symlink → `..`** — tracked in git as a real symlink (mode `120000`).
+  Resolves the marketplace manifest's `./plugins/review-loop` path back to the repo root,
+  letting Codex cache the plugin contents at
+  `~/.codex/plugins/cache/review-loop-marketplace/review-loop/2.7.5/`.
+- **Verified end-to-end**: with the new manifest in place,
+  `codex exec -c 'plugins."review-loop@review-loop-marketplace".enabled=true' "list skills"`
+  surfaces all four Stage 1 skills (`review-loop`, `review-loop:plan`, `review-loop:execute`,
+  `review-loop:guide`) — confirming a fresh Codex session that enables the plugin via
+  `/plugins` will get the same surface.
+- **Docs**: new `docs/install-codex.md` covering prerequisites, `marketplace add` →
+  `/plugins` enable flow, natural-language triggers (Codex 0.130 has no
+  `plugin install`/`enable` CLI subcommand and does not recognise `/review-loop:*` slash
+  commands), verification, and the Claude-vs-Codex plugin-surface boundary table.
+  README's `## Codex Stage 1` section gains an `### Install in Codex CLI` subsection
+  pointing at the new doc; `CLAUDE.md` gains a `### Codex marketplace surface` block
+  documenting the three required files for future maintenance.
+- **Lint contract +9** (`tests/skills/contracts/review-loop.json`):
+  `plugin_version_pinned_codex_plugin_json`,
+  `codex_marketplace_manifest_name`, `codex_marketplace_manifest_plugin_entry`,
+  `codex_marketplace_manifest_source_local`, `codex_marketplace_manifest_source_path`,
+  `codex_marketplace_manifest_installation_available`,
+  `codex_install_doc_present`, `codex_install_doc_referenced_from_readme`,
+  `codex_marketplace_manifest_referenced_in_claude_md`. Three existing `plugin_version_pinned_*`
+  needles bumped `"2.7.4"` → `"2.7.5"` in lockstep with `.claude-plugin/plugin.json` and
+  `.claude-plugin/marketplace.json` (`metadata.version` + `plugins[0].version`).
+- Plugin v2.7.4 → v2.7.5. Lint baseline 360 → **369 PASS / 0 FAIL** (+9).
+  `python3 -m unittest discover -s tests -p '*_test.py'` 187/187 PASS.
+
 ### v2.7.4 — Banner-parity polish-tier lint-mirror bundle
 
 - v2.7.3 banner parity 的 polish-tier follow-up（drift audit gap-closure session `8e3393e9-ff1b-4c34-ae0f-4a7943abc593`，源 `.compass/results/2026-05-10_v273-banner-parity-followup-gaps.json`）：新增 **8 条** 每行 `kind: contains` lint records 静态守护 umbrella startup banner 在两个 runtime 的字段，并把 3 条已有 `plugin_version_pinned_*` needles 与版本号 lockstep 升至 `"2.7.4"`。封堵 v2.7.3 留下的不对称——Claude 侧 0 条 per-line records，Codex 侧仍有 5 行（top border / work-item / problem / mode / historical-context template）silent 未守护。

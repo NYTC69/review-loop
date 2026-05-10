@@ -1,4 +1,4 @@
-**Last updated**: 2026-05-10 (v2.7.4 close P3 banner-parity polish-tier lint-mirror bundle)
+**Last updated**: 2026-05-10 (v2.7.5 close Codex marketplace plugin surface; add P2 protocol-LEARNING fast-replay alignment)
 
 ## P0 — blocker / must-do-now
 
@@ -8,7 +8,7 @@
 
 ## P2 — normal
 
-(none)
+[new] Align protocol with `L-review-loop-simplifier-prose-replay-precedent` LEARNING (LEARNINGS.md:34) so `docs/protocol/execution.md` Step 3.6 + `docs/protocol/session-file.md` `completed_stages` lifecycle do not contradict the established N=3 prose-only fast-replay practice. Currently the protocol still says "any Step 3.6 write clears `completed_stages` and replay restarts from `exec`", while the LEARNING says reviewer-only fast-replay (no Executor re-dispatch) is correct when (a) the write is prose / digit / metadata only, (b) it touches no `tests/skills/contracts/*.json` lint-pinned needle, and (c) `bash scripts/run-skill-lint` count is unchanged. Codex review of v2.7.5 (session 2026-05-10) flagged this as a P2 because future review-loop runs will see conflicting instructions. Fix: amend Step 3.6 + replay lifecycle text with an explicit "prose-only / no-lint-needle / no-baseline-change" exception clause that points back to the LEARNING anchor. Also propagate the matching wording to `skills/execute/SKILL.md` and `.agents/skills/execute/SKILL.md` so lint can statically guard the exception. (added 2026-05-10)
 
 ## P3 — nice to have / someday
 

@@ -1,0 +1,20 @@
+{
+  "name": "review-loop-marketplace",
+  "interface": {
+    "displayName": "review-loop"
+  },
+  "plugins": [
+    {
+      "name": "review-loop",
+      "source": {
+        "source": "local",
+        "path": "./plugins/review-loop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

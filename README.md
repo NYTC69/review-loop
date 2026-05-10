@@ -51,6 +51,39 @@ Stage 1 Codex reviewer/backend selection. In Codex Stage 1,
 
 Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
 
+### Install in Codex CLI
+
+review-loop ships a Codex marketplace manifest at
+`.agents/plugins/marketplace.json` plus a `plugins/review-loop` symlink so
+the repo installs as a first-class Codex plugin (visible in `/plugins`,
+parallel to the Claude Code plugin install at the top of this README).
+
+```bash
+codex plugin marketplace add NYTC69/review-loop
+```
+
+Then, inside a fresh Codex session:
+
+```
+/plugins
+```
+
+Pick `review-loop` and enable it. Codex CLI 0.130 has no
+`codex plugin install` / `enable` subcommand — install/enable goes through
+the `/plugins` TUI, which writes
+`[plugins."review-loop@review-loop-marketplace"] enabled = true` to
+`~/.codex/config.toml`.
+
+Once enabled, the four Stage 1 skills under `.agents/skills/` (`review-loop`,
+`plan`, `execute`, `guide`) are exposed to the Codex agent and respond to
+natural-language triggers like "run review-loop on this branch" or
+"plan this task with review-loop". Codex matches plugin skills by their
+`SKILL.md` `description`, not by literal slash commands —
+`/review-loop:plan` etc. are Claude-only and surface as `Unrecognized` in
+Codex.
+
+Full step-by-step + verification: [`docs/install-codex.md`](docs/install-codex.md).
+
 ## Skill Tests
 
 The repository includes a first-version skill testing framework for
