@@ -15,6 +15,8 @@ HANDOFF.md
 
 # compass /backlog → /close temp-id state file (ephemeral by spec)
 .compass/backlog-last-view.json
+# compass persist-results: per-session computed artifacts (ephemeral by spec)
+.compass/results/
 
 # Environment & config
 .env
