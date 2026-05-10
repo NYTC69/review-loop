@@ -1,0 +1,35 @@
+{
+  "name": "review-loop",
+  "version": "2.7.4",
+  "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 5 skills, full Plan-Execute-Review-Polish pipeline.",
+  "author": {
+    "name": "NYTC69",
+    "url": "https://github.com/NYTC69"
+  },
+  "repository": "https://github.com/NYTC69/review-loop",
+  "license": "Apache-2.0",
+  "keywords": [
+    "review-loop",
+    "code-review",
+    "agents",
+    "planning",
+    "automation",
+    "dual-agent",
+    "agentic-coding",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "review-loop",
+    "shortDescription": "Plan-Execute-Review pipeline with independent adversarial review and automated quality polish",
+    "longDescription": "review-loop drives work items from raw description through plan → execute → review → polish → delivery, with an independent reviewer agent (Codex CLI or Claude sub-agent) catching issues before merge. Skills cover full pipeline (review-loop), planning-only (plan), execution-only (execute), code review on changes (review-pr), iterative quality cleanup (code-quality-loop), structural reorganization (reorganize), and usage guidance (guide). Codex Stage 1 ships judgment-tier reviewer + executor as native Codex agents (.codex/agents/*.toml) for cwd-of-repo invocation; marketplace install exposes the skills globally.",
+    "developerName": "NYTC69",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "run review-loop on this branch",
+      "review the pending changes",
+      "plan this task with review-loop"
+    ]
+  }
+}
