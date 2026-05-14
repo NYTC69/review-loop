@@ -1,0 +1,11 @@
+Codex CLI v0.130 — running review...
+Loaded prompt template, calling model.
+
+Some preamble that is not JSON.
+
+{
+  "verdict": "approve",
+  "summary": "Raw-mode approve happy path.",
+  "findings": [],
+  "next_steps": []
+}

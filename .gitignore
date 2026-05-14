@@ -84,3 +84,7 @@ secrets.*
 # Logs
 *.log
 logs/
+
+# Python bytecode caches (pytest creates these)
+__pycache__/
+*.pyc

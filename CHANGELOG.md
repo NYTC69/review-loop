@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-05-14
+
+### v2.7.7 — 终局 adversarial-review gate (Step 3.4)
+
+- 在 Step 3 reviewer APPROVE 之后、Step 3.5 quality polish 之前插入一次终局
+  "陌生眼睛" review pass (Step 3.4 — Terminal Adversarial Gate)。双 runtime
+  (Claude `skills/execute/SKILL.md` + Codex `.agents/skills/execute/SKILL.md`)
+  对称记录, 共享 5 行 Bash dispatch:
+  ```bash
+  python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+  adversarial_exit=$?
+  ```
+- 新增 `scripts/adversarial_gate_invoke.py` — stdlib-only Python invoker,
+  drain-thread + timeout pattern 是 `Scheduler._run_one in
+  scripts/review_verification.py` 核心 pattern 的 faithful port; sentinel
+  bytes 与 `wait_after_kill_timed_out` 诊断 flag 故意 NOT ported。
+- 新增 `scripts/adversarial_gate_adapter.py` — 双 input-mode 翻译层 (raw +
+  plugin-json), 同时支持 stdin 与 `--input <path>` 双 handoff;
+  输出 review-loop verdict + bulleted issues。
+- 新增 `scripts/adversarial_gate_fallback_prompt.txt` — fallback-path
+  prompt 模板, `string.Template.safe_substitute` 渲染。
+- 配置: 新增 `adversarial_gate_skip_paths` (默认 `["**/SKILL.md",
+  "docs/protocol/**", "tests/skills/contracts/**"]`); 当 Step 3 changed-set
+  全部命中跳过 Glob 时整轮 skip。
+- Plugin-path preference + snapshot/restore: 优先走 `node
+  $CODEX_PLUGIN_ROOT/scripts/codex-companion.mjs adversarial-review --scope
+  working-tree --json` (JSON-RPC `runAppServerTurn` 不触发
+  `.review-loop/config.md` 覆写 side-effect); 退到 `codex exec
+  --output-schema` fallback path 时, 先 snapshot 再 restore 配置文件。
+- 6 个 SKIP reason 带可选 `detail=`: `plugin-root-unresolved`,
+  `cache-schema-unresolved`, `codex-unauthenticated`,
+  `adapter-exit-2-malformed`, `runtime-error` (carries detail),
+  `runtime-timeout`。
+- 共享 `_kill_process_group` 同时驱动 timeout 与 signal 两条 cleanup 路径
+  (kill child → restore config → exit 顺序), 避免 orphan child 在 restore
+  后再次 mutate config。
+- 加宽 auth-regex (`(?i)(?:unauthenticated|not signed in|login
+  required|authentication|oauth|unauthorized)`) 捕获 `AuthenticationError`
+  / `OAuth2` 等 concatenated 形式; FP risk 视为可接受 (两条分支都 SKIP,
+  只 banner reason 不同)。
+- `--scope working-tree`-only: 不带 `--base`, 否则 `git.mjs:resolveReviewTarget`
+  会 short-circuit 到 branch diff 漏掉 working tree。
+- Re-run 语义: 每次 Step 3 APPROVE 触发一次 gate; gate REQUEST_CHANGES 把
+  findings 喂回下一轮 Step 3, 直到 pass / skip / `soft_limit_exec` cap。
+- Codex Stage 1 outside-sandbox 要求 (mirrors reviewer / scheduler 调用
+  注解): Python invoker 写 tempfile, read-only sandbox 会拦截。
+- R6 反馈内联修复: signal-race during Popen assignment
+  (`pthread_sigmask` block window), cleanup unlink-only-after-restore-OK,
+  adapter-spawn OSError 测试, auth regex parametrized 4 sub-cases。
+- Lint contracts 新增 12 个 `kind: contains` 断言, version-pin needles
+  bump 4 处。Plugin v2.7.6 → v2.7.7。
+
 ## 2026-05-10
 
 ### v2.7.6 — protocol↔LEARNING fast-replay alignment

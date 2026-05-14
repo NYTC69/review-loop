@@ -1,0 +1,10 @@
+Codex CLI v0.130 — running review...
+{"note":"not schema, this is preamble metadata"}
+tokens used 4321
+
+{
+  "verdict": "approve",
+  "summary": "preamble-shadowing test: last schema-valid wins",
+  "findings": [],
+  "next_steps": []
+}

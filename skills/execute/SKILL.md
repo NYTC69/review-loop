@@ -327,6 +327,34 @@ not prove a no-op.
 - If git diff --name-only HEAD itself fails (non-zero exit, missing repo, etc.) when computing the pre-Executor or post-Executor changed set, stop and surface the failure to the user.
   Then release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting. Do not proceed with a partial or invented changed-set.
 
+## Step 3.4 — Terminal Adversarial Gate
+
+Per `docs/protocol/execution.md` §Step 3.4 — Terminal Adversarial Gate.
+Single-entry-point Python invoker; fires once between Step 3 APPROVE and
+Step 3.5 polish entry. All concerns (plugin-path preference,
+snapshot/restore, drain threads, signal cleanup) live inside the invoker.
+
+```bash
+# Terminal Adversarial Gate — single-entry-point Python invoker.
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+adversarial_exit=$?
+# 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
+```
+
+SKIP banner format: `adversarial-gate: SKIP reason=<reason>[ detail=<...>]`
+(6 reasons per the protocol-doc SKIP-reason table). Verdict table:
+adapter exit 0 → APPROVE; exit 1 → REQUEST_CHANGES (feed findings to
+next Step 3 round); exit 2 → invoker remaps to SKIP
+`adapter-exit-2-malformed`.
+
+No Agent dispatch involved — invoker is a Bash shell-out to Python, so
+the plugin-agent-sandbox bug does not apply.
+
+The `adversarial_gate_skip_paths` config key (default
+`["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`)
+lets the orchestrator skip the gate entirely when every Step 3 changed
+file matches one of the patterns.
+
 ## Step 3.5 — Quality Polish
 
 Per `docs/protocol/execution.md` §Step 3.5. Runs language-specific

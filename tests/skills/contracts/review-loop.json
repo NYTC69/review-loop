@@ -672,25 +672,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.6\""
+      "needle": "\"version\": \"2.7.7\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.6\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.7\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.6\",\n      \"author\""
+      "needle": "\"version\": \"2.7.7\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.6\""
+      "needle": "\"version\": \"2.7.7\""
     },
     {
       "id": "codex_marketplace_manifest_name",
@@ -1295,6 +1295,78 @@
         "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
       ],
       "window_lines": 2
+    },
+    {
+      "id": "adversarial_gate_claude_step_heading",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+    },
+    {
+      "id": "adversarial_gate_claude_invocation",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "python3 scripts/adversarial_gate_invoke.py"
+    },
+    {
+      "id": "adversarial_gate_claude_verdict_table_sentinel",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_claude_skip_banner_format",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "adversarial-gate: SKIP reason="
+    },
+    {
+      "id": "adversarial_gate_codex_step_heading",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+    },
+    {
+      "id": "adversarial_gate_codex_invocation",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "python3 scripts/adversarial_gate_invoke.py"
+    },
+    {
+      "id": "adversarial_gate_codex_verdict_table_sentinel",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_codex_sandbox_boundary",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Run the adversarial gate invocation outside the sandbox."
+    },
+    {
+      "id": "adversarial_gate_protocol_step_heading",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+    },
+    {
+      "id": "adversarial_gate_protocol_invoker_contract_row",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "shared `_kill_process_group` helper drives both the timeout cleanup"
+    },
+    {
+      "id": "adversarial_gate_config_example_key",
+      "kind": "contains",
+      "path": "review-loop-config.example.md",
+      "needle": "adversarial_gate_skip_paths"
+    },
+    {
+      "id": "adversarial_gate_invoker_docstring_anchor",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "Scheduler._run_one in scripts/review_verification.py"
     }
   ]
 }

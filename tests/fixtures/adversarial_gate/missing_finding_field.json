@@ -1,0 +1,16 @@
+{
+  "verdict": "needs-attention",
+  "summary": "Missing field.",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Bug",
+      "body": "Description",
+      "file": "src/x.py",
+      "line_start": 1,
+      "line_end": 2,
+      "confidence": 0.9
+    }
+  ],
+  "next_steps": []
+}

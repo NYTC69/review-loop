@@ -206,6 +206,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs |
 | `review_style` | `""` | Tone and rules for all reviews (free text) |
 | `skip_quality_polish` | `false` | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security |
+| `adversarial_gate_skip_paths` | `["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]` | Step 3.4 terminal adversarial gate — skip when every Step 3 changed file matches one of these glob patterns |
 
 For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
 path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,

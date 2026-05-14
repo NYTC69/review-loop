@@ -341,6 +341,116 @@ Executor call**:
 
 ---
 
+## Step 3.4 — Terminal Adversarial Gate
+
+A terminal "stranger-eyes" review pass that fires AFTER Step 3 reviewer
+APPROVE and BEFORE Step 3.5 polish. Single-entry-point Python invoker
+(`scripts/adversarial_gate_invoke.py`). All fail-silently: any
+unresolvable state, missing dep, runtime crash, or timeout becomes a
+controlled `SKIP` with a banner on stderr and exit 0 — the gate never
+blocks the pipeline by failing closed.
+
+### Trigger and re-run semantics
+
+- Fires once per Step 3 APPROVE. If Step 3 takes multiple
+  REQUEST_CHANGES → fix rounds, the gate runs each time Step 3 reaches
+  APPROVE — so the gate re-runs after each subsequent Step 3 APPROVE
+  until pass / skip / `soft_limit_exec` cap.
+- On gate REQUEST_CHANGES (adapter exit 1): replay through Step 3 with
+  the gate's findings appended to the reviewer prompt; the gate fires
+  again on the next APPROVE.
+- On gate APPROVE (adapter exit 0): proceed to Step 3.5.
+- On gate SKIP (banner on stderr, invoker exit 0): proceed to Step 3.5.
+  The skip reason and any `detail=` are surfaced in the round Live
+  Report but do not block delivery.
+
+### Skip rule (`adversarial_gate_skip_paths`)
+
+Config key `adversarial_gate_skip_paths` (default
+`["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`).
+When every path in the current Step 3 changed-file set matches one of
+these glob patterns, the gate is skipped entirely (banner
+`adversarial-gate: SKIP reason=skipped-by-config`) and the orchestrator
+proceeds to Step 3.5.
+
+### Focus text recipe
+
+The gate's `--focus-file` argument is the path to a UTF-8 text file
+containing, in order:
+
+1. Work-item title (from `## Approved Plan` first line or session
+   metadata).
+2. One-line problem statement.
+3. The set of files touched by Step 3 (one path per line).
+4. (optional) The most recent Reviewer summary line.
+
+The orchestrator writes this file to
+`.review-loop/tmp/{session_id}-adversarial-focus.{round}.txt` and
+passes its path via `--focus-file`.
+
+### Dispatch (5-line Bash)
+
+```bash
+# Terminal Adversarial Gate — single-entry-point Python invoker.
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+adversarial_exit=$?
+# 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
+```
+
+Plugin-path annotation: invoker prefers
+`node $CODEX_PLUGIN_ROOT/scripts/codex-companion.mjs adversarial-review
+--scope working-tree --json <focus>`. **No `--base` flag** —
+`git.mjs:resolveReviewTarget` short-circuits on any `--base` value,
+ignoring `--scope working-tree`. The plugin path is preferred because
+the JSON-RPC `runAppServerTurn` it uses does NOT trigger the sandbox
+bootstrap that overwrites `.review-loop/config.md`.
+
+Internal architecture note: the invoker's drain-thread + timeout
+pattern is a faithful port of the core pattern in
+`Scheduler._run_one in scripts/review_verification.py`. Reader-exception
+sentinel bytes and the `wait_after_kill_timed_out` diagnostic flag are
+intentionally NOT ported — gate failures surface as `runtime-error` SKIP
+with a `detail=` string, which is the level of diagnostic precision the
+gate path needs.
+
+### Verdict handling
+
+The Python adapter `scripts/adversarial_gate_adapter.py` translates the
+codex adversarial-review JSON output into one of:
+
+| Adapter exit | Verdict |
+|---|---|
+| `0` | APPROVE — proceed to Step 3.5. Advisory medium/low findings shown but non-blocking. |
+| `1` | REQUEST_CHANGES — feed findings to next Step 3 round; gate re-runs after next APPROVE. |
+| `2` | Malformed payload — invoker remaps to SKIP `adapter-exit-2-malformed`. |
+
+### SKIP-reason table
+
+| SKIP reason | Trigger | `detail=` carried? |
+|---|---|---|
+| `plugin-root-unresolved` | `$CODEX_PLUGIN_ROOT` unset AND cache glob empty. | no |
+| `cache-schema-unresolved` | Fallback path chosen but `schemas/review-output.schema.json` missing. | no |
+| `codex-unauthenticated` | Broadened auth-regex matches stderr (`unauthenticated`/`not signed in`/`login required`/`authentication`/`oauth`/`unauthorized`). | no |
+| `adapter-exit-2-malformed` | Adapter returns exit 2 (bad JSON, schema violation). | yes (last stderr line from adapter, truncated to 200 chars; `"no diagnostic"` if stderr empty) |
+| `runtime-error` | `OSError` on spawn (review-command or adapter), non-zero non-auth exit, snapshot/render failure, drain thread still alive after join. | yes (`str(e)` for OSError; `exit=N stderr=<tail>` for non-auth non-zero; `drain-incomplete` if drain join timed out) |
+| `runtime-timeout` | `subprocess.TimeoutExpired` after 600s + 2s grace + SIGKILL. | no |
+
+The shared `_kill_process_group` helper drives both the timeout cleanup
+path AND the signal-handler cleanup path — the signal handler kills the
+child BEFORE running config restore, so a still-running child cannot
+re-mutate `.review-loop/config.md` between restore and exit. The
+invoker contract row is mirrored in this protocol doc.
+
+### Homophily bias (accepted tradeoff)
+
+Codex Stage 1 invokes Codex-authored adversarial review on
+Codex-orchestrated work — the stranger-eyes benefit is reduced but not
+zero, since the adversarial-review prompt and schema are intentionally
+orthogonal to the protocol-reviewer prompt. This tradeoff is accepted;
+the gate does not claim runtime-independence.
+
+---
+
 ## Step 3.5 — Quality Polish
 
 > Codex Stage 1 and Claude Code both run Step 3.5 before delivery.
@@ -766,8 +876,11 @@ runtime_supported_set ⊆ completed_stages
 - Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
 Because invalidation + replay guarantee that set entries only exist when
-they are valid for the current state, no separate final reviewer pass is
-required — the gate is structural.
+they are valid for the current state, the delivery gate itself is
+structural and does not run another reviewer round. The terminal
+adversarial pass (Step 3.4, between Step 3 APPROVE and Step 3.5) is the
+explicit stranger-eyes check; the delivery gate trusts its outcome via
+the `completed_stages` set.
 
 On gate failure, the orchestrator **hard-stops**, sets
 `delivery_blocked_by ← <stage>` where `<stage>` is the first missing

@@ -527,6 +527,38 @@ Do not represent execution completion with custom metadata keys such as
 `completed_at`; the shared protocol completion state is carried by
 `completed_stages` and related baseline metadata.
 
+## Step 3.4 — Terminal Adversarial Gate
+
+Per `docs/protocol/execution.md` §Step 3.4 — Terminal Adversarial Gate.
+Single-entry-point Python invoker; fires once between Step 3 APPROVE and
+Step 3.5 polish entry.
+
+```bash
+# Terminal Adversarial Gate — single-entry-point Python invoker.
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+adversarial_exit=$?
+# 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
+```
+
+SKIP banner format: `adversarial-gate: SKIP reason=<reason>[ detail=<...>]`.
+Verdict table: adapter exit 0 → APPROVE; exit 1 → REQUEST_CHANGES (feed
+findings to next Step 3 round); exit 2 → invoker remaps to SKIP
+`adapter-exit-2-malformed`.
+
+**Run the adversarial gate invocation outside the sandbox.** The Python
+invoker writes tempfiles (`tempfile.mkstemp` for config snapshot,
+`tempfile.NamedTemporaryFile` for the rendered fallback prompt), which
+the Codex read-only sandbox blocks. Mirrors the existing reviewer-call
+and scheduler-call sandbox boundary.
+
+The invoker shells out via Bash, not `spawn_agent` — completed-agent
+cleanup does not apply.
+
+The `adversarial_gate_skip_paths` config key (default
+`["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`)
+lets the orchestrator skip the gate entirely when every Step 3 changed
+file matches one of the patterns.
+
 ## Step 3.5 — Quality Polish
 
 Per `docs/protocol/execution.md` §Step 3.5. Runs language-specific static analysis, code-quality review-fix loop, simplify, test consolidation. `quality_focus` applies only when Step 3.5 Quality Polish actually runs. If `skip_quality_polish: true` is set in config, the orchestrator skips the Step 3.5 substeps; in that case `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.

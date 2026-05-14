@@ -1,0 +1,27 @@
+{
+  "verdict": "needs-attention",
+  "summary": "Mixed severities.",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Auth bypass",
+      "body": "Missing auth check on admin endpoint.",
+      "file": "src/api.py",
+      "line_start": 100,
+      "line_end": 110,
+      "confidence": 0.9,
+      "recommendation": "Add auth decorator."
+    },
+    {
+      "severity": "medium",
+      "title": "Slow path",
+      "body": "N+1 query on dashboard.",
+      "file": "src/dashboard.py",
+      "line_start": 50,
+      "line_end": 55,
+      "confidence": 0.6,
+      "recommendation": "Use select_related."
+    }
+  ],
+  "next_steps": ["Fix auth; queue perf fix separately."]
+}
