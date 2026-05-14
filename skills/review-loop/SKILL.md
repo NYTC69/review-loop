@@ -248,13 +248,18 @@ strictness level from `plan_source`:
 - `review-only` (code-exists auto-route) → pure CR mode; first
   Executor round is skipped.
 
-Soft limit is `soft_limit_exec` (default 3). On APPROVE, mint `exec`
-into `completed_stages` and proceed to Step 3.5.
+Soft limit is `soft_limit_exec` (default 3). When Step 3 reviewer returns
+APPROVE, run Step 3.4 before Step 3.5 if the terminal gate has not yet run in
+this execution convergence. Step 3.4 is single-pass per execution convergence.
+Do not mint `exec` yet. Step 3.4 APPROVE or controlled SKIP mints `exec` into
+`completed_stages`, then proceeds to Step 3.5. Step 3.4 REQUEST_CHANGES
+withholds `exec` and feeds the gate findings into ordinary Step 3
+Executor/Reviewer repair rounds; do not run Step 3.4 again while repairing
+those findings. A later normal Step 3 reviewer APPROVE after those repairs
+mints `exec`.
 `completed_stages` is the required protocol field for a clean execution
 pass. Do not replace it with ad hoc metadata such as `completed_at`.
-Both edit rounds and reviewed no-op rounds must write
-`completed_stages: [exec]` (or the appropriate later-stage superset) to
-`## Session Metadata`.
+This applies to both edit rounds and reviewed no-op rounds.
 
 ### Step 3.5 — Quality Polish
 

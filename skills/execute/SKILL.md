@@ -281,8 +281,12 @@ Per `docs/protocol/execution.md` §`--review-only` first-round skip:
    The Orchestrator writes the round-1 Review History entry with the
    literal marker `- Executor backend: skipped (review-only first round)`
    so tests and audits can assert the skip unambiguously.
-2. APPROVE → mint `exec` into `completed_stages` (the only path where
-   `exec` is added without the Executor running).
+2. APPROVE → enter the normal post-APPROVE transition: run Step 3.4
+   before Step 3.5, and mint `exec` only after Step 3.4 APPROVE/controlled
+   SKIP, or after Step 3.4 REQUEST_CHANGES is repaired and a later normal
+   Step 3 Reviewer returns APPROVE. This remains the only path where `exec`
+   can be added without the Executor running before the first review-only
+   gate.
 3. REQUEST_CHANGES → round 2+ follows the standard CR → fix loop
    (Executor runs, then Reviewer, alternating).
 
@@ -307,9 +311,16 @@ sandbox bug. Always `general-purpose` with body inlined.
 
 ### Loop control
 
-- `APPROVE` → mint `exec` into `completed_stages` (for the current
-  tree+index state) and exit the execution loop. Proceed to Step 3.5
-  unless `--stop-after exec-round` or `--stop-after before-polish`.
+- `APPROVE` → exit the execution loop. If Step 3.4 has not yet run in this
+  execution convergence, run Step 3.4 before Step 3.5 and do not mint `exec`
+  yet. Step 3.4 is single-pass per execution convergence. Step 3.4 APPROVE or
+  controlled SKIP mints `exec` into `completed_stages` for the current
+  tree+index state, then proceeds to Step 3.5 unless `--stop-after
+  before-polish`. Step 3.4 REQUEST_CHANGES withholds `exec` and feeds the gate
+  findings to ordinary Step 3 Executor/Reviewer repair rounds; do not run Step
+  3.4 again while repairing those findings. A later normal Step 3 reviewer
+  APPROVE after those repairs mints `exec` and proceeds to Step 3.5 unless
+  `--stop-after before-polish`.
 - `REQUEST_CHANGES` → feed feedback to the next Executor round.
 - Soft limit + stuck detection per `docs/protocol/execution.md`
   §Per-stage max-round caps (`soft_limit_exec`, default 3).
@@ -326,6 +337,46 @@ not prove a no-op.
 
 - If git diff --name-only HEAD itself fails (non-zero exit, missing repo, etc.) when computing the pre-Executor or post-Executor changed set, stop and surface the failure to the user.
   Then release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting. Do not proceed with a partial or invented changed-set.
+
+## Step 3.4 — Terminal Adversarial Gate
+
+Per `docs/protocol/execution.md` §Step 3.4 — Terminal Adversarial Gate.
+Single-entry-point Python invoker; single-pass per execution convergence
+between Step 3 APPROVE and Step 3.5 polish entry. Gate APPROVE/SKIP mints
+`exec`; gate REQUEST_CHANGES returns to ordinary Step 3 repair rounds without
+minting `exec`, and the gate does not run again while repairing those findings.
+All concerns (plugin-path preference,
+snapshot/restore, drain threads, signal cleanup) live inside the invoker.
+
+```bash
+# Terminal Adversarial Gate — single-entry-point Python invoker.
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+adversarial_exit=$?
+# 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
+```
+
+SKIP banner format: `adversarial-gate: SKIP reason=<reason>[ detail=<...>]`
+(5 reasons per the protocol-doc SKIP-reason table). Verdict table:
+adapter exit 0 → APPROVE; exit 1 → REQUEST_CHANGES; exit 2 → REQUEST_CHANGES
+because produced-but-malformed adversarial output is blocking, not SKIP.
+APPROVE mints `exec`; REQUEST_CHANGES does not mint `exec` and feeds findings
+to ordinary Step 3 repair rounds without another Step 3.4 pass in that repair
+path.
+
+Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP: if
+`.review-loop/config.md` cannot be proven restored/deleted after fallback
+execution, or an unexpected existing or create-from-empty config change must be
+preserved for inspection, do not mint `exec`; feed the synthetic `[CRITICAL]`
+cleanup issue to ordinary Step 3 repair rounds without another Step 3.4 pass
+in that repair path.
+
+No Agent dispatch involved — invoker is a Bash shell-out to Python, so
+the plugin-agent-sandbox bug does not apply.
+
+The `adversarial_gate_skip_paths` config key (default
+`["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`)
+lets the orchestrator skip the gate entirely when every Step 3 changed
+file matches one of the patterns.
 
 ## Step 3.5 — Quality Polish
 
@@ -351,7 +402,8 @@ as a no-op completion and continue to Step 3.6.
   reviewer-only fast-replay.
 - Hallucination guard: for every quality agent returning `tool_uses:
   0`, discard and retry once; if retry is also 0, skip and report.
-- `--stop-after before-polish` → exit before Step 3.5 starts.
+- `--stop-after before-polish` → exit after Step 3.4 APPROVE/SKIP and
+  before Step 3.5 starts.
   `--stop-after before-docs` → exit after Step 3.5 and before Step 3.6.
 
 All Step 3.5 invocations use `subagent_type: general-purpose` with the

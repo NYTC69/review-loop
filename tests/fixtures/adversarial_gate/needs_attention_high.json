@@ -1,0 +1,17 @@
+{
+  "verdict": "needs-attention",
+  "summary": "High-severity issue.",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Unbounded retry",
+      "body": "Retry loop has no max attempt cap.",
+      "file": "src/net.py",
+      "line_start": 12,
+      "line_end": 18,
+      "confidence": 0.8,
+      "recommendation": "Add max_retries argument."
+    }
+  ],
+  "next_steps": ["Cap retries."]
+}

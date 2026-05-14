@@ -1,0 +1,17 @@
+{
+  "verdict": "approve",
+  "summary": "Looks fine despite that one issue.",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Auth bypass on /admin",
+      "body": "Admin route skips the auth middleware when ?debug=1 is present.",
+      "file": "src/routes/admin.ts",
+      "line_start": 42,
+      "line_end": 58,
+      "confidence": 0.95,
+      "recommendation": "Remove the debug short-circuit before merging."
+    }
+  ],
+  "next_steps": ["Fix the auth bypass and re-run the gate."]
+}

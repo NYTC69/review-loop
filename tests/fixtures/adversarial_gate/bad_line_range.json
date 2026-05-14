@@ -1,0 +1,17 @@
+{
+  "verdict": "needs-attention",
+  "summary": "Bad line range.",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Bug",
+      "body": "Description",
+      "file": "src/x.py",
+      "line_start": 50,
+      "line_end": 10,
+      "confidence": 0.8,
+      "recommendation": "Fix it"
+    }
+  ],
+  "next_steps": []
+}

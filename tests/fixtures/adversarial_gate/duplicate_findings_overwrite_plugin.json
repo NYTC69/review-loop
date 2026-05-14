@@ -1,0 +1,18 @@
+{
+  "verdict": "needs-attention",
+  "summary": "duplicate findings must fail closed",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Blocking finding",
+      "body": "This must not be overwritten by a duplicate key.",
+      "file": "app.py",
+      "line_start": 1,
+      "line_end": 1,
+      "confidence": 0.9,
+      "recommendation": "Reject duplicate keys before validation."
+    }
+  ],
+  "findings": [],
+  "next_steps": []
+}

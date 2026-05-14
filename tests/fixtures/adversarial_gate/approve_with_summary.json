@@ -1,0 +1,17 @@
+{
+  "verdict": "approve",
+  "summary": "Reviewed three files; no blocking issues.",
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Stylistic-only nit",
+      "body": "Variable name could be shorter.",
+      "file": "src/foo.py",
+      "line_start": 10,
+      "line_end": 10,
+      "confidence": 0.4,
+      "recommendation": "Consider renaming."
+    }
+  ],
+  "next_steps": ["Proceed to merge."]
+}

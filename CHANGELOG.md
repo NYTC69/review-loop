@@ -1,5 +1,148 @@
 # Changelog
 
+## 2026-05-14
+
+### v2.7.7 — 终局 adversarial-review gate (Step 3.4)
+
+- 在 Step 3 reviewer APPROVE 之后、Step 3.5 quality polish 之前插入一次终局
+  "陌生眼睛" review pass (Step 3.4 — Terminal Adversarial Gate)。双 runtime
+  (Claude `skills/execute/SKILL.md` + Codex `.agents/skills/execute/SKILL.md`)
+  对称记录, 共享 5 行 Bash dispatch:
+  ```bash
+  python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+  adversarial_exit=$?
+  ```
+- 新增 `scripts/adversarial_gate_invoke.py` — stdlib-only Python invoker,
+  drain-thread + timeout pattern 是 `Scheduler._run_one in
+  scripts/review_verification.py` 核心 pattern 的 faithful port; sentinel
+  bytes 与 `wait_after_kill_timed_out` 诊断 flag 故意 NOT ported。
+- 新增 `scripts/adversarial_gate_adapter.py` — 双 input-mode 翻译层 (raw +
+  plugin-json), 同时支持 stdin 与 `--input <path>` 双 handoff;
+  输出 review-loop verdict + bulleted issues。
+- 新增 `scripts/adversarial_gate_fallback_prompt.txt` — fallback-path
+  prompt 模板, `string.Template.safe_substitute` 渲染。
+- 配置: 新增 `adversarial_gate_skip_paths` (默认 `["**/SKILL.md",
+  "docs/protocol/**", "tests/skills/contracts/**"]`); 当 Step 3 changed-set
+  全部命中跳过 Glob 时整轮 skip。
+- Plugin-path preference + snapshot/restore: 优先走 `node
+  $CODEX_PLUGIN_ROOT/scripts/codex-companion.mjs adversarial-review --scope
+  working-tree --json` (JSON-RPC `runAppServerTurn` 不触发
+  `.review-loop/config.md` 覆写 side-effect); 退到 `codex exec
+  --output-schema` fallback path 时, 先 snapshot 再 restore 配置文件。
+- 5 个 SKIP reason 带可选 `detail=`: `plugin-root-unresolved`,
+  `cache-schema-unresolved`, `codex-unauthenticated`, `runtime-error`
+  (carries detail), `runtime-timeout`。Adapter exit 2 的 produced-but-malformed
+  adversarial output 是 blocking REQUEST_CHANGES, not SKIP。
+- 共享 `_kill_process_group` 同时驱动 timeout 与 signal 两条 cleanup 路径
+  (kill child → restore config → exit 顺序), 避免 orphan child 在 restore
+  后再次 mutate config。
+- 加宽 auth-regex (`(?i)(?:unauthenticated|not signed in|login
+  required|authentication|oauth|unauthorized)`) 捕获 `AuthenticationError`
+  / `OAuth2` 等 concatenated 形式; FP risk 视为可接受 (两条分支都 SKIP,
+  只 banner reason 不同)。
+- `--scope working-tree`-only: 不带 `--base`, 否则 `git.mjs:resolveReviewTarget`
+  会 short-circuit 到 branch diff 漏掉 working tree。
+- Re-run 语义调整为 single-pass per execution convergence: Step 3.4 只在当前
+  convergence 的第一次 Step 3 reviewer APPROVE 后跑一轮; gate REQUEST_CHANGES
+  把 findings 喂回普通 Step 3 Executor/Reviewer 修复轮, 修好后由正常 reviewer
+  APPROVE mint `exec`, 不再重复触发 adversarial self-loop。后续 downstream write
+  清空 `completed_stages` 并从 `exec` replay 时才开始新的 convergence。
+- Codex Stage 1 outside-sandbox 要求 (mirrors reviewer / scheduler 调用
+  注解): Python invoker 写 tempfile, read-only sandbox 会拦截。
+- R6 反馈内联修复: signal-race during Popen assignment
+  (`pthread_sigmask` block window), cleanup unlink-only-after-restore-OK,
+  adapter-spawn OSError 测试, auth regex parametrized 4 sub-cases。
+- Meta-dogfood R3 修复: Step 3 reviewer APPROVE 不再直接 mint `exec` 或跳到
+  Step 3.5; 两个 runtime 现在都先跑 Step 3.4, 只有 gate APPROVE / controlled
+  SKIP 才 mint `exec`, gate REQUEST_CHANGES 则 withhold `exec` 并把 findings
+  喂回下一轮 Step 3。`--stop-after before-polish` 语义同步为 gate APPROVE/SKIP
+  之后、Step 3.5 之前停止。
+- Meta-dogfood R3 cleanup 修复: `_run_with_drain` normal-exit 路径和 signal
+  handler 都按 spawn-time cached pgid 做 best-effort process-group teardown,
+  防止 stdio-closed descendant 在 fallback config restore/delete 后继续写
+  `.review-loop/config.md`。新增 2 个 invoker regression tests + 6 个 lint
+  contract guards 锁住该路径。
+- Meta-dogfood R4 cleanup-failure 修复: fallback config restore/delete 失败
+  不再被 stderr 吞掉后继续 APPROVE。`_cleanup()` 现在返回 failure detail,
+  `_CLEANUP_DONE` 只在清理尝试结束后置位, cleanup 期间 best-effort 屏蔽
+  SIGINT/SIGTERM/SIGHUP；任何无法证明 config 已恢复/删除的失败都会输出
+  synthetic `adversarial-gate: REQUEST_CHANGES` + `[CRITICAL]` 并 exit 1,
+  阻止 `exec` mint。额外 pin 住 plugin path 不会执行 fallback create-from-empty
+  config 删除。新增 3 个 invoker regression tests + 5 个 lint guards。
+- Meta-dogfood R5 adapter 修复: raw mode 现在把 stdout 最后一个 decoded JSON
+  object 视为 authoritative final payload, 不再回退到较早 schema-shaped
+  APPROVE object；top-level `findings` 必须存在且为 list, `next_steps` 也必须
+  为 list。新增 4 个 adapter regression tests 覆盖 final malformed raw payload,
+  missing findings (approve / needs-attention), 和 invalid next_steps type。
+- Meta-dogfood R6 修复: umbrella `review-loop` skills 不再在 Step 3 reviewer
+  APPROVE 后直接 mint `exec`; 它们现在显式进入 Step 3.4, 只有 gate
+  APPROVE / controlled SKIP 才 mint。Fallback create-from-empty cleanup 也收窄
+  为只删除 byte-exact Codex bootstrap config; 其它同窗口出现的 config 会保留并
+  触发 blocking REQUEST_CHANGES。新增 1 个 invoker regression test + 4 个
+  umbrella lint guards。
+- Meta-dogfood R7 修复: `docs/protocol/session-file.md` 的 `exec` stage add event
+  也改为 Step 3 reviewer APPROVE + Step 3.4 APPROVE / controlled SKIP 后才
+  mint；raw adapter mode 不再忽略 earlier APPROVE 后面的 truncated final JSON
+  object；pre-existing fallback config cleanup 只会覆盖 exact Codex bootstrap
+  overwrite, 对其它同窗口 config 编辑保留并 blocking REQUEST_CHANGES。新增 1
+  个 adapter regression test、1 个 invoker regression test、4 个 lint guards。
+- Meta-dogfood R8 修复: adapter exit 2 (bad JSON/schema violation/truncated raw
+  final payload) 不再被 invoker 转成 controlled SKIP；现在输出 synthetic
+  REQUEST_CHANGES + `[CRITICAL]`, exit 1, 阻止 `exec` mint。新增 1 个
+  end-to-end invoker regression test, 并把旧 adapter-exit-2 diagnostic test
+  改为 blocking 断言。
+- Meta-dogfood R9 修复: plugin/fallback producer 非零退出但 stdout 非空时,
+  invoker 先把 stdout 交给 adapter 校验, 只有空 stdout 才按 auth/runtime
+  SKIP 分类；adapter hand-rolled 校验补齐 cached `review-output.schema.json`
+  约束 (required `summary`, `additionalProperties: false`, non-empty strings,
+  `next_steps` item, bool-not-number/integer)。新增 8 个 adapter regression
+  tests、1 个 invoker regression test、4 个 lint guards。
+- Meta-dogfood R10 修复: `runtime-timeout` 和 `drain-incomplete` 不再在
+  producer stdout 已捕获时直接 controlled SKIP；清理进程组后若 stdout 非空,
+  invoker 输出 synthetic REQUEST_CHANGES, 只允许空 stdout 的 timeout/drain
+  failure SKIP。新增 2 个 invoker regression tests、2 个 lint guards。
+- Meta-dogfood R11 修复: raw adapter mode 不再忽略最后一个 decoded JSON object
+  后面的非空白尾巴；earlier APPROVE 后若跟着 final array、`null` 或 text-only
+  tail 都 exit 2, 由 invoker 转 blocking REQUEST_CHANGES。新增 3 个 adapter
+  regression tests、1 个 lint guard。
+- Meta-dogfood R12 修复: adapter launch OSError 只有 producer stdout 为空时
+  才是 controlled `runtime-error` SKIP；若 stdout 已捕获但 adapter 无法启动,
+  invoker 输出 synthetic REQUEST_CHANGES, 阻止未校验 payload mint `exec`。
+  新增 1 个 invoker regression test、1 个 lint guard。
+- Meta-dogfood R13 修复: raw adapter mode 不再把 truncated final array/wrapper
+  里的内嵌 schema-shaped object 当作 top-level final payload；`[{...}` 和
+  `{"result": {...}` 这类容器截断输出 exit 2, 由 invoker 转 blocking
+  REQUEST_CHANGES。新增 2 个 adapter regression tests、1 个 lint guard。
+- Meta-dogfood R14 修复: plugin path dispatch 在 `--json` 和 focus text 之间
+  插入 `--` sentinel, 防止以 `--base` / `--scope` 开头的 focus text 被
+  companion 当成选项并覆盖固定 `--scope working-tree` target。新增 1 个
+  invoker dry-run regression test、1 个 lint guard。
+- Meta-dogfood R15 修复: adapter JSON decode 在 plugin-json 和 raw mode 都用
+  duplicate-key detector, 重复 key 直接 exit 2, 防止 Python last-value-wins
+  覆盖 blocking `findings` / `verdict` 后错误 APPROVE。新增 2 个 adapter
+  regression tests、1 个 lint guard。
+- Meta-dogfood R16 修复: plugin-json envelope 不再信任 companion 已经
+  `JSON.parse` 折叠过的 `result`; 如果 `rawOutput` 或 `codex.stdout` 存在,
+  adapter 会用 duplicate-key-aware raw parser 重新解析原始 reviewer stdout 后
+  再验证。新增 1 个 adapter regression test、2 个 lint guards。
+- Meta-dogfood R17 修复: invoker drain reader exception 不再被吞掉后当作完整
+  stdout。reader exception + 非空 stdout 输出 synthetic REQUEST_CHANGES,
+  空 stdout 才允许 controlled `runtime-error` SKIP。新增 2 个 invoker
+  regression tests、2 个 lint guards。
+- Meta-dogfood R18 修复: raw adapter 不再把 malformed wrapper/member prefix
+  后面的 inner schema object 当成 top-level verdict；未闭合 JSON container
+  prefix 后的 `{schema}` 直接视为 nested candidate。新增 1 个 adapter
+  regression test、2 个 lint guards。
+- Meta-dogfood R19 修复: invoker 不再只信 adapter exit code。adapter exit 0/1
+  必须带对应 `adversarial-gate` verdict banner；缺失或不匹配时输出 synthetic
+  REQUEST_CHANGES。新增 1 个 invoker regression test、2 个 lint guards。
+- Meta-dogfood R20 修复: producer 非零退出但 stdout 是合法 APPROVE 时不再通过
+  gate；invoker 会先让 adapter 校验 stdout, 但 adapter APPROVE + producer
+  nonzero 现在输出 synthetic REQUEST_CHANGES。新增 1 个 invoker regression
+  test、2 个 lint guards。
+- Lint contracts 新增 62 个 terminal-gate guards, version-pin needles bump 4
+  处。Plugin v2.7.6 → v2.7.7。
+
 ## 2026-05-10
 
 ### v2.7.6 — protocol↔LEARNING fast-replay alignment

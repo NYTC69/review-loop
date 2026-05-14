@@ -312,8 +312,12 @@ Per `docs/protocol/execution.md` §`--review-only` first-round skip:
    The Orchestrator writes the round-1 Review History entry with the
    literal marker `- Executor backend: skipped (review-only first round)`
    so tests and audits can assert the skip unambiguously.
-2. APPROVE → mint `exec` into `completed_stages` (the only path where
-   `exec` is added without the Executor running).
+2. APPROVE → enter the normal post-APPROVE transition: run Step 3.4
+   before Step 3.5, and mint `exec` only after Step 3.4 APPROVE/controlled
+   SKIP, or after Step 3.4 REQUEST_CHANGES is repaired and a later normal
+   Step 3 Reviewer returns APPROVE. This remains the only path where `exec`
+   can be added without the Executor running before the first review-only
+   gate.
 3. REQUEST_CHANGES → round 2+ follows the standard CR → fix loop
    (Executor runs, then Reviewer, alternating).
 
@@ -483,9 +487,16 @@ Code review content must include:
 
 ### Loop control
 
-- `APPROVE` → mint `exec` into `completed_stages` (for the current
-  tree+index state) and exit the execution loop. Proceed to Step 3.5
-  unless `--stop-after exec-round` or `--stop-after before-polish`.
+- `APPROVE` → exit the execution loop. If Step 3.4 has not yet run in this
+  execution convergence, run Step 3.4 before Step 3.5 and do not mint `exec`
+  yet. Step 3.4 is single-pass per execution convergence. Step 3.4 APPROVE or
+  controlled SKIP mints `exec` into `completed_stages` for the current
+  tree+index state, then proceeds to Step 3.5 unless `--stop-after
+  before-polish`. Step 3.4 REQUEST_CHANGES withholds `exec` and feeds the gate
+  findings to ordinary Step 3 Executor/Reviewer repair rounds; do not run Step
+  3.4 again while repairing those findings. A later normal Step 3 reviewer
+  APPROVE after those repairs mints `exec` and proceeds to Step 3.5 unless
+  `--stop-after before-polish`.
 - `REQUEST_CHANGES` → feed feedback to the next Executor round.
 - Soft-limit prompt: when `soft_limit_exec` is reached and blocking
   issues remain, surface the situation to the user instead of silently
@@ -520,12 +531,61 @@ Per `docs/protocol/execution.md` §No-op execution round validation.
 
 ### Stage minting
 
-When an execution round reaches reviewer `APPROVE`, mint `exec` into
+When an execution round reaches reviewer `APPROVE`, run Step 3.4 before
+Step 3.5 if the terminal gate has not yet run in this execution convergence.
+Step 3.4 is single-pass per execution convergence. Withhold `exec` until the
+gate returns APPROVE or controlled SKIP, or until gate-requested repairs later
+receive a normal Step 3 reviewer APPROVE. Then mint `exec` into
 `completed_stages` in `## Session Metadata` per the shared session-file
-lifecycle. This applies to both edit rounds and reviewed no-op rounds.
-Do not represent execution completion with custom metadata keys such as
-`completed_at`; the shared protocol completion state is carried by
-`completed_stages` and related baseline metadata.
+lifecycle. This applies to both edit rounds and reviewed no-op rounds. If Step
+3.4 returns REQUEST_CHANGES, do not mint `exec`; feed the gate findings to
+ordinary Step 3 Executor/Reviewer repair rounds, and do not run Step 3.4 again
+while repairing those findings. Do not represent execution completion with
+custom metadata keys such as `completed_at`; the shared protocol completion
+state is carried by `completed_stages` and related baseline metadata.
+
+## Step 3.4 — Terminal Adversarial Gate
+
+Per `docs/protocol/execution.md` §Step 3.4 — Terminal Adversarial Gate.
+Single-entry-point Python invoker; single-pass per execution convergence
+between Step 3 APPROVE and Step 3.5 polish entry. Gate APPROVE/SKIP mints
+`exec`; gate REQUEST_CHANGES returns to ordinary Step 3 repair rounds without
+minting `exec`, and the gate does not run again while repairing those findings.
+
+```bash
+# Terminal Adversarial Gate — single-entry-point Python invoker.
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+adversarial_exit=$?
+# 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
+```
+
+SKIP banner format: `adversarial-gate: SKIP reason=<reason>[ detail=<...>]`.
+Verdict table: adapter exit 0 → APPROVE; exit 1 → REQUEST_CHANGES;
+exit 2 → REQUEST_CHANGES because produced-but-malformed adversarial output
+is blocking, not SKIP. APPROVE mints `exec`; REQUEST_CHANGES does not
+mint `exec` and feeds findings to ordinary Step 3 repair rounds without
+another Step 3.4 pass in that repair path.
+
+Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP: if
+`.review-loop/config.md` cannot be proven restored/deleted after fallback
+execution, or an unexpected existing or create-from-empty config change must be
+preserved for inspection, do not mint `exec`; feed the synthetic `[CRITICAL]`
+cleanup issue to ordinary Step 3 repair rounds without another Step 3.4 pass
+in that repair path.
+
+**Run the adversarial gate invocation outside the sandbox.** The Python
+invoker writes tempfiles (`tempfile.mkstemp` for config snapshot,
+`tempfile.NamedTemporaryFile` for the rendered fallback prompt), which
+the Codex read-only sandbox blocks. Mirrors the existing reviewer-call
+and scheduler-call sandbox boundary.
+
+The invoker shells out via Bash, not `spawn_agent` — completed-agent
+cleanup does not apply.
+
+The `adversarial_gate_skip_paths` config key (default
+`["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`)
+lets the orchestrator skip the gate entirely when every Step 3 changed
+file matches one of the patterns.
 
 ## Step 3.5 — Quality Polish
 
@@ -547,7 +607,8 @@ Per `docs/protocol/execution.md` §Step 3.5. Runs language-specific static analy
   reviewer-only fast-replay.
 - Hallucination guard: for every quality agent returning `tool_uses:
   0`, discard and retry once; if retry is also 0, skip and report.
-- `--stop-after before-polish` → exit before Step 3.5 starts.
+- `--stop-after before-polish` → exit after Step 3.4 APPROVE/SKIP and
+  before Step 3.5 starts.
   `--stop-after before-docs` → exit after Step 3.5 and before Step 3.6.
 
 ## Step 3.6 — Documentation Consistency

@@ -291,6 +291,30 @@
       "needle": "When `soft_limit_exec` is reached and blocking issues remain"
     },
     {
+      "id": "claude_umbrella_adversarial_gate_before_polish",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "run Step 3.4 before Step 3.5"
+    },
+    {
+      "id": "claude_umbrella_no_direct_exec_mint_after_approve",
+      "kind": "not_contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "On APPROVE, mint `exec` into `completed_stages` and proceed to Step 3.5"
+    },
+    {
+      "id": "codex_umbrella_adversarial_gate_before_polish",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "run Step 3.4 before Step 3.5"
+    },
+    {
+      "id": "codex_umbrella_no_direct_exec_mint_after_approve",
+      "kind": "not_contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "When an execution round reaches reviewer `APPROVE`, mint `exec` into"
+    },
+    {
       "id": "codex_stage1_downstream_lifecycle_consistent",
       "kind": "consistent_with",
       "mapping_id": "codex_stage1_downstream_lifecycle"
@@ -672,25 +696,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.6\""
+      "needle": "\"version\": \"2.7.7\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.6\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.7\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.6\",\n      \"author\""
+      "needle": "\"version\": \"2.7.7\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.6\""
+      "needle": "\"version\": \"2.7.7\""
     },
     {
       "id": "codex_marketplace_manifest_name",
@@ -1295,6 +1319,396 @@
         "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
       ],
       "window_lines": 2
+    },
+    {
+      "id": "adversarial_gate_claude_step_heading",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+    },
+    {
+      "id": "adversarial_gate_claude_invocation",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "python3 scripts/adversarial_gate_invoke.py"
+    },
+    {
+      "id": "adversarial_gate_claude_verdict_table_sentinel",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_claude_adapter_exit2_blocks",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "exit 2 → REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_claude_adapter_exit2_not_skip",
+      "kind": "not_contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "adapter-exit-2-malformed"
+    },
+    {
+      "id": "adversarial_gate_claude_skip_banner_format",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "adversarial-gate: SKIP reason="
+    },
+    {
+      "id": "adversarial_gate_claude_cleanup_failure_blocks",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP"
+    },
+    {
+      "id": "adversarial_gate_claude_loop_control_interposes_gate",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "run Step 3.4 before Step 3.5"
+    },
+    {
+      "id": "adversarial_gate_claude_single_pass_then_normal_review",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "single-pass per execution convergence"
+    },
+    {
+      "id": "adversarial_gate_claude_no_adversarial_self_loop",
+      "kind": "not_contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "gate fires again on the next APPROVE"
+    },
+    {
+      "id": "adversarial_gate_claude_no_direct_step35_loop_control",
+      "kind": "not_contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "exit the execution loop. Proceed to Step 3.5"
+    },
+    {
+      "id": "adversarial_gate_codex_step_heading",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+    },
+    {
+      "id": "adversarial_gate_codex_invocation",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "python3 scripts/adversarial_gate_invoke.py"
+    },
+    {
+      "id": "adversarial_gate_codex_verdict_table_sentinel",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_codex_adapter_exit2_blocks",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "exit 2 → REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_codex_adapter_exit2_not_skip",
+      "kind": "not_contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "adapter-exit-2-malformed"
+    },
+    {
+      "id": "adversarial_gate_codex_sandbox_boundary",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Run the adversarial gate invocation outside the sandbox."
+    },
+    {
+      "id": "adversarial_gate_codex_cleanup_failure_blocks",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP"
+    },
+    {
+      "id": "adversarial_gate_codex_loop_control_interposes_gate",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "run Step 3.4 before Step 3.5"
+    },
+    {
+      "id": "adversarial_gate_codex_single_pass_then_normal_review",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "single-pass per execution convergence"
+    },
+    {
+      "id": "adversarial_gate_codex_no_adversarial_self_loop",
+      "kind": "not_contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "gate fires again on the next APPROVE"
+    },
+    {
+      "id": "adversarial_gate_codex_no_direct_step35_loop_control",
+      "kind": "not_contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "exit the execution loop. Proceed to Step 3.5"
+    },
+    {
+      "id": "adversarial_gate_protocol_step_heading",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+    },
+    {
+      "id": "adversarial_gate_protocol_loop_control_interposes_gate",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "APPROVE exits Step 3 into Step 3.4 before any Step 3.5 entry"
+    },
+    {
+      "id": "adversarial_gate_protocol_single_pass_then_normal_review",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "single-pass per execution convergence"
+    },
+    {
+      "id": "adversarial_gate_protocol_no_adversarial_self_loop",
+      "kind": "not_contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "gate fires again on the next APPROVE"
+    },
+    {
+      "id": "adversarial_gate_protocol_no_direct_step35_loop_control",
+      "kind": "not_contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "starting at Step 3.5 on both runtimes"
+    },
+    {
+      "id": "adversarial_gate_protocol_cleanup_failure_blocks",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP"
+    },
+    {
+      "id": "adversarial_gate_protocol_adapter_exit2_blocks",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`2` | Malformed payload — REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_protocol_adapter_exit2_not_skip",
+      "kind": "not_contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "adapter-exit-2-malformed"
+    },
+    {
+      "id": "adversarial_gate_invoker_adapter_exit2_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "adapter output was malformed"
+    },
+    {
+      "id": "adversarial_gate_invoker_adapter_exit2_no_skip",
+      "kind": "not_contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "_emit_skip(\"adapter-exit-2-malformed\""
+    },
+    {
+      "id": "adversarial_gate_invoker_stdout_before_nonzero_skip",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "stdout_bytes.strip()"
+    },
+    {
+      "id": "adversarial_gate_invoker_nonzero_after_adapter_approve_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "producer exited nonzero after adapter APPROVE"
+    },
+    {
+      "id": "adversarial_gate_protocol_nonzero_after_adapter_approve_blocks",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "APPROVE plus non-zero producer exit becomes synthetic REQUEST_CHANGES"
+    },
+    {
+      "id": "adversarial_gate_invoker_timeout_stdout_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "producer stdout captured before runtime-timeout"
+    },
+    {
+      "id": "adversarial_gate_invoker_drain_stdout_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "producer stdout captured before drain-incomplete"
+    },
+    {
+      "id": "adversarial_gate_invoker_drain_exception_stdout_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "producer stdout captured before drain-exception"
+    },
+    {
+      "id": "adversarial_gate_protocol_drain_exception_stdout_blocks",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "blocking REQUEST_CHANGES (`drain-exception`)"
+    },
+    {
+      "id": "adversarial_gate_invoker_adapter_launch_stdout_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "adapter launch failed after producer stdout"
+    },
+    {
+      "id": "adversarial_gate_invoker_adapter_verdict_banner_required",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "without adversarial-gate verdict banner"
+    },
+    {
+      "id": "adversarial_gate_protocol_adapter_verdict_banner_required",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "Adapter exit 0/1 is not sufficient by itself"
+    },
+    {
+      "id": "adversarial_gate_invoker_plugin_focus_sentinel",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "option-like focus text"
+    },
+    {
+      "id": "adversarial_gate_adapter_requires_summary",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "summary must be a non-empty string"
+    },
+    {
+      "id": "adversarial_gate_adapter_rejects_extra_properties",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "unexpected top-level property"
+    },
+    {
+      "id": "adversarial_gate_adapter_validates_next_steps_items",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "next_steps["
+    },
+    {
+      "id": "adversarial_gate_protocol_raw_final_authoritative",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "Raw adapter mode treats the final decoded JSON object"
+    },
+    {
+      "id": "adversarial_gate_session_file_exec_mint_after_gate",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "Step 3 reviewer APPROVE plus either Step 3.4 APPROVE/controlled"
+    },
+    {
+      "id": "adversarial_gate_session_file_exec_mint_after_gate_repair",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "Step 3.4 REQUEST_CHANGES repaired by a later normal Step 3 reviewer"
+    },
+    {
+      "id": "adversarial_gate_session_file_no_direct_exec_mint",
+      "kind": "not_contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "one Executor+Reviewer cycle returned APPROVE for the current"
+    },
+    {
+      "id": "adversarial_gate_session_file_no_review_only_direct_exec_mint",
+      "kind": "not_contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "also mints `exec`"
+    },
+    {
+      "id": "adversarial_gate_adapter_truncated_final_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "malformed final JSON object after last valid object"
+    },
+    {
+      "id": "adversarial_gate_adapter_trailing_final_blocks",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "trailing content after final JSON object"
+    },
+    {
+      "id": "adversarial_gate_adapter_nested_object_candidates_ignored",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "Nested JSON object candidates"
+    },
+    {
+      "id": "adversarial_gate_adapter_unclosed_container_prefix_blocks_nested",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "_has_unclosed_json_container_prefix"
+    },
+    {
+      "id": "adversarial_gate_protocol_unclosed_container_prefix_blocks_nested",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "unclosed container prefix is never a top-level verdict"
+    },
+    {
+      "id": "adversarial_gate_adapter_duplicate_keys_block",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "duplicate key:"
+    },
+    {
+      "id": "adversarial_gate_adapter_companion_raw_output_reparsed",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "malformed companion raw output"
+    },
+    {
+      "id": "adversarial_gate_protocol_companion_raw_output_reparsed",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "rawOutput` or `codex.stdout` is the"
+    },
+    {
+      "id": "adversarial_gate_protocol_invoker_contract_row",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "shared `_kill_process_group` helper drives both the timeout cleanup"
+    },
+    {
+      "id": "adversarial_gate_config_example_key",
+      "kind": "contains",
+      "path": "review-loop-config.example.md",
+      "needle": "adversarial_gate_skip_paths"
+    },
+    {
+      "id": "adversarial_gate_invoker_docstring_anchor",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "Scheduler._run_one in scripts/review_verification.py"
+    },
+    {
+      "id": "adversarial_gate_invoker_cleanup_request_changes",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "def _emit_cleanup_request_changes"
+    },
+    {
+      "id": "adversarial_gate_invoker_fallback_cleanup_active_guard",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_invoke.py",
+      "needle": "_FALLBACK_CONFIG_CLEANUP_ACTIVE"
+    },
+    {
+      "id": "adversarial_gate_adapter_raw_final_authoritative",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_adapter.py",
+      "needle": "final JSON object is authoritative"
     }
   ]
 }

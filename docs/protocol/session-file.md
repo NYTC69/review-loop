@@ -379,9 +379,13 @@ tree+index state**. It is a set, not a historical log.
 
 ### Stage add events
 
-- `exec` — one Executor+Reviewer cycle returned APPROVE for the current
-  state. In `--review-only` mode a reviewer-only APPROVE on the existing diff
-  also mints `exec` (no Executor runs, by design — see
+- `exec` — Step 3 reviewer APPROVE plus either Step 3.4 APPROVE/controlled
+  SKIP, or Step 3.4 REQUEST_CHANGES repaired by a later normal Step 3 reviewer
+  APPROVE, for the current state. In `--review-only` mode a reviewer-only
+  APPROVE on the existing diff enters Step 3.4; that gate's APPROVE/controlled
+  SKIP mints `exec`, while gate REQUEST_CHANGES returns to ordinary Step 3
+  Executor/Reviewer repair rounds and a later normal reviewer APPROVE mints
+  `exec` (no Executor runs before the first review-only gate, by design — see
   [execution.md §`--review-only` first-round skip](./execution.md#review-only-first-round-skip)).
 - `polish` — Step 3.5 completed without unresolved issues. A Step 3.5
   `reviewer-only fast-replay` APPROVE preserves the current set but does not

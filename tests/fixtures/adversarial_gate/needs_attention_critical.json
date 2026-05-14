@@ -1,0 +1,17 @@
+{
+  "verdict": "needs-attention",
+  "summary": "Critical race condition.",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Race on shared counter",
+      "body": "Two threads increment without lock.",
+      "file": "src/counter.py",
+      "line_start": 42,
+      "line_end": 50,
+      "confidence": 0.95,
+      "recommendation": "Wrap with threading.Lock."
+    }
+  ],
+  "next_steps": ["Add lock, re-run tests."]
+}

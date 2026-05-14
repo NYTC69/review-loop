@@ -1,0 +1,5 @@
+Codex CLI v0.130 -- debug preamble:
+{"verdict":"approve","summary":"earlier object must not win","findings":[],"next_steps":[]}
+
+Final payload:
+{"verdict":"approve","summary":"truncated final","findings":[

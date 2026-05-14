@@ -43,6 +43,17 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-adversarial-gate-single-pass-convergence"></a> Run terminal adversarial gate once per execution convergence; route its REQUEST_CHANGES through normal Step 3 review/fix rounds, not another adversarial gate
+- **Date**: 2026-05-14
+- **Task context**: v2.7.7 terminal adversarial-review gate 交付过程中，连续多轮 meta-dogfood adversarial review 把流程带成难以收工的自循环。
+- **What broke**: adversarial gate 的旧协议写成每次 Step 3 APPROVE 都重跑 gate，导致 gate REQUEST_CHANGES 修完后又触发下一轮 adversarial review，容易继续挑出边缘问题并反复延长交付。
+- **Root cause**: 终局 adversarial review 被设计成普通 reviewer APPROVE 后的重复 gate，而不是一次性陌生视角抽查；缺少“发现问题后交回普通 Reviewer loop 收敛”的边界。
+- **Rule going forward**: Run terminal adversarial gate once per execution convergence; route its REQUEST_CHANGES through normal Step 3 review/fix rounds, not another adversarial gate
+- **Scope**: review-loop, adversarial-gate, terminal-review, execution-convergence, step-3, reviewer-loop
+- **Promotion candidacy**: project-only
+
+---
+
 Entry template (copy as you add each new learning):
 
 ```markdown

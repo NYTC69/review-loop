@@ -1,0 +1,17 @@
+{
+  "verdict": "needs-attention",
+  "summary": "line_start is bool",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Bool line_start",
+      "body": "JSON Schema integer must not accept booleans.",
+      "file": "app.py",
+      "line_start": true,
+      "line_end": 1,
+      "confidence": 0.8,
+      "recommendation": "Reject bool line numbers."
+    }
+  ],
+  "next_steps": []
+}

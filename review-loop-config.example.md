@@ -41,4 +41,10 @@ handsfree: false
 # `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 skip_quality_polish: false
 
+# Step 3.4 terminal adversarial gate — skip when every Step 3 changed file matches one of these glob patterns.
+# adversarial_gate_skip_paths:
+#   - "**/SKILL.md"
+#   - "docs/protocol/**"
+#   - "tests/skills/contracts/**"
+
 # context_persist_threshold: 25   # trigger planning.md §3.5 persist when context_pct >= N; default 70

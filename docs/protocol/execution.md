@@ -86,7 +86,7 @@ baseline update on a clean `--stop-after` exit follow the normal rules in
 | Value | Semantics |
 |---|---|
 | `exec-round` | Exit after the current execution round finishes (even if reviewer returned REQUEST_CHANGES). Useful for batch-sized iteration. |
-| `before-polish` | Exit after the execution loop APPROVEs and before Step 3.5 starts. |
+| `before-polish` | Exit after the execution loop APPROVEs and Step 3.4 resolves APPROVE/SKIP, before Step 3.5 starts. |
 | `before-docs` | Exit after Step 3.5 and before Step 3.6. |
 | `before-security` | Exit after Step 3.6 and before Step 3.7. |
 | `before-delivery` | Exit after Step 3.7 and before Step 4. |
@@ -220,9 +220,17 @@ The execution round loop mirrors the planning round loop (see
 
 6. **Parse, update loop state, display Live Report** — same as planning.
    After the Executor and Reviewer outputs for an execution round have been validated and persisted to the session file, close completed Codex subagents for that round before the next round, downstream stage, or delivery step.
-7. **Loop control** — APPROVE exits Step 3 and enters the downstream stages
-   starting at Step 3.5 on both runtimes. `REQUEST_CHANGES` feeds feedback
-   to the next round. Soft limit + stuck detection per the caps below.
+7. **Loop control** — APPROVE exits Step 3 into Step 3.4 before any Step 3.5 entry
+   on both runtimes when the terminal gate has not yet been spent for this
+   execution convergence. Do not mint `exec` yet. Step 3.4 is single-pass per
+   execution convergence. Step 3.4 REQUEST_CHANGES withholds `exec` and feeds
+   the gate findings to the next ordinary Step 3 Executor/Reviewer round; do
+   not run Step 3.4 again while repairing those findings. Step 3.4
+   APPROVE/SKIP, or a later normal Step 3 reviewer APPROVE after gate-requested
+   repairs, mints `exec`, then enters the downstream stages starting at Step 3.5
+   unless `--stop-after before-polish` applies. `REQUEST_CHANGES` from the
+   normal Reviewer still feeds feedback to the next round. Soft limit + stuck
+   detection per the caps below.
 
 ### Codex completed-agent cleanup
 
@@ -331,13 +339,205 @@ Executor call**:
 
 1. Round 1: jump straight to the Reviewer. The review content points at the
    existing diff + `## Review Target` scope. No Executor output is produced.
-2. If the Reviewer returns APPROVE, mint `exec` into `completed_stages`
-   (per [session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle))
-   and proceed downstream. This is the only code path where `exec` is added
-   without the Executor running.
+2. If the Reviewer returns APPROVE, use the same post-APPROVE transition as
+   normal Step 3: run Step 3.4 before Step 3.5, and mint `exec` into
+   `completed_stages` only after Step 3.4 returns APPROVE/controlled SKIP, or
+   after Step 3.4 REQUEST_CHANGES is repaired and a later normal Step 3
+   Reviewer returns APPROVE.
+   This remains the only path where `exec` can be added without the Executor
+   running.
 3. If the Reviewer returns REQUEST_CHANGES, round 2+ follows the standard
    CR → fix loop: Executor runs with the reviewer feedback to fix the code;
    subsequent rounds alternate Executor + Reviewer normally.
+
+---
+
+## Step 3.4 — Terminal Adversarial Gate
+
+A terminal "stranger-eyes" review pass that fires AFTER Step 3 reviewer
+APPROVE and BEFORE Step 3.5 polish. Single-entry-point Python invoker
+(`scripts/adversarial_gate_invoke.py`). Unresolvable setup/runtime failures
+with no produced review payload become a controlled `SKIP` with a banner on
+stderr and exit 0. Produced adversarial-review stdout is always adapter
+validated first; malformed produced output, blocking findings, and cleanup
+uncertainty fail closed as REQUEST_CHANGES.
+
+### Trigger and repair-loop semantics
+
+- Step 3.4 is single-pass per execution convergence. A convergence starts when
+  Step 3 starts from a plan, review-only target, or downstream replay, and ends
+  when `exec` is minted for the current tree+index state.
+- The gate fires once after the first normal Step 3 reviewer APPROVE in that
+  convergence, before Step 3.5 or the `--stop-after before-polish` stop point.
+- On gate REQUEST_CHANGES (adapter exit 1): do not mint `exec`; replay
+  ordinary Step 3 Executor/Reviewer rounds with the gate's findings appended to
+  the reviewer prompt. Do not run Step 3.4 again while repairing those
+  findings. When the normal Step 3 Reviewer later returns APPROVE, mint `exec`
+  and proceed to Step 3.5 unless `--stop-after before-polish` applies.
+- If a later downstream write clears `completed_stages` and replays from `exec`,
+  that replay starts a new execution convergence and receives its own one
+  Step 3.4 pass.
+- On gate APPROVE (adapter exit 0): mint `exec`, then proceed to Step 3.5
+  unless `--stop-after before-polish` applies.
+- On gate SKIP (banner on stderr, invoker exit 0): mint `exec`, then proceed
+  to Step 3.5 unless `--stop-after before-polish` applies.
+  The skip reason and any `detail=` are surfaced in the round Live
+  Report but do not block delivery.
+
+### Skip rule (`adversarial_gate_skip_paths`)
+
+Config key `adversarial_gate_skip_paths` (default
+`["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`).
+When every path in the current Step 3 changed-file set matches one of
+these glob patterns, the gate is skipped entirely (banner
+`adversarial-gate: SKIP reason=skipped-by-config`) and the orchestrator
+proceeds to Step 3.5.
+
+### Focus text recipe
+
+The gate's `--focus-file` argument is the path to a UTF-8 text file
+containing, in order:
+
+1. Work-item title (from `## Approved Plan` first line or session
+   metadata).
+2. One-line problem statement.
+3. The set of files touched by Step 3 (one path per line).
+4. (optional) The most recent Reviewer summary line.
+
+The orchestrator writes this file to
+`.review-loop/tmp/{session_id}-adversarial-focus.{round}.txt` and
+passes its path via `--focus-file`.
+
+### Dispatch (5-line Bash)
+
+```bash
+# Terminal Adversarial Gate — single-entry-point Python invoker.
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+adversarial_exit=$?
+# 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
+```
+
+Plugin-path annotation: invoker prefers
+`node $CODEX_PLUGIN_ROOT/scripts/codex-companion.mjs adversarial-review
+--scope working-tree --json -- <focus>`. **No `--base` flag** —
+`git.mjs:resolveReviewTarget` short-circuits on any `--base` value,
+ignoring `--scope working-tree`. The `--` sentinel is mandatory so
+option-like focus text cannot be parsed as companion flags and override
+the fixed working-tree target. The plugin path is preferred because the
+JSON-RPC `runAppServerTurn` it uses does NOT trigger the sandbox bootstrap
+that overwrites `.review-loop/config.md`.
+
+Internal architecture note: the invoker's drain-thread + timeout
+pattern is a faithful port of the core pattern in
+`Scheduler._run_one in scripts/review_verification.py`. Reader-exception
+sentinel bytes and the `wait_after_kill_timed_out` diagnostic flag are
+intentionally NOT ported — gate failures surface as `runtime-error` SKIP
+with a `detail=` string, which is the level of diagnostic precision the
+gate path needs.
+
+Raw adapter mode treats the final decoded JSON object on stdout as
+authoritative and validates that object. It must not approve an earlier
+schema-shaped JSON object if any later decoded object exists, and it must also
+fail closed when a later JSON object start is syntactically truncated or
+malformed before decoding. Any non-whitespace content after the last decoded
+JSON object is also malformed; raw mode must not ignore a final array, `null`,
+or text-only tail after an earlier schema-shaped APPROVE. Raw mode also must
+not treat schema-shaped objects nested inside arrays or wrapper object members
+as the top-level final payload; truncated containers like `[{...}` or
+`{"result": {...}` are malformed even if the inner object is complete. This
+also covers malformed wrapper prefixes with non-whitespace/comment-like tokens
+between the member colon and nested schema object; an inner object after an
+unclosed container prefix is never a top-level verdict.
+Both raw and plugin-json decoding reject duplicate JSON object keys before
+schema validation; Python-style last-value-wins duplicate handling must not
+erase blocking findings or verdict fields.
+
+For plugin-json companion envelopes, `rawOutput` or `codex.stdout` is the
+authoritative reviewer stdout when present. The adapter must re-parse that raw
+text with the duplicate-key-aware raw parser before trusting the already-parsed
+`result` object; `result` is a fallback only when the raw text is absent.
+
+Producer exit status is secondary to produced stdout. If the plugin path or
+fallback `codex exec` path exits non-zero with non-empty stdout, the invoker
+pipes that stdout to the adapter before checking auth/runtime SKIP reasons.
+Adapter REQUEST_CHANGES or malformed output still blocks normally; adapter
+APPROVE plus non-zero producer exit becomes synthetic REQUEST_CHANGES because
+the reviewer process did not complete cleanly.
+Only non-zero producer exits with empty stdout are classified as
+`codex-unauthenticated` or `runtime-error` SKIP.
+
+Drain reader exceptions are also uncertain stdout boundaries. If any stdout or
+stderr drain thread records a reader exception after producer spawn, non-empty
+captured stdout is a blocking REQUEST_CHANGES (`drain-exception`); only empty
+stdout may become a controlled `runtime-error` SKIP.
+
+Timeout and drain-incomplete paths follow the same stdout-first fail-closed
+rule. After killing the producer process group, if any non-empty stdout was
+captured before `runtime-timeout` or `drain-incomplete`, the invoker emits a
+synthetic REQUEST_CHANGES because the capture may be partial or the producer
+did not exit cleanly. Controlled SKIP is reserved for these runtime failures
+only when stdout is empty.
+
+Adapter launch failures also follow stdout-first fail-closed semantics. If the
+adapter cannot be spawned after producer stdout was captured, the invoker emits
+a synthetic REQUEST_CHANGES rather than SKIP because the adversarial-review
+payload was never validated. Adapter-spawn `runtime-error` SKIP is reserved for
+empty producer stdout.
+
+Adapter exit 0/1 is not sufficient by itself. The invoker must verify that the
+adapter stdout contains the canonical `adversarial-gate: APPROVE` banner for
+exit 0 or `adversarial-gate: REQUEST_CHANGES` banner for exit 1. Missing or
+mismatched verdict banners are synthetic REQUEST_CHANGES, because Step 3.4 did
+not prove a terminal gate verdict.
+
+### Verdict handling
+
+The Python adapter `scripts/adversarial_gate_adapter.py` translates the
+codex adversarial-review JSON output into one of:
+
+| Adapter exit | Verdict |
+|---|---|
+| `0` | APPROVE — mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies. Advisory medium/low findings shown but non-blocking. |
+| `1` | REQUEST_CHANGES — do not mint `exec`; feed findings to ordinary Step 3 repair rounds; do not re-run Step 3.4 in that repair path. |
+| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP. |
+
+Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP: if the
+invoker cannot prove `.review-loop/config.md` was restored to the snapshot, a
+known Codex bootstrap config was deleted, or an unexpected existing or
+create-from-empty config change was preserved for inspection, it emits an
+`adversarial-gate: REQUEST_CHANGES` block with a `[CRITICAL]` cleanup issue and
+exits 1 before `exec` can be minted. `_CLEANUP_DONE` is set only after the
+cleanup attempt completes, and cleanup masks SIGINT/SIGTERM/SIGHUP while
+restoring/deleting or preserving config. Create-from-empty config deletion is
+active only after the fallback `codex exec` path starts and only for the exact
+known bootstrap template; restoring over a pre-existing config likewise only
+overwrites the exact bootstrap template. The plugin path must never delete an
+existing user config.
+
+### SKIP-reason table
+
+| SKIP reason | Trigger | `detail=` carried? |
+|---|---|---|
+| `plugin-root-unresolved` | `$CODEX_PLUGIN_ROOT` unset AND cache glob empty. | no |
+| `cache-schema-unresolved` | Fallback path chosen but `schemas/review-output.schema.json` missing. | no |
+| `codex-unauthenticated` | Broadened auth-regex matches stderr (`unauthenticated`/`not signed in`/`login required`/`authentication`/`oauth`/`unauthorized`). | no |
+| `runtime-error` | `OSError` on review-command spawn, adapter spawn with empty producer stdout, non-zero non-auth exit with empty stdout, snapshot/render failure, drain thread still alive after join with empty stdout. | yes (`str(e)` for OSError; `exit=N stderr=<tail>` for non-auth non-zero; `drain-incomplete` if drain join timed out) |
+| `runtime-timeout` | `subprocess.TimeoutExpired` after 600s + 2s grace + SIGKILL, and stdout remained empty. | no |
+
+The shared `_kill_process_group` helper drives both the timeout cleanup
+path AND the signal-handler cleanup path, and also runs on normal child
+exit before fallback config restore/delete. The signal handler kills the
+cached process group BEFORE running config restore, so a still-running
+child cannot re-mutate `.review-loop/config.md` between restore and exit.
+The invoker contract row is mirrored in this protocol doc.
+
+### Homophily bias (accepted tradeoff)
+
+Codex Stage 1 invokes Codex-authored adversarial review on
+Codex-orchestrated work — the stranger-eyes benefit is reduced but not
+zero, since the adversarial-review prompt and schema are intentionally
+orthogonal to the protocol-reviewer prompt. This tradeoff is accepted;
+the gate does not claim runtime-independence.
 
 ---
 
@@ -766,8 +966,11 @@ runtime_supported_set ⊆ completed_stages
 - Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
 Because invalidation + replay guarantee that set entries only exist when
-they are valid for the current state, no separate final reviewer pass is
-required — the gate is structural.
+they are valid for the current state, the delivery gate itself is
+structural and does not run another reviewer round. The terminal
+adversarial pass (Step 3.4, between Step 3 APPROVE and Step 3.5) is the
+explicit stranger-eyes check; the delivery gate trusts its outcome via
+the `completed_stages` set.
 
 On gate failure, the orchestrator **hard-stops**, sets
 `delivery_blocked_by ← <stage>` where `<stage>` is the first missing

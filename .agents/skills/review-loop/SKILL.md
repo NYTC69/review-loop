@@ -394,10 +394,16 @@ umbrella adds only the umbrella-level rules:
   guesswork.
 - Record each execution round in `## Review History` and `## Timing Log`.
   Record which reviewer backend (`claude-cli` or `codex`) was used.
-- When an execution round reaches reviewer `APPROVE`, mint `exec` into
-  `completed_stages` in `## Session Metadata` per the shared
-  session-file lifecycle. This applies to both edit rounds and reviewed
-  no-op rounds.
+- When an execution round reaches reviewer `APPROVE`, run Step 3.4 before Step 3.5
+  if the terminal gate has not yet run in this execution convergence. Step
+  3.4 is single-pass per execution convergence. Do not mint `exec` yet. Step
+  3.4 APPROVE or controlled SKIP mints `exec` into `completed_stages` in
+  `## Session Metadata` per the shared session-file lifecycle. Step 3.4
+  REQUEST_CHANGES withholds `exec` and feeds the gate findings into ordinary
+  Step 3 Executor/Reviewer repair rounds; do not run Step 3.4 again while
+  repairing those findings. A later normal Step 3 reviewer APPROVE after those
+  repairs mints `exec`. This applies to both edit rounds and reviewed no-op
+  rounds.
 - Do not represent execution completion with custom metadata keys such
   as `completed_at`; the shared protocol completion state is carried by
   `completed_stages` and related baseline metadata.

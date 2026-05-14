@@ -1,0 +1,18 @@
+{
+  "verdict": "needs-attention",
+  "summary": "one finding has an extra key",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Extra key",
+      "body": "Finding must reject additional properties.",
+      "file": "app.py",
+      "line_start": 1,
+      "line_end": 1,
+      "confidence": 0.9,
+      "recommendation": "Remove the extra key.",
+      "unexpected": true
+    }
+  ],
+  "next_steps": []
+}

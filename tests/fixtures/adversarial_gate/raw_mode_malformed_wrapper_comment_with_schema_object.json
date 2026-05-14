@@ -1,0 +1,1 @@
+{"result": /* malformed wrapper token before nested value */ {"verdict":"approve","summary":"nested schema object must not win after malformed wrapper prefix","findings":[],"next_steps":[]}

@@ -1,0 +1,65 @@
+{
+  "review": "Adversarial Review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against main",
+    "baseRef": "main",
+    "explicit": true
+  },
+  "threadId": "019e2538-348d-7e12-b42f-3609b0e35f72",
+  "context": {
+    "repoRoot": "/Users/yuanlei/3Cats/review-loop/.worktrees/terminal-adversarial-review",
+    "branch": "feat/terminal-adversarial-review",
+    "summary": "Reviewing branch feat/terminal-adversarial-review against main from merge-base 190897699cf005c096e5165e72449844273ab754."
+  },
+  "codex": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "{\"verdict\":\"needs-attention\",\"summary\":\"No ship: the preferred plugin path appears to skip instead of gate, and the adapter can approve despite blocking findings.\",\"findings\":[{\"severity\":\"critical\",\"title\":\"Plugin JSON path expects the wrong payload shape\",\"body\":\"The plugin path passes `codex-companion.mjs adversarial-review --json` stdout to the adapter as `plugin-json`, but this mode immediately validates the top-level object as the review schema. The local companion implementation prints a wrapper payload for `--json` with the actual schema under `result`, so a real blocking review becomes `invalid verdict: None`, adapter exit 2, then invoker remaps it to SKIP exit 0. That means the preferred path silently does not enforce Step 3.4.\",\"file\":\"scripts/adversarial_gate_adapter.py\",\"line_start\":233,\"line_end\":237,\"confidence\":0.93,\"recommendation\":\"In `plugin-json` mode, unwrap the companion payload (`payload[\\\"result\\\"]`) when present, preserve parse/status diagnostics, and add a fixture matching real `codex-companion --json` output.\"},{\"severity\":\"critical\",\"title\":\"Approve verdict drops critical/high findings\",\"body\":\"`_render` returns APPROVE whenever `verdict == \\\"approve\\\"` before considering `blocking`. Critical/high findings in an inconsistent but schema-shaped payload are neither blocking nor printed, because only advisory findings are appended in that branch. A contradictory model response can explicitly identify a high-severity defect and still let delivery proceed cleanly.\",\"file\":\"scripts/adversarial_gate_adapter.py\",\"line_start\":183,\"line_end\":196,\"confidence\":0.98,\"recommendation\":\"Make blocking findings authoritative: if any finding is `critical` or `high`, render REQUEST_CHANGES regardless of top-level verdict, or reject `approve` plus blocking findings as malformed. Add an `approve_with_high` regression fixture.\"},{\"severity\":\"high\",\"title\":\"Process-group cleanup can leave surviving descendants\",\"body\":\"`_kill_process_group` sends SIGTERM to the group, but the grace loop only watches the leader process. If the leader exits while a descendant ignores SIGTERM and keeps running, the helper skips SIGKILL and returns; after the signal-handler path, cleanup can restore `.review-loop/config.md` while that descendant is still able to mutate it again. The same weakness can leak children on timeout or drain-incomplete scenarios.\",\"file\":\"scripts/adversarial_gate_invoke.py\",\"line_start\":84,\"line_end\":103,\"confidence\":0.86,\"recommendation\":\"Cache the child pgid immediately after spawn, send SIGKILL to that pgid after the grace period even if the leader has exited, and use the same teardown before SKIP on drain-incomplete.\"}],\"next_steps\":[\"Fix the adapter contract against real companion JSON before relying on the plugin path.\",\"Add regression fixtures for wrapped plugin JSON and approve-with-blocking-findings.\",\"Harden process-group teardown with a cached pgid and descendant-aware kill behavior.\"]}",
+    "reasoning": []
+  },
+  "result": {
+    "verdict": "needs-attention",
+    "summary": "No ship: the preferred plugin path appears to skip instead of gate, and the adapter can approve despite blocking findings.",
+    "findings": [
+      {
+        "severity": "critical",
+        "title": "Plugin JSON path expects the wrong payload shape",
+        "body": "The plugin path passes `codex-companion.mjs adversarial-review --json` stdout to the adapter as `plugin-json`, but this mode immediately validates the top-level object as the review schema. The local companion implementation prints a wrapper payload for `--json` with the actual schema under `result`, so a real blocking review becomes `invalid verdict: None`, adapter exit 2, then invoker remaps it to SKIP exit 0. That means the preferred path silently does not enforce Step 3.4.",
+        "file": "scripts/adversarial_gate_adapter.py",
+        "line_start": 233,
+        "line_end": 237,
+        "confidence": 0.93,
+        "recommendation": "In `plugin-json` mode, unwrap the companion payload (`payload[\"result\"]`) when present, preserve parse/status diagnostics, and add a fixture matching real `codex-companion --json` output."
+      },
+      {
+        "severity": "critical",
+        "title": "Approve verdict drops critical/high findings",
+        "body": "`_render` returns APPROVE whenever `verdict == \"approve\"` before considering `blocking`. Critical/high findings in an inconsistent but schema-shaped payload are neither blocking nor printed, because only advisory findings are appended in that branch. A contradictory model response can explicitly identify a high-severity defect and still let delivery proceed cleanly.",
+        "file": "scripts/adversarial_gate_adapter.py",
+        "line_start": 183,
+        "line_end": 196,
+        "confidence": 0.98,
+        "recommendation": "Make blocking findings authoritative: if any finding is `critical` or `high`, render REQUEST_CHANGES regardless of top-level verdict, or reject `approve` plus blocking findings as malformed. Add an `approve_with_high` regression fixture."
+      },
+      {
+        "severity": "high",
+        "title": "Process-group cleanup can leave surviving descendants",
+        "body": "`_kill_process_group` sends SIGTERM to the group, but the grace loop only watches the leader process. If the leader exits while a descendant ignores SIGTERM and keeps running, the helper skips SIGKILL and returns; after the signal-handler path, cleanup can restore `.review-loop/config.md` while that descendant is still able to mutate it again. The same weakness can leak children on timeout or drain-incomplete scenarios.",
+        "file": "scripts/adversarial_gate_invoke.py",
+        "line_start": 84,
+        "line_end": 103,
+        "confidence": 0.86,
+        "recommendation": "Cache the child pgid immediately after spawn, send SIGKILL to that pgid after the grace period even if the leader has exited, and use the same teardown before SKIP on drain-incomplete."
+      }
+    ],
+    "next_steps": [
+      "Fix the adapter contract against real companion JSON before relying on the plugin path.",
+      "Add regression fixtures for wrapped plugin JSON and approve-with-blocking-findings.",
+      "Harden process-group teardown with a cached pgid and descendant-aware kill behavior."
+    ]
+  },
+  "rawOutput": "{\"verdict\":\"needs-attention\",\"summary\":\"No ship: the preferred plugin path appears to skip instead of gate, and the adapter can approve despite blocking findings.\",\"findings\":[{\"severity\":\"critical\",\"title\":\"Plugin JSON path expects the wrong payload shape\",\"body\":\"The plugin path passes `codex-companion.mjs adversarial-review --json` stdout to the adapter as `plugin-json`, but this mode immediately validates the top-level object as the review schema. The local companion implementation prints a wrapper payload for `--json` with the actual schema under `result`, so a real blocking review becomes `invalid verdict: None`, adapter exit 2, then invoker remaps it to SKIP exit 0. That means the preferred path silently does not enforce Step 3.4.\",\"file\":\"scripts/adversarial_gate_adapter.py\",\"line_start\":233,\"line_end\":237,\"confidence\":0.93,\"recommendation\":\"In `plugin-json` mode, unwrap the companion payload (`payload[\\\"result\\\"]`) when present, preserve parse/status diagnostics, and add a fixture matching real `codex-companion --json` output.\"},{\"severity\":\"critical\",\"title\":\"Approve verdict drops critical/high findings\",\"body\":\"`_render` returns APPROVE whenever `verdict == \\\"approve\\\"` before considering `blocking`. Critical/high findings in an inconsistent but schema-shaped payload are neither blocking nor printed, because only advisory findings are appended in that branch. A contradictory model response can explicitly identify a high-severity defect and still let delivery proceed cleanly.\",\"file\":\"scripts/adversarial_gate_adapter.py\",\"line_start\":183,\"line_end\":196,\"confidence\":0.98,\"recommendation\":\"Make blocking findings authoritative: if any finding is `critical` or `high`, render REQUEST_CHANGES regardless of top-level verdict, or reject `approve` plus blocking findings as malformed. Add an `approve_with_high` regression fixture.\"},{\"severity\":\"high\",\"title\":\"Process-group cleanup can leave surviving descendants\",\"body\":\"`_kill_process_group` sends SIGTERM to the group, but the grace loop only watches the leader process. If the leader exits while a descendant ignores SIGTERM and keeps running, the helper skips SIGKILL and returns; after the signal-handler path, cleanup can restore `.review-loop/config.md` while that descendant is still able to mutate it again. The same weakness can leak children on timeout or drain-incomplete scenarios.\",\"file\":\"scripts/adversarial_gate_invoke.py\",\"line_start\":84,\"line_end\":103,\"confidence\":0.86,\"recommendation\":\"Cache the child pgid immediately after spawn, send SIGKILL to that pgid after the grace period even if the leader has exited, and use the same teardown before SKIP on drain-incomplete.\"}],\"next_steps\":[\"Fix the adapter contract against real companion JSON before relying on the plugin path.\",\"Add regression fixtures for wrapped plugin JSON and approve-with-blocking-findings.\",\"Harden process-group teardown with a cached pgid and descendant-aware kill behavior.\"]}",
+  "parseError": null,
+  "reasoningSummary": []
+}

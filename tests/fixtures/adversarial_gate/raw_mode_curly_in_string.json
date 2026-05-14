@@ -1,0 +1,10 @@
+Codex CLI v0.130 — running review...
+tokens used
+4321
+
+{
+  "verdict": "approve",
+  "summary": "found issue with {embedded} {curlies} in summary text",
+  "findings": [],
+  "next_steps": []
+}

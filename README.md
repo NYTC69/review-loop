@@ -158,7 +158,7 @@ Claude Code supports the full set of stages:
 | Value | Stops |
 |---|---|
 | `exec-round` | After the current execution round finishes (even on REQUEST_CHANGES) |
-| `before-polish` | Before Step 3.5 Quality Polish |
+| `before-polish` | After Step 3.4 gate APPROVE/SKIP, before Step 3.5 Quality Polish |
 | `before-docs` | Before Step 3.6 Documentation Consistency |
 | `before-security` | Before Step 3.7 Security Preflight |
 | `before-delivery` | Before Step 4 Delivery |
@@ -288,6 +288,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs. |
 | `review_style` | `""` | Tone and rules for all reviews (free text) |
 | `skip_quality_polish` | `false` | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security. |
+| `adversarial_gate_skip_paths` | `["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]` | Step 3.4 terminal adversarial gate — skip when every Step 3 changed file matches one of these glob patterns. |
 
 For Codex Stage 1, the reviewer separation policy is explicit: unless
 `codex_reviewer_backend: codex` is set, review stays on the

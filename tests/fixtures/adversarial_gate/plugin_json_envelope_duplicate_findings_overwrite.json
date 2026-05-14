@@ -1,0 +1,25 @@
+{
+  "review": "Adversarial Review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against main",
+    "baseRef": "main",
+    "explicit": true
+  },
+  "codex": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "{\"verdict\":\"needs-attention\",\"summary\":\"hidden blocking finding before duplicate key\",\"findings\":[{\"severity\":\"critical\",\"title\":\"Hidden critical\",\"body\":\"This critical finding is erased by last-key-wins parsing.\",\"file\":\"scripts/adversarial_gate_adapter.py\",\"line_start\":1,\"line_end\":1,\"confidence\":0.95,\"recommendation\":\"Reject duplicate keys before trusting the companion result.\"}],\"findings\":[],\"next_steps\":[\"Reject duplicate keys in raw companion output.\"]}"
+  },
+  "result": {
+    "verdict": "needs-attention",
+    "summary": "hidden blocking finding before duplicate key",
+    "findings": [],
+    "next_steps": [
+      "Reject duplicate keys in raw companion output."
+    ]
+  },
+  "rawOutput": "{\"verdict\":\"needs-attention\",\"summary\":\"hidden blocking finding before duplicate key\",\"findings\":[{\"severity\":\"critical\",\"title\":\"Hidden critical\",\"body\":\"This critical finding is erased by last-key-wins parsing.\",\"file\":\"scripts/adversarial_gate_adapter.py\",\"line_start\":1,\"line_end\":1,\"confidence\":0.95,\"recommendation\":\"Reject duplicate keys before trusting the companion result.\"}],\"findings\":[],\"next_steps\":[\"Reject duplicate keys in raw companion output.\"]}",
+  "parseError": null,
+  "reasoningSummary": []
+}

@@ -1,0 +1,6 @@
+{
+  "verdict": "approve",
+  "summary": "Looks fine.",
+  "findings": [],
+  "next_steps": "rerun the gate"
+}

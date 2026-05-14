@@ -1,0 +1,11 @@
+{
+  "review": "Adversarial Review",
+  "target": {"scope": "working-tree"},
+  "threadId": "fake-thread",
+  "context": {},
+  "codex": {},
+  "result": null,
+  "rawOutput": "...truncated codex output...",
+  "parseError": "Unexpected end of JSON input at position 4096",
+  "reasoningSummary": ""
+}

@@ -1,0 +1,27 @@
+{
+  "verdict": "needs-attention",
+  "summary": "Advisory-only findings — no blocking issues.",
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Magic number",
+      "body": "Hard-coded 60s timeout.",
+      "file": "src/foo.py",
+      "line_start": 7,
+      "line_end": 7,
+      "confidence": 0.55,
+      "recommendation": "Pull into a constant."
+    },
+    {
+      "severity": "low",
+      "title": "Stale comment",
+      "body": "Doc-string says deprecated but function is used.",
+      "file": "src/bar.py",
+      "line_start": 2,
+      "line_end": 2,
+      "confidence": 0.5,
+      "recommendation": "Update doc-string."
+    }
+  ],
+  "next_steps": ["Defer both to a follow-up backlog item."]
+}
