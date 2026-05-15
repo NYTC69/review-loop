@@ -44,6 +44,15 @@ def _run_with_stdin(fixture: str, mode: str) -> subprocess.CompletedProcess:
     )
 
 
+def _run_with_stdin_bytes(data: bytes, mode: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(ADAPTER), "--input-mode", mode],
+        input=data,
+        capture_output=True,
+        check=False,
+    )
+
+
 # -------- Plugin-json mode --------
 
 
@@ -240,6 +249,25 @@ def test_raw_mode_preamble_with_json():
     assert b"preamble-shadowing test" in r.stdout
 
 
+def test_raw_mode_two_schema_objects_uses_last_payload():
+    r = _run_with_input_flag(
+        "raw_mode_two_schema_objects_last_request_changes.json", "raw"
+    )
+    assert r.returncode == 1, r.stderr
+    assert b"adversarial-gate: REQUEST_CHANGES" in r.stdout
+    assert b"Last payload blocker" in r.stdout
+    assert b"earlier approve must not win" not in r.stdout
+
+
+def test_raw_mode_multiple_non_schema_objects_do_not_approve():
+    r = _run_with_input_flag(
+        "raw_mode_multiple_non_schema_objects.json", "raw"
+    )
+    assert r.returncode == 2
+    assert b"schema violation" in r.stderr
+    assert b"APPROVE" not in r.stdout
+
+
 def test_raw_mode_final_malformed_object_is_authoritative():
     r = _run_with_input_flag(
         "raw_mode_final_malformed_after_approve.json", "raw"
@@ -309,6 +337,17 @@ def test_raw_mode_curly_in_string():
     assert b"adversarial-gate: APPROVE" in r.stdout
     # Summary content (with the embedded curlies preserved) reaches stdout.
     assert b"{embedded} {curlies}" in r.stdout
+
+
+def test_raw_mode_invalid_utf8_rejects_instead_of_replacing():
+    payload = (
+        b'\xff{"verdict":"approve","summary":"ok",'
+        b'"findings":[],"next_steps":[]}\n'
+    )
+    r = _run_with_stdin_bytes(payload, "raw")
+    assert r.returncode == 2
+    assert b"utf-8" in r.stderr.lower()
+    assert b"APPROVE" not in r.stdout
 
 
 # -------- Stdin plumbing cases --------
@@ -393,3 +432,15 @@ def test_approve_with_high_severity_renders_request_changes():
     assert b"adversarial-gate: REQUEST_CHANGES" in r.stdout
     assert b"[CRITICAL]" in r.stdout  # `high` collapses to CRITICAL tag.
     assert b"Auth bypass" in r.stdout
+
+
+def test_approve_with_critical_severity_renders_request_changes():
+    """A contradictory approve verdict with a critical finding blocks directly."""
+    r = _run_with_input_flag("approve_with_critical.json", "plugin-json")
+    assert r.returncode == 1, (
+        f"approve+critical must render REQUEST_CHANGES (exit 1); got "
+        f"{r.returncode}, stdout={r.stdout!r}"
+    )
+    assert b"adversarial-gate: REQUEST_CHANGES" in r.stdout
+    assert b"[CRITICAL]" in r.stdout
+    assert b"Critical data loss path" in r.stdout

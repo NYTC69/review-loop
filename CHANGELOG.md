@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-05-15
+
+### v2.7.8 — adversarial-gate polish closeout
+
+- 关闭 v2.7.7 Terminal Adversarial Gate 的 18 项 P3 polish follow-up bundle：
+  并行 triage 后只修仍有实际行为/诊断价值的项，避免继续扩大 adversarial
+  self-loop。
+- 强化 `scripts/adversarial_gate_adapter.py` / `scripts/adversarial_gate_invoke.py`：
+  strict UTF-8 input/prompt handling；plugin/cache SKIP detail；adapter failure
+  stdout 不泄漏伪 `APPROVE`；snapshot/prompt partial tempfile 失败清理；
+  snapshot unlink failure 改为非阻塞 warning。
+- 新增/强化 adversarial-gate regression fixtures：raw last-wins、多 JSON 非 schema
+  fail-closed、approve+critical blocks、plugin-path ENOENT、SIGKILL escalation、
+  mkstemp/os.close/prompt write/close failure cleanup 等。
+- 协议和 lint contract pin 住 plugin-root/cache-schema SKIP detail；补充
+  adversarial-gate 注释 provenance，说明历史 `Finding #N` / `Meta-dogfood R*`
+  标签只是审计来源，durable contract 在协议和测试里。
+- Plugin v2.7.7 → v2.7.8。验证：adapter/invoker scoped suite 91/91；
+  `/opt/homebrew/bin/pytest tests -q` 278/278；`bash scripts/run-skill-lint`
+  review-loop 286 PASS / 0 FAIL。
+
 ## 2026-05-14
 
 ### v2.7.7 — 终局 adversarial-review gate (Step 3.4)

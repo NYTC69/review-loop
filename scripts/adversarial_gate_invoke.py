@@ -7,6 +7,8 @@ sentinel bytes and the wait_after_kill_timed_out diagnostic flag are
 intentionally NOT ported — runtime failures with empty stdout surface as
 controlled SKIP with a detail string, while runtime failures after producer
 stdout fail closed as REQUEST_CHANGES.
+Drain-thread exceptions and incomplete drains are stricter local divergences:
+empty stdout SKIPs with diagnostic detail, but any captured stdout blocks.
 
 Two dispatch paths:
 
@@ -22,6 +24,10 @@ Two dispatch paths:
 Exits 0 on every controlled SKIP. Exits with the adapter's clean verdict
 returncode (0 = APPROVE, 1 = REQUEST_CHANGES); adapter malformed output
 (exit 2) is converted to blocking REQUEST_CHANGES.
+
+Historical `Finding #N` / `Meta-dogfood R*` labels in comments are provenance
+for the v2.7.7/v2.7.8 adversarial-gate audit trail; the durable contract is
+the protocol text plus the regression tests.
 """
 
 from __future__ import annotations
@@ -91,7 +97,8 @@ def _emit_skip(reason: str, detail: Optional[str] = None) -> NoReturn:
     """Print SKIP banner to stderr and exit 0 (fail-silently contract)."""
     msg = f"adversarial-gate: SKIP reason={reason}"
     if detail:
-        msg += f" detail={detail}"
+        safe_detail = detail.replace("\n", " | ")[:300]
+        msg += f" detail={safe_detail}"
     sys.stderr.write(msg + "\n")
     sys.exit(0)
 
@@ -110,6 +117,27 @@ def _emit_cleanup_request_changes(detail: str) -> NoReturn:
         "then rerun Step 3.\n"
     )
     sys.exit(1)
+
+
+def _emit_runtime_warning(detail: str) -> None:
+    """Best-effort stderr diagnostic; never changes gate outcome."""
+    safe_detail = detail.replace("\n", " | ")[:300]
+    try:
+        sys.stderr.write(f"adversarial-gate: warning {safe_detail}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _unlink_partial_temp(path: Optional[str], label: str) -> None:
+    """Best-effort cleanup for temp files not yet owned by _cleanup()."""
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        _emit_runtime_warning(f"{label} unlink failed: {e}")
 
 
 def _emit_uncertain_stdout_request_changes(
@@ -285,7 +313,9 @@ def _cleanup() -> Optional[str]:
     """Restore config snapshot (if any) and unlink tempfiles.
 
     Idempotent via _CLEANUP_DONE; exception-safe per-action. Unlink of the
-    snapshot only runs AFTER restore is confirmed (Finding #27). Returns a
+    snapshot only runs AFTER restore is confirmed (Finding #27). `restore_ok`
+    means either byte-identical, restored from snapshot, or intentionally
+    absent-to-restored after fallback bootstrap cleanup. Returns a
     failure detail when config restore/delete cannot be proven successful.
     """
     global _CLEANUP_DONE, _CLEANUP_FAILURE, _CLEANUP_IN_PROGRESS
@@ -345,8 +375,8 @@ def _cleanup() -> Optional[str]:
             if restore_ok:
                 try:
                     os.unlink(_SNAPSHOT_PATH)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    _emit_runtime_warning(f"cleanup snapshot unlink failed: {e}")
             # If restore_ok is False, snapshot is left on disk for user recovery.
 
         # Meta-dogfood R2 Fix A + R6: if the config did NOT exist before our
@@ -471,13 +501,17 @@ def _resolve_schema_path(root: str) -> Optional[str]:
     return candidate if os.path.isfile(candidate) else None
 
 
+def _schema_path_detail(root: str) -> str:
+    return os.path.join(root, "schemas", "review-output.schema.json")
+
+
 # ---------- prompt rendering ----------
 
 
 def _render_fallback_prompt(focus_text: str, review_target_desc: str) -> str:
     template_path = os.path.join(_SCRIPT_DIR, "adversarial_gate_fallback_prompt.txt")
     with open(template_path, "rb") as fh:
-        template_src = fh.read().decode("utf-8", errors="replace")
+        template_src = fh.read().decode("utf-8")
     return string.Template(template_src).safe_substitute(
         FOCUS_TEXT=focus_text,
         REVIEW_TARGET_DESC=review_target_desc,
@@ -813,16 +847,22 @@ def main(argv: list[str]) -> int:
         try:
             with open(args.focus_file, "rb") as fh:
                 focus_text = fh.read().decode("utf-8", errors="replace")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             _emit_skip("runtime-error", detail=str(e))
 
         # --- plugin-path test hook ---
         plugin_root_override = os.environ.get("REVIEW_LOOP_PLUGIN_ROOT")
         if plugin_root_override == "__force_unresolved__":
-            _emit_skip("plugin-root-unresolved")
+            _emit_skip(
+                "plugin-root-unresolved",
+                detail="REVIEW_LOOP_PLUGIN_ROOT=__force_unresolved__",
+            )
         plugin_root = plugin_root_override or _resolve_plugin_root()
         if not plugin_root:
-            _emit_skip("plugin-root-unresolved")
+            _emit_skip(
+                "plugin-root-unresolved",
+                detail="CODEX_PLUGIN_ROOT unset/invalid and plugin cache root not found",
+            )
 
         companion = _resolve_companion_script(plugin_root)
         force_fallback = os.environ.get("REVIEW_LOOP_FORCE_FALLBACK") == "1"
@@ -847,7 +887,10 @@ def main(argv: list[str]) -> int:
         # Fallback path
         schema_path = _resolve_schema_path(plugin_root)
         if not schema_path:
-            _emit_skip("cache-schema-unresolved")
+            _emit_skip(
+                "cache-schema-unresolved",
+                detail=f"missing {_schema_path_detail(plugin_root)}",
+            )
 
         # Meta-dogfood R2 Fix A: record whether ``.review-loop/config.md``
         # existed BEFORE we spawn ``codex exec``. ``codex exec`` will
@@ -860,15 +903,19 @@ def main(argv: list[str]) -> int:
 
         # Snapshot config if present
         if _CONFIG_EXISTED_PRE_CALL:
+            snap: Optional[str] = None
             try:
                 fd, snap = tempfile.mkstemp(prefix="adversarial-gate-config-")
                 os.close(fd)
                 shutil.copy2(_CONFIG_PATH, snap)
                 _SNAPSHOT_PATH = snap
             except OSError as e:
+                _unlink_partial_temp(snap, "partial snapshot")
                 _emit_skip("runtime-error", detail=str(e))
 
         # Render prompt to tempfile
+        prompt_path: Optional[str] = None
+        tmp = None
         try:
             prompt_text = _render_fallback_prompt(
                 focus_text=focus_text,
@@ -877,10 +924,17 @@ def main(argv: list[str]) -> int:
             tmp = tempfile.NamedTemporaryFile(
                 mode="wb", delete=False, prefix="adversarial-gate-prompt-"
             )
+            prompt_path = tmp.name
             tmp.write(prompt_text.encode("utf-8"))
             tmp.close()
-            _PROMPT_PATH = tmp.name
-        except OSError as e:
+            _PROMPT_PATH = prompt_path
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            if tmp is not None:
+                try:
+                    tmp.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            _unlink_partial_temp(prompt_path, "partial prompt")
             _emit_skip("runtime-error", detail=str(e))
 
         argv_to_run = _build_fallback_argv(schema_path)

@@ -1,0 +1,5 @@
+Codex CLI debug stream:
+{"verdict":"approve","summary":"earlier approve must not win","findings":[],"next_steps":[]}
+
+Final schema payload:
+{"verdict":"needs-attention","summary":"last payload is authoritative","findings":[{"severity":"critical","title":"Last payload blocker","body":"The later schema-shaped object must decide the verdict.","file":"src/final.py","line_start":10,"line_end":12,"confidence":0.99,"recommendation":"Use the last decoded schema payload."}],"next_steps":["Fix the final blocker."]}

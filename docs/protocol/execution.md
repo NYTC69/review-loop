@@ -518,8 +518,8 @@ existing user config.
 
 | SKIP reason | Trigger | `detail=` carried? |
 |---|---|---|
-| `plugin-root-unresolved` | `$CODEX_PLUGIN_ROOT` unset AND cache glob empty. | no |
-| `cache-schema-unresolved` | Fallback path chosen but `schemas/review-output.schema.json` missing. | no |
+| `plugin-root-unresolved` | `$CODEX_PLUGIN_ROOT` unset/invalid AND cache glob empty, or the test hook forces unresolved root. | yes (root-resolution diagnostic) |
+| `cache-schema-unresolved` | Fallback path chosen but `schemas/review-output.schema.json` missing. | yes (missing schema path) |
 | `codex-unauthenticated` | Broadened auth-regex matches stderr (`unauthenticated`/`not signed in`/`login required`/`authentication`/`oauth`/`unauthorized`). | no |
 | `runtime-error` | `OSError` on review-command spawn, adapter spawn with empty producer stdout, non-zero non-auth exit with empty stdout, snapshot/render failure, drain thread still alive after join with empty stdout. | yes (`str(e)` for OSError; `exit=N stderr=<tail>` for non-auth non-zero; `drain-incomplete` if drain join timed out) |
 | `runtime-timeout` | `subprocess.TimeoutExpired` after 600s + 2s grace + SIGKILL, and stdout remained empty. | no |

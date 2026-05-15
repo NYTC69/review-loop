@@ -156,6 +156,8 @@ def test_skip_plugin_root_unresolved(tmp_path):
     )
     assert r.returncode == 0  # SKIP exits 0
     assert b"SKIP reason=plugin-root-unresolved" in r.stderr
+    assert b"detail=" in r.stderr
+    assert b"REVIEW_LOOP_PLUGIN_ROOT=__force_unresolved__" in r.stderr
 
 
 # ---------- (d) cache-schema-unresolved SKIP ----------
@@ -174,6 +176,208 @@ def test_skip_cache_schema_unresolved(tmp_path):
     )
     assert r.returncode == 0
     assert b"SKIP reason=cache-schema-unresolved" in r.stderr
+    assert b"detail=" in r.stderr
+    assert b"schemas/review-output.schema.json" in r.stderr
+
+
+def test_fallback_prompt_invalid_utf8_skips_runtime_error(
+    tmp_path, monkeypatch, capsys
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_prompt_utf8", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    root = _make_plugin_root_fallback_only(tmp_path)
+    focus = _make_focus_file(tmp_path)
+    script_dir = tmp_path / "script-dir"
+    script_dir.mkdir()
+    (script_dir / "adversarial_gate_fallback_prompt.txt").write_bytes(b"\xff")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_LOOP_PLUGIN_ROOT", str(root))
+    monkeypatch.setattr(mod, "_SCRIPT_DIR", str(script_dir))
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod.main(["--focus-file", str(focus), "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "SKIP reason=runtime-error" in captured.err
+    assert "utf-8" in captured.err.lower()
+
+
+def test_fallback_prompt_write_oserror_removes_partial_prompt(
+    tmp_path, monkeypatch, capsys
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_prompt_write", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    root = _make_plugin_root_fallback_only(tmp_path)
+    focus = _make_focus_file(tmp_path)
+    partial_prompt = tmp_path / "adversarial-gate-prompt-partial"
+
+    class _FailingPromptFile:
+        name = str(partial_prompt)
+
+        def __init__(self):
+            partial_prompt.write_text("")
+
+        def write(self, _data):
+            raise OSError("prompt write denied")
+
+        def close(self):
+            return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_LOOP_PLUGIN_ROOT", str(root))
+    monkeypatch.setattr(
+        mod.tempfile,
+        "NamedTemporaryFile",
+        lambda **_kwargs: _FailingPromptFile(),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod.main(["--focus-file", str(focus), "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "SKIP reason=runtime-error" in captured.err
+    assert "prompt write denied" in captured.err
+    assert not partial_prompt.exists()
+
+
+def test_fallback_prompt_close_oserror_removes_partial_prompt(
+    tmp_path, monkeypatch, capsys
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_prompt_close", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    root = _make_plugin_root_fallback_only(tmp_path)
+    focus = _make_focus_file(tmp_path)
+    partial_prompt = tmp_path / "adversarial-gate-prompt-partial-close"
+
+    class _FailingPromptFile:
+        name = str(partial_prompt)
+
+        def __init__(self):
+            partial_prompt.write_text("")
+
+        def write(self, data):
+            partial_prompt.write_bytes(data)
+
+        def close(self):
+            raise OSError("prompt close denied")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_LOOP_PLUGIN_ROOT", str(root))
+    monkeypatch.setattr(
+        mod.tempfile,
+        "NamedTemporaryFile",
+        lambda **_kwargs: _FailingPromptFile(),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod.main(["--focus-file", str(focus), "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "SKIP reason=runtime-error" in captured.err
+    assert "prompt close denied" in captured.err
+    assert not partial_prompt.exists()
+
+
+def test_fallback_snapshot_mkstemp_oserror_skips_runtime_error(
+    tmp_path, monkeypatch, capsys
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_mkstemp", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    root = _make_plugin_root_fallback_only(tmp_path)
+    focus = _make_focus_file(tmp_path)
+    config_dir = tmp_path / ".review-loop"
+    config_dir.mkdir()
+    (config_dir / "config.md").write_text("ORIGINAL\n")
+
+    def _raise_mkstemp(*_args, **_kwargs):
+        raise OSError("mkstemp denied")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_LOOP_PLUGIN_ROOT", str(root))
+    monkeypatch.setattr(mod.tempfile, "mkstemp", _raise_mkstemp)
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod.main(["--focus-file", str(focus), "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "SKIP reason=runtime-error" in captured.err
+    assert "mkstemp denied" in captured.err
+
+
+def test_fallback_snapshot_close_oserror_removes_partial_snapshot(
+    tmp_path, monkeypatch, capsys
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_close_snapshot", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    root = _make_plugin_root_fallback_only(tmp_path)
+    focus = _make_focus_file(tmp_path)
+    config_dir = tmp_path / ".review-loop"
+    config_dir.mkdir()
+    (config_dir / "config.md").write_text("ORIGINAL\n")
+    partial_snapshot = tmp_path / "adversarial-gate-config-partial"
+
+    def _mkstemp(*_args, **_kwargs):
+        partial_snapshot.write_text("")
+        return 99999, str(partial_snapshot)
+
+    def _raise_close(fd):
+        if fd == 99999:
+            raise OSError("close denied")
+        return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_LOOP_PLUGIN_ROOT", str(root))
+    monkeypatch.setattr(mod.tempfile, "mkstemp", _mkstemp)
+    monkeypatch.setattr(mod.os, "close", _raise_close)
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod.main(["--focus-file", str(focus), "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "SKIP reason=runtime-error" in captured.err
+    assert "close denied" in captured.err
+    assert not partial_snapshot.exists()
 
 
 # ---------- (e) runtime-timeout SKIP + config restore + banner ----------
@@ -404,6 +608,22 @@ def test_plugin_happy_path_routes_to_plugin_json(tmp_path):
     assert "--input-mode" in log_text and "'plugin-json'" in log_text, log_text
     # And the shim's canned APPROVE output reached the invoker's stdout.
     assert b"adversarial-gate: APPROVE" in r.stdout
+
+
+def test_plugin_spawn_oserror_node_command(tmp_path):
+    root = _make_plugin_root_with_companion(tmp_path, stub_body="// stub\n")
+    focus = _make_focus_file(tmp_path)
+    r = _run_invoker(
+        ["--focus-file", str(focus)],
+        env={
+            "REVIEW_LOOP_PLUGIN_ROOT": str(root),
+            "REVIEW_LOOP_NODE": "/nonexistent/path/to/node-binary",
+        },
+        cwd=tmp_path,
+    )
+    assert r.returncode == 0
+    assert b"adversarial-gate: SKIP reason=runtime-error" in r.stderr
+    assert b"detail=" in r.stderr
 
 
 def test_plugin_path_does_not_delete_existing_config(tmp_path):
@@ -860,6 +1080,56 @@ def test_adapter_success_without_verdict_banner_blocks(tmp_path):
     assert b"adversarial-gate: REQUEST_CHANGES" in r.stdout
     assert b"adapter returned exit 0 without adversarial-gate verdict" in r.stdout
     assert b"SKIP reason=runtime-error" not in r.stderr
+
+
+def test_adapter_exit_2_stdout_approve_banner_does_not_leak(tmp_path):
+    """Malformed adapter output must not forward a misleading APPROVE banner."""
+    payload = json.dumps({
+        "verdict": "approve",
+        "summary": "producer payload",
+        "findings": [],
+        "next_steps": [],
+    })
+    producer_stub = _make_python_stub(
+        tmp_path,
+        "codex_stdout_before_fake_adapter_exit2.py",
+        textwrap.dedent(f"""\
+            #!{sys.executable}
+            import sys
+            sys.stdin.read()
+            sys.stdout.write({payload!r})
+        """),
+    )
+    adapter_stub = _make_python_stub(
+        tmp_path,
+        "adapter_exit2_fake_approve.py",
+        textwrap.dedent(f"""\
+            #!{sys.executable}
+            import sys
+            sys.stdin.buffer.read()
+            sys.stdout.write("adversarial-gate: APPROVE\\nSHOULD_NOT_LEAK\\n")
+            sys.stderr.write("schema violation: fake adapter failure\\n")
+            sys.exit(2)
+        """),
+    )
+    root = _make_plugin_root_fallback_only(tmp_path)
+    focus = _make_focus_file(tmp_path)
+
+    r = _run_invoker(
+        ["--focus-file", str(focus)],
+        env={
+            "REVIEW_LOOP_PLUGIN_ROOT": str(root),
+            "REVIEW_LOOP_CODEX": str(producer_stub),
+            "REVIEW_LOOP_ADAPTER_PYTHON": str(adapter_stub),
+        },
+        cwd=tmp_path,
+    )
+
+    assert r.returncode == 1
+    assert r.stdout.startswith(b"adversarial-gate: REQUEST_CHANGES")
+    assert b"adapter output was malformed" in r.stdout
+    assert b"SHOULD_NOT_LEAK" not in r.stdout
+    assert b"adversarial-gate: APPROVE" not in r.stdout
 
 
 # ---------- (m Step 3.5.3 Fix #3 / R8) adapter-exit-2 blocks ----------
@@ -1419,6 +1689,41 @@ def test_drain_incomplete_kills_process_group(tmp_path, monkeypatch):
 # ---------- (q Meta-dogfood R3 Fix A) normal exit tears down cached pgid ----------
 
 
+def test_kill_process_group_sends_sigkill_even_when_leader_already_exited(
+    monkeypatch,
+):
+    """Leader exit is not proof that the cached process group is empty."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_sigkill_pin", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class _ExitedProc:
+        pid = 5151
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    signals: list[int] = []
+
+    def _recording_killpg(_pgid, sig):
+        signals.append(sig)
+
+    monkeypatch.setattr(mod, "_SIGTERM_GRACE_SECS", 0.0)
+    monkeypatch.setattr(mod.os, "killpg", _recording_killpg)
+
+    mod._kill_process_group(_ExitedProc(), pgid=4242)
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
 def test_normal_exit_kills_cached_process_group_before_config_restore(tmp_path):
     """A leader can exit 0 while a stdio-closed descendant keeps running.
 
@@ -1569,6 +1874,43 @@ def test_cleanup_restore_failure_is_reported_and_done_after_attempt(
         "codex_reviewer_backend: codex\nskip_quality_polish: true\n"
     )
     assert snapshot.exists(), "snapshot must remain for manual recovery"
+
+
+def test_cleanup_snapshot_unlink_failure_warns_without_blocking(
+    tmp_path, monkeypatch
+):
+    """A restored config is safe; failed snapshot unlink is diagnostic only."""
+    import importlib.util
+    import io
+
+    spec = importlib.util.spec_from_file_location(
+        "adversarial_gate_invoke_under_test_snapshot_unlink", str(INVOKER)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    snapshot = tmp_path / "snapshot.md"
+    config = tmp_path / ".review-loop" / "config.md"
+    config.parent.mkdir()
+    snapshot.write_text("ORIGINAL\n")
+    config.write_text("ORIGINAL\n")
+    mod._SNAPSHOT_PATH = str(snapshot)
+    mod._CONFIG_PATH = str(config)
+
+    def _raise_unlink(path):
+        if path == str(snapshot):
+            raise OSError("unlink denied")
+
+    fake_stderr = io.StringIO()
+    monkeypatch.setattr(mod.os, "unlink", _raise_unlink)
+    monkeypatch.setattr(mod.sys, "stderr", fake_stderr)
+
+    failure = mod._cleanup()
+
+    assert failure is None
+    assert "cleanup snapshot unlink failed" in fake_stderr.getvalue()
+    assert "unlink denied" in fake_stderr.getvalue()
 
 
 def test_cleanup_failure_overrides_adapter_approve(tmp_path, monkeypatch, capsys):

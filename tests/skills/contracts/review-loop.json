@@ -696,25 +696,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.7\""
+      "needle": "\"version\": \"2.7.8\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.7\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.8\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.7\",\n      \"author\""
+      "needle": "\"version\": \"2.7.8\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.7\""
+      "needle": "\"version\": \"2.7.8\""
     },
     {
       "id": "codex_marketplace_manifest_name",
@@ -1679,6 +1679,18 @@
       "kind": "contains",
       "path": "docs/protocol/execution.md",
       "needle": "shared `_kill_process_group` helper drives both the timeout cleanup"
+    },
+    {
+      "id": "adversarial_gate_protocol_plugin_root_skip_has_detail",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`plugin-root-unresolved` | `$CODEX_PLUGIN_ROOT` unset/invalid AND cache glob empty, or the test hook forces unresolved root. | yes (root-resolution diagnostic)"
+    },
+    {
+      "id": "adversarial_gate_protocol_cache_schema_skip_has_detail",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`cache-schema-unresolved` | Fallback path chosen but `schemas/review-output.schema.json` missing. | yes (missing schema path)"
     },
     {
       "id": "adversarial_gate_config_example_key",

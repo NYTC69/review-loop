@@ -54,6 +54,17 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-parallelize-independent-branches"></a> Parallelize independent review-loop work branches by default; use sidecar agents or parallel tool calls without waiting for another reminder when write scopes or investigations are independent
+- **Date**: 2026-05-15
+- **Task context**: v2.7.8 adversarial-gate polish/backlog closeout after the user corrected sequential triage during a multi-branch cleanup task.
+- **What broke**: I started the #1 backlog closeout sequentially even though triage, coverage-gap inspection, and doc/comment cleanup could proceed independently. This wasted wall-clock time and made the user repeat an already-established preference.
+- **Root cause**: I over-weighted keeping the main thread simple and under-applied the repo/user convention that bounded independent work should run concurrently when tool policy permits it.
+- **Rule going forward**: Parallelize independent review-loop work branches by default; use sidecar agents or parallel tool calls without waiting for another reminder when write scopes or investigations are independent
+- **Scope**: review-loop, orchestration, codex, parallel-agents, wall-clock, backlog-closeout
+- **Promotion candidacy**: consider-global
+
+---
+
 Entry template (copy as you add each new learning):
 
 ```markdown

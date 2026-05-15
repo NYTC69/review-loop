@@ -27,6 +27,10 @@ Exit codes:
 Stdout: review-loop verdict line + bulleted issues block per
         docs/protocol/reviewer-output.md.
 Stderr: human-readable diagnostic on exit 2.
+
+Historical `Finding #N` / `Meta-dogfood R*` labels in comments are provenance
+for the v2.7.7/v2.7.8 adversarial-gate audit trail; the durable contract is
+the protocol text plus the regression tests.
 """
 
 from __future__ import annotations
@@ -383,9 +387,12 @@ def main(argv: list[str]) -> int:
                 raw_bytes = fh.read()
         else:
             raw_bytes = sys.stdin.buffer.read()
-        text = raw_bytes.decode("utf-8", errors="replace")
+        text = raw_bytes.decode("utf-8")
     except OSError as e:
         _err(f"cannot read input: {e}")
+        return 2
+    except UnicodeDecodeError as e:
+        _err(f"malformed input: invalid utf-8: {e}")
         return 2
 
     try:

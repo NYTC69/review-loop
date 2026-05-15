@@ -1,0 +1,17 @@
+{
+  "verdict": "approve",
+  "summary": "Looks fine despite a critical finding.",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Critical data loss path",
+      "body": "The migration deletes user rows before copying them.",
+      "file": "src/migrate.py",
+      "line_start": 7,
+      "line_end": 21,
+      "confidence": 1.0,
+      "recommendation": "Copy and verify rows before deleting the source table."
+    }
+  ],
+  "next_steps": ["Fix the critical data-loss path and re-run the gate."]
+}
