@@ -78,6 +78,17 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-smoke-kill-leaves-config-deleted"></a> Never commit while `run-skill-smoke` runs; after an interrupted smoke run restore tracked `.review-loop/config.md` with `git checkout --` and re-check `git status` before staging
+- **Date**: 2026-09-16
+- **Task context**: 收尾 Codex 交付的 v2.8.1 stage-scoped protocol loading，准备 stage + commit + push 前补跑 `bash scripts/run-skill-smoke` 作为最后一项验证。
+- **What broke**: smoke 超过 600s 预算被 TaskStop 硬杀，杀完 `git status` 出现 `D .review-loop/config.md` —— tracked 的 reviewer 配置（`reviewer_model: "gpt-5.6-sol"`）被删。当时下一步正是 `git add -A`，若没先看 status 就会把用户配置的删除静默提交进 v2.8.1。同一次硬杀还留下一个 pid 已死的孤儿 `.review-loop/sessions/<uuid>.lock`，以及已经花掉但作废的真实模型调用。
+- **Root cause**: `scripts/run-skill-smoke` 的 `config_manager()`（:791）按用例故意改写或 unlink tracked 的 `.review-loop/config.md`——`config_text` 为 `""` 的用例直接 unlink 以覆盖无配置路径；还原靠 `restore()` 闭包。该闭包确实被正确地包在 `finally:` 里（:1147），所以普通用例失败、异常、单用例 timeout 都能正常还原。但 `finally:` 挡不住硬杀进程：TaskStop / SIGKILL / 外层 harness 的 timeout-kill 会跳过还原，把删除状态留在工作树里。根因不是 smoke 写坏了文件，而是"故意的临时突变 + 只有软路径保护"这一组合遇上硬杀。
+- **Rule going forward**: Never commit while `run-skill-smoke` runs; after an interrupted smoke run restore tracked `.review-loop/config.md` with `git checkout --` and re-check `git status` before staging
+- **Scope**: run-skill-smoke, .review-loop/config.md, smoke 被中断或超时杀掉, TaskStop / SIGKILL 跳过 finally, git add -A 前的 status 复核, 孤儿 session lock
+- **Promotion candidacy**: project-only
+
+---
+
 Entry template (copy as you add each new learning):
 
 ```markdown
