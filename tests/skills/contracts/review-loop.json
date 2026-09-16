@@ -696,25 +696,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.8\""
+      "needle": "\"version\": \"2.8.0\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.7.8\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.0\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.7.8\",\n      \"author\""
+      "needle": "\"version\": \"2.8.0\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.7.8\""
+      "needle": "\"version\": \"2.8.0\""
     },
     {
       "id": "codex_marketplace_manifest_name",
@@ -1721,6 +1721,1642 @@
       "kind": "contains",
       "path": "scripts/adversarial_gate_adapter.py",
       "needle": "final JSON object is authoritative"
+    },
+    {
+      "id": "claude_current_review_packet_section_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Current Review Packet"
+    },
+    {
+      "id": "claude_evidence_ledger_section_declared",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Evidence Ledger"
+    },
+    {
+      "id": "evidence_ledger_helper_exists",
+      "kind": "exists",
+      "path": "scripts/evidence_ledger.py"
+    },
+    {
+      "id": "evidence_ledger_tests_exist",
+      "kind": "exists",
+      "path": "tests/evidence_ledger_test.py"
+    },
+    {
+      "id": "evidence_ledger_fixture_session_exists",
+      "kind": "exists",
+      "path": "tests/skills/fixtures/sessions/evidence-ledger-session.md"
+    },
+    {
+      "id": "evidence_ledger_fixture_declares_ledger_section",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/sessions/evidence-ledger-session.md",
+      "needle": "## Evidence Ledger"
+    },
+    {
+      "id": "evidence_ledger_fixture_declares_packet_section",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/sessions/evidence-ledger-session.md",
+      "needle": "## Current Review Packet"
+    },
+    {
+      "id": "evidence_ledger_fixture_declares_attributable_delta",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/sessions/evidence-ledger-session.md",
+      "needle": "### Attributable Delta"
+    },
+    {
+      "id": "evidence_ledger_fixture_timing_log_13_columns",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/sessions/evidence-ledger-session.md",
+      "needle": "| Phase | Round | Role | Duration | Dispatch | Reuse | Reads | Unchanged | Tests | Pause | Model | Tokens | Cost |"
+    },
+    {
+      "id": "session_file_canonical_sections_twelve",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "12. `## Session Metadata` — always last"
+    },
+    {
+      "id": "session_file_active_record_rule_declared",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "### Active-record rule"
+    },
+    {
+      "id": "session_file_failure_dominance_declared",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "**Failure dominance**: an active `FAIL` keeps the claim unsatisfied until"
+    },
+    {
+      "id": "session_file_closure_uncertain_default",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "closure       declared | uncertain   (default uncertain)"
+    },
+    {
+      "id": "session_file_completed_stages_derived",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "`completed_stages` is **derived** from the\nledger by `evidence_ledger.py check`"
+    },
+    {
+      "id": "session_file_convergence_rule_positive_proof",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "Positive proof only: there is no\nprose-looking, extension, directory, or path-category rule."
+    },
+    {
+      "id": "session_file_legacy_fail_closed_row",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "\"Passed earlier\" prose in `## Review History` is never reinterpreted as a reusable PASS."
+    },
+    {
+      "id": "session_file_timing_log_na_rule",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "Never invent a value: any unmeasured cell is `N/A`."
+    },
+    {
+      "id": "session_file_snapshot_never_touches_head",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "The worktree, the user's index, `HEAD`,\nand branches are untouched"
+    },
+    {
+      "id": "session_file_no_line_count_skip",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "No line-count skip anywhere."
+    },
+    {
+      "id": "protocol_execution_gate_record_through_helper",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "The\n  orchestrator never writes `completed_stages` by hand."
+    },
+    {
+      "id": "protocol_execution_classify_decides_convergence",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "A downstream write\n  starts a new convergence only when `evidence_ledger.py classify` reports\n  it as exec-invalidating"
+    },
+    {
+      "id": "protocol_planning_no_flat_history_dump",
+      "kind": "not_contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "for each finding in loop_state.findings"
+    },
+    {
+      "id": "protocol_planning_packet_first_prompt",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "Read `## Current Review Packet` first. Load a `## Review History` entry\nonly when the packet references it or a claim needs provenance."
+    },
+    {
+      "id": "codex_reviewer_toml_no_full_session_read_first",
+      "kind": "not_contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "Read the session file and any referenced code before reviewing."
+    },
+    {
+      "id": "codex_reviewer_toml_delta_command",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "python3 scripts/evidence_ledger.py delta --session <uuid> --pre <n> --post <m>"
+    },
+    {
+      "id": "evidence_ledger_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "evidence_ledger"
+    },
+    {
+      "id": "current_review_packet_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "current_review_packet"
+    },
+    {
+      "id": "session_file_every_active_record_rule",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "A stage is present iff **every active (non-superseded) record of each\nrequired check is valid**"
+    },
+    {
+      "id": "session_file_no_governing_record_rule",
+      "kind": "not_contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "governing record"
+    },
+    {
+      "id": "session_file_explicit_supersession_declared",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "`evidence_ledger.py record --supersedes\n   <id>[,<id>...]` marks those earlier records of the **same `check`**"
+    },
+    {
+      "id": "session_file_fail_supersession_guard",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "**FAIL supersession\n   guard**: a record whose `result` is `FAIL` may only be explicitly\n   superseded by an **executed PASS** of the same `check` whose scope key\n   **covers** the FAIL's scope key"
+    },
+    {
+      "id": "session_file_route_facts_packet_row",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "| `### Route Facts` | execution rounds only:"
+    },
+    {
+      "id": "evidence_ledger_helper_no_governing_record",
+      "kind": "not_contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "governing"
+    },
+    {
+      "id": "evidence_ledger_helper_supersedes_guard",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "def validate_supersedes("
+    },
+    {
+      "id": "evidence_ledger_helper_route_subcommand",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "def cmd_route("
+    },
+    {
+      "id": "evidence_ledger_helper_route_not_stub",
+      "kind": "not_contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "not implemented until Slice 2"
+    },
+    {
+      "id": "protocol_execution_no_governing_record",
+      "kind": "not_contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "governing `reviewer_approve`"
+    },
+    {
+      "id": "protocol_execution_author_route_selection_declared",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "### Author route selection"
+    },
+    {
+      "id": "protocol_execution_planning_executor_only",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "**Planning\nremains Executor-only**"
+    },
+    {
+      "id": "protocol_execution_route_never_classifies_from_paths",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`--path` only selects which ledger claims the cross-check inspects; it\n   never classifies the change."
+    },
+    {
+      "id": "protocol_execution_route_affirmative_eligibility",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`orchestrator-direct` iff **every** eligibility fact is `true` **and**\n   every sensitive flag is `false` **and** the ledger cross-check passes"
+    },
+    {
+      "id": "protocol_execution_direct_route_no_self_review",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "direct\nauthorship never permits self-review-only delivery"
+    },
+    {
+      "id": "protocol_execution_supersedes_when_scope_grows",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "add `--supersedes <earlier id>` so the stale\n   earlier-scope claim is retired"
+    },
+    {
+      "id": "protocol_executor_output_dir_declared",
+      "kind": "contains",
+      "path": "docs/protocol/executor-output.md",
+      "needle": "## Direct Implementation Record"
+    },
+    {
+      "id": "protocol_executor_output_dir_content_state",
+      "kind": "contains",
+      "path": "docs/protocol/executor-output.md",
+      "needle": "### Content State"
+    },
+    {
+      "id": "protocol_executor_output_dir_never_fabricates_executor_output",
+      "kind": "contains",
+      "path": "docs/protocol/executor-output.md",
+      "needle": "A DIR is never a fabricated Executor output"
+    },
+    {
+      "id": "protocol_executor_output_dir_no_self_review",
+      "kind": "contains",
+      "path": "docs/protocol/executor-output.md",
+      "needle": "a DIR never permits\n  self-review-only delivery"
+    },
+    {
+      "id": "protocol_planning_route_answers_executor",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "`evidence_ledger.py route` answers\n  `executor` during planning"
+    },
+    {
+      "id": "claude_umbrella_no_blanket_coding_prohibition",
+      "kind": "not_contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Never do the planning or coding yourself."
+    },
+    {
+      "id": "claude_umbrella_no_blanket_work_prohibition",
+      "kind": "not_contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "**Never do the work yourself**"
+    },
+    {
+      "id": "claude_umbrella_author_route_rule",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Never plan yourself; implement directly only under\n`docs/protocol/execution.md` §Author route selection"
+    },
+    {
+      "id": "claude_umbrella_direct_route_produces_dir",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "produce a Direct Implementation Record per\n`docs/protocol/executor-output.md`"
+    },
+    {
+      "id": "codex_umbrella_author_route_rule",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` §Author route selection"
+    },
+    {
+      "id": "claude_execute_route_facts_before_executor",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "`### Route Facts` in the packet + `evidence_ledger.py\nroute --path <touched paths>`"
+    },
+    {
+      "id": "codex_execute_route_facts_before_executor",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`### Route Facts` in the packet + `evidence_ledger.py\nroute --path <touched paths>`"
+    },
+    {
+      "id": "claude_plan_planning_always_executor_authored",
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "planning is always Executor-authored"
+    },
+    {
+      "id": "codex_plan_planning_always_executor_authored",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "planning is always Executor-authored"
+    },
+    {
+      "id": "evidence_ledger_fixture_declares_route_facts",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/sessions/evidence-ledger-session.md",
+      "needle": "### Route Facts"
+    },
+    {
+      "id": "evidence_ledger_route_reads_packet_only",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "route facts block absent from Current Review Packet"
+    },
+    {
+      "id": "evidence_ledger_route_packet_helper",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "def packet_route_facts_block"
+    },
+    {
+      "id": "protocol_execution_route_facts_packet_only",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet`"
+    },
+    {
+      "id": "protocol_execution_route_facts_absent_reason",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "route facts block absent from Current Review\n   Packet"
+    },
+    {
+      "id": "claude_umbrella_route_facts_packet_only",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "never from history or an old"
+    },
+    {
+      "id": "claude_execute_route_facts_packet_only",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "never from history or an old"
+    },
+    {
+      "id": "codex_umbrella_route_facts_packet_only",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "never from history or an old"
+    },
+    {
+      "id": "codex_execute_route_facts_packet_only",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "never from history or an old"
+    },
+    {
+      "id": "route_facts_source_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "route_facts_source"
+    },
+    {
+      "id": "finding_triage_helper_exists",
+      "kind": "exists",
+      "path": "scripts/finding_triage.py"
+    },
+    {
+      "id": "finding_triage_tests_exist",
+      "kind": "exists",
+      "path": "tests/finding_triage_test.py"
+    },
+    {
+      "id": "finding_triage_check_subcommand",
+      "kind": "contains",
+      "path": "scripts/finding_triage.py",
+      "needle": "def cmd_check"
+    },
+    {
+      "id": "finding_triage_dispute_subcommand",
+      "kind": "contains",
+      "path": "scripts/finding_triage.py",
+      "needle": "def cmd_dispute"
+    },
+    {
+      "id": "finding_triage_concur_subcommand",
+      "kind": "contains",
+      "path": "scripts/finding_triage.py",
+      "needle": "def cmd_concur"
+    },
+    {
+      "id": "finding_triage_revalidate_subcommand",
+      "kind": "contains",
+      "path": "scripts/finding_triage.py",
+      "needle": "def cmd_revalidate"
+    },
+    {
+      "id": "finding_triage_imports_schema_parser",
+      "kind": "contains",
+      "path": "scripts/finding_triage.py",
+      "needle": "from review_verification import _validate_reviewer_output_schema"
+    },
+    {
+      "id": "reviewer_agent_blocking_rubric_section",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "## Blocking rubric"
+    },
+    {
+      "id": "reviewer_agent_rubric_six_fields",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "- `Cheaper response:` why a lighter response"
+    },
+    {
+      "id": "reviewer_agent_rubric_gate_named",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "`scripts/finding_triage.py check`"
+    },
+    {
+      "id": "reviewer_agent_non_blocking_list",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "unreachable scenarios, unsupported assumption chains, negligible\ncombined risk, or clearly disproportionate complexity for extremely rare\nlow-impact benefit"
+    },
+    {
+      "id": "reviewer_agent_rare_harm_stays_blocking",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "comparable harm remains blocking"
+    },
+    {
+      "id": "reviewer_agent_disclosed_simplification_not_critical",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "is not automatically CRITICAL"
+    },
+    {
+      "id": "reviewer_agent_missing_disclosure_minor",
+      "kind": "contains",
+      "path": "agents/reviewer.md",
+      "needle": "is a MINOR\n  record correction, not an automatic CRITICAL"
+    },
+    {
+      "id": "reviewer_agent_no_technically_correct",
+      "kind": "not_contains",
+      "path": "agents/reviewer.md",
+      "needle": "technically correct"
+    },
+    {
+      "id": "protocol_execution_no_technically_correct",
+      "kind": "not_contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "technically correct"
+    },
+    {
+      "id": "protocol_reviewer_output_blocking_rubric",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-output.md",
+      "needle": "### Blocking rubric (every `[CRITICAL]`)"
+    },
+    {
+      "id": "protocol_reviewer_output_rubric_gate",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-output.md",
+      "needle": "### Rubric gate"
+    },
+    {
+      "id": "protocol_reviewer_output_gate_required",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-output.md",
+      "needle": "**required post-parse step** on every blocking review output"
+    },
+    {
+      "id": "protocol_reviewer_output_never_implement_failed_triage",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-output.md",
+      "needle": "**The orchestrator never implements a `[CRITICAL]` that failed triage.**"
+    },
+    {
+      "id": "protocol_reviewer_output_schema_rubric_lines",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-output.md",
+      "needle": "  Trigger: ...\n  Reachability: ...\n  Impact: ...\n  Likelihood: ...\n  Fix cost: ...\n  Cheaper response: ..."
+    },
+    {
+      "id": "protocol_execution_mandatory_rubric_gate",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "### Mandatory rubric gate"
+    },
+    {
+      "id": "protocol_execution_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "### Gate rubric revalidation"
+    },
+    {
+      "id": "protocol_execution_gate_infrastructure_failure_not_a_finding",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "is an infrastructure failure, not a finding: it is not partitioned, not revalidated and not disputable"
+    },
+    {
+      "id": "protocol_execution_triage_incomplete_exit_4",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`incomplete` (exit 4; re-asserted without a full"
+    },
+    {
+      "id": "protocol_execution_gate_controlled_skip_declares_closure",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`--disposition controlled-skip --reason \"<verbatim SKIP banner>\" --closure\n  declared`"
+    },
+    {
+      "id": "protocol_execution_dispute_flow",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "### Dispute flow"
+    },
+    {
+      "id": "protocol_execution_retry_table_claude_row",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
+    },
+    {
+      "id": "protocol_execution_retry_table_codex_row",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "| Codex Stage 1 Claude-CLI Reviewer | none — `planning.md` \"do not retry Claude for that round\" applies unchanged |"
+    },
+    {
+      "id": "protocol_execution_retry_table_gate_row",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "| Step 3.4 gate (adapter REQUEST_CHANGES, invoker exit 1) | none — the gate stays single-pass; the producer is **not** re-run |"
+    },
+    {
+      "id": "protocol_execution_never_implement_failed_triage",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "**The orchestrator never implements a CRITICAL that failed triage.**"
+    },
+    {
+      "id": "protocol_execution_round_step7_complete_only",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "complete findings only; incomplete ones follow"
+    },
+    {
+      "id": "protocol_execution_round_step6_triage",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`python3 scripts/finding_triage.py check --input <parsed review text>`"
+    },
+    {
+      "id": "protocol_execution_focus_recipe_item5",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "5. The blocking-rubric instruction, verbatim"
+    },
+    {
+      "id": "protocol_execution_revalidation_prompt_block",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`## Rubric revalidation`, listing every pending entry verbatim"
+    },
+    {
+      "id": "protocol_execution_revalidation_executor_less",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "no complete gate finding → round step 2 is skipped"
+    },
+    {
+      "id": "protocol_execution_gate_never_rerun",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "The gate is spent for this convergence and is never re-run."
+    },
+    {
+      "id": "protocol_execution_revalidation_counts_soft_limit",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "A revalidation round counts as a Step 3 round for\n   `soft_limit_exec`"
+    },
+    {
+      "id": "protocol_execution_triage_state_in_ledger",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "`triage` object inside the session's\n`## Evidence Ledger` JSON block"
+    },
+    {
+      "id": "protocol_execution_provenance_disclosed_simplification",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "A disclosed\nequivalent simplification that satisfies the plan's intent and the\nacceptance criteria is not automatically CRITICAL."
+    },
+    {
+      "id": "protocol_planning_loop_state_pending_rubric",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "pending_rubric_incomplete: [],"
+    },
+    {
+      "id": "protocol_planning_loop_state_revalidation_round",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "revalidation_round: false"
+    },
+    {
+      "id": "protocol_planning_scope_drift_undisclosed",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "check whether the Executor introduced undisclosed\n   changes to the plan's design decisions"
+    },
+    {
+      "id": "protocol_planning_parse_step_triage",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "Then run the mandatory rubric gate: `python3 scripts/finding_triage.py\n  check --input <parsed review text>`"
+    },
+    {
+      "id": "protocol_planning_codex_reviewer_triage",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "then run\n`python3 scripts/finding_triage.py check --input <result file>`"
+    },
+    {
+      "id": "protocol_session_file_triage_key",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "carries an optional `triage` object"
+    },
+    {
+      "id": "codex_reviewer_toml_blocking_rubric",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "Blocking rubric:"
+    },
+    {
+      "id": "codex_reviewer_toml_rubric_fields",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "`Trigger:`, `Reachability:`, `Impact:`, `Likelihood:`, `Fix cost:`, `Cheaper response:`"
+    },
+    {
+      "id": "codex_reviewer_toml_deviation_rules",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-reviewer.toml",
+      "needle": "a disclosed equivalent simplification satisfying intent and acceptance criteria is not automatically `[CRITICAL]`"
+    },
+    {
+      "id": "gate_fallback_prompt_blocking_rubric",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_fallback_prompt.txt",
+      "needle": "Blocking rubric: every finding with severity critical or high blocks the"
+    },
+    {
+      "id": "gate_fallback_prompt_inline_labels",
+      "kind": "contains",
+      "path": "scripts/adversarial_gate_fallback_prompt.txt",
+      "needle": "Cheaper response: <why a lighter response is\ninsufficient>."
+    },
+    {
+      "id": "reviewer_schema_fixture_rubric_continuation_shape",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/expected/reviewer-schema.json",
+      "needle": "\"critical_rubric_continuation\""
+    },
+    {
+      "id": "reviewer_schema_fixture_rubric_inline_shape",
+      "kind": "contains",
+      "path": "tests/skills/fixtures/expected/reviewer-schema.json",
+      "needle": "\"critical_rubric_inline\""
+    },
+    {
+      "id": "claude_umbrella_triage_step",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "`finding_triage.py check`"
+    },
+    {
+      "id": "claude_umbrella_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Gate rubric revalidation"
+    },
+    {
+      "id": "claude_plan_triage_step",
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "`finding_triage.py check`"
+    },
+    {
+      "id": "claude_plan_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "Gate rubric revalidation"
+    },
+    {
+      "id": "claude_execute_triage_step",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "`finding_triage.py check`"
+    },
+    {
+      "id": "claude_execute_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Gate rubric revalidation"
+    },
+    {
+      "id": "codex_umbrella_triage_step",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "`finding_triage.py check`"
+    },
+    {
+      "id": "codex_umbrella_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Gate rubric revalidation"
+    },
+    {
+      "id": "codex_plan_triage_step",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "`finding_triage.py check`"
+    },
+    {
+      "id": "codex_plan_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "Gate rubric revalidation"
+    },
+    {
+      "id": "codex_execute_triage_step",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "`finding_triage.py check`"
+    },
+    {
+      "id": "codex_execute_gate_rubric_revalidation",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Gate rubric revalidation"
+    },
+    {
+      "id": "claude_umbrella_dispute_flow",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+    },
+    {
+      "id": "claude_umbrella_revalidation_executor_less",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+    },
+    {
+      "id": "claude_umbrella_gate_never_rerun",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "The gate is\nnever re-run"
+    },
+    {
+      "id": "claude_execute_dispute_flow",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+    },
+    {
+      "id": "claude_execute_revalidation_executor_less",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+    },
+    {
+      "id": "claude_execute_gate_never_rerun",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "The gate is\nnever re-run"
+    },
+    {
+      "id": "codex_umbrella_dispute_flow",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+    },
+    {
+      "id": "codex_umbrella_revalidation_executor_less",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+    },
+    {
+      "id": "codex_umbrella_gate_never_rerun",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "The gate is\nnever re-run"
+    },
+    {
+      "id": "codex_execute_dispute_flow",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+    },
+    {
+      "id": "codex_execute_revalidation_executor_less",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+    },
+    {
+      "id": "codex_execute_gate_never_rerun",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "The gate is\nnever re-run"
+    },
+    {
+      "id": "claude_execute_provenance_disclosed_simplification",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "undisclosed material deviations block; a disclosed equivalent\n  simplification satisfying intent and acceptance criteria is not\n  automatically CRITICAL"
+    },
+    {
+      "id": "codex_execute_provenance_disclosed_simplification",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "undisclosed material deviations block; a disclosed equivalent\n  simplification satisfying intent and acceptance criteria is not\n  automatically CRITICAL"
+    },
+    {
+      "id": "codex_umbrella_triage_after_schema_validation",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
+    },
+    {
+      "id": "codex_umbrella_triage_no_claude_retry",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
+    },
+    {
+      "id": "codex_umbrella_triage_fanout",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "on every validated `result` (mandatory rubric gate)"
+    },
+    {
+      "id": "codex_umbrella_triage_local_reviewer",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
+    },
+    {
+      "id": "codex_plan_triage_after_schema_validation",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
+    },
+    {
+      "id": "codex_plan_triage_no_claude_retry",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
+    },
+    {
+      "id": "codex_plan_triage_fanout",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "on every validated `result` (mandatory rubric gate)"
+    },
+    {
+      "id": "codex_plan_triage_local_reviewer",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
+    },
+    {
+      "id": "codex_execute_triage_after_schema_validation",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
+    },
+    {
+      "id": "codex_execute_triage_no_claude_retry",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
+    },
+    {
+      "id": "codex_execute_triage_fanout",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "on every validated `result` (mandatory rubric gate)"
+    },
+    {
+      "id": "codex_execute_triage_local_reviewer",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
+    },
+    {
+      "id": "claude_umbrella_triage_one_retry",
+      "kind": "contains",
+      "path": "skills/review-loop/SKILL.md",
+      "needle": "re-dispatch the Reviewer once with the missing-field list"
+    },
+    {
+      "id": "claude_execute_triage_one_retry",
+      "kind": "contains",
+      "path": "skills/execute/SKILL.md",
+      "needle": "re-dispatch the Reviewer once with the missing-field list"
+    },
+    {
+      "id": "claude_plan_triage_one_retry",
+      "kind": "contains",
+      "path": "skills/plan/SKILL.md",
+      "needle": "re-dispatch the Reviewer once with the missing-field list"
+    },
+    {
+      "id": "rubric_gate_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "rubric_gate"
+    },
+    {
+      "id": "gate_rubric_revalidation_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "gate_rubric_revalidation"
+    },
+    {
+      "id": "gate_infrastructure_failure_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "gate_infrastructure_failure"
+    },
+    {
+      "id": "author_route_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "author_route"
+    },
+    {
+      "id": "round3_helper_packet_not_unique_reason",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "canonical packet section not uniquely identifiable"
+    },
+    {
+      "id": "round3_helper_canonical_candidates",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "def canonical_section_candidates"
+    },
+    {
+      "id": "round3_helper_find_canonical_section",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "def find_canonical_section"
+    },
+    {
+      "id": "round3_helper_successor_table",
+      "kind": "contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "CANONICAL_SUCCESSOR"
+    },
+    {
+      "id": "round3_helper_first_match_selector_removed",
+      "kind": "not_contains",
+      "path": "scripts/evidence_ledger.py",
+      "needle": "def find_section("
+    },
+    {
+      "id": "round3_execution_packet_not_unique_reason",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "canonical packet section not uniquely identifiable"
+    },
+    {
+      "id": "round3_execution_structural_selection",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "never by the first matching"
+    },
+    {
+      "id": "round3_session_file_structural_selection",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "never by the first matching heading"
+    },
+    {
+      "id": "round3_session_file_ledger_successor",
+      "kind": "contains",
+      "path": "docs/protocol/session-file.md",
+      "needle": "`## Evidence Ledger` is the heading followed by"
+    },
+    {
+      "id": "round3_regression_test_route_selects_canonical_packet_by_structure_not_first_heading",
+      "kind": "contains",
+      "path": "tests/evidence_ledger_test.py",
+      "needle": "def test_route_selects_canonical_packet_by_structure_not_first_heading("
+    },
+    {
+      "id": "round3_regression_test_route_fails_closed_when_packet_heading_is_ambiguous",
+      "kind": "contains",
+      "path": "tests/evidence_ledger_test.py",
+      "needle": "def test_route_fails_closed_when_packet_heading_is_ambiguous("
+    },
+    {
+      "id": "round3_regression_test_route_ignores_quoted_packet_heading_inside_review_history_details",
+      "kind": "contains",
+      "path": "tests/evidence_ledger_test.py",
+      "needle": "def test_route_ignores_quoted_packet_heading_inside_review_history_details("
+    },
+    {
+      "id": "round3_regression_test_ledger_and_metadata_writers_refuse_ambiguous_sections",
+      "kind": "contains",
+      "path": "tests/evidence_ledger_test.py",
+      "needle": "def test_ledger_and_metadata_writers_refuse_ambiguous_sections("
+    },
+    {
+      "id": "canonical_packet_selection_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "canonical_packet_selection"
+    },
+    {
+      "id": "slice4_evaluation_harness_exists",
+      "kind": "exists",
+      "path": "tests/evaluation_cases_test.py"
+    },
+    {
+      "id": "slice4_case_1_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-1/case.json"
+    },
+    {
+      "id": "slice4_case_1_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-1/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_1_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-1/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_2_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-2/case.json"
+    },
+    {
+      "id": "slice4_case_2_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-2/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_2_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-2/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_3_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-3/case.json"
+    },
+    {
+      "id": "slice4_case_3_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-3/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_3_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-3/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_4_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-4/case.json"
+    },
+    {
+      "id": "slice4_case_4_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-4/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_4_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-4/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_5_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-5/case.json"
+    },
+    {
+      "id": "slice4_case_5_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-5/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_5_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-5/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_6_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-6/case.json"
+    },
+    {
+      "id": "slice4_case_6_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_6_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_7_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-7/case.json"
+    },
+    {
+      "id": "slice4_case_7_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-7/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_7_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-7/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_8_fixture_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-8/case.json"
+    },
+    {
+      "id": "slice4_case_8_declares_seeded_defects",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-8/case.json",
+      "needle": "\"seeded_defects\""
+    },
+    {
+      "id": "slice4_case_8_has_no_expectations",
+      "kind": "not_contains",
+      "path": "tests/fixtures/evaluation/case-8/case.json",
+      "needle": "\"expected_"
+    },
+    {
+      "id": "slice4_case_2_seeds_a_defect",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-2/case.json",
+      "needle": "\"line_start\""
+    },
+    {
+      "id": "slice4_case_3_seeds_a_defect",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-3/case.json",
+      "needle": "\"line_start\""
+    },
+    {
+      "id": "slice4_case_7_seeds_a_defect",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-7/case.json",
+      "needle": "\"line_start\""
+    },
+    {
+      "id": "slice4_case_8_seeds_a_defect",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-8/case.json",
+      "needle": "\"line_start\""
+    },
+    {
+      "id": "slice4_case_6_seeds_nothing",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"seeded_defects\": []"
+    },
+    {
+      "id": "slice4_case_6_variant_6b",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"6b\":"
+    },
+    {
+      "id": "slice4_case_6_variant_6c",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"6c\":"
+    },
+    {
+      "id": "slice4_case_6_variant_6c_gate",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"6c-gate\":"
+    },
+    {
+      "id": "slice4_case_6_variant_6c_gate_reassert",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-6/case.json",
+      "needle": "\"6c-gate-reassert\":"
+    },
+    {
+      "id": "slice4_case_7_data_loss_kind",
+      "kind": "contains",
+      "path": "tests/fixtures/evaluation/case-7/case.json",
+      "needle": "irreversible-data-loss"
+    },
+    {
+      "id": "slice4_case_6_packet_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-6/packet.md"
+    },
+    {
+      "id": "slice4_case_7_packet_exists",
+      "kind": "exists",
+      "path": "tests/fixtures/evaluation/case-7/packet.md"
+    },
+    {
+      "id": "slice4_harness_field_executor_dispatches",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"executor_dispatches\""
+    },
+    {
+      "id": "slice4_harness_field_reviewer_dispatches",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"reviewer_dispatches\""
+    },
+    {
+      "id": "slice4_harness_field_gate_runs",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"gate_runs\""
+    },
+    {
+      "id": "slice4_harness_field_repeated_reads",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"repeated_reads\""
+    },
+    {
+      "id": "slice4_harness_field_unchanged_content_reviewed",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"unchanged_content_reviewed\""
+    },
+    {
+      "id": "slice4_harness_field_tests_rerun",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"tests_rerun\""
+    },
+    {
+      "id": "slice4_harness_field_tests_reused",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"tests_reused\""
+    },
+    {
+      "id": "slice4_harness_field_pauses_without_decision",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"pauses_without_decision\""
+    },
+    {
+      "id": "slice4_harness_field_elapsed_s",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"elapsed_s\""
+    },
+    {
+      "id": "slice4_harness_field_cost_usd",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"cost_usd\""
+    },
+    {
+      "id": "slice4_harness_field_blocking_rejected_or_downgraded",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"blocking_rejected_or_downgraded\""
+    },
+    {
+      "id": "slice4_harness_field_stale_evidence_reused",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"stale_evidence_reused\""
+    },
+    {
+      "id": "slice4_harness_field_defects_found",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"defects_found\""
+    },
+    {
+      "id": "slice4_harness_field_defects_missed",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"defects_missed\""
+    },
+    {
+      "id": "slice4_harness_field_theoretical_complexity_added",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"theoretical_complexity_added\""
+    },
+    {
+      "id": "slice4_harness_old_rule_cited_to_audit",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "2026-09-15_orchestration-overhead-audit.md"
+    },
+    {
+      "id": "slice4_harness_new_rule_via_helpers",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "scripts/evidence_ledger.py snapshot/record/check/classify/delta/route"
+    },
+    {
+      "id": "slice4_harness_report_path",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "evaluation-cases.md"
+    },
+    {
+      "id": "slice4_harness_unverified_smoke_row",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "\"unverified\""
+    },
+    {
+      "id": "slice4_harness_test_row_schema_and_na_fields",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_row_schema_and_na_fields("
+    },
+    {
+      "id": "slice4_harness_test_derived_counts_recomputed_independently",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_derived_counts_recomputed_independently("
+    },
+    {
+      "id": "slice4_harness_test_defect_and_complexity_properties",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_defect_and_complexity_properties("
+    },
+    {
+      "id": "slice4_harness_test_routine_cases_reduce_overhead",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_routine_cases_reduce_overhead("
+    },
+    {
+      "id": "slice4_harness_test_case_8_keeps_independent_review_gate_and_fresh_tests",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_8_keeps_independent_review_gate_and_fresh_tests("
+    },
+    {
+      "id": "slice4_harness_test_new_file_under_declared_selector_invalidates_tests_claim",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_new_file_under_declared_selector_invalidates_tests_claim("
+    },
+    {
+      "id": "slice4_harness_test_case_6_dispute_then_concur_without_implementation",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_6_dispute_then_concur_without_implementation("
+    },
+    {
+      "id": "slice4_harness_test_case_6b_reasserted_stays_blocking_with_risk_pause_only",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_6b_reasserted_stays_blocking_with_risk_pause_only("
+    },
+    {
+      "id": "slice4_harness_test_case_6c_incomplete_critical_is_discarded_never_implemented",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_6c_incomplete_critical_is_discarded_never_implemented("
+    },
+    {
+      "id": "slice4_harness_test_case_6c_gate_executorless_revalidation_mints_exec",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_6c_gate_executorless_revalidation_mints_exec("
+    },
+    {
+      "id": "slice4_harness_test_case_6c_gate_reassert_requires_executor_repair_before_exec",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_6c_gate_reassert_requires_executor_repair_before_exec("
+    },
+    {
+      "id": "slice4_harness_test_case_7_dispute_without_concurrence_stays_blocking",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_case_7_dispute_without_concurrence_stays_blocking("
+    },
+    {
+      "id": "slice4_harness_test_write_evaluation_report",
+      "kind": "contains",
+      "path": "tests/evaluation_cases_test.py",
+      "needle": "def test_write_evaluation_report("
+    },
+    {
+      "id": "slice4_smoke_case6_fixture_exists",
+      "kind": "exists",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json"
+    },
+    {
+      "id": "slice4_smoke_case6_model_opus",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json",
+      "needle": "--model opus"
+    },
+    {
+      "id": "slice4_smoke_case6_json_output",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json",
+      "needle": "--output-format json"
+    },
+    {
+      "id": "slice4_smoke_case6_inlines_reviewer_body",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json",
+      "needle": "agents/reviewer.md"
+    },
+    {
+      "id": "slice4_smoke_case6_best_effort",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json",
+      "needle": "\"execution_policy\": \"best_effort\""
+    },
+    {
+      "id": "slice4_smoke_case6_captures_result",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json",
+      "needle": "\"reviewer_result\": \"reviewer_result_file\""
+    },
+    {
+      "id": "slice4_smoke_case7_fixture_exists",
+      "kind": "exists",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json"
+    },
+    {
+      "id": "slice4_smoke_case7_model_opus",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json",
+      "needle": "--model opus"
+    },
+    {
+      "id": "slice4_smoke_case7_json_output",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json",
+      "needle": "--output-format json"
+    },
+    {
+      "id": "slice4_smoke_case7_inlines_reviewer_body",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json",
+      "needle": "agents/reviewer.md"
+    },
+    {
+      "id": "slice4_smoke_case7_best_effort",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json",
+      "needle": "\"execution_policy\": \"best_effort\""
+    },
+    {
+      "id": "slice4_smoke_case7_captures_result",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json",
+      "needle": "\"reviewer_result\": \"reviewer_result_file\""
+    },
+    {
+      "id": "slice4_smoke_case6_assertion_kind",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case6.smoke.claude.json",
+      "needle": "reviewer_no_blocking_critical"
+    },
+    {
+      "id": "slice4_smoke_case7_assertion_kind",
+      "kind": "contains",
+      "path": "tests/skills/smoke/reviewer.case7.smoke.claude.json",
+      "needle": "reviewer_complete_blocking_critical"
+    },
+    {
+      "id": "slice4_mapping_no_blocking_kind",
+      "kind": "contains",
+      "path": "tests/skills/contracts/assertion-mapping.json",
+      "needle": "\"reviewer_no_blocking_critical\""
+    },
+    {
+      "id": "slice4_mapping_complete_blocking_kind",
+      "kind": "contains",
+      "path": "tests/skills/contracts/assertion-mapping.json",
+      "needle": "\"reviewer_complete_blocking_critical\""
+    },
+    {
+      "id": "slice4_runner_no_blocking_kind",
+      "kind": "contains",
+      "path": "scripts/run-skill-smoke",
+      "needle": "\"reviewer_no_blocking_critical\""
+    },
+    {
+      "id": "slice4_runner_complete_blocking_kind",
+      "kind": "contains",
+      "path": "scripts/run-skill-smoke",
+      "needle": "\"reviewer_complete_blocking_critical\""
+    },
+    {
+      "id": "slice4_runner_shells_out_to_triage",
+      "kind": "contains",
+      "path": "scripts/run-skill-smoke",
+      "needle": "\"finding_triage.py\"), \"check\""
+    },
+    {
+      "id": "slice4_runner_imports_schema_validator",
+      "kind": "contains",
+      "path": "scripts/run-skill-smoke",
+      "needle": "from scripts.review_verification import _validate_reviewer_output_schema"
+    },
+    {
+      "id": "slice4_runner_measurement_artifact",
+      "kind": "contains",
+      "path": "scripts/run-skill-smoke",
+      "needle": "reviewer-measurement.json"
+    },
+    {
+      "id": "slice4_kinds_test_ReviewerNoBlockingCriticalKindTest",
+      "kind": "contains",
+      "path": "tests/run_skill_smoke_kinds_test.py",
+      "needle": "class ReviewerNoBlockingCriticalKindTest("
+    },
+    {
+      "id": "slice4_kinds_test_ReviewerCompleteBlockingCriticalKindTest",
+      "kind": "contains",
+      "path": "tests/run_skill_smoke_kinds_test.py",
+      "needle": "class ReviewerCompleteBlockingCriticalKindTest("
+    },
+    {
+      "id": "slice4_kinds_test_ReviewerEnvelopeShapeTest",
+      "kind": "contains",
+      "path": "tests/run_skill_smoke_kinds_test.py",
+      "needle": "class ReviewerEnvelopeShapeTest("
+    },
+    {
+      "id": "slice4_readme_case6_fixture",
+      "kind": "contains",
+      "path": "tests/skills/smoke/README.md",
+      "needle": "reviewer.case6.smoke.claude"
+    },
+    {
+      "id": "slice4_readme_case7_fixture",
+      "kind": "contains",
+      "path": "tests/skills/smoke/README.md",
+      "needle": "reviewer.case7.smoke.claude"
+    },
+    {
+      "id": "slice4_readme_case6_pass_rule",
+      "kind": "contains",
+      "path": "tests/skills/smoke/README.md",
+      "needle": "case 6 passes **only** with a schema-valid `APPROVE`"
+    },
+    {
+      "id": "slice4_readme_case7_pass_rule",
+      "kind": "contains",
+      "path": "tests/skills/smoke/README.md",
+      "needle": "case 7 passes **only** with at least one"
+    },
+    {
+      "id": "slice4_readme_unverified_rule",
+      "kind": "contains",
+      "path": "tests/skills/smoke/README.md",
+      "needle": "reported as `unverified`"
     }
   ]
 }

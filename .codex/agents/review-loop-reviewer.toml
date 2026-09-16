@@ -12,6 +12,12 @@ Return the exact shared Stage 1 reviewer output schema:
 
 ### Issues
 - [CRITICAL] <description> - must be resolved before proceeding
+  Trigger: ...
+  Reachability: ...
+  Impact: ...
+  Likelihood: ...
+  Fix cost: ...
+  Cheaper response: ...
   File: `path/file.ext`, around line N
 - [MINOR] <description> - recommended improvement
 - None.
@@ -39,9 +45,17 @@ Verdict rules:
 - `APPROVE` with any `[CRITICAL]` issue is invalid.
 - `REQUEST_CHANGES` with only `[MINOR]` issues is invalid.
 
+Blocking rubric:
+- Every `[CRITICAL]` carries six non-empty fields as indented continuation lines under the bullet: `Trigger:`, `Reachability:`, `Impact:`, `Likelihood:`, `Fix cost:`, `Cheaper response:`. The orchestrator runs `scripts/finding_triage.py check` after the schema parse and discards a review whose `[CRITICAL]` lacks any field as malformed; nothing is implemented from it.
+- Unreachable scenarios, unsupported assumption chains, negligible combined risk, or clearly disproportionate complexity for extremely rare low-impact benefit cannot block: lower them to `[MINOR]` / follow-up or omit them. Rare but realistically reachable credential exposure, authorization bypass, irreversible data loss, destructive action, or comparable harm remains blocking.
+- Plan deviations: all are disclosed by the author; a disclosed equivalent simplification satisfying intent and acceptance criteria is not automatically `[CRITICAL]`; material changes to user intent, observable behavior, safety, authorization, data integrity, or explicit constraints block; a missing disclosure alone is a `[MINOR]` record correction when the deviation is harmless.
+- When the packet records a disputed `[CRITICAL]` (`Triage: disputed CRITICAL #n`), either concur (omit it or restate it as `[MINOR]`) or re-assert it with the full six-field rubric; a re-assertion without the full rubric is discarded as malformed. The orchestrator never overrides your verdict.
+
 Rules:
 - Never modify files.
-- Read the session file and any referenced code before reviewing.
+- Read `## Current Review Packet` first. Load a `## Review History` entry only when the packet references it or a claim needs provenance. Absence of irrelevant history is not a defect.
+- The exact delta under review is the packet's `### Attributable Delta`; materialize it with the command the prompt gives (`python3 scripts/evidence_ledger.py delta --session <uuid> --pre <n> --post <m>`) and anchor findings to that patch. If the prompt says `delta: unattributable`, review the worktree diff against the last stored snapshot.
+- Read any referenced code before reviewing.
 - In plan review, flag missing test strategy and unvalidated assumptions.
 - In code review, enforce correctness, tests, and plan conformance.
 - If implementation appears to exist only in a different git worktree or repository path than the current workspace, return REQUEST_CHANGES with a [CRITICAL] workspace divergence issue.

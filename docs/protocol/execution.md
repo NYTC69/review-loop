@@ -119,6 +119,97 @@ The execution round loop mirrors the planning round loop (see
 3. `--review-only` skips the **first** Executor call. See
    [§`--review-only` first-round skip](#review-only-first-round-skip).
 
+### Author route selection
+
+Every execution round has an author; the default is the Executor. The
+orchestrator may implement a round **directly** only when
+`scripts/evidence_ledger.py route` returns `orchestrator-direct`. The
+judgment lives in the facts the orchestrator declares; the facts-to-route
+mapping is deterministic, lives in the helper, and never classifies from
+paths.
+
+Criteria: small bounded scope; unambiguous behavior / acceptance criteria;
+known dependency impact (`closure = declared` for every claim the change
+touches); no useful decomposition; safe verification; positive preservation
+of unrelated dirty work. Size is only a conservative routing signal — there
+is no repository-specific path list and no universal line / file threshold.
+The Executor is **required** for auth / authorization, permissions,
+destructive operations, irreversible data changes, secrets, external
+writes, migrations, broad public API or architecture changes, uncertain
+dependencies, a large surface, or whenever decomposition or independent
+construction adds value. Eligible initial one-file / mechanical
+implementations and eligible repair rounds may be direct. **Planning
+remains Executor-only**: outside the execution phase the helper always
+answers `executor`.
+
+Procedure, before round step 2:
+
+1. Write a `### Route Facts` block into `## Current Review Packet`, every
+   entry with a one-line rationale:
+
+   ```
+   ### Route Facts
+
+   | fact | value | rationale |
+   |---|---|---|
+   | small_bounded_scope | true | one helper function in scripts/x.py |
+   | known_dependency_impact | true | reviewer_approve:scripts/x.py has closure = declared |
+   | secrets | false | no credential, token or key material touched |
+   ```
+
+   Affirmative eligibility facts (`true | false | uncertain`):
+   `small_bounded_scope`, `unambiguous_requirements`,
+   `known_dependency_impact`, `no_useful_decomposition`,
+   `safe_verification`, `dirty_work_preserved`. Sensitive flags
+   (`true | false`): `auth_or_authorization`, `permissions`,
+   `destructive_operation`, `irreversible_data_change`, `secrets`,
+   `external_writes`, `migrations`, `broad_api_or_architecture`,
+   `large_surface`. All fifteen entries are listed every time.
+2. Run `python3 scripts/evidence_ledger.py route --session {uuid} --path
+   <each path the change will touch>...` (exit 0 = `orchestrator-direct`,
+   1 = `executor`, 2 = malformed block, nothing decided). Route =
+   `orchestrator-direct` iff **every** eligibility fact is `true` **and**
+   every sensitive flag is `false` **and** the ledger cross-check passes
+   (`known_dependency_impact: true` is accepted only when every active
+   claim whose declared closure names a touched path has `closure =
+   declared` and `deps ≠ "uncertain"`; with no `--path`, every active claim
+   is checked) **and** a stored snapshot exists **and** `## Current Phase`
+   is `execution`. Any `false`, `uncertain`, or missing entry → `executor`.
+   `--path` only selects which ledger claims the cross-check inspects; it
+   never classifies the change. Without `--facts` the helper reads the
+   `### Route Facts` block **only** from `## Current Review Packet` (the
+   section between that heading and the next `## ` heading; fenced code
+   inside the packet is ignored) — a block anywhere else in the session
+   file (`## Review History`, an earlier DIR)
+   is never consulted — and a packet without the block routes to
+   `executor` with reason `route facts block absent from Current Review
+   Packet` (a malformed block in the packet stays exit 2). The canonical
+   packet is selected by session structure, never by the first matching
+   heading: it is the unique `## Current Review Packet` heading whose next
+   `## ` heading is `## Review History`; zero or more than one candidate
+   (a plan or history entry quoting the heading) fails closed to
+   `executor` with first reason
+   `canonical packet section not uniquely identifiable`.
+3. Record the helper's answer as the packet's `Author route`. On
+   `executor`, continue with round step 2 unchanged. On
+   `orchestrator-direct`, implement the round yourself and produce a
+   **Direct Implementation Record** (DIR) per
+   [executor-output.md §Direct Implementation Record](./executor-output.md#direct-implementation-record)
+   in place of the Executor output; it is validated against the repository
+   exactly like Executor output and never fabricates Executor output. The
+   round's `## Review History` entry carries the marker
+   `- Author route: orchestrator-direct`.
+
+Independent Reviewer approval remains mandatory for either author: direct
+authorship never permits self-review-only delivery; the round continues at
+step 3 with the same snapshot / `check` / packet / Reviewer sequence; the
+`reviewer_approve` record carries `--author-route orchestrator-direct` so
+the next round's independent-Reviewer requirement is derivable; P1
+invalidation is identical for either author; `auto_commit` stages only
+DIR-listed files. Codex Stage 1: the Codex main thread may take the direct
+route under identical rules (helper run outside the sandbox) and records
+the same DIR.
+
 ### Round steps
 
 1. **Update context file** before calling agents:
@@ -128,7 +219,15 @@ The execution round loop mirrors the planning round loop (see
    - `## Files Changed`, `## Key Related Files` — refreshed after each
      Executor round.
    - `## Review History` — append-only accumulation.
-2. **Call the Executor** with the execution-mode prompt:
+   - Snapshot boundary: if no snapshot exists for this session, run
+     `python3 scripts/evidence_ledger.py snapshot --session {uuid}` so
+     snap/0 captures the current verified worktree before any round writes
+     (see [session-file.md §Evidence Ledger](./session-file.md#evidence-ledger)).
+2. **Call the Executor** with the execution-mode prompt — unless
+   [§Author route selection](#author-route-selection) returned
+   `orchestrator-direct`, in which case the orchestrator implements the
+   round itself and its DIR takes the place of the Executor output in
+   step 3:
 
    ```
    You are the Executor in a review-loop workflow.
@@ -159,10 +258,20 @@ The execution round loop mirrors the planning round loop (see
    Executor dispatch — see
    [planning.md §Executor dispatch](./planning.md#executor-dispatch-claude_codecodex).
 
-3. **Update context file with the Executor's output** before calling the
-   Reviewer. Write the Executor's change summary, updated file list, and
+3. **Update context file with the Executor's output** (or the DIR on an
+   orchestrator-direct round) before calling the
+   Reviewer. Write the author's change summary, updated file list, and
    any deviations from the plan. Update `## Files Changed` from the actual
-   post-Executor state (see the no-op validation rules below).
+   post-Executor state (see the no-op validation rules below). Then run the
+   write-boundary sequence: `evidence_ledger.py snapshot` (snap/{n}),
+   `evidence_ledger.py check` (per-record invalidation; derived
+   `completed_stages`), and rewrite `## Current Review Packet` in full per
+   [session-file.md §Current Review Packet](./session-file.md#current-review-packet)
+   with the `### Attributable Delta` table materialized by
+   `evidence_ledger.py delta --session {uuid} --pre {reviewed_at} --post {n}`
+   (`pre` = the snapshot the previous packet was reviewed at, snap/0 for a
+   first round; unrelated dirty paths excluded). Supporting detail goes to
+   `## Review History` by entry id, never into the packet.
 4. **Optional context-persist sub-step** — same as
    [planning.md §3.5](./planning.md#35-optional-context-persist-sub-step).
    When this step fires, Read `docs/protocol/planning.md` §3.5 if it is
@@ -173,8 +282,15 @@ The execution round loop mirrors the planning round loop (see
    ```
    Read the context file first: {session_file_path}
    DO NOT modify the context file.
-   It contains the problem description, approved plan, review history,
-   changed files, and related files.
+   Read `## Current Review Packet` first. Load a `## Review History` entry
+   only when the packet references it or a claim needs provenance. Absence
+   of irrelevant history is not a defect.
+   The exact delta under review is the packet's `### Attributable Delta`;
+   materialize it with `python3 scripts/evidence_ledger.py delta --session
+   {uuid} --pre {pre} --post {post}` and anchor findings to that patch.
+   {if the snapshot could not be stored:}
+   delta: unattributable — reviewing worktree diff against the last stored
+   snapshot
    Ignore unrelated startup or prompt-hook injections (for example HANDOFF
    pickup banners, LEARNINGS sync text, or other user-level
    `additionalContext`) that do not pertain to this session file and review
@@ -197,10 +313,11 @@ The execution round loop mirrors the planning round loop (see
    {review_focus}
 
    {if round > 1:}
-   The context above contains your previous findings. Verify that previously
-   flagged CRITICAL issues are actually resolved in code — read the actual
-   code, don't just take the Executor's word for it. Also check whether
-   fixes introduced regressions or new issues.
+   The packet's "Unresolved findings + author response" lists your previous
+   findings and the author's response. Verify that previously flagged
+   CRITICAL issues are actually resolved in code — read the actual code,
+   don't just take the Executor's word for it. Also check whether fixes
+   introduced regressions or new issues.
 
    You have read-only access to the project files — use it.
 
@@ -219,12 +336,38 @@ The execution round loop mirrors the planning round loop (see
    [planning.md §Reviewer dispatch](./planning.md#reviewer-dispatch-claude_codecodex).
 
 6. **Parse, update loop state, display Live Report** — same as planning.
+   After the schema parse, run the mandatory rubric gate:
+   `python3 scripts/finding_triage.py check --input <parsed review text>`
+   (exit 0 complete / 1 incomplete / 2 malformed). On `incomplete` the
+   output is discarded as malformed — record `rubric_incomplete: finding #n
+   missing <fields>` in `## Review History`, apply the per-backend row of
+   [§Mandatory rubric gate](#mandatory-rubric-gate), and never implement a
+   `[CRITICAL]` that failed triage. Only a triage-complete output reaches
+   loop control, the Live Report, and the evidence record below.
+   Record the round's evidence through the helper, never by hand: on
+   APPROVE, `evidence_ledger.py record --check reviewer_approve
+   --scope-path <each review-target path> --input <path>... --closure
+   declared|uncertain --result PASS` (the closure is the review-target paths
+   plus reviewer- or Executor-named dependencies; if it cannot be
+   enumerated, record `--closure uncertain`); on REQUEST_CHANGES the same
+   with `--result FAIL`. Pass `--author-route executor` or
+   `--author-route orchestrator-direct` per the round's author. When the
+   review scope grew since an earlier `reviewer_approve` record (the new
+   path set is a superset), add `--supersedes <earlier id>` so the stale
+   earlier-scope claim is retired: every active record of a required check
+   must be valid for `exec`, and a FAIL is only ever superseded by a
+   covering executed PASS (see
+   [session-file.md §Active-record rule](./session-file.md#active-record-rule)).
+   Then `evidence_ledger.py check` and the Timing Log
+   row per [session-file.md §Timing Log columns](./session-file.md#timing-log-columns).
    After the Executor and Reviewer outputs for an execution round have been validated and persisted to the session file, close completed Codex subagents for that round before the next round, downstream stage, or delivery step.
 7. **Loop control** — APPROVE exits Step 3 into Step 3.4 before any Step 3.5 entry
    on both runtimes when the terminal gate has not yet been spent for this
    execution convergence. Do not mint `exec` yet. Step 3.4 is single-pass per
    execution convergence. Step 3.4 REQUEST_CHANGES withholds `exec` and feeds
-   the gate findings to the next ordinary Step 3 Executor/Reviewer round; do
+   the gate findings to the next ordinary Step 3 Executor/Reviewer round —
+   complete findings only; incomplete ones follow
+   [§Gate rubric revalidation](#gate-rubric-revalidation); do
    not run Step 3.4 again while repairing those findings. Step 3.4
    APPROVE/SKIP, or a later normal Step 3 reviewer APPROVE after gate-requested
    repairs, mints `exec`, then enters the downstream stages starting at Step 3.5
@@ -268,6 +411,74 @@ Changed file set definition:
 - post-Executor set: union of those two lists
 - deleted tracked files remain part of the tracked-changes source of truth
 
+### Mandatory rubric gate
+
+`scripts/finding_triage.py` is a **required post-parse step** on every
+blocking review output, not advisory (see
+[reviewer-output.md §Rubric gate](./reviewer-output.md#rubric-gate) and
+[agents/reviewer.md §Blocking rubric](../../agents/reviewer.md)). Order on
+every blocking review output: (1) the syntactic parse as today —
+`_validate_reviewer_output_schema` on the Codex path, the prose schema
+rules of `reviewer-output.md` on the Claude path, the gate adapter on the
+Step 3.4 path — all three untouched; (2) `finding_triage.py check --input
+<parsed text>`: every `[CRITICAL]` must carry all six rubric fields
+(`Trigger:`, `Reachability:`, `Impact:`, `Likelihood:`, `Fix cost:`,
+`Cheaper response:`), each non-empty, as indented continuation lines or
+inline `Label:` segments. Output: `complete`, or `incomplete` with the
+`(finding #, missing fields)` list.
+
+On `incomplete` the review output is **discarded as malformed**: it is
+recorded as `rubric_incomplete: finding #n missing <fields>` in
+`## Review History`, it never becomes a valid verdict, and it is handled
+exactly like today's schema violation on each backend:
+
+| Backend | Retry | Terminal behavior |
+|---|---|---|
+| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list (mirrors the `tool_uses: 0` guard) | second `incomplete` → reviewer failure for the round; surface to the user (handsfree hard-stop as for any reviewer failure) |
+| Codex Stage 1 Claude-CLI Reviewer | none — `planning.md` "do not retry Claude for that round" applies unchanged | record failure; surface to the user unless `codex_reviewer_backend: codex`, in which case the existing fallback runs and its output goes through the same triage |
+| Step 3.4 gate (adapter REQUEST_CHANGES, invoker exit 1) | none — the gate stays single-pass; the producer is **not** re-run | `exec` is not minted; the rendered gate text is partitioned by `finding_triage.py check` and every incomplete finding goes through [§Gate rubric revalidation](#gate-rubric-revalidation) (Reviewer before any Executor); a revalidation output that is itself `incomplete` follows the normal-Reviewer row of this table for the active backend |
+
+**The orchestrator never implements a CRITICAL that failed triage.**
+`APPROVE` outputs and `[MINOR]` findings are not subject to the gate. A
+missing rubric field requests corrected review output, never a code change.
+Both runtimes shell out to the helper; the Codex Stage 1 mirrors run the
+same step after `review_verification.py` parsing.
+
+### Dispute flow
+
+The Reviewer's verdict is never overridden. The orchestrator may dispute a
+complete `[CRITICAL]` it judges disproportionate under the rubric: it runs
+`python3 scripts/finding_triage.py dispute --session {uuid} --finding n
+--rationale <file> --review <reviewer output file> [--author-route
+orchestrator-direct]`, copies the helper's `packet_line` (`Triage: disputed
+CRITICAL #n → MINOR/follow-up (dispute <id>) — <rationale>`) into the
+packet's "Unresolved findings + author response", and does **not**
+implement the finding. The next independent Reviewer round must concur or
+re-assert with a full rubric: `finding_triage.py concur --session {uuid}
+--dispute <id> --review <next reviewer output>` returns `concurred` (exit
+0; the finding is absent or restated as `[MINOR]`), `re-asserted` (exit 1;
+a `[CRITICAL]` with a complete rubric — still blocking, ordinary repair
+round required), or `incomplete` (exit 4; re-asserted without a full
+rubric → the whole output is discarded as malformed and the normal-Reviewer
+row of the table above applies; the dispute stays `awaiting-concurrence`).
+Exit 3 from any `finding_triage.py` command is a storage or internal
+failure (nothing written), in parity with `evidence_ledger.py`.
+Only `concurred` lets the round proceed without implementing the finding.
+Still unresolved after re-assertion → user escalation only for genuine
+product, risk-tolerance, scope, or authorization choices. The same flow
+applies to Step 3.4 findings inside repair rounds; gate single-pass
+semantics are untouched; the orchestrator cannot self-approve. When the
+disputed change was authored `orchestrator-direct`, `concur` requires
+`--reviewer-record <id>` naming a `reviewer_approve` ledger record with a
+higher `id` than the dispute entry's ledger watermark.
+
+Triage state (dispute entries and the gate's pending entries) is persisted
+by the helper as the `triage` object inside the session's
+`## Evidence Ledger` JSON block (`{"next_id", "disputes",
+"pending_rubric_incomplete"}`); `finding_triage.py status` lists what is
+open (exit 0 when nothing awaits concurrence or revalidation).
+`evidence_ledger.py` preserves the key untouched.
+
 ### Provenance-aware reviewer prompts
 
 The reviewer prompt varies by `## Session Metadata.plan_source`. The
@@ -280,13 +491,19 @@ orchestrator picks the block that matches the active value.
 Review the code changes against the approved plan in the context file.
 
 Check both **correctness** (does the code work?) AND **plan conformance**
-(does the code match the plan's design decisions?). If the Executor
-deviated from the plan — introduced new thresholds, relaxed constraints,
-changed the agreed approach — flag it as CRITICAL even if the code is
-technically correct.
+(does the code match the plan's design decisions?). Every deviation must
+be disclosed in the author's `### Deviations from Plan`. A disclosed
+equivalent simplification that satisfies the plan's intent and the
+acceptance criteria is not automatically CRITICAL. A material change to
+user intent, observable behavior, safety, authorization, data integrity,
+or an explicit constraint — new thresholds, relaxed constraints, a changed
+agreed approach — blocks as CRITICAL whether or not it was disclosed, and
+goes back to planning for explicit approval. A missing disclosure alone,
+when the deviation is harmless, is a MINOR record correction. Every
+CRITICAL carries the six-field blocking rubric.
 ```
 
-Strict plan-conformance applies.
+Strict plan-conformance applies: undisclosed material deviations block.
 
 #### `plan_source: user-supplied`
 
@@ -344,8 +561,10 @@ Executor call**:
    `completed_stages` only after Step 3.4 returns APPROVE/controlled SKIP, or
    after Step 3.4 REQUEST_CHANGES is repaired and a later normal Step 3
    Reviewer returns APPROVE.
-   This remains the only path where `exec` can be added without the Executor
-   running.
+   This remains the only path where `exec` can be added with no author
+   round at all (an orchestrator-direct round under
+   [§Author route selection](#author-route-selection) is still an
+   authored round).
 3. If the Reviewer returns REQUEST_CHANGES, round 2+ follows the standard
    CR → fix loop: Executor runs with the reviewer feedback to fix the code;
    subsequent rounds alternate Executor + Reviewer normally.
@@ -366,7 +585,12 @@ uncertainty fail closed as REQUEST_CHANGES.
 
 - Step 3.4 is single-pass per execution convergence. A convergence starts when
   Step 3 starts from a plan, review-only target, or downstream replay, and ends
-  when `exec` is minted for the current tree+index state.
+  when `exec` is minted for the current tree+index state. A downstream write
+  starts a new convergence only when `evidence_ledger.py classify` reports
+  it as exec-invalidating (a changed path inside a declared `exec` closure,
+  or any `exec` record with `closure = uncertain`); a non-invalidating delta
+  is a reviewer-only incremental replay of the touched non-exec claims with
+  no new convergence and no gate. Line count is never a skip criterion.
 - The gate fires once after the first normal Step 3 reviewer APPROVE in that
   convergence, before Step 3.5 or the `--stop-after before-polish` stop point.
 - On gate REQUEST_CHANGES (adapter exit 1): do not mint `exec`; replay
@@ -383,6 +607,104 @@ uncertainty fail closed as REQUEST_CHANGES.
   to Step 3.5 unless `--stop-after before-polish` applies.
   The skip reason and any `detail=` are surfaced in the round Live
   Report but do not block delivery.
+- "Mint `exec`" means: record the gate outcome through the helper —
+  `evidence_ledger.py record --check gate --scope-path <Step 3 changed
+  paths> --input <path>... --closure declared --result PASS`, or
+  `--disposition controlled-skip --reason "<verbatim SKIP banner>" --closure
+  declared` (a controlled skip without `--closure declared` is `uncertain`
+  and never satisfies `exec`), or `--result FAIL` on REQUEST_CHANGES — then
+  run `evidence_ledger.py
+  check`, which derives `completed_stages` (`exec` present iff every
+  active `reviewer_approve` and `gate` record is valid). The
+  orchestrator never writes `completed_stages` by hand.
+
+### Gate rubric revalidation
+
+One explicit path for gate findings that fail the rubric gate — Reviewer
+before Executor. What the orchestrator receives is unchanged: invoker exit
+1 plus the adapter-rendered text (`adversarial-gate: REQUEST_CHANGES` /
+`### Issues` / one `- [CRITICAL] file:lines (confidence=…) — title: body`
+line per blocking finding, optional `  Recommendation:` continuation).
+Existing gate semantics (single-pass per convergence, exit-code table, SKIP
+table, cleanup) are untouched. A synthetic invoker REQUEST_CHANGES (cleanup
+/ capture / adapter / banner failure) is recognized only by its full
+signature — a synthetic invoker text (anchored at the invoker / adapter,
+`confidence=1.0`, carrying no rubric fields) — and is an infrastructure
+failure, not a finding: it is not partitioned, not revalidated and not
+disputable (`finding_triage.py check` lists it under `infrastructure` and
+exits 1; `dispute` refuses it); `exec` stays withheld until the runtime
+failure is resolved and the ordinary Step 3 repair path re-runs (the gate
+stays single-pass). A gate `[CRITICAL]` anchored at
+`scripts/adversarial_gate_invoke.py` or `scripts/adversarial_gate_adapter.py`
+that carries any rubric field, or another confidence, is an ordinary
+finding: partitioned by the normal rule, dispatched when complete, and
+disputable.
+
+1. **Partition.** Run `python3 scripts/finding_triage.py check --session
+   {uuid} --input <rendered gate text> --record-pending --round {round}`.
+   Findings that pass are *complete gate findings*; findings that fail are
+   *incomplete gate findings*. Each incomplete finding is recorded in
+   `## Review History` as `rubric_incomplete: gate finding #n missing
+   <fields>` and appended (by the helper) to the persisted pending list,
+   mirrored in `loop_state.pending_rubric_incomplete`, as `{id, source:
+   "gate", round, finding: n, missing: [...], text, state:
+   "awaiting-revalidation"}`. `exec` stays withheld while any complete gate
+   finding is unresolved or any pending entry is `awaiting-revalidation`.
+2. **Next Step 3 round.** Ordinary round steps apply with one deterministic
+   branch on the partition result (`executor_dispatch` in the helper's
+   output):
+   - at least one complete gate finding → round step 2 dispatches the
+     Executor with **only** the complete findings as feedback (the helper's
+     `complete_findings_text`; today's ordering, unchanged for them);
+   - no complete gate finding → round step 2 is skipped:
+     `loop_state.revalidation_round = true`, round step 3 records "no
+     Executor dispatch — rubric revalidation", the Timing Log row shows
+     `executor:0`.
+   In both branches round step 5 dispatches the normal Step 3 Reviewer
+   (same backend, same packet-first prompt) with one extra block,
+   `## Rubric revalidation`, listing every pending entry verbatim with its
+   missing fields and the instruction: "For each item: re-assert it as a
+   `[CRITICAL]` with the full six-field rubric, or drop it (omit it, or
+   restate it as `[MINOR]`). Nothing listed here has been implemented; do
+   not treat any item as resolved." An incomplete finding never appears in
+   an Executor prompt.
+3. **Outcome per pending entry**, computed by `python3
+   scripts/finding_triage.py revalidate --session {uuid} --pending <id>
+   --review <reviewer output file>` (same three-valued result as `concur`):
+   `re-asserted` (exit 1; a `[CRITICAL]` with a complete rubric matching the
+   entry) → state `re-asserted`; the finding enters the ordinary
+   Executor/Reviewer repair loop as a normal complete CRITICAL from this
+   Reviewer output. `concurred` (exit 0; absent, or restated as `[MINOR]`)
+   → state `dropped`; closed with a `## Review History` line (the helper's
+   `history_line`). `incomplete` (exit 4; re-asserted without a full
+   rubric) → the whole Reviewer output is discarded as malformed and the
+   **normal-Reviewer row** of the [§Mandatory rubric gate](#mandatory-rubric-gate)
+   table applies (Claude plugin: one re-dispatch with the missing-field
+   list, second `incomplete` → reviewer failure for the round, handsfree
+   hard-stop; Codex Stage 1 Claude CLI: no retry, reviewer failure surfaced
+   or the configured Codex fallback, whose output goes through the same
+   triage). The pending entry stays `awaiting-revalidation` until a valid
+   output resolves it.
+4. **Minting.** The gate is spent for this convergence and is never re-run.
+   `exec` is minted exactly when a normal Step 3 Reviewer returns a
+   schema-valid, triage-complete `APPROVE` while no complete gate finding
+   is open and every pending entry is `dropped` or was repaired through the
+   ordinary loop after `re-asserted` (`finding_triage.py status` exit 0).
+   Because `REQUEST_CHANGES` must carry at least one `[CRITICAL]`
+   (`reviewer-output.md`), an `APPROVE` on a revalidation round necessarily
+   means every pending entry was dropped, so a round with zero Executor
+   dispatches mints `exec` directly. Verdicts are never overridden: a
+   re-asserted complete CRITICAL blocks like any other; a drop is the
+   Reviewer's own decision, never the orchestrator's.
+5. **Loop accounting.** A revalidation round counts as a Step 3 round for
+   `soft_limit_exec` and stuck detection. `loop_state` additions are
+   declared in [planning.md §Loop state](./planning.md#loop-state):
+   `pending_rubric_incomplete: []`, `revalidation_round: false`. Codex
+   Stage 1 mirrors run the same partition and `revalidate` after
+   `review_verification.py` parsing; the Codex `claude -p` reviewer prompt
+   file carries the same `## Rubric revalidation` block. Normal (non-gate)
+   Reviewer outputs are unaffected by this subflow: an incomplete
+   normal-path CRITICAL is discarded and retried per the table, as before.
 
 ### Skip rule (`adversarial_gate_skip_paths`)
 
@@ -403,6 +725,21 @@ containing, in order:
 2. One-line problem statement.
 3. The set of files touched by Step 3 (one path per line).
 4. (optional) The most recent Reviewer summary line.
+5. The blocking-rubric instruction, verbatim: "Every finding with severity
+   critical or high must carry, inline inside its `body`, the six labelled
+   segments `Trigger:`, `Reachability:`, `Impact:`, `Likelihood:`, `Fix
+   cost:`, `Cheaper response:`, each non-empty; a blocking finding lacking
+   any segment is discarded as malformed and never implemented. Unreachable
+   scenarios, unsupported assumption chains, negligible combined risk, or
+   clearly disproportionate complexity for extremely rare low-impact
+   benefit cannot block; rare but realistically reachable credential
+   exposure, authorization bypass, irreversible data loss, destructive
+   action, or comparable harm remains blocking." (The focus file is the
+   only channel shared by the plugin and fallback paths;
+   `scripts/adversarial_gate_fallback_prompt.txt` repeats it for the
+   fallback path. Adapter JSON schema, `_render`, and exit codes are
+   untouched; `finding_triage.py` reads the inline labels from the rendered
+   `body`.)
 
 The orchestrator writes this file to
 `.review-loop/tmp/{session_id}-adversarial-focus.{round}.txt` and
@@ -498,7 +835,7 @@ codex adversarial-review JSON output into one of:
 | Adapter exit | Verdict |
 |---|---|
 | `0` | APPROVE — mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies. Advisory medium/low findings shown but non-blocking. |
-| `1` | REQUEST_CHANGES — do not mint `exec`; feed findings to ordinary Step 3 repair rounds; do not re-run Step 3.4 in that repair path. |
+| `1` | REQUEST_CHANGES — do not mint `exec`; partition the rendered text with `finding_triage.py check`; feed complete findings to ordinary Step 3 repair rounds and incomplete ones to [§Gate rubric revalidation](#gate-rubric-revalidation); do not re-run Step 3.4 in that repair path. A synthetic invoker REQUEST_CHANGES (cleanup / capture / adapter / banner failure — a synthetic invoker text (anchored at the invoker / adapter, `confidence=1.0`, carrying no rubric fields)) is an infrastructure failure, not a finding: it is not partitioned, not revalidated and not disputable; `exec` stays withheld until the runtime failure is resolved and the ordinary Step 3 repair path re-runs (the gate stays single-pass). A gate `[CRITICAL]` at those paths that carries any rubric field is an ordinary finding. |
 | `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP. |
 
 Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP: if the
@@ -560,8 +897,16 @@ simplification, and test consolidation, re-running the Executor on any
 CRITICALs it surfaces.
 
 When any substep writes code (executor-fix, simplify, test consolidation),
-`completed_stages` is cleared entirely and the orchestrator replays from
-`exec` per [session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle).
+the orchestrator runs the write-boundary sequence (`evidence_ledger.py
+snapshot` → `classify` → `check`): every record whose declared closure the
+write touched is invalidated per record, `completed_stages` is re-derived,
+and if `classify` reports the delta as exec-invalidating the orchestrator
+replays from `exec` per
+[session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle).
+Each Step 3.5 outcome is recorded through the helper (`static_analysis`
+executed PASS or `not-applicable` with the reason, `agent_review:<name>`,
+`simplify`, `tests` with `--env-command` and selectors); `polish` is derived
+from those records, never hand-minted.
 
 ### 3.5.1 — Language detection
 
@@ -832,16 +1177,17 @@ Comments fixed: {N} stale comments in {files / "none"}
 ─────────────────────────────────────────────────────
 ```
 
-If Step 3.6 performs any writes (doc or comment fixes), the default rule is
-to clear `completed_stages` and replay from `exec`. Narrow exception:
-eligible prose/comment/metadata-only writes may use `reviewer-only
+If Step 3.6 performs any writes (doc or comment fixes), run the
+write-boundary sequence (`evidence_ledger.py snapshot` → `classify` →
+`check`). When `classify` reports the delta as exec-invalidating, replay
+from `exec`. Otherwise the write is eligible for `reviewer-only
 fast-replay` per
-[session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle).
-On reviewer-only fast-replay `APPROVE`, preserve the current
-`completed_stages` and mint `docs`; on `REQUEST_CHANGES`, clear
-`completed_stages` and replay from `exec`. A no-write or approved
-fast-replay docs stage still proceeds to Step 3.7; Step 3.6 is not a
-terminal state.
+[session-file.md §`completed_stages` lifecycle](./session-file.md#completed_stages-lifecycle):
+the touched non-exec claims are re-recorded by a Reviewer-only round; on
+`APPROVE`, record `docs_consistency` (executed PASS) and `docs` is derived;
+on `REQUEST_CHANGES`, record it as FAIL and replay from `exec`. A no-write
+or approved fast-replay docs stage still proceeds to Step 3.7; Step 3.6 is
+not a terminal state.
 
 ---
 
@@ -948,9 +1294,11 @@ Status: {✓ CLEAN — ready to commit | ✗ BLOCKED — N sensitive files must 
 
 If BLOCKED: halt. Do not proceed to Step 4 until resolved.
 
-If Step 3.7 writes `.gitignore` or causes `git rm --cached`,
-`completed_stages` is cleared and replay restarts from `exec`. On a
-no-write completion, mint `security`.
+If Step 3.7 writes `.gitignore` or causes `git rm --cached`, run the
+write-boundary sequence (`evidence_ledger.py snapshot` → `classify` →
+`check`); Step 3.7 writes always invalidate `exec` and replay restarts from
+`exec`. On a no-write completion, record `security_scan` (executed PASS,
+`--env-command`) and `security` is derived.
 
 ---
 
@@ -965,9 +1313,12 @@ runtime_supported_set ⊆ completed_stages
 - Claude Code: `{exec, polish, docs, security} ⊆ completed_stages`.
 - Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
-Because invalidation + replay guarantee that set entries only exist when
-they are valid for the current state, the delivery gate itself is
-structural and does not run another reviewer round. The terminal
+Because `completed_stages` is derived by `evidence_ledger.py check` from
+records whose inputs, dependencies and selector members are byte-identical
+to the current worktree, set entries only exist when they are valid for the
+current state; the delivery gate itself is structural and does not run
+another reviewer round. Run `check` once more immediately before the gate
+so the value reflects the final tree. The terminal
 adversarial pass (Step 3.4, between Step 3 APPROVE and Step 3.5) is the
 explicit stranger-eyes check; the delivery gate trusts its outcome via
 the `completed_stages` set.
@@ -1037,11 +1388,12 @@ state, sets `delivery_blocked_by ← <stage>`, and exits without delivering.
 
 - Session file schema + canonical sections, lock, moving baseline, dirty
   map, drift check, `completed_stages` + `delivery_blocked_by` lifecycles,
-  `--accept-external-state`, backward-compat fallback:
+  `--accept-external-state`, backward-compat fallback, evidence ledger,
+  current review packet, Timing Log columns:
   [session-file.md](./session-file.md).
 - Planning phase round loop, dispatch templates, question classification,
   context-persist sub-step: [planning.md](./planning.md).
-- Executor output schema + rejection rules:
+- Executor output schema, Direct Implementation Record + rejection rules:
   [executor-output.md](./executor-output.md).
-- Reviewer output schema + validation rules:
+- Reviewer output schema + validation rules, blocking rubric, rubric gate:
   [reviewer-output.md](./reviewer-output.md).

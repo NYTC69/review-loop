@@ -1,0 +1,618 @@
+{
+  "id": "case-6",
+  "title": "a reviewer-proposed defense against an unreachable, low-impact scenario whose robust fix adds substantial complexity",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n",
+    "tests/__init__.py": "",
+    "tests/test_calc.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampTest(unittest.TestCase):\n    def test_low(self):\n        self.assertEqual(clamp(-1, 0, 3), 0)\n\n    def test_inside(self):\n        self.assertEqual(clamp(2, 0, 3), 2)\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n",
+    "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n"
+  },
+  "seeded_defects": [],
+  "steps": [
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+        "tests/test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.store import load, save\n\n\nclass StoreTest(unittest.TestCase):\n    def test_round_trip(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            path = os.path.join(tmp, \"doc.json\")\n            save(path, {\"a\": 1})\n            self.assertEqual(load(path), {\"a\": 1})\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "uncertain",
+          "callers of load() outside the package are not enumerated"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/store.py",
+          "tests/test_store.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/store.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-1.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "dispute",
+      "finding": 1,
+      "rationale": "reviews/dispute-1.md",
+      "review": "reviews/round-2.md",
+      "gate": "gate/approve.md",
+      "old_rule_repair_writes": {
+        "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    import fcntl\n    import hashlib\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        fcntl.flock(fh, fcntl.LOCK_SH)\n        try:\n            raw = fh.read()\n        finally:\n            fcntl.flock(fh, fcntl.LOCK_UN)\n    digest_path = path + \".sha256\"\n    try:\n        with open(digest_path, \"r\", encoding=\"utf-8\") as fh:\n            expected = fh.read().strip()\n    except FileNotFoundError:\n        expected = None\n    if expected is not None and hashlib.sha256(raw.encode(\"utf-8\")).hexdigest() != expected:\n        raise ValueError(\"checksum mismatch while loading \" + path)\n    return json.loads(raw)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n"
+      }
+    }
+  ],
+  "variants": {
+    "6b": {
+      "title": "case 6, second Reviewer re-asserts with a full rubric",
+      "steps": [
+        {
+          "kind": "write",
+          "write_kind": "code",
+          "writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+            "tests/test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.store import load, save\n\n\nclass StoreTest(unittest.TestCase):\n    def test_round_trip(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            path = os.path.join(tmp, \"doc.json\")\n            save(path, {\"a\": 1})\n            self.assertEqual(load(path), {\"a\": 1})\n"
+          },
+          "route_facts": {
+            "small_bounded_scope": [
+              "true",
+              "one module and its focused test"
+            ],
+            "unambiguous_requirements": [
+              "true",
+              "acceptance criteria name the exact behaviour"
+            ],
+            "known_dependency_impact": [
+              "uncertain",
+              "callers of load() outside the package are not enumerated"
+            ],
+            "no_useful_decomposition": [
+              "true",
+              "single cohesive edit"
+            ],
+            "safe_verification": [
+              "true",
+              "unit tests cover the change"
+            ],
+            "dirty_work_preserved": [
+              "true",
+              "no unrelated dirty paths in the worktree"
+            ],
+            "auth_or_authorization": [
+              "false",
+              "no auth code"
+            ],
+            "permissions": [
+              "false",
+              "no permission model"
+            ],
+            "destructive_operation": [
+              "false",
+              "no deletion of user data"
+            ],
+            "irreversible_data_change": [
+              "false",
+              "in-memory helpers only"
+            ],
+            "secrets": [
+              "false",
+              "no credentials"
+            ],
+            "external_writes": [
+              "false",
+              "no network or external system"
+            ],
+            "migrations": [
+              "false",
+              "no schema"
+            ],
+            "broad_api_or_architecture": [
+              "false",
+              "internal helper"
+            ],
+            "large_surface": [
+              "false",
+              "one or two files"
+            ]
+          },
+          "review_closure": {
+            "inputs": [
+              "pkg/store.py",
+              "tests/test_store.py"
+            ],
+            "deps": []
+          },
+          "checks": {
+            "tests": {
+              "command": "python3 -m unittest discover -q -s tests -t .",
+              "inputs": [
+                "pkg/store.py"
+              ],
+              "deps": [],
+              "selectors": [
+                "glob:tests/**"
+              ]
+            }
+          },
+          "review": "reviews/round-1.md",
+          "gate": "gate/approve.md"
+        },
+        {
+          "kind": "dispute",
+          "finding": 1,
+          "rationale": "reviews/dispute-1.md",
+          "review": "reviews/round-2-reassert.md",
+          "gate": "gate/approve.md",
+          "on_reassert": "pause:risk",
+          "old_rule_repair_writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    import fcntl\n    import hashlib\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        fcntl.flock(fh, fcntl.LOCK_SH)\n        try:\n            raw = fh.read()\n        finally:\n            fcntl.flock(fh, fcntl.LOCK_UN)\n    digest_path = path + \".sha256\"\n    try:\n        with open(digest_path, \"r\", encoding=\"utf-8\") as fh:\n            expected = fh.read().strip()\n    except FileNotFoundError:\n        expected = None\n    if expected is not None and hashlib.sha256(raw.encode(\"utf-8\")).hexdigest() != expected:\n        raise ValueError(\"checksum mismatch while loading \" + path)\n    return json.loads(raw)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n"
+          }
+        }
+      ]
+    },
+    "6c": {
+      "title": "case 6, incomplete CRITICAL (missing Reachability and Fix cost)",
+      "steps": [
+        {
+          "kind": "write",
+          "write_kind": "code",
+          "writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+            "tests/test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.store import load, save\n\n\nclass StoreTest(unittest.TestCase):\n    def test_round_trip(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            path = os.path.join(tmp, \"doc.json\")\n            save(path, {\"a\": 1})\n            self.assertEqual(load(path), {\"a\": 1})\n"
+          },
+          "route_facts": {
+            "small_bounded_scope": [
+              "true",
+              "one module and its focused test"
+            ],
+            "unambiguous_requirements": [
+              "true",
+              "acceptance criteria name the exact behaviour"
+            ],
+            "known_dependency_impact": [
+              "uncertain",
+              "callers of load() outside the package are not enumerated"
+            ],
+            "no_useful_decomposition": [
+              "true",
+              "single cohesive edit"
+            ],
+            "safe_verification": [
+              "true",
+              "unit tests cover the change"
+            ],
+            "dirty_work_preserved": [
+              "true",
+              "no unrelated dirty paths in the worktree"
+            ],
+            "auth_or_authorization": [
+              "false",
+              "no auth code"
+            ],
+            "permissions": [
+              "false",
+              "no permission model"
+            ],
+            "destructive_operation": [
+              "false",
+              "no deletion of user data"
+            ],
+            "irreversible_data_change": [
+              "false",
+              "in-memory helpers only"
+            ],
+            "secrets": [
+              "false",
+              "no credentials"
+            ],
+            "external_writes": [
+              "false",
+              "no network or external system"
+            ],
+            "migrations": [
+              "false",
+              "no schema"
+            ],
+            "broad_api_or_architecture": [
+              "false",
+              "internal helper"
+            ],
+            "large_surface": [
+              "false",
+              "one or two files"
+            ]
+          },
+          "review_closure": {
+            "inputs": [
+              "pkg/store.py",
+              "tests/test_store.py"
+            ],
+            "deps": []
+          },
+          "checks": {
+            "tests": {
+              "command": "python3 -m unittest discover -q -s tests -t .",
+              "inputs": [
+                "pkg/store.py"
+              ],
+              "deps": [],
+              "selectors": [
+                "glob:tests/**"
+              ]
+            }
+          },
+          "review": "reviews/round-1-incomplete.md",
+          "gate": "gate/approve.md"
+        },
+        {
+          "kind": "retry",
+          "review": "reviews/round-2.md",
+          "gate": "gate/approve.md",
+          "old_rule_repair_writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    import fcntl\n    import hashlib\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        fcntl.flock(fh, fcntl.LOCK_SH)\n        try:\n            raw = fh.read()\n        finally:\n            fcntl.flock(fh, fcntl.LOCK_UN)\n    digest_path = path + \".sha256\"\n    try:\n        with open(digest_path, \"r\", encoding=\"utf-8\") as fh:\n            expected = fh.read().strip()\n    except FileNotFoundError:\n        expected = None\n    if expected is not None and hashlib.sha256(raw.encode(\"utf-8\")).hexdigest() != expected:\n        raise ValueError(\"checksum mismatch while loading \" + path)\n    return json.loads(raw)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n"
+          }
+        }
+      ]
+    },
+    "6c-gate": {
+      "title": "case 6, the same incomplete CRITICAL arrives as adapter-rendered Step 3.4 text",
+      "steps": [
+        {
+          "kind": "write",
+          "write_kind": "code",
+          "writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+            "tests/test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.store import load, save\n\n\nclass StoreTest(unittest.TestCase):\n    def test_round_trip(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            path = os.path.join(tmp, \"doc.json\")\n            save(path, {\"a\": 1})\n            self.assertEqual(load(path), {\"a\": 1})\n"
+          },
+          "route_facts": {
+            "small_bounded_scope": [
+              "true",
+              "one module and its focused test"
+            ],
+            "unambiguous_requirements": [
+              "true",
+              "acceptance criteria name the exact behaviour"
+            ],
+            "known_dependency_impact": [
+              "uncertain",
+              "callers of load() outside the package are not enumerated"
+            ],
+            "no_useful_decomposition": [
+              "true",
+              "single cohesive edit"
+            ],
+            "safe_verification": [
+              "true",
+              "unit tests cover the change"
+            ],
+            "dirty_work_preserved": [
+              "true",
+              "no unrelated dirty paths in the worktree"
+            ],
+            "auth_or_authorization": [
+              "false",
+              "no auth code"
+            ],
+            "permissions": [
+              "false",
+              "no permission model"
+            ],
+            "destructive_operation": [
+              "false",
+              "no deletion of user data"
+            ],
+            "irreversible_data_change": [
+              "false",
+              "in-memory helpers only"
+            ],
+            "secrets": [
+              "false",
+              "no credentials"
+            ],
+            "external_writes": [
+              "false",
+              "no network or external system"
+            ],
+            "migrations": [
+              "false",
+              "no schema"
+            ],
+            "broad_api_or_architecture": [
+              "false",
+              "internal helper"
+            ],
+            "large_surface": [
+              "false",
+              "one or two files"
+            ]
+          },
+          "review_closure": {
+            "inputs": [
+              "pkg/store.py",
+              "tests/test_store.py"
+            ],
+            "deps": []
+          },
+          "checks": {
+            "tests": {
+              "command": "python3 -m unittest discover -q -s tests -t .",
+              "inputs": [
+                "pkg/store.py"
+              ],
+              "deps": [],
+              "selectors": [
+                "glob:tests/**"
+              ]
+            }
+          },
+          "review": "reviews/round-1-approve.md",
+          "gate": "gate/incomplete.md",
+          "revalidation_review": "reviews/round-2.md",
+          "old_rule_repair_writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    import fcntl\n    import hashlib\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        fcntl.flock(fh, fcntl.LOCK_SH)\n        try:\n            raw = fh.read()\n        finally:\n            fcntl.flock(fh, fcntl.LOCK_UN)\n    digest_path = path + \".sha256\"\n    try:\n        with open(digest_path, \"r\", encoding=\"utf-8\") as fh:\n            expected = fh.read().strip()\n    except FileNotFoundError:\n        expected = None\n    if expected is not None and hashlib.sha256(raw.encode(\"utf-8\")).hexdigest() != expected:\n        raise ValueError(\"checksum mismatch while loading \" + path)\n    return json.loads(raw)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n"
+          }
+        }
+      ]
+    },
+    "6c-gate-reassert": {
+      "title": "case 6 gate variant, the revalidation round re-asserts with a full rubric",
+      "steps": [
+        {
+          "kind": "write",
+          "write_kind": "code",
+          "writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+            "tests/test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.store import load, save\n\n\nclass StoreTest(unittest.TestCase):\n    def test_round_trip(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            path = os.path.join(tmp, \"doc.json\")\n            save(path, {\"a\": 1})\n            self.assertEqual(load(path), {\"a\": 1})\n"
+          },
+          "route_facts": {
+            "small_bounded_scope": [
+              "true",
+              "one module and its focused test"
+            ],
+            "unambiguous_requirements": [
+              "true",
+              "acceptance criteria name the exact behaviour"
+            ],
+            "known_dependency_impact": [
+              "uncertain",
+              "callers of load() outside the package are not enumerated"
+            ],
+            "no_useful_decomposition": [
+              "true",
+              "single cohesive edit"
+            ],
+            "safe_verification": [
+              "true",
+              "unit tests cover the change"
+            ],
+            "dirty_work_preserved": [
+              "true",
+              "no unrelated dirty paths in the worktree"
+            ],
+            "auth_or_authorization": [
+              "false",
+              "no auth code"
+            ],
+            "permissions": [
+              "false",
+              "no permission model"
+            ],
+            "destructive_operation": [
+              "false",
+              "no deletion of user data"
+            ],
+            "irreversible_data_change": [
+              "false",
+              "in-memory helpers only"
+            ],
+            "secrets": [
+              "false",
+              "no credentials"
+            ],
+            "external_writes": [
+              "false",
+              "no network or external system"
+            ],
+            "migrations": [
+              "false",
+              "no schema"
+            ],
+            "broad_api_or_architecture": [
+              "false",
+              "internal helper"
+            ],
+            "large_surface": [
+              "false",
+              "one or two files"
+            ]
+          },
+          "review_closure": {
+            "inputs": [
+              "pkg/store.py",
+              "tests/test_store.py"
+            ],
+            "deps": []
+          },
+          "checks": {
+            "tests": {
+              "command": "python3 -m unittest discover -q -s tests -t .",
+              "inputs": [
+                "pkg/store.py"
+              ],
+              "deps": [],
+              "selectors": [
+                "glob:tests/**"
+              ]
+            }
+          },
+          "review": "reviews/round-1-approve.md",
+          "gate": "gate/incomplete.md",
+          "revalidation_review": "reviews/round-2-gate-reassert.md",
+          "old_rule_repair_writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    import fcntl\n    import hashlib\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        fcntl.flock(fh, fcntl.LOCK_SH)\n        try:\n            raw = fh.read()\n        finally:\n            fcntl.flock(fh, fcntl.LOCK_UN)\n    digest_path = path + \".sha256\"\n    try:\n        with open(digest_path, \"r\", encoding=\"utf-8\") as fh:\n            expected = fh.read().strip()\n    except FileNotFoundError:\n        expected = None\n    if expected is not None and hashlib.sha256(raw.encode(\"utf-8\")).hexdigest() != expected:\n        raise ValueError(\"checksum mismatch while loading \" + path)\n    return json.loads(raw)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n"
+          }
+        },
+        {
+          "kind": "write",
+          "write_kind": "code",
+          "writes": {
+            "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    import fcntl\n    import hashlib\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        fcntl.flock(fh, fcntl.LOCK_SH)\n        try:\n            raw = fh.read()\n        finally:\n            fcntl.flock(fh, fcntl.LOCK_UN)\n    digest_path = path + \".sha256\"\n    try:\n        with open(digest_path, \"r\", encoding=\"utf-8\") as fh:\n            expected = fh.read().strip()\n    except FileNotFoundError:\n        expected = None\n    if expected is not None and hashlib.sha256(raw.encode(\"utf-8\")).hexdigest() != expected:\n        raise ValueError(\"checksum mismatch while loading \" + path)\n    return json.loads(raw)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n"
+          },
+          "route_facts": {
+            "small_bounded_scope": [
+              "true",
+              "one module and its focused test"
+            ],
+            "unambiguous_requirements": [
+              "true",
+              "acceptance criteria name the exact behaviour"
+            ],
+            "known_dependency_impact": [
+              "uncertain",
+              "callers of load() outside the package are not enumerated"
+            ],
+            "no_useful_decomposition": [
+              "true",
+              "single cohesive edit"
+            ],
+            "safe_verification": [
+              "true",
+              "unit tests cover the change"
+            ],
+            "dirty_work_preserved": [
+              "true",
+              "no unrelated dirty paths in the worktree"
+            ],
+            "auth_or_authorization": [
+              "false",
+              "no auth code"
+            ],
+            "permissions": [
+              "false",
+              "no permission model"
+            ],
+            "destructive_operation": [
+              "false",
+              "no deletion of user data"
+            ],
+            "irreversible_data_change": [
+              "false",
+              "in-memory helpers only"
+            ],
+            "secrets": [
+              "false",
+              "no credentials"
+            ],
+            "external_writes": [
+              "false",
+              "no network or external system"
+            ],
+            "migrations": [
+              "false",
+              "no schema"
+            ],
+            "broad_api_or_architecture": [
+              "false",
+              "internal helper"
+            ],
+            "large_surface": [
+              "false",
+              "one or two files"
+            ]
+          },
+          "review_closure": {
+            "inputs": [
+              "pkg/store.py"
+            ],
+            "deps": []
+          },
+          "checks": {
+            "tests": {
+              "command": "python3 -m unittest discover -q -s tests -t .",
+              "inputs": [
+                "pkg/store.py"
+              ],
+              "deps": [],
+              "selectors": [
+                "glob:tests/**"
+              ]
+            }
+          },
+          "review": "reviews/round-3.md",
+          "gate": "gate/approve.md"
+        }
+      ]
+    }
+  }
+}

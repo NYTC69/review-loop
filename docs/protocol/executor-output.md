@@ -97,10 +97,87 @@ claim against the pre-round / post-round current-round delta (see
 
 ---
 
+## Direct Implementation Record
+
+When [execution.md §Author route selection](./execution.md#author-route-selection)
+routes an execution round to `orchestrator-direct` — only when
+`scripts/evidence_ledger.py route` says so — the orchestrator implements the
+round itself and produces a **Direct Implementation Record** (DIR) in place
+of the Executor output. A DIR is never a fabricated Executor output: its
+heading names the author route, and the orchestrator never writes
+`## Implementation Complete` for work no Executor did.
+
+```
+## Direct Implementation Record: {title}
+
+### Author Route: orchestrator-direct
+
+### Route Facts
+| fact | value | rationale |
+|---|---|---|
+| small_bounded_scope | true | ... |
+...   (all six eligibility facts and nine sensitive flags, verbatim from the packet)
+
+### Changes Made
+...
+
+### Files Modified / Created / Deleted
+- `path/to/file.ext` — what changed
+- ...
+
+### Deviations from Plan
+None  /  [explain if any]
+
+### Notes for Reviewer
+...
+
+### Content State
+| path | pre_blob | post_blob |
+|---|---|---|
+| `path/to/file.ext` | {sha or <absent>} | {sha or <absent>} |
+
+### Verification
+- `{command}` → {exit code / result}
+
+### Attributable Delta
+{the `### Attributable Delta` table from
+ `python3 scripts/evidence_ledger.py delta --session {uuid} --pre {pre} --post {post}`}
+```
+
+### Rules
+
+- The outer `## Direct Implementation Record: {title}` heading and
+  `### Author Route: orchestrator-direct` are required; the four execution
+  sections follow the execution-mode rules above unchanged.
+- `### Route Facts` repeats the packet block the route decision was made
+  from; it is not edited after `evidence_ledger.py route` ran.
+- `### Content State` lists every touched path with its pre and post blob
+  identity (`<absent>` for a created or deleted side). Its rows are
+  identical to the packet's `### Attributable Delta` rows (pre = the
+  snapshot the previous packet was reviewed at, post = the snapshot stored
+  after the direct write); the orchestrator copies them from
+  `evidence_ledger.py delta --format json` and never hand-computes a hash.
+- `### Verification` lists the commands the orchestrator actually ran and
+  their results; an unrun check is stated as unrun, never implied.
+- The DIR is validated against the repository exactly like Executor output:
+  the rejection rules below apply verbatim, and the DIR is additionally
+  rejected when any `### Content State` row's `post_blob` differs from the
+  stored post snapshot.
+- The round's `## Review History` entry carries the marker
+  `- Author route: orchestrator-direct`; the `reviewer_approve` record is
+  written with `--author-route orchestrator-direct`; `auto_commit` stages
+  only DIR-listed files. Independent Reviewer approval is mandatory for any
+  meaningful runtime or externally visible change — a DIR never permits
+  self-review-only delivery.
+- Codex Stage 1 produces the same DIR when the Codex main thread takes the
+  direct route.
+
+---
+
 ## Rejection rules
 
-The orchestrator treats Executor output as **invalid** and rejects it if
-any of the following are true:
+The orchestrator treats Executor output (and a Direct Implementation
+Record) as **invalid** and rejects it if any of the following are true:
 
 1. A mandatory `##` or `###` section header is missing.
 2. The required section structure is present but the body is unparseable

@@ -32,6 +32,17 @@
   },
   "issue_entry_shapes": {
     "critical": "- [CRITICAL] <description> - must be resolved before proceeding\n  File: `path/file.ext`, around line N",
+    "critical_rubric_continuation": "- [CRITICAL] <description> - must be resolved before proceeding\n  Trigger: <text>\n  Reachability: <text>\n  Impact: <text>\n  Likelihood: <text>\n  Fix cost: <text>\n  Cheaper response: <text>\n  File: `path/file.ext`, around line N",
+    "critical_rubric_inline": "- [CRITICAL] path/file.ext:N-M (confidence=<c>) - <title>: Trigger: <text>. Reachability: <text>. Impact: <text>. Likelihood: <text>. Fix cost: <text>. Cheaper response: <text>.",
     "minor": "- [MINOR] <description> - recommended improvement"
-  }
+  },
+  "rubric_fields": [
+    "Trigger",
+    "Reachability",
+    "Impact",
+    "Likelihood",
+    "Fix cost",
+    "Cheaper response"
+  ],
+  "rubric_gate": "scripts/finding_triage.py check"
 }

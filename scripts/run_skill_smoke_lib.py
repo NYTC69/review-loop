@@ -256,3 +256,25 @@ def cleanup_timed_out_process(
         process.stderr.close()
 
     return partial_stdout, partial_stderr
+
+
+# `finding_triage.py check` report keys the reviewer-kind smoke assertions
+# consume. Access is strict: a missing key is helper/report contract drift
+# and must surface as a FAIL record, never as a defaulted measurement.
+TRIAGE_REPORT_KEYS = ("result", "findings", "complete", "incomplete", "summary")
+
+
+def triage_report_fields(report) -> dict:
+    """Strict projection of a `finding_triage.py check` JSON report onto
+    `TRIAGE_REPORT_KEYS` (every finding must carry `severity`). Raises
+    KeyError naming the first missing key; TypeError when the report is not
+    an object."""
+    if not isinstance(report, dict):
+        raise TypeError(f"finding_triage.py check report must be a JSON object, got {type(report).__name__}")
+    for key in TRIAGE_REPORT_KEYS:
+        if key not in report:
+            raise KeyError(key)
+    for finding in report["findings"]:
+        if not isinstance(finding, dict) or "severity" not in finding:
+            raise KeyError("findings[].severity")
+    return {key: report[key] for key in TRIAGE_REPORT_KEYS}

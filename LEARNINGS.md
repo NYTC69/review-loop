@@ -44,6 +44,7 @@ is created (SPEC rev 14 architecture E').
 ---
 
 ### <a id="L-review-loop-adversarial-gate-single-pass-convergence"></a> Run terminal adversarial gate once per execution convergence; route its REQUEST_CHANGES through normal Step 3 review/fix rounds, not another adversarial gate
+<!-- synced: 2026-05-16 drawer-id=drawer_3cats_learnings_review-loop_505a489ea4b28727 sidecar-hash=82fc873cde880063e2f0434be75a9498 target=3cats/learnings_review-loop schema=v1 -->
 - **Date**: 2026-05-14
 - **Task context**: v2.7.7 terminal adversarial-review gate 交付过程中，连续多轮 meta-dogfood adversarial review 把流程带成难以收工的自循环。
 - **What broke**: adversarial gate 的旧协议写成每次 Step 3 APPROVE 都重跑 gate，导致 gate REQUEST_CHANGES 修完后又触发下一轮 adversarial review，容易继续挑出边缘问题并反复延长交付。
@@ -55,12 +56,24 @@ is created (SPEC rev 14 architecture E').
 ---
 
 ### <a id="L-review-loop-parallelize-independent-branches"></a> Parallelize independent review-loop work branches by default; use sidecar agents or parallel tool calls without waiting for another reminder when write scopes or investigations are independent
+<!-- synced: 2026-05-16 drawer-id=drawer_3cats_learnings_review-loop_fcaad8902490a83f sidecar-hash=fab1b2b6c694803c26e5afab548113b6 target=3cats/learnings_review-loop schema=v1 -->
 - **Date**: 2026-05-15
 - **Task context**: v2.7.8 adversarial-gate polish/backlog closeout after the user corrected sequential triage during a multi-branch cleanup task.
 - **What broke**: I started the #1 backlog closeout sequentially even though triage, coverage-gap inspection, and doc/comment cleanup could proceed independently. This wasted wall-clock time and made the user repeat an already-established preference.
 - **Root cause**: I over-weighted keeping the main thread simple and under-applied the repo/user convention that bounded independent work should run concurrently when tool policy permits it.
 - **Rule going forward**: Parallelize independent review-loop work branches by default; use sidecar agents or parallel tool calls without waiting for another reminder when write scopes or investigations are independent
 - **Scope**: review-loop, orchestration, codex, parallel-agents, wall-clock, backlog-closeout
+- **Promotion candidacy**: consider-global
+
+---
+
+### <a id="L-review-loop-unrequired-dimension-fail-closed"></a> When a review or gate finding opens a capability dimension the approved plan never required, decide whether to support that dimension at all before choosing an implementation; take the fail-closed non-support branch unless a real user case demands otherwise
+- **Date**: 2026-09-16
+- **Task context**: review-loop orchestration-overhead P1–P4 milestone (session 7d83b340). The first terminal adversarial gate flagged that submodule gitlinks were skipped by the evidence snapshot and offered two fixes: (A) bind gitlinks and let them participate in invalidation, or (B) mark any gitlink `closure = uncertain` and refuse evidence reuse.
+- **What broke**: The Executor chose (A) with the rationale that (B) "would refuse reuse for every repo with a submodule". Submodules appear nowhere in the approved plan, review-loop has no `.gitmodules`, no repo under `~/3Cats/` or `~/Github/` uses one, and none of the eight evaluation cases involve one. (A) then compounded: the second gate found dirty nested repos did not invalidate (32 min executor round), and the next quality pass found four more HIGH defects in the same area (missing mode/type in the digest, `submodule.<name>.ignore` blindness, `git status` stderr swallowed on a zero exit, `skip-worktree` blindness) plus eight MEDIUMs, with a disk-driven rewrite queued behind them. Roughly a quarter of a 5-hour loop went into a dimension with no user.
+- **Root cause**: The P4 proportionality rubric was applied to each finding one at a time ("trigger realistic, impact = stale evidence, fix cost small") but never to the dimension as a whole. No one asked whether the capability should exist. Each accepted dimension is a surface that generates further findings in the same area, so the cost is compounding while the rubric only ever measures one increment.
+- **Rule going forward**: When a finding opens a capability dimension the approved plan never required, first decide whether to support the dimension at all. Prefer the fail-closed non-support branch the finding usually offers (mark the claim uncertain, refuse reuse, disclose it) unless a concrete supported user case demands the capability. Bind the decision in the session file so later rounds do not re-litigate it. This is also the binding-guidance rule "prefer rerunning a cheap relevant check over inventing a complex proof of reuse", applied at the dimension level instead of the finding level.
+- **Scope**: review-loop, over-engineering, proportional-review, adversarial-gate, unrequired-dimension, fail-closed, submodule, evidence-reuse
 - **Promotion candidacy**: consider-global
 
 ---

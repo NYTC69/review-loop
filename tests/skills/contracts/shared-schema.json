@@ -197,6 +197,24 @@
       "id": "codex_stage1_cheap_model_noop_target",
       "kind": "consistent_with",
       "mapping_id": "codex_stage1_cheap_model_noop"
+    },
+    {
+      "id": "session_current_review_packet_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Current Review Packet"
+    },
+    {
+      "id": "session_evidence_ledger_section_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "## Evidence Ledger"
+    },
+    {
+      "id": "session_route_facts_block_declared",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "### Route Facts"
     }
   ]
 }

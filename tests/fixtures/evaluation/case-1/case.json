@@ -1,0 +1,37 @@
+{
+  "id": "case-1",
+  "title": "a read-only review",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n",
+    "tests/__init__.py": "",
+    "tests/test_calc.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampTest(unittest.TestCase):\n    def test_low(self):\n        self.assertEqual(clamp(-1, 0, 3), 0)\n\n    def test_inside(self):\n        self.assertEqual(clamp(2, 0, 3), 2)\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n"
+  },
+  "seeded_defects": [
+    {
+      "file": "pkg/calc.py",
+      "line_start": 13,
+      "line_end": 15,
+      "kind": "off-by-one"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "write",
+      "writes": {},
+      "write_kind": "none",
+      "review_target": [
+        "pkg/calc.py"
+      ],
+      "review_closure": {
+        "inputs": [
+          "pkg/calc.py"
+        ],
+        "deps": []
+      },
+      "checks": {},
+      "review": "reviews/round-1.md"
+    }
+  ]
+}

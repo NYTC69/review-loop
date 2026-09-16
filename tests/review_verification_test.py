@@ -956,6 +956,55 @@ class SchemaValidationTest(unittest.TestCase):
         self.assertTrue(issues[0].startswith("[CRITICAL]"))
         self.assertIsNone(error)
 
+    _RUBRIC_LINES = (
+        "  Trigger: upstream returns HTTP 429 during the nightly batch\n"
+        "  Reachability: every nightly batch hits the rate limit at least once\n"
+        "  Impact: the batch aborts and partial writes remain on disk\n"
+        "  Likelihood: high\n"
+        "  Fix cost: small; honour Retry-After inside the existing loop\n"
+        "  Cheaper response: a MINOR would leave nightly data loss in place\n"
+    )
+
+    def test_request_changes_critical_with_six_rubric_continuation_lines_is_valid(self):
+        # P4 blocking rubric: the six indented `Label:` continuation lines
+        # under a `[CRITICAL]` bullet are tolerated exactly like the `File:`
+        # annotation — the parser still yields one CRITICAL issue and no
+        # schema violation. Rubric completeness is finding_triage.py's job.
+        body = (
+            "### VERDICT: REQUEST_CHANGES\n"
+            "\n"
+            "### Issues\n"
+            "- [CRITICAL] retry loop drops 429 responses\n"
+            + self._RUBRIC_LINES
+            + "  File: `src/client.py`, around line 42\n"
+            "\n"
+            "### Strengths\n"
+            "- ok\n"
+        )
+        verdict, issues, error = rv._parse_stream_json_result(_wrap_result(body))
+        self.assertEqual(verdict, "REQUEST_CHANGES")
+        self.assertEqual(len(issues), 1)
+        self.assertTrue(issues[0].startswith("[CRITICAL] retry loop"))
+        self.assertIsNone(error)
+
+    def test_request_changes_rubric_critical_mixed_with_minor_is_valid(self):
+        body = (
+            "### VERDICT: REQUEST_CHANGES\n"
+            "\n"
+            "### Issues\n"
+            "- [CRITICAL] retry loop drops 429 responses\n"
+            + self._RUBRIC_LINES
+            + "- [MINOR] extra blank line\n"
+            "  File: `src/client.py`, around line 90\n"
+            "\n"
+            "### Strengths\n"
+            "- ok\n"
+        )
+        verdict, issues, error = rv._parse_stream_json_result(_wrap_result(body))
+        self.assertEqual(verdict, "REQUEST_CHANGES")
+        self.assertEqual([i.split("]")[0] + "]" for i in issues], ["[CRITICAL]", "[MINOR]"])
+        self.assertIsNone(error)
+
     # ---- Schema violations ----------------------------------------------
 
     def test_invalid_verdict_token_flags_schema_violation(self):

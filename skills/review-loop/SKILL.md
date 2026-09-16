@@ -119,7 +119,10 @@ Shared tier contract:
 
 When triggered, you are the Orchestrator. Coordinate Executor and
 Reviewer; enforce the loop; keep the user informed via Live Reports.
-Never do the planning or coding yourself.
+Never plan yourself; implement directly only under
+`docs/protocol/execution.md` §Author route selection (when
+`evidence_ledger.py route` returns `orchestrator-direct`); otherwise
+delegate.
 
 ### Step 0 — Load config and parse flags
 
@@ -136,13 +139,19 @@ Generate a lowercase UUID. Create `.review-loop/sessions/{uuid}.md`
 with the canonical section list per `docs/protocol/session-file.md`
 §Canonical sections (includes `## Problem Description`, `## Context`,
 `## Acceptance Criteria`, `## Current Phase`, `## Approved Plan`,
-`## Review History`, `## Files Changed`, `## Key Related Files`,
-`## Timing Log`, `## Session Metadata`). `## Current Phase: planning`
+`## Current Review Packet`, `## Review History`, `## Files Changed`,
+`## Key Related Files`, `## Timing Log` (13-column header per
+`docs/protocol/session-file.md` §Timing Log columns), `## Evidence
+Ledger`, `## Session Metadata`). `## Current Phase: planning`
 (fresh) or `execution` (when Step 1.5 routes to CR).
 `entry_point: review-loop`. Fresh baseline quintet from current repo
 state. `plan_source` is written only after the planning loop APPROVEs
 or Step 1.5 routes directly into Approved Plan / review-only; omitted
-during planning draft rounds.
+during planning draft rounds. Store snap/0 of the current verified
+worktree with `python3 scripts/evidence_ledger.py snapshot --session
+{uuid}` — the mandatory entry point for every `## Evidence Ledger`
+write (`snapshot` / `record` / `check` / `classify` / `delta`); never
+hash content or mint stages in prose.
 
 Acquire the single-writer lock per
 `docs/protocol/session-file.md` §Lock file lifecycle. Print the
@@ -230,7 +239,15 @@ When Step 1.5 selected "fresh start", run the planning loop per
 `docs/protocol/planning.md` §Round loop. All per-round dispatch,
 Executor/Reviewer prompts, loop control, soft limit
 (`soft_limit_plan`), stuck detection, and question classification
-behavior are defined in that doc and not duplicated here.
+behavior are defined in that doc and not duplicated here. After every
+Reviewer parse run `finding_triage.py check` (mandatory rubric gate per
+`docs/protocol/execution.md` §Mandatory rubric gate: every `[CRITICAL]`
+carries the six fields `Trigger:`, `Reachability:`, `Impact:`,
+`Likelihood:`, `Fix cost:`, `Cheaper response:`; `incomplete` → discard
+the output as malformed, record `rubric_incomplete: finding #n missing
+<fields>`, re-dispatch the Reviewer once with the missing-field list,
+second `incomplete` → reviewer failure for the round; never implement a
+CRITICAL that failed triage).
 
 On `VERDICT: APPROVE`: promote `## Draft Plan` → `## Approved Plan`
 with `- Source: reviewer-approved`, write `plan_source:
@@ -261,6 +278,86 @@ mints `exec`.
 pass. Do not replace it with ad hoc metadata such as `completed_at`.
 This applies to both edit rounds and reviewed no-op rounds.
 
+Evidence and packet per round (`docs/protocol/execution.md` §Round
+steps, `docs/protocol/session-file.md` §Evidence Ledger / §Current
+Review Packet): after every write boundary run `evidence_ledger.py
+snapshot` then `check`; record `reviewer_approve` (PASS / FAIL, with
+`--scope-path` + `--input` for the review targets and `--closure
+declared` only when the closure is fully enumerated) and `gate` (PASS,
+FAIL, or `--disposition controlled-skip --reason "<verbatim banner>"
+--closure declared`) through the helper; "mint `exec`" means those records are valid and
+`check` derived the stage — never write `completed_stages` by hand.
+Every active record of a required check must be valid for a stage;
+when the review scope grew, retire the stale earlier-scope claim with
+`record --supersedes <earlier id>` (a FAIL is only superseded by a
+covering executed PASS). Author route per
+`docs/protocol/execution.md` §Author route selection: before each
+Executor call write `### Route Facts` (six eligibility facts, nine
+sensitive flags, each with a rationale) into the packet and run
+`evidence_ledger.py route --path <touched paths>`; `orchestrator-direct`
+(every fact `true`, every flag `false`, ledger cross-check passed,
+snapshot stored, execution phase) means you implement the round
+yourself and produce a Direct Implementation Record per
+`docs/protocol/executor-output.md`; anything else dispatches the
+Executor (without `--facts` the helper reads `### Route Facts` only
+from `## Current Review Packet`, never from history or an old DIR; a
+packet without the block routes to `executor`; the canonical packet is
+the unique `## Current Review Packet` heading whose next `## ` heading is
+`## Review History`, otherwise fail closed to `executor`). Record
+`reviewer_approve` with `--author-route`; independent
+Reviewer approval stays mandatory for either author.
+Rewrite `## Current Review Packet` in full with the `### Attributable
+Delta` from `evidence_ledger.py delta` (pre = the snapshot the previous
+packet was reviewed at, snap/0 for a first round). Reviewer prompts say
+"Read `## Current Review Packet` first. Load a `## Review History`
+entry only when the packet references it or a claim needs provenance.
+Absence of irrelevant history is not a defect." Timing Log rows use
+the 13 columns; unmeasured cells are `N/A`. After every Reviewer parse
+run `finding_triage.py check` (mandatory rubric gate per
+`docs/protocol/execution.md` §Mandatory rubric gate: every `[CRITICAL]`
+carries the six fields `Trigger:`, `Reachability:`, `Impact:`,
+`Likelihood:`, `Fix cost:`, `Cheaper response:`; `incomplete` → discard
+the output as malformed, record `rubric_incomplete: finding #n missing
+<fields>`, re-dispatch the Reviewer once with the missing-field list,
+second `incomplete` → reviewer failure for the round; never implement a
+CRITICAL that failed triage).
+
+Gate rubric revalidation per `docs/protocol/execution.md` §Gate rubric
+revalidation: partition the rendered gate text with `finding_triage.py
+check --session {uuid} --input <gate text> --record-pending`; only the
+complete findings (`complete_findings_text`) feed the next Executor round;
+when none is complete skip the Executor (`revalidation_round: true`,
+Timing Log `executor:0`); the next normal Step 3 Reviewer prompt carries a
+`## Rubric revalidation` block listing every pending entry with its
+missing fields ("re-assert it as a `[CRITICAL]` with the full six-field
+rubric, or drop it; nothing listed has been implemented"); per entry
+`finding_triage.py revalidate --pending <id> --review <output>` →
+`re-asserted` (ordinary repair loop) / `concurred` (dropped) /
+`incomplete` (output discarded; normal-Reviewer retry row). A synthetic
+invoker REQUEST_CHANGES (cleanup / capture / adapter / banner failure — a
+synthetic invoker text anchored at the invoker / adapter, `confidence=1.0`,
+carrying no rubric fields) is
+an infrastructure failure, not a finding: it is not partitioned, not
+revalidated and not disputable (`check` lists it under `infrastructure`,
+exit 1); a gate `[CRITICAL]` at those paths that carries any rubric field
+is an ordinary finding; `exec` stays withheld until the runtime failure is
+resolved and Step 3 re-runs. The gate is
+never re-run; `exec` is minted only on a triage-complete APPROVE with no
+complete gate finding open and every pending entry dropped or repaired
+(`finding_triage.py status` exit 0); revalidation rounds count toward
+`soft_limit_exec`. An incomplete finding never appears in an Executor
+prompt.
+
+Dispute flow per `docs/protocol/execution.md` §Dispute flow: the
+Reviewer's verdict is never overridden; to dispute a disproportionate
+complete CRITICAL run `finding_triage.py dispute --finding n --rationale
+<file> --review <output>`, copy its `packet_line` (`Triage: disputed
+CRITICAL #n → MINOR/follow-up`) into the packet, implement nothing, and
+let the next independent Reviewer `concur` (`concurred` proceeds without
+implementing; `re-asserted` keeps blocking; `incomplete` discards the
+output); an `orchestrator-direct` dispute needs `--reviewer-record` from a
+later round.
+
 ### Step 3.5 — Quality Polish
 
 Run Step 3.5 per `docs/protocol/execution.md` §Step 3.5.
@@ -272,22 +369,30 @@ substeps use
 `subagent_type: general-purpose` with the agent body inlined — never
 plugin-defined agent types. Hallucination guard on `tool_uses: 0`.
 
-On a no-write clean finish, mint `polish`. Any writing substep clears
-`completed_stages` and replays from `exec` per
-`docs/protocol/session-file.md` §`completed_stages` lifecycle.
+Record every substep outcome through `evidence_ledger.py record`
+(`static_analysis` PASS or `--disposition not-applicable`,
+`agent_review:<name>`, `simplify`, `tests` with `--env-command` and
+selectors); `polish` is derived by `check`. Any writing substep runs
+`snapshot` → `classify` → `check`: records whose declared closure the
+write touched are invalidated per record, and an exec-invalidating
+delta replays from `exec` per `docs/protocol/session-file.md`
+§`completed_stages` lifecycle.
 
 ### Step 3.6 — Documentation Consistency
 
-Single pass per `docs/protocol/execution.md` §Step 3.6. Writes → clear
-`completed_stages`, replay. No-write → mint `docs`. **After minting
-`docs`, proceed to Step 3.7** — a no-op docs stage is not a terminal
+Single pass per `docs/protocol/execution.md` §Step 3.6. Writes →
+`snapshot` → `classify` → `check`; exec-invalidating → replay,
+otherwise reviewer-only fast-replay of the touched non-exec claims.
+Record `docs_consistency`; `docs` is derived. **After `docs` is
+present, proceed to Step 3.7** — a no-op docs stage is not a terminal
 state.
 
 ### Step 3.7 — Security Preflight
 
 Single scan per `docs/protocol/execution.md` §Step 3.7. Writes to
-`.gitignore` or `git rm --cached` → clear `completed_stages`, replay.
-No-write → mint `security`. BLOCKED → halt; do not proceed.
+`.gitignore` or `git rm --cached` → `snapshot` → `check`, always
+exec-invalidating → replay. No-write → record `security_scan`;
+`security` is derived. BLOCKED → halt; do not proceed.
 
 Step 3.7 runs **unconditionally** after Step 3.6, regardless of
 whether any prior stage wrote files. A no-op session (zero code
@@ -298,7 +403,8 @@ changes, zero doc updates) still runs this scan. The only exits before
 ### Step 4 — Delivery
 
 Gated by the runtime delivery gate: Claude Code requires
-`{exec, polish, docs, security} ⊆ completed_stages`. Per
+`{exec, polish, docs, security} ⊆ completed_stages`, re-derived by
+`evidence_ledger.py check` immediately before the gate. Per
 `docs/protocol/execution.md` §Step 4 — Delivery: if `auto_commit:
 true`, stage only the Executor-reported files, commit
 `{commit_message_prefix}: {title}`, append sha to `session_commits`.
@@ -329,12 +435,16 @@ round temp files; preserve the session file. Clear
   management discipline. Session file on disk is the single source of
   truth. Orchestrator keeps minimal conversation context: session
   path, latest Reviewer feedback, loop control state. All durable
-  state is on disk.
+  state is on disk. The Reviewer's default input is `## Current Review
+  Packet`; `## Review History` is loaded on demand by entry id.
 
 ## Important Orchestrator Behaviors
 
-- **Never do the work yourself** — delegate planning to the Executor
-  and reviewing to the Reviewer.
+- **Never plan or review yourself** — delegate planning to the Executor
+  and reviewing to the Reviewer; implement directly only when
+  `evidence_ledger.py route` returns `orchestrator-direct` under
+  `docs/protocol/execution.md` §Author route selection, and then produce
+  a Direct Implementation Record per `docs/protocol/executor-output.md`.
 - **Keep the session file up to date** — both agents read it each
   round.
 - **Use protocol metadata only** — do not invent session completion

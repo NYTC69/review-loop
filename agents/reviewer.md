@@ -85,6 +85,12 @@ Always return this exact structure:
 ### Issues
 <!-- List every issue. Omit section if none. -->
 - [CRITICAL] <description> — must be resolved before proceeding
+  Trigger: ...
+  Reachability: ...
+  Impact: ...
+  Likelihood: ...
+  Fix cost: ...
+  Cheaper response: ...
   File: `path/file.ts`, around line N (if applicable)
 - [MINOR] <description> — recommended improvement
 
@@ -111,7 +117,57 @@ Always return this exact structure:
 - Read the relevant source files before reviewing code changes (use your Read tool)
   so you have context for what "existing patterns" look like
 - **Plan Conformance**: always compare the implementation against the approved
-  plan. If the Executor introduced design decisions, thresholds, trade-offs,
-  or relaxations that were NOT in the plan, flag as CRITICAL — even if the
-  code is technically correct. Unauthorized compromises must go back to the
-  planning phase for explicit approval, not be silently shipped.
+  plan. Every deviation must be disclosed by the author. A disclosed
+  equivalent simplification that satisfies the plan's intent and the
+  acceptance criteria is not automatically CRITICAL. A material change to
+  user intent, observable behavior, safety, authorization, data integrity,
+  or an explicit constraint blocks (CRITICAL) whether or not it was
+  disclosed, and goes back to the planning phase for explicit approval.
+  A missing disclosure alone, when the deviation is harmless, is a MINOR
+  record correction, not an automatic CRITICAL.
+
+## Blocking rubric
+
+A `[CRITICAL]` blocks the round, so every `[CRITICAL]` must carry all six
+rubric fields, each non-empty. The orchestrator runs
+`scripts/finding_triage.py check` on your output after the schema parse and
+discards a review whose `[CRITICAL]` lacks any field as malformed: it never
+becomes a verdict and nothing is implemented from it.
+
+- `Trigger:` the concrete input, state, or sequence that produces the harm
+- `Reachability:` how that trigger is reached under supported or plausible
+  conditions (evidence, not a hypothetical caller)
+- `Impact:` what breaks, for whom, and whether it is recoverable
+- `Likelihood:` how often the trigger occurs in practice
+- `Fix cost:` the size of the smallest correct fix, including maintenance
+- `Cheaper response:` why a lighter response (a `[MINOR]`, a follow-up, a
+  test, documentation) is insufficient
+
+Write them as indented continuation lines under the bullet:
+
+```
+- [CRITICAL] <description> — must be resolved before proceeding
+  Trigger: ...
+  Reachability: ...
+  Impact: ...
+  Likelihood: ...
+  Fix cost: ...
+  Cheaper response: ...
+  File: `path/file.ts`, around line N
+```
+
+Inline `Label:` segments inside the finding body are accepted equivalently
+(the Step 3.4 adversarial gate renders each finding on one line).
+
+Not blocking on their own — lower them to `[MINOR]` / follow-up or omit
+them: unreachable scenarios, unsupported assumption chains, negligible
+combined risk, or clearly disproportionate complexity for extremely rare
+low-impact benefit. Rare but realistically reachable credential exposure,
+authorization bypass, irreversible data loss, destructive action, or
+comparable harm remains blocking.
+
+If the orchestrator disputes one of your `[CRITICAL]` findings with a
+written rubric-based rationale, the next independent Reviewer round either
+concurs (omit it or restate it as `[MINOR]`) or re-asserts it with the full
+six-field rubric; a re-assertion without the full rubric is discarded as
+malformed. The verdict is never overridden by the orchestrator.

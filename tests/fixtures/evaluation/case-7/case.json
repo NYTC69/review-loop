@@ -1,0 +1,214 @@
+{
+  "id": "case-7",
+  "title": "a rare but reachable irreversible-data-loss scenario",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n",
+    "tests/__init__.py": "",
+    "tests/test_calc.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampTest(unittest.TestCase):\n    def test_low(self):\n        self.assertEqual(clamp(-1, 0, 3), 0)\n\n    def test_inside(self):\n        self.assertEqual(clamp(2, 0, 3), 2)\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n",
+    "pkg/retention.py": "\"\"\"Retention sweep.\"\"\"\nimport os\n\n\ndef expired(entries, keep_days):\n    \"\"\"Entries older than keep_days.\"\"\"\n    return [e for e in entries if e[\"age_days\"] > keep_days]\n\n\ndef purge(directory, ages, keep_days):\n    \"\"\"Delete files older than keep_days (keep_days <= 0 deletes everything).\"\"\"\n    for name, age in ages.items():\n        if keep_days <= 0 or age > keep_days:\n            os.remove(os.path.join(directory, name))\n",
+    "tests/test_retention.py": "import unittest\n\nfrom pkg.retention import expired\n\n\nclass ExpiredTest(unittest.TestCase):\n    def test_expired(self):\n        self.assertEqual(expired([{\"age_days\": 40}, {\"age_days\": 3}], 30), [{\"age_days\": 40}])\n"
+  },
+  "seeded_defects": [
+    {
+      "file": "pkg/retention.py",
+      "line_start": 12,
+      "line_end": 14,
+      "kind": "irreversible-data-loss"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/retention.py": "\"\"\"Retention sweep (used by pkg.cli).\"\"\"\nimport os\n\n\ndef expired(entries, keep_days):\n    \"\"\"Entries older than keep_days.\"\"\"\n    return [e for e in entries if e[\"age_days\"] > keep_days]\n\n\ndef purge(directory, ages, keep_days):\n    \"\"\"Delete files older than keep_days (keep_days <= 0 deletes everything).\"\"\"\n    for name, age in ages.items():\n        if keep_days <= 0 or age > keep_days:\n            os.remove(os.path.join(directory, name))\n",
+        "pkg/cli.py": "\"\"\"Command line entry point for the retention sweep.\"\"\"\nimport argparse\n\nfrom pkg.retention import purge\n\n\ndef main(argv, directory, ages):\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"--keep-days\", type=int, default=30)\n    args = parser.parse_args(argv)\n    purge(directory, ages, args.keep_days)\n    return 0\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "true",
+          "purge() removes files"
+        ],
+        "irreversible_data_change": [
+          "true",
+          "deleted files are not recoverable"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/retention.py",
+          "pkg/cli.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/retention.py",
+            "pkg/cli.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-1.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "dispute",
+      "finding": 1,
+      "rationale": "reviews/dispute-1.md",
+      "review": "reviews/round-2-reassert.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/retention.py": "\"\"\"Retention sweep (used by pkg.cli).\"\"\"\nimport os\n\n\ndef expired(entries, keep_days):\n    \"\"\"Entries older than keep_days.\"\"\"\n    return [e for e in entries if e[\"age_days\"] > keep_days]\n\n\ndef purge(directory, ages, keep_days):\n    \"\"\"Delete files older than keep_days; keep_days must be at least 1.\"\"\"\n    if keep_days < 1:\n        raise ValueError(\"keep_days must be >= 1 (refusing to purge everything)\")\n    for name, age in ages.items():\n        if age > keep_days:\n            os.remove(os.path.join(directory, name))\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "true",
+          "purge() removes files"
+        ],
+        "irreversible_data_change": [
+          "true",
+          "deleted files are not recoverable"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/retention.py"
+        ],
+        "deps": [
+          "pkg/cli.py"
+        ]
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/retention.py",
+            "pkg/cli.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-3.md",
+      "gate": "gate/approve.md"
+    }
+  ]
+}

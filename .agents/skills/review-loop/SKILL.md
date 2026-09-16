@@ -182,12 +182,29 @@ resume); otherwise the row is omitted.
   - `## Acceptance Criteria`
   - `## Current Phase`
   - `## Approved Plan`
+  - `## Current Review Packet`
   - `## Review History`
   - `## Files Changed`
   - `## Key Related Files`
   - `## Timing Log`
+  - `## Evidence Ledger`
 - Keep `## Session Metadata` as the final section in the file.
 - Rewrite canonical sections in full on each orchestrator update.
+- `## Current Review Packet` is rewritten in full each round per
+  `docs/protocol/session-file.md` §Current Review Packet; it carries every
+  binding current fact in full plus the `### Attributable Delta` table, and
+  references supporting detail into `## Review History` by entry id.
+- `## Evidence Ledger` is written only through
+  `python3 scripts/evidence_ledger.py` (`snapshot` / `record` / `check` /
+  `classify` / `delta`), run outside the Codex sandbox like the Claude
+  reviewer command (the workspace-write sandbox denies `.git` writes). If a
+  snapshot cannot be stored, append no record, keep every claim `uncertain`,
+  and tell the Reviewer `delta: unattributable — reviewing worktree diff
+  against the last stored snapshot`. `completed_stages` is derived by
+  `check`; never hash content or mint stages in prose.
+- `## Timing Log` uses the 13-column header per
+  `docs/protocol/session-file.md` §Timing Log columns; unmeasured cells are
+  `N/A`.
 - `Review History` is logically append-only, but rewrite the full accumulated
   section each time.
 - `Timing Log` is logically append-only, but rewrite the full accumulated
@@ -394,6 +411,10 @@ umbrella adds only the umbrella-level rules:
   guesswork.
 - Record each execution round in `## Review History` and `## Timing Log`.
   Record which reviewer backend (`claude-cli` or `codex`) was used.
+- After every Reviewer parse run `finding_triage.py check` (mandatory
+  rubric gate per `docs/protocol/execution.md` §Mandatory rubric gate);
+  `incomplete` → the output is discarded as malformed, no Claude retry for
+  the round, and a CRITICAL that failed triage is never implemented.
 - When an execution round reaches reviewer `APPROVE`, run Step 3.4 before Step 3.5
   if the terminal gate has not yet run in this execution convergence. Step
   3.4 is single-pass per execution convergence. Do not mint `exec` yet. Step
@@ -403,10 +424,38 @@ umbrella adds only the umbrella-level rules:
   Step 3 Executor/Reviewer repair rounds; do not run Step 3.4 again while
   repairing those findings. A later normal Step 3 reviewer APPROVE after those
   repairs mints `exec`. This applies to both edit rounds and reviewed no-op
-  rounds.
+  rounds. Complete gate findings only feed the Executor; incomplete ones
+  follow the gate rubric revalidation below.
 - Do not represent execution completion with custom metadata keys such
   as `completed_at`; the shared protocol completion state is carried by
   `completed_stages` and related baseline metadata.
+- After every write boundary run `evidence_ledger.py snapshot` then
+  `check`; record `reviewer_approve` and `gate` (PASS / FAIL /
+  `--disposition controlled-skip --reason "<verbatim banner>" --closure
+  declared`) through `evidence_ledger.py
+  record`; "mint `exec`" means those records are valid and `check` derived
+  the stage. Every active record of a required check must be valid; when
+  the review scope grew, retire the stale earlier-scope claim with
+  `record --supersedes <earlier id>` (a FAIL is only superseded by a
+  covering executed PASS). Downstream writes run `snapshot` → `classify` → `check`: only
+  an exec-invalidating delta (changed path inside a declared `exec`
+  closure, or an `uncertain` closure) starts a new convergence.
+- Author route per `docs/protocol/execution.md` §Author route selection:
+  before each `review_loop_executor` spawn write `### Route Facts` (six
+  eligibility facts, nine sensitive flags, each with a rationale) into the
+  packet and run `evidence_ledger.py route --path <touched paths>` outside
+  the sandbox (without `--facts` the helper reads `### Route Facts` only
+  from `## Current Review Packet`, never from history or an old DIR; a
+  packet without the block routes to `executor`; the canonical packet is
+  the unique `## Current Review Packet` heading whose next `## ` heading is
+  `## Review History`, otherwise fail closed to `executor`); `orchestrator-direct`
+  (every fact `true`, every flag
+  `false`, ledger cross-check passed, snapshot stored, execution phase)
+  means the Codex main thread implements the round itself and produces a
+  Direct Implementation Record per `docs/protocol/executor-output.md`;
+  anything else spawns the Executor. Record `reviewer_approve` with
+  `--author-route`; independent Reviewer approval stays mandatory for
+  either author.
 - When `soft_limit_exec` is reached and blocking issues remain, surface
   the situation to the user instead of silently continuing or silently
   stopping. Respect the configured execution soft limit, but do not
@@ -438,6 +487,15 @@ Rules:
   but do not treat them as output. If no `type == "result"` line appears
   before the process exits, treat that as a command execution failure.
 - Validate the `result` field against the shared reviewer schema.
+- Then run `python3 scripts/finding_triage.py check --input <result file>`
+  (mandatory rubric gate per `docs/protocol/execution.md` §Mandatory rubric
+  gate: every `[CRITICAL]` carries the six fields `Trigger:`,
+  `Reachability:`, `Impact:`, `Likelihood:`, `Fix cost:`, `Cheaper
+  response:`). An `incomplete` result is a reviewer schema validation
+  failure for this round: discard the output as malformed, record
+  `rubric_incomplete: finding #n missing <fields>` in `## Review History`,
+  do not retry Claude for that round, and never implement a CRITICAL that
+  failed triage.
 - If Claude invocation fails or validation fails, do not guess and do not retry
   Claude for that round.
 - If Claude invocation fails or validation fails, record a short failure reason
@@ -516,6 +574,11 @@ Invoke the scheduler outside the sandbox:
   own `parsed_verdict` / `parsed_issues` are best-effort metadata only
   per `scripts/review_verification.py:12-17` and must not be substituted
   for orchestrator-side validation.
+- Then run `python3 scripts/finding_triage.py check --input <result file>`
+  on every validated `result` (mandatory rubric gate); an `incomplete`
+  result is a reviewer schema validation failure for that entry, discarded
+  as malformed and recorded as `rubric_incomplete: finding #n missing
+  <fields>`.
 - Apply the same per-round failure-mode taxonomy as the single-shot path
   (command execution / JSON parsing / missing `result` / reviewer schema
   validation) when recording `## Review History`.
@@ -552,6 +615,47 @@ the round verdict.
   correction instructions.
 - If the local reviewer retry is still invalid, stop and surface the failure to the
   user.
+- The local reviewer output also goes through `python3
+  scripts/finding_triage.py check`; `incomplete` counts as invalid output
+  for the one correction retry above, and a CRITICAL that failed triage is
+  never implemented.
+
+Gate rubric revalidation per `docs/protocol/execution.md` §Gate rubric
+revalidation: partition the rendered gate text with `finding_triage.py
+check --session {uuid} --input <gate text> --record-pending` (run
+outside the sandbox, like every helper write); only the
+complete findings (`complete_findings_text`) feed the next Executor round;
+when none is complete skip the Executor (`revalidation_round: true`,
+Timing Log `executor:0`); the next normal Step 3 Reviewer prompt carries a
+`## Rubric revalidation` block listing every pending entry with its
+missing fields ("re-assert it as a `[CRITICAL]` with the full six-field
+rubric, or drop it; nothing listed has been implemented"); per entry
+`finding_triage.py revalidate --pending <id> --review <output>` →
+`re-asserted` (ordinary repair loop) / `concurred` (dropped) /
+`incomplete` (output discarded; normal-Reviewer retry row). A synthetic
+invoker REQUEST_CHANGES (cleanup / capture / adapter / banner failure — a
+synthetic invoker text anchored at the invoker / adapter, `confidence=1.0`,
+carrying no rubric fields) is
+an infrastructure failure, not a finding: it is not partitioned, not
+revalidated and not disputable (`check` lists it under `infrastructure`,
+exit 1); a gate `[CRITICAL]` at those paths that carries any rubric field
+is an ordinary finding; `exec` stays withheld until the runtime failure is
+resolved and Step 3 re-runs. The gate is
+never re-run; `exec` is minted only on a triage-complete APPROVE with no
+complete gate finding open and every pending entry dropped or repaired
+(`finding_triage.py status` exit 0); revalidation rounds count toward
+`soft_limit_exec`. An incomplete finding never appears in an Executor
+prompt.
+
+Dispute flow per `docs/protocol/execution.md` §Dispute flow: the
+Reviewer's verdict is never overridden; to dispute a disproportionate
+complete CRITICAL run `finding_triage.py dispute --finding n --rationale
+<file> --review <output>`, copy its `packet_line` (`Triage: disputed
+CRITICAL #n → MINOR/follow-up`) into the packet, implement nothing, and
+let the next independent Reviewer `concur` (`concurred` proceeds without
+implementing; `re-asserted` keeps blocking; `incomplete` discards the
+output); an `orchestrator-direct` dispute needs `--reviewer-record` from a
+later round.
 
 ## Review Content Composition
 
@@ -565,9 +669,12 @@ For every reviewer prompt you construct, preserve these reviewer semantics:
 Plan review content must include:
 
 - the shared session file path
+- the instruction "Read `## Current Review Packet` first. Load a
+  `## Review History` entry only when the packet references it or a claim
+  needs provenance. Absence of irrelevant history is not a defect."
 - the current planning-phase context from the session file
 - the latest Executor planning output
-- prior `Review History` context when present
+- prior `Review History` context only by packet reference
 - the exact shared reviewer schema
 - a review-only instruction
 - explicit direction to flag missing test strategy and unvalidated assumptions
@@ -581,13 +688,19 @@ Plan review content must include:
 Code review content must include:
 
 - the shared session file path
+- the instruction "Read `## Current Review Packet` first. Load a
+  `## Review History` entry only when the packet references it or a claim
+  needs provenance. Absence of irrelevant history is not a defect."
 - the current execution-phase context from the session file
 - the latest Executor execution output
 - the actual post-Executor changed file list, including deleted tracked files
-- the delta attributable to the current round, derived from the relevant
-  pre-round and post-round state for files touched in that round
+- the delta attributable to the current round: the packet's
+  `### Attributable Delta` table, materialized with
+  `python3 scripts/evidence_ledger.py delta --session {uuid} --pre {pre} --post {post}`
+  from the stored snapshots (or `delta: unattributable — reviewing worktree
+  diff against the last stored snapshot` when no snapshot could be stored)
 - the orchestrator-owned current workspace as the authoritative review scope
-- prior `Review History` context when present
+- prior `Review History` context only by packet reference
 - the exact shared reviewer schema
 - a review-only instruction
 - explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)
@@ -664,9 +777,17 @@ finding should reasonably be able to point to specific files or locations.
 ## Orchestrator Discipline
 
 - Keep the user informed of each round's status and review findings.
+- Never plan yourself; implement directly only under
+  `docs/protocol/execution.md` §Author route selection (when
+  `evidence_ledger.py route` returns `orchestrator-direct`); otherwise
+  delegate to `review_loop_executor`.
 - Write the session file yourself; do not delegate session-file writes.
+  `## Evidence Ledger` and `completed_stages` are written only through
+  `scripts/evidence_ledger.py`.
 - Do not invent changed files, reviewer verdicts, plan details, or fixes to
-  keep the loop moving.
+  keep the loop moving. Never reinterpret "passed earlier" prose as a
+  reusable PASS; a legacy session without a ledger fails closed (empty
+  stages, snap/0 from the current verified worktree, affected checks rerun).
 - If Executor or Reviewer output is malformed, reject it and use the retry or
   fallback path defined above.
 - Stay within the approved Stage 1 contract and shared `.review-loop` protocol.

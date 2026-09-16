@@ -57,6 +57,27 @@ The underlying skill behavior is verified by lint contracts in
   per-case `setup.timeout_seconds` budget vs real `claude -p` /
   `codex exec` convergence time on this machine.
 
+- `reviewer.case6.smoke.claude` / `reviewer.case7.smoke.claude` — the two
+  live Opus Reviewer smokes of the P1–P4 evaluation (`tests/fixtures/
+  evaluation/case-6`, `case-7`). Each pipes the `agents/reviewer.md` body
+  plus the case packet into `claude -p --no-session-persistence --model
+  opus --output-format json` (JSON stdout is what makes the wrapper write
+  `reviewer-result.json`). Pass rules, enforced by the assertion kinds
+  `reviewer_no_blocking_critical` / `reviewer_complete_blocking_critical`
+  in `scripts/run-skill-smoke` (schema parse via
+  `_validate_reviewer_output_schema`, then `scripts/finding_triage.py
+  check`): case 6 passes **only** with a schema-valid `APPROVE` carrying no
+  `[CRITICAL]` (no issues or `[MINOR]`-only; any `[CRITICAL]`, complete or
+  incomplete, a `[MINOR]`-only `REQUEST_CHANGES` — schema-invalid — or
+  malformed output is a FAIL); case 7 passes **only** with at least one
+  `[CRITICAL]` that passes `finding_triage.py check`. A timeout, FAIL, or
+  environment skip is reported as `unverified` for that case in
+  `tests/skills/.artifacts/evaluation-cases.md` and in the delivery
+  message — never as `N/A` and never as passed; `best_effort` does not
+  soften this. The kinds also write `reviewer-measurement.json`
+  (duration / model / tokens / cost from the envelope, `N/A` when absent)
+  which the evaluation report consumes.
+
 The strict (non-`best_effort`) cases must pass cleanly. As of v2.7.2:
 
 - `guide.shared-state.codex` — strict (no `execution_policy` field →

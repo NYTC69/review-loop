@@ -1,0 +1,204 @@
+{
+  "id": "case-5",
+  "title": "a mechanical directory move with path/packaging checks",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\nfrom pkg.util import slug\n\n\ndef label(text, value):\n    \"\"\"`slug(text)=value`.\"\"\"\n    return f\"{slug(text)}={value}\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size]\n",
+    "tests/__init__.py": "",
+    "tests/test_calc.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampTest(unittest.TestCase):\n    def test_low(self):\n        self.assertEqual(clamp(-1, 0, 3), 0)\n\n    def test_inside(self):\n        self.assertEqual(clamp(2, 0, 3), 2)\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n",
+    "pkg/util.py": "\"\"\"String helpers.\"\"\"\n\n\ndef slug(text):\n    \"\"\"Lower-case, dash-separated identifier.\"\"\"\n    return \"-\".join(text.lower().split())\n",
+    "tests/test_util.py": "import unittest\n\nfrom pkg.util import slug\n\n\nclass SlugTest(unittest.TestCase):\n    def test_slug(self):\n        self.assertEqual(slug(\"Hello World\"), \"hello-world\")\n"
+  },
+  "seeded_defects": [],
+  "steps": [
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/util.py": null,
+        "pkg/helpers/__init__.py": "",
+        "pkg/helpers/util.py": "\"\"\"String helpers.\"\"\"\n\n\ndef slug(text):\n    \"\"\"Lower-case, dash-separated identifier.\"\"\"\n    return \"-\".join(text.lower().split())\n",
+        "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\nfrom pkg.helpers.util import slug\n\n\ndef label(text, value):\n    \"\"\"`slug(text)=value`.\"\"\"\n    return f\"{slug(text)}={value}\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size]\n",
+        "tests/test_util.py": "import unittest\n\nfrom pkg.helpers.util import slug\n\n\nclass SlugTest(unittest.TestCase):\n    def test_slug(self):\n        self.assertEqual(slug(\"Hello World\"), \"hello-world\")\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "a rename is one atomic edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/util.py",
+          "pkg/helpers/__init__.py",
+          "pkg/helpers/util.py",
+          "pkg/calc.py",
+          "tests/test_util.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/calc.py",
+            "pkg/helpers/util.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-1.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "tests/test_packaging.py": "import importlib\nimport unittest\n\n\nclass PackagingTest(unittest.TestCase):\n    def test_new_module_path(self):\n        self.assertTrue(hasattr(importlib.import_module(\"pkg.helpers.util\"), \"slug\"))\n\n    def test_old_module_path_is_gone(self):\n        with self.assertRaises(ModuleNotFoundError):\n            importlib.import_module(\"pkg.util\")\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "a rename is one atomic edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "tests/test_packaging.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/calc.py",
+            "pkg/helpers/util.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/replay-1.md",
+      "gate": "gate/approve.md"
+    }
+  ]
+}

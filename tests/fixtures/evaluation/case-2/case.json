@@ -1,0 +1,203 @@
+{
+  "id": "case-2",
+  "title": "a one-file bug fix with focused tests",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return low\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n",
+    "tests/__init__.py": "",
+    "tests/test_calc.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampTest(unittest.TestCase):\n    def test_low(self):\n        self.assertEqual(clamp(-1, 0, 3), 0)\n\n    def test_inside(self):\n        self.assertEqual(clamp(2, 0, 3), 2)\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n"
+  },
+  "seeded_defects": [
+    {
+      "file": "pkg/calc.py",
+      "line_start": 13,
+      "line_end": 15,
+      "kind": "off-by-one"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n",
+        "tests/test_clamp.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampHighTest(unittest.TestCase):\n    def test_high(self):\n        self.assertEqual(clamp(5, 0, 3), 3)\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/calc.py",
+          "tests/test_clamp.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/calc.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-1.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size]\n",
+        "tests/test_window.py": "import unittest\n\nfrom pkg.calc import window\n\n\nclass WindowTest(unittest.TestCase):\n    def test_size(self):\n        self.assertEqual(window([1, 2, 3], 2), [1, 2])\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "true",
+          "one module and its focused test"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/calc.py",
+          "tests/test_window.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/calc.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-2.md",
+      "gate": "gate/approve.md"
+    }
+  ]
+}

@@ -27,11 +27,15 @@ full; the orchestrator is the only writer).
 3. `## Acceptance Criteria`
 4. `## Current Phase`
 5. `## Approved Plan`
-6. `## Review History`
-7. `## Files Changed`
-8. `## Key Related Files`
-9. `## Timing Log`
-10. `## Session Metadata` — always last
+6. `## Current Review Packet` — rewritten in full each round; see
+   [§Current Review Packet](#current-review-packet)
+7. `## Review History`
+8. `## Files Changed`
+9. `## Key Related Files`
+10. `## Timing Log`
+11. `## Evidence Ledger` — one fenced JSON block, written only by
+    `scripts/evidence_ledger.py`; see [§Evidence Ledger](#evidence-ledger)
+12. `## Session Metadata` — always last
 
 Two non-canonical supplemental sections may appear alongside the canonical
 set:
@@ -136,10 +140,12 @@ Every cell below is what the orchestrator must produce at session creation
 | `## Current Phase` | `planning` | preserved (typically `execution`) | `execution` | `execution` |
 | `## Approved Plan` | empty body, no `Source` sub-field | preserved (must already exist) | Source: `user-supplied` + injected user text | Source: `review-only` + canonical sentinel |
 | `## Draft Plan` | present; overwritten by each planning round's Executor output | absent | absent | absent |
+| `## Current Review Packet` | empty until the first round's packet is written | preserved; rewritten in full by the next round (legacy session without one: fresh packet whose first delta is snap/0 → snap/1) | empty until the first round's packet is written | empty until the first round's packet is written |
 | `## Review History` | empty | preserved | empty | empty |
 | `## Files Changed` | empty | preserved | empty | populated from actual post-open dirty set (read-only snapshot) |
 | `## Key Related Files` | empty | preserved | empty | populated from `## Review Target` scope |
-| `## Timing Log` | empty table header | preserved | empty table header | empty table header |
+| `## Timing Log` | empty 13-column table header (see [§Timing Log columns](#timing-log-columns)) | preserved; legacy 4-column rows rewritten with `N/A` on first write | empty 13-column table header | empty 13-column table header |
+| `## Evidence Ledger` | `evidence_ledger.py snapshot` stores snap/0 of the current verified worktree; no records | preserved; legacy session without a ledger: snap/0 taken from the current verified worktree, `completed_stages` empty (see [§Backward-compat fallback](#backward-compat-fallback)) | snap/0 stored; no records | snap/0 stored; no records |
 | `## Review Target` | absent | preserved if present; absent otherwise | absent | populated from `--description` / scope args |
 | `## Session Metadata` | fresh metadata block; `plan_source` omitted during planning draft rounds and written on APPROVE | preserved, then re-baselined on drift check | fresh metadata block (see [§Session Metadata schema](#session-metadata-schema)) | fresh metadata block |
 
@@ -204,7 +210,10 @@ Fields:
   (e.g. by `auto_commit`). Used to distinguish session-owned progress from
   external `HEAD` movement in the drift check.
 - `completed_stages` — currently-valid validations. Not a historical log;
-  see [§`completed_stages` lifecycle](#completed_stages-lifecycle).
+  see [§`completed_stages` lifecycle](#completed_stages-lifecycle). Derived
+  from `## Evidence Ledger` by `scripts/evidence_ledger.py check` at every
+  write boundary; the orchestrator never hand-edits it (see
+  [§Derived `completed_stages`](#derived-completed_stages)).
 - `delivery_blocked_by` — see
   [§`delivery_blocked_by` lifecycle](#delivery_blocked_by-lifecycle).
 
@@ -397,35 +406,45 @@ tree+index state**. It is a set, not a historical log.
   after the Step 3.6 reviewer APPROVE.
 - `security` — Step 3.7 completed.
 
-### Invalidation rules (any of these clears the ENTIRE set)
+### Invalidation rules
 
-1. A new Executor round starts.
-2. Drift accepted in the decision tree step 4 → A.
-3. Old-session baseline backfill accepted
+Two events clear the ENTIRE set (external provenance = uncertain):
+
+1. Drift accepted in the decision tree step 4 → A.
+2. Old-session baseline backfill accepted
    (see [§Backward-compat fallback](#backward-compat-fallback)).
-4. Step 3.5 write that is not eligible for reviewer-only fast-replay.
-5. Step 3.6 write that is not eligible for reviewer-only fast-replay.
-6. Step 3.7 security preflight writes `.gitignore` or causes
-   `git rm --cached`.
+
+Every other write — a new Executor or orchestrator-direct round, a Step 3.5
+/ 3.6 write, a Step 3.7 `.gitignore` write or `git rm --cached` — invalidates
+**per record** through the [§Active-record rule](#active-record-rule): each
+active evidence record whose `inputs`, `deps`, or selector membership no
+longer matches the worktree becomes invalid, and `evidence_ledger.py check`
+recomputes `completed_stages` from what remains valid. A stage that lost a
+required claim disappears from the set; a stage whose closure was untouched
+stays. There is no all-clear for ordinary writes and no line-count or
+path-category rule anywhere.
 
 ### Reviewer-only fast-replay
 
-This is a narrow exception to the default clear-and-replay rule above. The
-orchestrator may preserve already-earned `completed_stages` for a
+This is the narrow path on which already-earned `completed_stages` survive a
+Step 3.5.4 or Step 3.6 write. It is no longer decided by looking at the
+diff's prose-likeness: the orchestrator runs `evidence_ledger.py classify`,
+which is a dependency-closure proof (see
+[§Convergence rule](#convergence-rule)). A write is eligible for
 `reviewer-only fast-replay` only when all of the following are true:
 
 - The write happened in Step 3.5.4 or Step 3.6.
-- The diff is limited to prose/comment/metadata-only updates.
-- The diff does not change runtime behavior, test behavior, or security
-  posture.
-- The diff does not touch lint-pinned needles or otherwise change the
-  `bash scripts/run-skill-lint` baseline.
+- `classify` reports the delta as non-invalidating for `exec`: no changed
+  path lies inside the declared closure of any `exec`-required record, and
+  every `exec`-required record has `closure = declared`.
+- The touched non-exec claims (for example `docs_consistency`) are replayed
+  by a Reviewer-only round and recorded fresh.
 
-The exception is fail-closed. The following remain clear-and-replay writes:
+The exception is fail-closed. The following always invalidate `exec` and
+start a new execution convergence:
 
-- Any code, test, or security-preflight write.
-- Any lint-pinned, contract, assertion-mapping, or other baseline-changing
-  write.
+- Any changed path inside a declared `exec` closure, or any `exec` record
+  with `closure = uncertain` (regardless of path).
 - Drift acceptance, old-session baseline backfill, and Step 3.7 writes.
 
 Fast-replay outcomes:
@@ -443,10 +462,11 @@ Fast-replay outcomes:
 
 ### Replay rule
 
-After clearing, the orchestrator **replays from `exec`** in runtime order
-until the runtime-supported set is present again. Each replay iteration that
-writes files clears the set and restarts from `exec`. Termination is
-guaranteed by the per-stage caps documented in
+After `exec` is invalidated, the orchestrator **replays from `exec`** in
+runtime order until the runtime-supported set is present again. Each replay
+iteration that writes files invalidates per record and, when `exec` is
+touched, restarts from `exec`. Termination is guaranteed by the per-stage
+caps documented in
 [execution.md §Per-stage max-round caps](./execution.md#per-stage-max-round-caps).
 
 ### Runtime-supported sets
@@ -541,8 +561,327 @@ degrades as follows when reading an existing session:
 | Baseline quintet — any of `base_head`, `base_dirty`, `last_verified_head`, `last_verified_dirty`, `session_commits` | **Pause and prompt** the user: "This session predates the moving-baseline schema. Accept current repo state as new baseline?" On (A): backfill all five fields from current state, clear `completed_stages` entirely. On (B): abort. Handsfree alone blocks; `--accept-external-state` auto-picks (A). |
 | `completed_stages` | Empty set; replay starts from `exec`. |
 | `delivery_blocked_by` | Treated as `null` (normal resume). |
+| `## Evidence Ledger` / `## Current Review Packet` (legacy session without bound evidence) | **Fail closed.** `completed_stages` is treated as empty regardless of what the file says; `evidence_ledger.py snapshot` stores snap/0 from the current verified worktree (tracked dirty and in-scope untracked content included, so nothing pre-existing is ever attributed to the task); a fresh packet is written whose first delta is snap/0 → snap/1; every affected check is rerun and recorded. "Passed earlier" prose in `## Review History` is never reinterpreted as a reusable PASS. |
 
 No silent backfill of the baseline quintet. No silent adoption of external
 drift. The orchestrator will not "just fill in" the baseline from `HEAD` on
 resume without explicit user acknowledgment, because the file's last write
 may have been weeks ago and the tree may have moved arbitrarily since.
+
+---
+
+## Evidence Ledger
+
+`## Evidence Ledger` holds one fenced ` ```json ` block:
+`{"schema": 1, "scope": [...], "snapshots": [...], "records": [...]}`. The
+orchestrator is the only writer and **every** write goes through
+`scripts/evidence_ledger.py` (`snapshot`, `record`, `check`, `classify`,
+`delta`, `route`, `prune`); there
+is no in-prose hashing and no in-prose stage minting. The same block
+carries an optional `triage` object (`{"next_id", "disputes",
+"pending_rubric_incomplete"}`) written only by `scripts/finding_triage.py`
+(`dispute`, `concur`, `revalidate`, `check --record-pending`) and preserved
+untouched by `evidence_ledger.py`; see
+[execution.md §Dispute flow](./execution.md#dispute-flow). Both runtimes shell
+out to the same helper. Codex Stage 1 runs `snapshot` / `record` outside
+the Codex sandbox (the workspace-write sandbox denies `.git` writes), under
+the same rule the Codex mirrors apply to the `claude -p` reviewer command.
+
+### Snapshots
+
+`evidence_ledger.py snapshot` stores **content**, not bare hashes, at every
+write boundary: all tracked paths plus untracked, non-ignored paths inside
+the declared `scope` are hashed with `git hash-object -w`, assembled into a
+tree through a private index (`GIT_INDEX_FILE=$(git rev-parse
+--absolute-git-dir)/review-loop/{uuid}.index` — resolved, never a hard-coded
+`.git/`, because linked worktrees have a `.git` file), committed with
+`git commit-tree` under an explicit helper identity, and pinned as
+`refs/review-loop/{uuid}/snap/{n}`. The worktree, the user's index, `HEAD`,
+and branches are untouched; the objects stay reachable while the ref exists.
+Each snapshot entry records `n`, `ref`, `commit`, `tree`, `head`,
+`recorded_at`, `untracked[]`, `deleted[]` (tombstones, incl. the old path of
+a rename from `git status --porcelain=v2 -z`) and `renames[]`. Submodule
+gitlinks are stored in the snapshot tree with mode `160000` and the commit
+the submodule currently points to (its checked-out `HEAD`, else the index
+pointer), so a pointer move participates in selectors, records, `classify`
+and `delta` exactly like a blob change; a `dir:` selector also covers a
+gitlink at exactly its directory path. Untracked content under
+`.review-loop/` (the session directory) is never in scope, so session-file
+writes never appear in `classify.changed_paths` or a delta; an untracked
+nested repository (listed as `dir/` by `git ls-files --others`) is bound
+like a gitlink to its checked-out `HEAD`, and one that cannot be bound is
+listed under `nested_repos_skipped` in the snapshot output and persisted on
+the snapshot entry; `classify` and `check` carry the latest entry's
+`nested_repos_skipped` in their JSON output, so an unbound region is never
+invisible. A checked-out submodule or nested repository with uncommitted or
+untracked content (`git status --porcelain=v1 -z --untracked-files=all`
+non-empty; ignored files excluded) is bound as
+`160000:<commit>+dirty:<digest>` — sha256 over its sorted `(XY, path,
+content oid)` entries, nested-nested repositories recursed with the same
+rule up to 4 levels (deeper fails closed, exit 3). The digest is therefore
+bounded by how it is built: `git status` inside the nested repository
+selects the entries, and the digest binds their sorted `(XY, path, current
+content oid)` triples with each oid read from disk. It therefore moves
+whenever a selected path's `XY` or content changes, including a further edit
+to a path porcelain already reports; mode and type reach it only insofar as
+they change a path's `XY` or content oid; and a path status never selects
+(`submodule.<name>.ignore` on a nested-nested submodule, `skip-worktree` /
+`assume-unchanged`, a directory git could not open) is absent from it
+entirely. Superproject paths are bound from disk with their own mode and are
+unaffected.
+Because a git tree
+can only hold the plain commit, the digest is persisted per snapshot as
+`gitlink_dirty: {path: digest}` on the snapshot entry and re-applied
+whenever the tree is read, so records, selectors, `classify` and `delta`
+all see the suffixed identity and a record bound to the plain
+`160000:<commit>` of a now-dirty repository reads `changed input`. snap/0 is the
+current verified worktree at initialization; the first round's delta is
+snap/0 → snap/1. If a snapshot cannot be stored (read-only `.git`, sandbox),
+the helper exits 3 and writes nothing: no record may be appended, every
+claim stays `uncertain`, the direct author route is refused, and the
+reviewer prompt states `delta: unattributable — reviewing worktree diff
+against the last stored snapshot`. Refs are kept for audit;
+`evidence_ledger.py prune --session <uuid>` deletes them only when the user
+asks. `prune` stamps `pruned_at` on the ledger and on every snapshot entry
+it has not stamped yet — driven by the ledger, not by the refs it found, so
+a re-run after a failed session write still stamps (`refs_missing: true`)
+and a prune with nothing left to stamp reports `already_pruned: true`.
+While the ledger carries `pruned_at`, `record`, `classify`, `delta` and
+`route` refuse every snapshot lookup with `snapshots were pruned at <when>;
+run `snapshot` to store a new baseline` (exit 2); a new `snapshot` lifts the
+ledger-level stamp, and an individual stamped entry stays unusable (a
+`delta` naming it is refused the same way).
+
+### Evidence record
+
+```
+id            monotonic integer, append order
+claim_id      "<check>:<scope key>" — two records with the same claim_id are
+              checks of the same claim
+check         reviewer_approve | gate | tests | lint | static_analysis |
+              simplify | docs_consistency | security_scan |
+              agent_review:<name> | manual:<desc>
+scope         sorted "|"-joined review-target paths (reviewer_approve, gate,
+              agent_review:*, simplify); the command line (tests, lint,
+              static_analysis); the literal `session` (docs_consistency,
+              security_scan); the description (manual:<desc>)
+stage         exec | polish | docs | security | n/a
+disposition   executed | not-applicable | controlled-skip
+result        PASS | FAIL — present iff disposition = executed
+reason        verbatim reason — present iff disposition ≠ executed
+head          HEAD sha at record time;  snapshot: n
+inputs        {path: "<mode>:<blob_sha>" | "<deleted>" |
+                     "<untracked:<mode>:<blob_sha>>"}
+deps          {path: "<mode>:<blob_sha>" | ...} | "uncertain"
+selectors[]   {kind: glob | dir | discovery, pattern, members_digest}
+closure       declared | uncertain   (default uncertain)
+env           {command, recorded_at} — required for tests, lint,
+              static_analysis, security_scan, manual:*
+freshness     {"kind": "ttl", "seconds": N} | {"kind": "bound-to-head"} | null
+requires_freshness   true for manual:* and any record marked env-sensitive
+assumptions[] unresolved[]
+provenance    "fresh" | "reused-from:<id>"  (+ mandatory `why` for reuse)
+author_route  executor | orchestrator-direct | n/a
+supersedes[]  ids of earlier same-check records this record explicitly
+              retired via `record --supersedes` (empty when none)
+recorded_at   superseded_by: <id> | null  (implicit: a higher-id record of
+              the same claim_id; explicit: the record whose --supersedes
+              named this one)
+```
+
+- `not-applicable` is legal only for `static_analysis`; `controlled-skip`
+  (the verbatim `adversarial-gate: SKIP reason=… detail=…` banner from
+  `scripts/adversarial_gate_invoke.py`, or the orchestrator's
+  `skipped-by-config`) only for `gate`. Neither is a PASS and neither ever
+  renders as one; each satisfies its stage requirement only where the
+  protocol already allows N/A or controlled SKIP. The helper rejects any
+  other use at record time.
+- Blob identities are the stored blobs of the bound snapshot, so staged,
+  unstaged and untracked states hash the same bytes. Every identity carries
+  the git mode (`100644`, `100755`, `120000`, `160000`), so a mode-only
+  change — an executable-bit flip, a file ↔ symlink type change, a submodule
+  pointer move — invalidates the record exactly like a content change; a
+  legacy identity without a mode never matches and is non-reusable. A rename
+  is the new path plus a `<deleted>` tombstone for the old path.
+- `members_digest` = sha256 over the sorted `(path, mode, blob_sha)` triples
+  matching `pattern` in the snapshot tree (tracked and in-scope untracked
+  alike).
+  Discovery-based checks must declare selectors, not just files: `tests`
+  (`tests/**`, config files), `lint` (emitted by `evidence_ledger.py
+  lint-closure`), `static_analysis` / `security_scan` (their roots), and
+  `reviewer_approve` / `gate` / `agent_review:*` whenever the review target
+  is a directory. A closure that cannot be stated as files + selectors is
+  `uncertain`.
+- A record that requires `freshness` and lacks it is **non-reusable**: it
+  fails validity (never a schema error) and still counts as executed for the
+  round that produced it.
+
+### Active-record rule
+
+Implemented in `evidence_ledger.py check`; deterministic.
+
+1. For each `claim_id` the **active** record is the one with the highest
+   `id`; every lower-`id` record for that claim is marked
+   `superseded_by = <active id>` on the next ledger write and is never
+   consulted for stage derivation. A record may also be **explicitly
+   superseded across `claim_id`s**: `evidence_ledger.py record --supersedes
+   <id>[,<id>...]` marks those earlier records of the **same `check`** as
+   `superseded_by = <new id>` when the new record is written — the
+   orchestrator does this when the review scope grows, so a stale
+   earlier-scope claim cannot block a stage forever. A superseded record,
+   implicit or explicit, is never consulted by `check` or `classify` and
+   never becomes active again.
+2. An active record is **valid** ⇔ (`disposition = executed ∧ result =
+   PASS` ∨ `disposition ∈ {not-applicable, controlled-skip}` where
+   permitted) ∧ `closure = declared` ∧ `deps ≠ "uncertain"` ∧ every
+   `inputs` / `deps` entry is byte-identical to the current worktree
+   (tombstones must still be absent; untracked blobs must still match) ∧
+   every selector's recomputed `members_digest` matches (a member that newly
+   matches, stops matching, is removed, or is renamed invalidates; no fixed
+   path exceptions) ∧ `unresolved = []` ∧ freshness holds (`ttl` not expired
+   against `recorded_at`; `bound-to-head` requires `head` = current `HEAD`).
+3. **Failure dominance**: an active `FAIL` keeps the claim unsatisfied until
+   a *new* record with a higher `id` and `result = PASS` is appended. A
+   prior PASS can never satisfy a claim after a later FAIL, because it is
+   superseded by construction. Dominance holds across scopes: any active
+   `FAIL` of a required check blocks that check's stage whatever its scope
+   key (a FAIL followed by another FAIL of the same `claim_id` leaves the
+   newer FAIL active and the claim unsatisfied). **FAIL supersession
+   guard**: a record whose `result` is `FAIL` may only be explicitly
+   superseded by an **executed PASS** of the same `check` whose scope key
+   **covers** the FAIL's scope key — for path-scoped checks
+   (`reviewer_approve`, `gate`, `agent_review:*`, `simplify`) the new sorted
+   path set must be a superset of the old one; for command / literal scopes
+   it must be identical. Any other `--supersedes` target of a FAIL record,
+   or a `--supersedes` naming a different `check`, a non-existent id, or an
+   already-superseded id → `record` exits 2 and writes nothing.
+4. A `FAIL`, an `uncertain` closure, an unresolved finding, or an expired
+   freshness is never reused; `provenance = reused-from:<id>` is legal only
+   when the source is the active record of the same claim and is currently
+   valid under rule 2 (the helper rejects anything else).
+5. Anything not covered by rules 1–4 → the claim is unsatisfied → relevant
+   rerun. Prefer rerun over argument.
+
+### Required claim sets and derived `completed_stages`
+
+| Stage | Required checks (**every** active record of each check must be valid) |
+|---|---|
+| `exec` | `reviewer_approve` (executed PASS) + `gate` (executed PASS or `controlled-skip`) |
+| `polish` | `static_analysis` (executed PASS or `not-applicable`), `agent_review:code-reviewer`, `agent_review:silent-failure-hunter`, `simplify`, `tests` |
+| `docs` | `docs_consistency` |
+| `security` | `security_scan` |
+
+A stage is present iff **every active (non-superseded) record of each
+required check is valid** under the active-record rule and in a permitted
+satisfying state. There is no newest-record-per-check selection across
+`claim_id`s: an active `FAIL` of a required check blocks the stage whatever
+its scope, until it is superseded — implicitly by a higher-id record of the
+same `claim_id`, or explicitly via `record --supersedes` under the FAIL
+supersession guard. `completed_stages` is **derived** from the
+ledger by `evidence_ledger.py check` at every write boundary — after any
+Executor / orchestrator-direct / simplifier / doc / `.gitignore` write and
+at drift check — and written into `## Session Metadata` by the helper; the
+orchestrator never hand-edits it. The stage-add events in
+[§`completed_stages` lifecycle](#completed_stages-lifecycle) describe *when*
+the required records get recorded; presence is always the derived value.
+
+### Convergence rule
+
+After a write, `evidence_ledger.py classify` computes the changed-path set
+(current worktree vs the last snapshot) and, for **every** active
+`exec`-required record (not one per check), checks whether any changed path is in `inputs ∪ deps`,
+whether a selector digest changed, or whether the record has `closure =
+uncertain`. If **no** `exec`-required record is touched and all have
+`closure = declared`, the delta is **non-invalidating for exec**; otherwise
+`exec` is invalidated (helper exit 1). Positive proof only: there is no
+prose-looking, extension, directory, or path-category rule. A later write
+outside the declared `reviewer_approve` closure is non-invalidating **only
+because** the orchestrator declared that closure complete at approval time;
+if it cannot enumerate the closure it records `closure = uncertain`, and
+every later write invalidates `exec`.
+
+**When we rerun vs reuse.** A check is reused (recorded with
+`provenance: reused-from:<id>` and a `why` sentence) only when its previous
+record is currently valid: same bytes for every input, dependency and
+selector member, closure declared, freshness intact, nothing unresolved.
+Any other situation — a FAIL, a changed or deleted input, a new or renamed
+member under a declared selector, an expired ttl, a moved `HEAD` for a
+`bound-to-head` record, an `uncertain` closure — is a rerun; the rerun's
+record supersedes the old one. An `exec`-invalidating delta starts a new
+execution convergence (Step 3 round → independent Reviewer → Step 3.4 runs
+once, unconditionally); a non-invalidating delta is a reviewer-only
+incremental replay of the touched non-exec claims with no new convergence
+and no gate. No line-count skip anywhere.
+
+---
+
+## Current Review Packet
+
+`## Current Review Packet` sits directly after `## Approved Plan` and is
+rewritten in full each round (planning rounds included). It is the
+Reviewer's default input: reviewer prompts say "Read `## Current Review
+Packet` first. Load a `## Review History` entry only when the packet
+references it or a claim needs provenance. Absence of irrelevant history is
+not a defect." Helpers locate the canonical packet by session structure,
+never by the first matching heading: it is
+the unique `## Current Review Packet` heading whose next `## ` heading is
+`## Review History` (likewise `## Evidence Ledger` is the heading followed by
+`## Session Metadata`, and `## Session Metadata` is the last heading); a
+quoted heading inside
+`## Approved Plan` or a history entry is never selected, and zero or more
+than one candidate fails closed (`route` → `executor`; ledger / metadata
+readers and writers → exit 2, nothing written).
+
+Required fields — never truncated and never moved to history:
+
+| Field | Content |
+|---|---|
+| Intent and acceptance criteria | full text |
+| Binding decisions and authorization | full text of every user ruling still in force |
+| Exact delta | `git diff --stat` (navigation only) **plus** `### Attributable Delta` |
+| `### Attributable Delta` | table `snapshot pre \| snapshot post \| path \| pre_blob \| post_blob`; `pre` is the snapshot the previous packet was reviewed at (snap/0 for a first round), **never** `HEAD`; unrelated dirty paths never appear |
+| Touched contracts / invariants | list |
+| Evidence | table from `evidence_ledger.py check --format markdown`: ledger id, claim, disposition, result, fresh/reused, `why`, valid, reason |
+| Unresolved findings + author response | list |
+| Declared deviations | list |
+| Risks / open questions | list |
+| `### Route Facts` | execution rounds only: table `fact \| value \| rationale` — the six eligibility facts (`true \| false \| uncertain`) and nine sensitive flags (`true \| false`) per [execution.md §Author route selection](./execution.md#author-route-selection); `evidence_ledger.py route` reads this block |
+| Author route | `executor` \| `orchestrator-direct`, exactly as returned by `evidence_ledger.py route` (always `executor` in a planning round) |
+
+Boundedness is semantic, not a line cap: only *supporting* detail
+(prior-round transcripts, superseded findings, resolved discussions) is
+referenced into `## Review History` by entry id. The Attributable Delta is
+materialized deterministically by `scripts/evidence_ledger.py delta
+--session <uuid> --pre <n> --post <m>`, which runs `git diff` between the
+two stored snapshot commits restricted to the scope paths and verifies each
+hunk's pre/post blob against the table; hashes verify the patch, they are
+not the patch. Findings are anchored to that materialized patch. For a
+planning round the delta is the plan-text diff between rounds.
+
+---
+
+## Timing Log columns
+
+```
+| Phase | Round | Role | Duration | Dispatch | Reuse | Reads | Unchanged | Tests | Pause | Model | Tokens | Cost |
+```
+
+| Column | Value |
+|---|---|
+| `Duration` | wall-clock from `loop_state.timing.steps`; `N/A` when not recorded |
+| `Dispatch` | `executor:n reviewer:n gate:n` for the row's step |
+| `Reuse` | `reused:n rerun:n` plus each reused claim's ledger id and its `why` (from `evidence_ledger.py check`) |
+| `Reads` | `## Review History` entries presented to the Reviewer this round / total entries (packet-referenced only) |
+| `Unchanged` | review-scope paths whose pre and post snapshot blobs are identical (presented but absent from the Attributable Delta) |
+| `Tests` | `rerun` or `reused` with `inputs_changed: true\|false` |
+| `Pause` | `none` or the pause kind (`product \| risk \| scope \| authorization \| other`) |
+| `Model`, `Tokens` | from Agent / reviewer metadata (`loop_state.token_usage`) when present, else `N/A` |
+| `Cost` | USD from the same metadata (`total_cost_usd` of a `claude -p --output-format json` envelope, or an Agent-tool cost field) when present, else `N/A` |
+
+On the first write under this header every existing four-column row is
+rewritten with `N/A` in each new column; the table is always rectangular.
+Never invent a value: any unmeasured cell is `N/A`. These columns are the
+per-step overhead subset of the evaluation field set; per-case fields that
+need seeded ground truth (`defects_found`, `defects_missed`,
+`theoretical_complexity_added`, `blocking_rejected_or_downgraded`,
+`stale_evidence_reused`) have no production column.

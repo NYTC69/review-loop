@@ -1,0 +1,34 @@
+{
+  "id": "reviewer.case6.smoke.claude",
+  "type": "smoke",
+  "target": "reviewer",
+  "runtime": "claude",
+  "requires": [
+    "claude"
+  ],
+  "setup": {
+    "timeout_seconds": 240
+  },
+  "execution_policy": "best_effort",
+  "artifacts": {
+    "capture": {
+      "reviewer_prompt": "reviewer_prompt_file",
+      "reviewer_result": "reviewer_result_file"
+    },
+    "required": [
+      "reviewer_result",
+      "assertions",
+      "meta"
+    ]
+  },
+  "command": [
+    "bash",
+    "-lc",
+    "set -eu; WT=\"$1\"; cd \"$WT\"; { awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' agents/reviewer.md; printf '\\n\\n'; cat tests/fixtures/evaluation/case-6/packet.md; } | claude -p --no-session-persistence --model opus --output-format json",
+    "--",
+    "__WORKTREE__"
+  ],
+  "assertions": [
+    "reviewer_no_blocking_critical"
+  ]
+}

@@ -1,0 +1,224 @@
+{
+  "id": "case-8",
+  "title": "a release-sized change with meaningful independent review",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n",
+    "tests/__init__.py": "",
+    "tests/test_calc.py": "import unittest\n\nfrom pkg.calc import clamp\n\n\nclass ClampTest(unittest.TestCase):\n    def test_low(self):\n        self.assertEqual(clamp(-1, 0, 3), 0)\n\n    def test_inside(self):\n        self.assertEqual(clamp(2, 0, 3), 2)\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n",
+    "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as fh:\n            return json.load(fh)\n    except (OSError, ValueError):\n        return {}\n",
+    "pkg/retention.py": "\"\"\"Retention sweep (used by pkg.cli).\"\"\"\nimport os\n\n\ndef expired(entries, keep_days):\n    \"\"\"Entries older than keep_days.\"\"\"\n    return [e for e in entries if e[\"age_days\"] > keep_days]\n\n\ndef purge(directory, ages, keep_days):\n    \"\"\"Delete files older than keep_days; keep_days must be at least 1.\"\"\"\n    if keep_days < 1:\n        raise ValueError(\"keep_days must be >= 1 (refusing to purge everything)\")\n    for name, age in ages.items():\n        if age > keep_days:\n            os.remove(os.path.join(directory, name))\n",
+    "tests/test_retention.py": "import unittest\n\nfrom pkg.retention import expired\n\n\nclass ExpiredTest(unittest.TestCase):\n    def test_expired(self):\n        self.assertEqual(expired([{\"age_days\": 40}, {\"age_days\": 3}], 30), [{\"age_days\": 40}])\n"
+  },
+  "seeded_defects": [
+    {
+      "file": "pkg/calc.py",
+      "line_start": 13,
+      "line_end": 15,
+      "kind": "off-by-one"
+    },
+    {
+      "file": "pkg/store.py",
+      "line_start": 5,
+      "line_end": 10,
+      "kind": "silent-failure"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size + 1]\n\n\ndef scale(value, factor):\n    \"\"\"Multiply `value` by `factor`.\"\"\"\n    return value * factor\n",
+        "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as fh:\n            return json.load(fh)\n    except (OSError, ValueError):\n        return {}\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+        "pkg/retention.py": "\"\"\"Retention sweep (used by pkg.cli).\"\"\"\nimport os\n\n\ndef expired(entries, keep_days):\n    \"\"\"Entries older than keep_days.\"\"\"\n    return [e for e in entries if e[\"age_days\"] > keep_days]\n\n\ndef purge(directory, ages, keep_days):\n    \"\"\"Delete files older than keep_days; keep_days must be at least 1.\"\"\"\n    if keep_days < 1:\n        raise ValueError(\"keep_days must be >= 1 (refusing to purge everything)\")\n    for name, age in ages.items():\n        if age > keep_days:\n            os.remove(os.path.join(directory, name))\n\n\ndef expired_names(ages, keep_days):\n    \"\"\"Names whose age exceeds keep_days.\"\"\"\n    return sorted(name for name, age in ages.items() if age > keep_days)\n",
+        "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n\n## Release 1.0\n\n- `scale`, atomic `save`, `expired_names`.\n",
+        "tests/test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.store import load, save\n\n\nclass StoreTest(unittest.TestCase):\n    def test_round_trip(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            path = os.path.join(tmp, \"doc.json\")\n            save(path, {\"a\": 1})\n            self.assertEqual(load(path), {\"a\": 1})\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "false",
+          "release-sized change across four modules"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "false",
+          "could be split per module"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "true",
+          "retention module removes files"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "true",
+          "public surface of three modules changes"
+        ],
+        "large_surface": [
+          "true",
+          "five files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/calc.py",
+          "pkg/store.py",
+          "pkg/retention.py",
+          "README.md",
+          "tests/test_store.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/calc.py",
+            "pkg/store.py",
+            "pkg/retention.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-1.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/calc.py": "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value, low, high):\n    \"\"\"Keep value inside [low, high].\"\"\"\n    if value < low:\n        return low\n    if value > high:\n        return high\n    return value\n\n\ndef window(items, size):\n    \"\"\"First `size` items.\"\"\"\n    return items[:size]\n\n\ndef scale(value, factor):\n    \"\"\"Multiply `value` by `factor`.\"\"\"\n    return value * factor\n",
+        "pkg/store.py": "\"\"\"Tiny JSON document store.\"\"\"\nimport json\n\n\ndef load(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return json.load(fh)\n\n\ndef save(path, data):\n    \"\"\"Write atomically: temp file then rename.\"\"\"\n    import os\n    tmp = path + \".tmp\"\n    with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n        json.dump(data, fh)\n    os.replace(tmp, path)\n",
+        "tests/test_regression.py": "import os\nimport tempfile\nimport unittest\n\nfrom pkg.calc import window\nfrom pkg.store import load\n\n\nclass RegressionTest(unittest.TestCase):\n    def test_window_size(self):\n        self.assertEqual(window([1, 2, 3], 2), [1, 2])\n\n    def test_load_raises_on_missing(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            with self.assertRaises(OSError):\n                load(os.path.join(tmp, \"missing.json\"))\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "false",
+          "release-sized change across four modules"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "false",
+          "could be split per module"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "true",
+          "retention module removes files"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "true",
+          "public surface of three modules changes"
+        ],
+        "large_surface": [
+          "true",
+          "five files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/calc.py",
+          "pkg/store.py",
+          "tests/test_regression.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests": {
+          "command": "python3 -m unittest discover -q -s tests -t .",
+          "inputs": [
+            "pkg/calc.py",
+            "pkg/store.py",
+            "pkg/retention.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-2.md",
+      "gate": "gate/approve.md"
+    }
+  ]
+}

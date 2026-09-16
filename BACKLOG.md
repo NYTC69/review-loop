@@ -1,4 +1,4 @@
-**Last updated**: 2026-05-15 (close v2.7.8 adversarial-gate polish follow-up bundle)
+**Last updated**: 2026-09-15
 
 ## P0 — blocker / must-do-now
 
@@ -8,7 +8,8 @@
 
 ## P2 — normal
 
-(none)
+- Reduce review-loop orchestration overhead while preserving independent review and safety. (added 2026-09-15)
+  - Note: Yuan requested recording these proposals for a separate follow-up session, not implementation now. Motivated by the GTO Wizard extension 1.0 release and subsequent directory migration: (1) reuse review/test evidence tied to exact content and rerun only checks invalidated by a delta, failure, or unresolved concern; (2) allow the main agent to implement small scoped changes while retaining an independent reviewer, using Executor subagents when decomposition actually helps; (3) give reviewers a compact current-requirements/diff/contracts/test-results/open-issues packet, with historical session details available on demand; (4) classify deviations from the plan by user intent, real impact, and safety rather than automatically treating a correct simplification as CRITICAL; (5) load protocols by active stage, keep current state short with append-only history, simplify prose-only replay, scope security checks to the delivery without unrelated cleanup, and evaluate risk-based use of extra adversarial review. Prioritize proposals 1–3; preserve meaningful tests, independent review, data protection, and authorization boundaries. Measure unnecessary pauses, duplicated reads/reviews/tests, elapsed time, token use, and missed defects on representative small-fix/read-only/cross-file/release tasks. These are proposals requiring review, not approval to weaken current gates. Codex entry unification is a separate local-configuration task: Yuan prefers the live development repository as the sole source, not the installed cached version.
 
 ## P3 — nice to have / someday
 

@@ -1,0 +1,227 @@
+{
+  "id": "case-3",
+  "title": "a cross-file runtime change",
+  "repo": {
+    "pkg/__init__.py": "",
+    "pkg/a.py": "\"\"\"Report formatting.\"\"\"\n\n\ndef format_report(rows):\n    \"\"\"Render `(key, value)` rows as `key: value` lines.\"\"\"\n    return \"\\n\".join(f\"{key}: {value}\" for key, value in rows)\n",
+    "pkg/b.py": "\"\"\"Line parsing.\"\"\"\n\n\ndef parse_line(line):\n    \"\"\"Split a `key=value;...` line into a dict.\"\"\"\n    fields = line.strip().split(\";\")\n    out = {}\n    for field in fields[:-1]:\n        key, _, value = field.partition(\"=\")\n        out[key] = value\n    return out\n",
+    "tests/__init__.py": "",
+    "tests/test_a.py": "import unittest\n\nfrom pkg.a import format_report\n\n\nclass ReportTest(unittest.TestCase):\n    def test_lines(self):\n        self.assertEqual(format_report([(\"a\", 1)]), \"a: 1\")\n",
+    "tests/test_b.py": "import unittest\n\nfrom pkg.b import parse_line\n\n\nclass ParseTest(unittest.TestCase):\n    def test_trailing_separator(self):\n        self.assertEqual(parse_line(\"a=1;b=2;\"), {\"a\": \"1\", \"b\": \"2\"})\n",
+    "README.md": "# demo\n\n`clamp` keeps a value inside `[low, high]`.\n"
+  },
+  "seeded_defects": [
+    {
+      "file": "pkg/b.py",
+      "line_start": 8,
+      "line_end": 10,
+      "kind": "dropped-last-field"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/a.py": "\"\"\"Report formatting.\"\"\"\n\n\ndef format_report(rows):\n    \"\"\"Render `(key, value)` rows as `key: value` lines.\"\"\"\n    return \"\\n\".join(f\"{key}: {value}\" for key, value in rows)\n\n\ndef format_summary(counts):\n    \"\"\"Render a `{name: count}` mapping sorted by name.\"\"\"\n    return format_report(sorted(counts.items()))\n",
+        "pkg/b.py": "\"\"\"Line parsing.\"\"\"\n\n\ndef parse_line(line):\n    \"\"\"Split a `key=value;...` line into a dict.\"\"\"\n    fields = line.strip().split(\";\")\n    out = {}\n    for field in fields[:-1]:\n        key, _, value = field.partition(\"=\")\n        out[key] = value\n    return out\n\n\ndef parse_lines(lines):\n    \"\"\"Parse every non-empty line.\"\"\"\n    return [parse_line(line) for line in lines if line.strip()]\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "false",
+          "two runtime modules change together"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/a.py",
+          "pkg/b.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests_a": {
+          "command": "python3 -m unittest -q tests.test_a",
+          "inputs": [
+            "pkg/a.py",
+            "tests/test_a.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        },
+        "tests_b": {
+          "command": "python3 -m unittest -q tests.test_b",
+          "inputs": [
+            "pkg/b.py",
+            "tests/test_b.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-1.md",
+      "gate": "gate/approve.md"
+    },
+    {
+      "kind": "write",
+      "write_kind": "code",
+      "writes": {
+        "pkg/b.py": "\"\"\"Line parsing.\"\"\"\n\n\ndef parse_line(line):\n    \"\"\"Split a `key=value;...` line into a dict.\"\"\"\n    fields = line.strip().split(\";\")\n    out = {}\n    for field in fields:\n        if not field:\n            continue\n        key, _, value = field.partition(\"=\")\n        out[key] = value\n    return out\n\n\ndef parse_lines(lines):\n    \"\"\"Parse every non-empty line.\"\"\"\n    return [parse_line(line) for line in lines if line.strip()]\n"
+      },
+      "route_facts": {
+        "small_bounded_scope": [
+          "false",
+          "repair inside a two-module change"
+        ],
+        "unambiguous_requirements": [
+          "true",
+          "acceptance criteria name the exact behaviour"
+        ],
+        "known_dependency_impact": [
+          "true",
+          "callers enumerated; closure declared below"
+        ],
+        "no_useful_decomposition": [
+          "true",
+          "single cohesive edit"
+        ],
+        "safe_verification": [
+          "true",
+          "unit tests cover the change"
+        ],
+        "dirty_work_preserved": [
+          "true",
+          "no unrelated dirty paths in the worktree"
+        ],
+        "auth_or_authorization": [
+          "false",
+          "no auth code"
+        ],
+        "permissions": [
+          "false",
+          "no permission model"
+        ],
+        "destructive_operation": [
+          "false",
+          "no deletion of user data"
+        ],
+        "irreversible_data_change": [
+          "false",
+          "in-memory helpers only"
+        ],
+        "secrets": [
+          "false",
+          "no credentials"
+        ],
+        "external_writes": [
+          "false",
+          "no network or external system"
+        ],
+        "migrations": [
+          "false",
+          "no schema"
+        ],
+        "broad_api_or_architecture": [
+          "false",
+          "internal helper"
+        ],
+        "large_surface": [
+          "false",
+          "one or two files"
+        ]
+      },
+      "review_closure": {
+        "inputs": [
+          "pkg/b.py"
+        ],
+        "deps": []
+      },
+      "checks": {
+        "tests_a": {
+          "command": "python3 -m unittest -q tests.test_a",
+          "inputs": [
+            "pkg/a.py",
+            "tests/test_a.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        },
+        "tests_b": {
+          "command": "python3 -m unittest -q tests.test_b",
+          "inputs": [
+            "pkg/b.py",
+            "tests/test_b.py"
+          ],
+          "deps": [],
+          "selectors": [
+            "glob:tests/**"
+          ]
+        }
+      },
+      "review": "reviews/round-2.md",
+      "gate": "gate/approve.md"
+    }
+  ]
+}

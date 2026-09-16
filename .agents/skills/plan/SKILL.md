@@ -115,10 +115,17 @@ Imports docs listed above.
    - `## Draft Plan` is present; it will be overwritten by each planning
      round's Executor output.
    - `## Current Phase: planning`.
+   - `## Current Review Packet` (empty until round 1) and
+     `## Evidence Ledger` are part of the canonical list; the Timing Log
+     header has the 13 columns of `docs/protocol/session-file.md`
+     §Timing Log columns.
 4. Under the lock, write the initial `## Session Metadata` block.
    `entry_point: plan`. `plan_source` is omitted during planning draft
    rounds — it is written on APPROVE only.
-5. Tell the user the session path so they can inspect it.
+5. Run `python3 scripts/evidence_ledger.py snapshot --session {uuid}`
+   outside the Codex sandbox to store snap/0 (the only way
+   `## Evidence Ledger` is ever written).
+6. Tell the user the session path so they can inspect it.
 
 ## Step 1 — Parse the work item
 
@@ -183,9 +190,18 @@ this skill specifically:
 
 - Each round: update context file → spawn `review_loop_executor` with a
   fresh self-contained prompt → write the round's draft into
-  `## Draft Plan` → optional context-persist sub-step → reviewer
-  dispatch → parse → Live Report → close completed agents per
-  §Completed Agent Cleanup above.
+  `## Draft Plan` → `evidence_ledger.py snapshot` → rewrite
+  `## Current Review Packet` in full (planning-round delta = the
+  plan-text diff between rounds from `evidence_ledger.py delta`,
+  unresolved findings + Executor response, `Author route: executor` —
+  planning is always Executor-authored; `evidence_ledger.py route`
+  answers `executor` outside the execution phase) →
+  optional context-persist sub-step → reviewer dispatch → parse →
+  `finding_triage.py check` (mandatory rubric gate; `incomplete` → output
+  discarded as malformed, no Claude retry for the round, never implement a
+  CRITICAL that failed triage) → Live
+  Report (13-column Timing Log row, `N/A` where unmeasured) → close
+  completed agents per §Completed Agent Cleanup above.
 - Loop control: `APPROVE` → promote `## Draft Plan` into
   `## Approved Plan` with `- Source: reviewer-approved`, write
   `plan_source: reviewer-approved` to `## Session Metadata`, remove
@@ -193,6 +209,10 @@ this skill specifically:
   loop. Do NOT continue into execution — that is the `execute` skill's
   job.
 - `REQUEST_CHANGES` → feed feedback into the next Executor round.
+- Planning rounds have no Step 3.4 gate, so `docs/protocol/execution.md`
+  §Gate rubric revalidation does not apply here; an incomplete
+  planning-round CRITICAL is discarded and retried per the per-backend
+  table in `docs/protocol/execution.md` §Mandatory rubric gate.
 - When `soft_limit_plan` is reached and blocking issues remain, surface
   the situation to the user instead of silently continuing or silently
   stopping. Respect the configured plan soft limit, but do not bypass
@@ -233,6 +253,15 @@ claude -p --no-session-persistence --output-format stream-json --include-partial
   as a command execution failure.
 - Validate the `result` field against the shared reviewer schema in
   `docs/protocol/reviewer-output.md`.
+- Then run `python3 scripts/finding_triage.py check --input <result file>`
+  (mandatory rubric gate per `docs/protocol/execution.md` §Mandatory rubric
+  gate: every `[CRITICAL]` carries the six fields `Trigger:`,
+  `Reachability:`, `Impact:`, `Likelihood:`, `Fix cost:`, `Cheaper
+  response:`). An `incomplete` result is a reviewer schema validation
+  failure for this round: discard the output as malformed, record
+  `rubric_incomplete: finding #n missing <fields>` in `## Review History`,
+  do not retry Claude for that round, and never implement a CRITICAL that
+  failed triage.
 - Delete `.review-loop/tmp/{session_id}-reviewer-prompt.txt` immediately
   after the command returns.
 - If the Claude call fails or validation fails, do not guess and do not
@@ -250,6 +279,10 @@ review content and the same reviewer schema rules. If invalid, retry
 once with explicit correction instructions. If still invalid, stop and
 surface the failure. Then
 release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting.
+- The local reviewer output also goes through `python3
+  scripts/finding_triage.py check`; `incomplete` counts as invalid output
+  for the one correction retry above, and a CRITICAL that failed triage is
+  never implemented.
 
 #### Parallel Reviewer Fan-Out (N>1)
 
@@ -318,6 +351,11 @@ Invoke the scheduler outside the sandbox:
   own `parsed_verdict` / `parsed_issues` are best-effort metadata only
   per `scripts/review_verification.py:12-17` and must not be substituted
   for orchestrator-side validation.
+- Then run `python3 scripts/finding_triage.py check --input <result file>`
+  on every validated `result` (mandatory rubric gate); an `incomplete`
+  result is a reviewer schema validation failure for that entry, discarded
+  as malformed and recorded as `rubric_incomplete: finding #n missing
+  <fields>`.
 - Apply the same per-round failure-mode taxonomy as the single-shot path
   (command execution / JSON parsing / missing `result` / reviewer schema
   validation) when recording `## Review History`.
@@ -344,9 +382,13 @@ the round verdict.
 Plan review content must include:
 
 - the shared session file path
+- the instruction "Read `## Current Review Packet` first. Load a
+  `## Review History` entry only when the packet references it or a
+  claim needs provenance. Absence of irrelevant history is not a
+  defect."
 - the current planning-phase context from the session file
 - the latest Executor planning output
-- prior `Review History` context when present
+- prior `Review History` context only by packet reference
 - the exact shared reviewer schema
 - a review-only instruction
 - explicit direction to flag missing test strategy and unvalidated

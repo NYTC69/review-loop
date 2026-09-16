@@ -683,6 +683,10 @@ class RunSkillSmokeTimeoutRegressionTest(unittest.TestCase):
             "execute.stop-after-before-polish.smoke.claude.json": 360,
             # full-pipeline tier (B3 override min: 1, ADR-4 tier value 600s)
             "review-loop.regression.smoke.claude.json": 600,
+            # single live Opus Reviewer dispatch for the P1-P4 evaluation (cases 6 / 7);
+            # one `claude -p` call, so the NEAR_DISPATCH tier value applies
+            "reviewer.case6.smoke.claude.json": 240,
+            "reviewer.case7.smoke.claude.json": 240,
             # review-loop infrastructure cases (kept on legacy 120s; not in P3-2 scope)
             "review-loop.noop.claude-default.json": 120,
             "review-loop.noop.codex-fallback.json": 120,

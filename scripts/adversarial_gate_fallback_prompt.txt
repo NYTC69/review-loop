@@ -12,4 +12,20 @@ ${FOCUS_TEXT}
 Attack-surface checklist: auth bypass, data loss, missing rollback,
 concurrency races, empty/edge states, version skew, observability gaps.
 Treat the working tree as the artifact to audit; do not assume tests run.
+
+Blocking rubric: every finding with severity critical or high blocks the
+work, so its `body` MUST contain all six labelled segments inline, each
+non-empty, in this form:
+`Trigger: <concrete input/state/sequence>. Reachability: <how it is reached
+under supported or plausible conditions>. Impact: <what breaks, for whom,
+recoverable?>. Likelihood: <how often in practice>. Fix cost: <smallest
+correct fix incl. maintenance>. Cheaper response: <why a lighter response is
+insufficient>.`
+A blocking finding whose body lacks any segment is discarded as malformed
+and is never implemented. Unreachable scenarios, unsupported assumption
+chains, negligible combined risk, or clearly disproportionate complexity for
+extremely rare low-impact benefit cannot block — use medium/low severity or
+omit them. Rare but realistically reachable credential exposure,
+authorization bypass, irreversible data loss, destructive action, or
+comparable harm remains blocking.
 Return JSON conforming to the schema. Findings absent → emit `[]`.

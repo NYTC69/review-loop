@@ -85,13 +85,19 @@ Imports docs listed above.
      round's Executor output (see `docs/protocol/session-file.md`
      §Draft Plan and `docs/protocol/planning.md` §3).
    - `## Current Phase: planning`.
+   - `## Current Review Packet` (empty until round 1) and
+     `## Evidence Ledger` are part of the canonical list; the Timing Log
+     header has the 13 columns of `docs/protocol/session-file.md`
+     §Timing Log columns.
 3. Write the initial `## Session Metadata` block. `entry_point: plan`.
    `plan_source` is **omitted** during planning draft rounds — it is
    written on APPROVE only (per Phase 1 decision; see
    `docs/protocol/session-file.md` §Session Metadata schema).
 4. Acquire the single-writer lock per
    `docs/protocol/session-file.md` §Lock file lifecycle.
-5. Tell the user the session path so they can inspect it.
+5. Run `python3 scripts/evidence_ledger.py snapshot --session {uuid}`
+   to store snap/0 (the only way `## Evidence Ledger` is ever written).
+6. Tell the user the session path so they can inspect it.
 
 ## Step 1 — Parse the work item
 
@@ -156,9 +162,29 @@ Run the planning loop per `docs/protocol/planning.md` §Round loop. For
 this skill specifically:
 
 - Each round: update context file → Executor → update context file
-  (write the round's draft into `## Draft Plan`) → optional
-  context-persist sub-step (§3.5 in the protocol doc) → Reviewer →
-  parse → Live Report.
+  (write the round's draft into `## Draft Plan`; `evidence_ledger.py
+  snapshot`; rewrite `## Current Review Packet` in full with the
+  planning-round delta — the plan-text diff between rounds from
+  `evidence_ledger.py delta` — unresolved findings + Executor response,
+  and `Author route: executor` — planning is always Executor-authored;
+  `evidence_ledger.py route` answers `executor` outside the execution
+  phase) → optional context-persist sub-step
+  (§3.5 in the protocol doc) → Reviewer → parse → `finding_triage.py check` (mandatory rubric gate per
+  `docs/protocol/execution.md` §Mandatory rubric gate: every `[CRITICAL]`
+  carries the six fields `Trigger:`, `Reachability:`, `Impact:`,
+  `Likelihood:`, `Fix cost:`, `Cheaper response:`; `incomplete` → discard
+  the output as malformed, record `rubric_incomplete: finding #n missing
+  <fields>`, re-dispatch the Reviewer once with the missing-field list,
+  second `incomplete` → reviewer failure for the round; never implement a
+  CRITICAL that failed triage) → Live Report (Timing
+  Log row with the 13 columns, `N/A` where unmeasured).
+- Round 2+ scope-drift check per `docs/protocol/planning.md` §4: an
+  undisclosed material change to the plan's design decisions is CRITICAL;
+  a disclosed equivalent simplification is not automatically CRITICAL.
+- Planning rounds have no Step 3.4 gate, so `docs/protocol/execution.md`
+  §Gate rubric revalidation does not apply here; an incomplete
+  planning-round CRITICAL is discarded and retried per the per-backend
+  table in `docs/protocol/execution.md` §Mandatory rubric gate.
 - Loop control: `APPROVE` → promote `## Draft Plan` into
   `## Approved Plan` with `- Source: reviewer-approved`, write
   `plan_source: reviewer-approved` to `## Session Metadata`, **remove
@@ -206,7 +232,11 @@ Follow `docs/protocol/planning.md` §Reviewer dispatch, Claude Code
 block. Two modes (`codex` and `subagent`) controlled by `reviewer:` in
 `.review-loop/config.md`. For subagent mode, `subagent_type` is
 `general-purpose` with the `agents/reviewer.md` body inlined plus an
-explicit "Report only, do not modify any files" instruction.
+explicit "Report only, do not modify any files" instruction. Every
+prompt opens with "Read `## Current Review Packet` first. Load a
+`## Review History` entry only when the packet references it or a
+claim needs provenance. Absence of irrelevant history is not a
+defect."; the flat all-rounds findings dump is gone.
 
 ## Step 3 — Exit with hand-off hint
 

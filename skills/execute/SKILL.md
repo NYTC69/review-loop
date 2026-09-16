@@ -248,9 +248,54 @@ the standard drift check.
 ## Step 3 — Execution round loop
 
 Per `docs/protocol/execution.md` §Step 3 — Execution round loop. Round
-sequence: update context → Executor (skipped on `--review-only`
-round 1) → update context → optional context-persist sub-step →
-Reviewer → parse → Live Report → loop control.
+sequence: update context (snap/0 via `evidence_ledger.py snapshot` if
+none exists) → `### Route Facts` in the packet + `evidence_ledger.py
+route --path <touched paths>` per `docs/protocol/execution.md` §Author
+route selection (`orchestrator-direct` = every eligibility fact `true`,
+every sensitive flag `false`, ledger cross-check passed, snapshot
+stored, execution phase → implement directly and produce a Direct
+Implementation Record per `docs/protocol/executor-output.md`; anything
+else → Executor; without `--facts` the helper reads `### Route Facts`
+only from `## Current Review Packet`, never from history or an old DIR,
+and a packet without the block routes to `executor`; the canonical packet
+is the unique `## Current Review Packet` heading whose next `## ` heading is
+`## Review History`, otherwise fail closed to `executor`) → Executor or
+direct round (skipped on `--review-only`
+round 1) → update
+context → `evidence_ledger.py snapshot` → `check` → rewrite
+`## Current Review Packet` in full with the `### Attributable Delta`
+from `evidence_ledger.py delta` (pre = the snapshot the previous packet
+was reviewed at, snap/0 for a first round) → optional context-persist
+sub-step → Reviewer (prompt opens with "Read `## Current Review Packet`
+first. Load a `## Review History` entry only when the packet references
+it or a claim needs provenance. Absence of irrelevant history is not a
+defect.") → parse → `finding_triage.py check` (mandatory rubric gate per
+`docs/protocol/execution.md` §Mandatory rubric gate: every `[CRITICAL]`
+carries the six fields `Trigger:`, `Reachability:`, `Impact:`,
+`Likelihood:`, `Fix cost:`, `Cheaper response:`; `incomplete` → discard
+the output as malformed, record `rubric_incomplete: finding #n missing
+<fields>`, re-dispatch the Reviewer once with the missing-field list,
+second `incomplete` → reviewer failure for the round; never implement a
+CRITICAL that failed triage) →
+`evidence_ledger.py record --check reviewer_approve`
+(PASS / FAIL, `--author-route`, plus `--supersedes <earlier id>` when
+the review scope grew — every active record of a required check must be
+valid; a FAIL is only superseded by a covering executed PASS) →
+`check` → Live Report + 13-column Timing Log row → loop
+control. `## Evidence Ledger` and `completed_stages` are written only
+through `scripts/evidence_ledger.py`; a legacy session without a ledger
+fails closed (empty stages, snap/0 from the current verified worktree,
+affected checks rerun; "passed earlier" prose is never a PASS).
+
+Dispute flow per `docs/protocol/execution.md` §Dispute flow: the
+Reviewer's verdict is never overridden; to dispute a disproportionate
+complete CRITICAL run `finding_triage.py dispute --finding n --rationale
+<file> --review <output>`, copy its `packet_line` (`Triage: disputed
+CRITICAL #n → MINOR/follow-up`) into the packet, implement nothing, and
+let the next independent Reviewer `concur` (`concurred` proceeds without
+implementing; `re-asserted` keeps blocking; `incomplete` discards the
+output); an `orchestrator-direct` dispute needs `--reviewer-record` from a
+later round.
 
 ### Provenance-aware reviewer prompts
 
@@ -258,7 +303,11 @@ The Orchestrator picks the reviewer-prompt block that matches the
 active `## Session Metadata.plan_source`, per
 `docs/protocol/execution.md` §Provenance-aware reviewer prompts:
 
-- `plan_source: reviewer-approved` → strict plan-conformance block.
+- `plan_source: reviewer-approved` → strict plan-conformance block:
+  undisclosed material deviations block; a disclosed equivalent
+  simplification satisfying intent and acceptance criteria is not
+  automatically CRITICAL; a missing disclosure of a harmless change is a
+  MINOR record correction.
 - `plan_source: user-supplied` → plan-conformance deviations become
   `[MINOR]`/advisory unless they change user-visible behavior or
   violate acceptance criteria; correctness + intent still enforced.
@@ -285,8 +334,8 @@ Per `docs/protocol/execution.md` §`--review-only` first-round skip:
    before Step 3.5, and mint `exec` only after Step 3.4 APPROVE/controlled
    SKIP, or after Step 3.4 REQUEST_CHANGES is repaired and a later normal
    Step 3 Reviewer returns APPROVE. This remains the only path where `exec`
-   can be added without the Executor running before the first review-only
-   gate.
+   can be added with no author round (Executor or orchestrator-direct)
+   before the first review-only gate.
 3. REQUEST_CHANGES → round 2+ follows the standard CR → fix loop
    (Executor runs, then Reviewer, alternating).
 
@@ -320,7 +369,10 @@ sandbox bug. Always `general-purpose` with body inlined.
   findings to ordinary Step 3 Executor/Reviewer repair rounds; do not run Step
   3.4 again while repairing those findings. A later normal Step 3 reviewer
   APPROVE after those repairs mints `exec` and proceeds to Step 3.5 unless
-  `--stop-after before-polish`.
+  `--stop-after before-polish`. "Mint `exec`" = record `gate` through
+  `evidence_ledger.py record` (PASS, FAIL, or `--disposition
+  controlled-skip --reason "<verbatim SKIP banner>" --closure declared`)
+  and let `check` derive `completed_stages`.
 - `REQUEST_CHANGES` → feed feedback to the next Executor round.
 - Soft limit + stuck detection per `docs/protocol/execution.md`
   §Per-stage max-round caps (`soft_limit_exec`, default 3).
@@ -373,6 +425,32 @@ in that repair path.
 No Agent dispatch involved — invoker is a Bash shell-out to Python, so
 the plugin-agent-sandbox bug does not apply.
 
+Gate rubric revalidation per `docs/protocol/execution.md` §Gate rubric
+revalidation: partition the rendered gate text with `finding_triage.py
+check --session {uuid} --input <gate text> --record-pending`; only the
+complete findings (`complete_findings_text`) feed the next Executor round;
+when none is complete skip the Executor (`revalidation_round: true`,
+Timing Log `executor:0`); the next normal Step 3 Reviewer prompt carries a
+`## Rubric revalidation` block listing every pending entry with its
+missing fields ("re-assert it as a `[CRITICAL]` with the full six-field
+rubric, or drop it; nothing listed has been implemented"); per entry
+`finding_triage.py revalidate --pending <id> --review <output>` →
+`re-asserted` (ordinary repair loop) / `concurred` (dropped) /
+`incomplete` (output discarded; normal-Reviewer retry row). A synthetic
+invoker REQUEST_CHANGES (cleanup / capture / adapter / banner failure — a
+synthetic invoker text anchored at the invoker / adapter, `confidence=1.0`,
+carrying no rubric fields) is
+an infrastructure failure, not a finding: it is not partitioned, not
+revalidated and not disputable (`check` lists it under `infrastructure`,
+exit 1); a gate `[CRITICAL]` at those paths that carries any rubric field
+is an ordinary finding; `exec` stays withheld until the runtime failure is
+resolved and Step 3 re-runs. The gate is
+never re-run; `exec` is minted only on a triage-complete APPROVE with no
+complete gate finding open and every pending entry dropped or repaired
+(`finding_triage.py status` exit 0); revalidation rounds count toward
+`soft_limit_exec`. An incomplete finding never appears in an Executor
+prompt.
+
 The `adversarial_gate_skip_paths` config key (default
 `["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]`)
 lets the orchestrator skip the gate entirely when every Step 3 changed
@@ -386,20 +464,24 @@ consolidation. `quality_focus` applies only when Step 3.5 Quality Polish
 actually runs. If `skip_quality_polish: true` in config, mint `polish`
 as a no-op completion and continue to Step 3.6.
 
-- Any substep that writes code clears `completed_stages` and the
-  Orchestrator replays from `exec` per
-  `docs/protocol/session-file.md` §`completed_stages` lifecycle. Each
-  replay iteration that writes files clears the set and restarts from
-  `exec`. Termination is guaranteed by the per-stage caps.
-- Narrow `reviewer-only fast-replay` exception: eligible Step 3.5.4
-  prose/comment/metadata-only writes that do not touch lint-pinned needles
-  or change the `bash scripts/run-skill-lint` baseline may preserve the
-  current `completed_stages` per
+- Any substep that writes code runs the write-boundary sequence
+  `evidence_ledger.py snapshot` → `classify` → `check`: records whose
+  declared closure the write touched are invalidated per record, and an
+  exec-invalidating delta replays from `exec` per
   `docs/protocol/session-file.md` §`completed_stages` lifecycle.
-- Step 3.5.4 reviewer-only fast-replay `APPROVE` does not mint `polish`.
-  Step 3.5.6 mints `polish` only after the full Step 3.5 invocation finishes
-  cleanly with either no writes, or only eligible writes already approved by
-  reviewer-only fast-replay.
+  Termination is guaranteed by the per-stage caps.
+- Narrow `reviewer-only fast-replay` exception: a Step 3.5.4 write that
+  `classify` reports as non-invalidating for `exec` (no changed path inside
+  a declared `exec` closure; no `uncertain` closure) keeps the surviving
+  records per `docs/protocol/session-file.md` §`completed_stages`
+  lifecycle; no prose-likeness or path-category test is applied.
+- Record every substep outcome through `evidence_ledger.py record`
+  (`static_analysis` PASS or `--disposition not-applicable --reason`,
+  `agent_review:<name>`, `simplify`, `tests` with `--env-command` and
+  `--selector` for its discovery roots). Step 3.5.4 reviewer-only
+  fast-replay `APPROVE` does not itself make `polish` present; `polish` is
+  derived by `check` once every required record is valid after the full
+  Step 3.5 invocation finished cleanly.
 - Hallucination guard: for every quality agent returning `tool_uses:
   0`, discard and retry once; if retry is also 0, skip and report.
 - `--stop-after before-polish` → exit after Step 3.4 APPROVE/SKIP and
@@ -413,13 +495,12 @@ agent body inlined, per `docs/protocol/execution.md` §3.5.2 /
 ## Step 3.6 — Documentation Consistency
 
 Per `docs/protocol/execution.md` §Step 3.6. Single pass. Update project
-docs + fix stale code comments. Writes → clear `completed_stages`,
-replay from `exec`, except for the narrow `reviewer-only fast-replay`
-exception above when the write is eligible prose/comment/metadata-only work
-that does not touch lint-pinned needles or change the
-`bash scripts/run-skill-lint` baseline. No-write or approved reviewer-only
-fast-replay → mint `docs`. **After minting `docs`, proceed to Step 3.7** —
-a no-op docs stage is not a terminal state.
+docs + fix stale code comments. Writes → `snapshot` → `classify` →
+`check`; exec-invalidating → replay from `exec`, otherwise the narrow
+`reviewer-only fast-replay` of the touched non-exec claims. Record
+`docs_consistency` (PASS on APPROVE, FAIL on REQUEST_CHANGES); `docs` is
+derived. **After `docs` is present, proceed to Step 3.7** — a no-op docs
+stage is not a terminal state.
 
 - Hallucination guard: for every documentation-stage agent returning `tool_uses: 0`, discard and retry once; if retry is also 0, skip and report.
 
@@ -429,8 +510,9 @@ a no-op docs stage is not a terminal state.
 
 Per `docs/protocol/execution.md` §Step 3.7. Single scan. Check for
 tracked/staged sensitive files; audit `.gitignore` for missing
-coverage. Writes to `.gitignore` or `git rm --cached` → clear
-`completed_stages`, replay from `exec`. No-write → mint `security`.
+coverage. Writes to `.gitignore` or `git rm --cached` → `snapshot` →
+`check`, always exec-invalidating → replay from `exec`. No-write →
+record `security_scan` (`--env-command`); `security` is derived.
 
 Step 3.7 runs **unconditionally** after Step 3.6, regardless of
 whether any prior stage wrote files. A no-op session (zero code
@@ -447,7 +529,8 @@ gate, not a content-dependent step. The only exits before 3.7 are
 
 Per `docs/protocol/execution.md` §Step 4 — Delivery, gated by the
 delivery gate in §Delivery gate: `runtime_supported_set ⊆
-completed_stages`. For Claude Code the runtime set is
+completed_stages` (re-derived by `evidence_ledger.py check` immediately
+before the gate). For Claude Code the runtime set is
 `{exec, polish, docs, security}`; for Codex Stage 1 it is
 `{exec, polish, docs, security}`. Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.
 
@@ -500,4 +583,6 @@ Per `docs/protocol/session-file.md` §`delivery_blocked_by` lifecycle.
 The Orchestrator keeps minimal state between rounds (session path,
 latest Reviewer feedback, round number, current stage). All durable
 state is on disk. See `docs/protocol/planning.md` §Context management
-discipline (applies equally to execution).
+discipline (applies equally to execution). The Reviewer's default input
+is `## Current Review Packet`; `## Review History` is loaded on demand by
+entry id.

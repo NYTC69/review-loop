@@ -20,6 +20,7 @@ from scripts.run_skill_smoke_lib import (
     cleanup_timed_out_process,
     finalize_stream_capture_artifact,
     select_primary_session_path,
+    triage_report_fields,
 )
 
 
@@ -232,6 +233,132 @@ def _resolve_smoke_assertion_entry(smoke_assertions, raw_entry):
         merged[key] = value
 
     return assertion_id, merged, None
+
+REVIEWER_MEASUREMENT_ARTIFACT = "reviewer-measurement.json"
+_NA = "N/A"
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def envelope_measurement(envelope: dict) -> dict:
+    # Elapsed / model / token / cost fields of a `claude -p --output-format
+    # json` envelope for the evaluation smoke rows. Every field that the
+    # envelope does not carry is the literal string "N/A" — never a guess.
+    out = {"duration_ms": _NA, "model": _NA, "tokens_in": _NA, "tokens_out": _NA, "cost_usd": _NA}
+
+    # Direct numeric fields: only update if present and numeric
+    if _number(envelope.get("duration_ms")):
+        out["duration_ms"] = envelope["duration_ms"]
+    if _number(envelope.get("total_cost_usd")):
+        out["cost_usd"] = envelope["total_cost_usd"]
+
+    # Usage tokens: nested under usage -> input_tokens / output_tokens
+    usage = envelope.get("usage")
+    if isinstance(usage, dict):
+        if _number(usage.get("input_tokens")):
+            out["tokens_in"] = usage["input_tokens"]
+        if _number(usage.get("output_tokens")):
+            out["tokens_out"] = usage["output_tokens"]
+
+    # Model selection: prefer modelUsage (sorted by output tokens), fallback to model field
+    model_usage = envelope.get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        # several models may appear (helper models included); the reviewer
+        # is the one that produced the most output tokens, ties by name.
+        def weight(item):
+            name, stats = item
+            tokens = stats.get("outputTokens") if isinstance(stats, dict) else None
+            return (tokens if _number(tokens) else -1, name)
+        out["model"] = sorted(model_usage.items(), key=weight, reverse=True)[0][0]
+    elif isinstance(envelope.get("model"), str) and envelope["model"]:
+        out["model"] = envelope["model"]
+    return out
+
+
+def evaluate_reviewer_result_kind(assertion_id: str, kind: str, artifact_name, artifact_path, artifact_dir: Path):
+    # Two live-Reviewer smoke kinds (Slice 4, evaluation cases 6 / 7):
+    #   reviewer_no_blocking_critical      — schema-valid APPROVE with no
+    #                                        `[CRITICAL]` at all (MINOR-only
+    #                                        issues allowed); any CRITICAL,
+    #                                        complete or not, a MINOR-only
+    #                                        REQUEST_CHANGES (schema-invalid)
+    #                                        or malformed output → FAIL.
+    #   reviewer_complete_blocking_critical — at least one `[CRITICAL]` that
+    #                                        passes `finding_triage.py check`.
+    # Both read `result` from reviewer-result.json, validate it with
+    # `_validate_reviewer_output_schema` (imported, never copied) and shell
+    # out to `scripts/finding_triage.py check`. A missing artifact or a
+    # schema violation is a FAIL, never a pass. The envelope measurement
+    # (duration / model / tokens / cost, "N/A" when absent) is written to
+    # reviewer-measurement.json for the evaluation report.
+    from scripts.review_verification import _validate_reviewer_output_schema
+
+    measurement_path = artifact_dir / REVIEWER_MEASUREMENT_ARTIFACT
+    if artifact_path is None or not artifact_path.exists():
+        return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing (reviewer stdout was not a JSON envelope)"}
+    try:
+        envelope = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is not valid JSON: {exc}"}
+    if not isinstance(envelope, dict):
+        return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} payload must be an object"}
+    measurement = envelope_measurement(envelope)
+    measurement.update({"kind": kind, "verdict": None, "triage": None, "critical_total": None,
+                        "critical_complete": None, "critical_incomplete": None})
+    write_json(measurement_path, measurement)
+
+    result_text = envelope.get("result")
+    if not isinstance(result_text, str) or not result_text.strip():
+        return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} carries no string `result` field"}
+    verdict, _issues, schema_error = _validate_reviewer_output_schema(result_text)
+    measurement["verdict"] = verdict
+    write_json(measurement_path, measurement)
+    if schema_error is not None:
+        return {"id": assertion_id, "status": "fail", "message": f"reviewer output rejected by the schema parser: {schema_error}"}
+
+    review_path = artifact_dir / "reviewer-result.md"
+    write_text(review_path, result_text if result_text.endswith("\n") else result_text + "\n")
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "finding_triage.py"), "check", "--input", str(review_path)],
+        cwd=str(ROOT), capture_output=True, text=True, check=False,
+    )
+    if completed.returncode not in (0, 1):
+        return {"id": assertion_id, "status": "fail", "message": f"finding_triage.py check rejected the output (exit {completed.returncode}): {completed.stderr.strip()}"}
+    try:
+        report = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return {"id": assertion_id, "status": "fail", "message": f"finding_triage.py check emitted invalid JSON: {exc}"}
+    # Strict key access: a report that lacks a consumed key is contract
+    # drift between the helper and this runner, reported as FAIL — never
+    # silently defaulted to an empty measurement.
+    try:
+        fields = triage_report_fields(report)
+    except (KeyError, TypeError) as exc:
+        missing = exc.args[0] if exc.args else exc
+        return {"id": assertion_id, "status": "fail", "message": f"finding_triage.py check report lacks key {missing!r} (helper/report contract drift)"}
+    criticals = [f for f in fields["findings"] if f["severity"] == "CRITICAL"]
+    complete = list(fields["complete"])
+    incomplete = list(fields["incomplete"])
+    measurement.update({"triage": fields["result"], "critical_total": len(criticals),
+                        "critical_complete": len(complete), "critical_incomplete": len(incomplete)})
+    write_json(measurement_path, measurement)
+
+    if kind == "reviewer_no_blocking_critical":
+        if criticals:
+            return {"id": assertion_id, "status": "fail", "message": f"{len(criticals)} [CRITICAL] finding(s) present (verdict {verdict}); any CRITICAL, complete or incomplete, fails case 6"}
+        if verdict != "APPROVE":
+            return {"id": assertion_id, "status": "fail", "message": f"verdict {verdict}; case 6 passes only with APPROVE (no issues or [MINOR]-only)"}
+        minors = len(fields["findings"]) - len(criticals)
+        return {"id": assertion_id, "status": "pass", "message": f"APPROVE with no [CRITICAL] ({minors} [MINOR])"}
+
+    # reviewer_complete_blocking_critical
+    if verdict != "REQUEST_CHANGES":
+        return {"id": assertion_id, "status": "fail", "message": f"verdict {verdict}; case 7 requires REQUEST_CHANGES with a complete blocking [CRITICAL]"}
+    if not complete:
+        return {"id": assertion_id, "status": "fail", "message": f"no [CRITICAL] passes finding_triage.py check ({'; '.join(fields['summary']) or 'no CRITICAL'})"}
+    return {"id": assertion_id, "status": "pass", "message": f"{len(complete)} [CRITICAL] finding(s) pass finding_triage.py check ({len(incomplete)} incomplete ignored)"}
 
 
 def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Path):
@@ -552,6 +679,9 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
                 "status": "pass",
                 "message": f"all observed subagent_type values match whitelist {whitelist}{drift_note}",
             }
+
+        if kind in {"reviewer_no_blocking_critical", "reviewer_complete_blocking_critical"}:
+            return evaluate_reviewer_result_kind(assertion_id, kind, artifact_name, artifact_path, artifact_dir)
 
         return {"id": assertion_id, "status": "fail", "message": f"unsupported smoke assertion kind {kind!r}"}
 

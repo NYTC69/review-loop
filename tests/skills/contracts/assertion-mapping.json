@@ -487,6 +487,14 @@
       "whitelist": [
         "general-purpose"
       ]
+    },
+    "reviewer_no_blocking_critical": {
+      "kind": "reviewer_no_blocking_critical",
+      "artifact": "reviewer-result.json"
+    },
+    "reviewer_complete_blocking_critical": {
+      "kind": "reviewer_complete_blocking_critical",
+      "artifact": "reviewer-result.json"
     }
   },
   "lint_assertions": {
@@ -1510,6 +1518,286 @@
       {
         "path": ".agents/skills/execute/SKILL.md",
         "needle": "reviewer-only fast-replay"
+      }
+    ],
+    "evidence_ledger": [
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "every** write goes through `scripts/evidence_ledger.py`"
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "orchestrator never writes `completed_stages` by hand"
+      },
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "the orchestrator shells out to `scripts/evidence_ledger.py`"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "never write `completed_stages` by hand"
+      },
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "the only way `## Evidence Ledger` is ever written"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "`## Evidence Ledger` and `completed_stages` are written only through `scripts/evidence_ledger.py`"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`## Evidence Ledger` and `completed_stages` are written only through `scripts/evidence_ledger.py`"
+      },
+      {
+        "path": ".agents/skills/plan/SKILL.md",
+        "needle": "the only way `## Evidence Ledger` is ever written"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "`## Evidence Ledger` and `completed_stages` are written only through the helper"
+      }
+    ],
+    "current_review_packet": [
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": ".agents/skills/plan/SKILL.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "Read `## Current Review Packet` first"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "Read `## Current Review Packet` first"
+      }
+    ],
+    "rubric_gate": [
+      {
+        "path": "docs/protocol/reviewer-output.md",
+        "needle": "The orchestrator never implements a `[CRITICAL]` that failed triage"
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "The orchestrator never implements a CRITICAL that failed triage"
+      },
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "Never implement a `[CRITICAL]` that failed triage"
+      },
+      {
+        "path": "agents/reviewer.md",
+        "needle": "nothing is implemented from it"
+      },
+      {
+        "path": ".codex/agents/review-loop-reviewer.toml",
+        "needle": "nothing is implemented from it"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "never implement a CRITICAL that failed triage"
+      },
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "never implement a CRITICAL that failed triage"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "never implement a CRITICAL that failed triage"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "never implement a CRITICAL that failed triage"
+      },
+      {
+        "path": ".agents/skills/plan/SKILL.md",
+        "needle": "never implement a CRITICAL that failed triage"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "never implement a CRITICAL that failed triage"
+      }
+    ],
+    "gate_rubric_revalidation": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "### Gate rubric revalidation"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "Gate rubric revalidation"
+      },
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "Gate rubric revalidation"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "Gate rubric revalidation"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "Gate rubric revalidation"
+      },
+      {
+        "path": ".agents/skills/plan/SKILL.md",
+        "needle": "Gate rubric revalidation"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "Gate rubric revalidation"
+      }
+    ],
+    "gate_infrastructure_failure": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "is an infrastructure failure, not a finding: it is not partitioned, not revalidated and not disputable"
+      },
+      {
+        "path": "scripts/finding_triage.py",
+        "needle": "an infrastructure failure is not disputable"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable"
+      }
+    ],
+    "route_facts_source": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "a packet without the block routes to `executor`"
+      },
+      {
+        "path": "scripts/evidence_ledger.py",
+        "needle": "a packet without the block routes to `executor`"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "a packet without the block routes to `executor`"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "a packet without the block routes to `executor`"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "a packet without the block routes to `executor`"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "a packet without the block routes to `executor`"
+      }
+    ],
+    "author_route": [
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "as returned by `evidence_ledger.py route`"
+      },
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "`scripts/evidence_ledger.py route` returns `orchestrator-direct`"
+      },
+      {
+        "path": "docs/protocol/executor-output.md",
+        "needle": "`scripts/evidence_ledger.py route` says so"
+      },
+      {
+        "path": "docs/protocol/planning.md",
+        "needle": "`evidence_ledger.py route` answers `executor` during planning"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "`evidence_ledger.py route` returns `orchestrator-direct`"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "`evidence_ledger.py route --path <touched paths>`"
+      },
+      {
+        "path": "skills/plan/SKILL.md",
+        "needle": "`evidence_ledger.py route` answers `executor` outside the execution phase"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "`evidence_ledger.py route` returns `orchestrator-direct`"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "`evidence_ledger.py route --path <touched paths>`"
+      },
+      {
+        "path": ".agents/skills/plan/SKILL.md",
+        "needle": "`evidence_ledger.py route` answers `executor` outside the execution phase"
+      }
+    ],
+    "canonical_packet_selection": [
+      {
+        "path": "docs/protocol/execution.md",
+        "needle": "the unique `## Current Review Packet` heading"
+      },
+      {
+        "path": "docs/protocol/session-file.md",
+        "needle": "the unique `## Current Review Packet` heading"
+      },
+      {
+        "path": "scripts/evidence_ledger.py",
+        "needle": "the unique `## Current Review Packet` heading"
+      },
+      {
+        "path": "skills/review-loop/SKILL.md",
+        "needle": "the unique `## Current Review Packet` heading"
+      },
+      {
+        "path": "skills/execute/SKILL.md",
+        "needle": "the unique `## Current Review Packet` heading"
+      },
+      {
+        "path": ".agents/skills/review-loop/SKILL.md",
+        "needle": "the unique `## Current Review Packet` heading"
+      },
+      {
+        "path": ".agents/skills/execute/SKILL.md",
+        "needle": "the unique `## Current Review Packet` heading"
       }
     ]
   }
