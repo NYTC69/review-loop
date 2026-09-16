@@ -80,14 +80,20 @@ natural-language only. Full step-by-step + verification:
   a limitation of the current downstream lifecycle.
 - **Parallel-CR library entry point** — `scripts/review_verification.py`
   is the conflict-aware parallel reviewer-fan-out scheduler (Codex
-  Stage 1 scope only). Orchestrator wiring lives at the
-  `Parallel Reviewer Fan-Out (N>1)` subsection in each of the three
-  Codex Stage 1 SKILL files (`.agents/skills/{review-loop,plan,
-  execute}/SKILL.md`); single-shot N=1 dispatch keeps the existing
+  Stage 1 scope only). Orchestrator wiring lives once in
+  `docs/protocol/parallel-review.md`, loaded by the `parallel-review`
+  action in `docs/protocol/loading.json`; single-shot N=1 dispatch keeps the existing
   `claude -p` shell-out byte-identical and only N>1 fans out via
   `python3 scripts/review_verification.py --jobs <path> --output <path>`.
   Claude/plugin-side reviewer dispatch is in-process Agent-tool
   dispatch and is not externally wrappable.
+
+- **Stage-scoped instructions** — the six entry skills use
+  `docs/protocol/loading.md` and `scripts/read_protocol.py` to read exact
+  authoritative sections before the relevant action. Shared protocol files
+  remain the SSOT; a link alone is not an eager import. New agents and new or
+  compacted contexts reload prerequisites. Runtime entry details live in each
+  skill's `references/entry.md`. Loading does not change stage/gate semantics.
 
 ## Design Philosophy
 

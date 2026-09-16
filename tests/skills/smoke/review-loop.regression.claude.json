@@ -15,72 +15,72 @@
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "soft_limit_plan"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "soft_limit_exec"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Current Phase"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Approved Plan"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Review History"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "Quality Polish"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Delivery"
     },
     {
       "kind": "contains",
       "path": "skills/review-loop/SKILL.md",
-      "needle": "## Protocol Imports"
+      "needle": "--runtime claude --stage entry-review-loop"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/session-file.md"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/planning.md"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/execution.md"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/executor-output.md"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/reviewer-output.md"
     },
     {
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/planning.md",
       "needle": "entry_point: review-loop"
     },
     {

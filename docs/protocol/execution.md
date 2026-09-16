@@ -556,6 +556,9 @@ Executor call**:
 
 1. Round 1: jump straight to the Reviewer. The review content points at the
    existing diff + `## Review Target` scope. No Executor output is produced.
+   Record the literal marker `- Executor backend: skipped (review-only first round)`
+   in the round-1 Review History entry, preserving the runtime entry contract
+   consumed by review-only smoke assertions.
 2. If the Reviewer returns APPROVE, use the same post-APPROVE transition as
    normal Step 3: run Step 3.4 before Step 3.5, and mint `exec` into
    `completed_stages` only after Step 3.4 returns APPROVE/controlled SKIP, or
@@ -747,6 +750,11 @@ passes its path via `--focus-file`.
 
 ### Dispatch (5-line Bash)
 
+Codex Stage 1: Run the adversarial gate invocation outside the sandbox.
+The invoker creates snapshot/prompt tempfiles; this is the same boundary as
+the normal Claude reviewer and parallel scheduler calls. This guard was
+previously inline in the Codex execute skill.
+
 ```bash
 # Terminal Adversarial Gate — single-entry-point Python invoker.
 python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
@@ -877,6 +885,16 @@ orthogonal to the protocol-reviewer prompt. This tradeoff is accepted;
 the gate does not claim runtime-independence.
 
 ---
+
+## Quality-agent tool-use guard
+
+For every dispatched quality, documentation-stage or security-stage agent
+returning `tool_uses: 0`, discard its result and retry once. If the retry is
+also `tool_uses: 0`, skip that agent and report the failure. This applies on
+both runtimes, including resume directly into docs or security. An agent
+skipped by this guard is not a successful check; only clean evidence can
+satisfy a stage. This does not change the explicit `skip_quality_polish` setting.
+This is the guard formerly inline in the execute skills, not a new gate.
 
 ## Step 3.5 — Quality Polish
 

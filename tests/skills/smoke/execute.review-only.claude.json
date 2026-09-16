@@ -16,32 +16,32 @@
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "--review-only"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/session-file.md",
       "needle": "(none — review-only mode)"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "## Review Target"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/session-file.md",
       "needle": "skips the first Executor round"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "entry_point: review-only"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "plan_source: review-only"
     },
     {

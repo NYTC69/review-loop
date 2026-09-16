@@ -21,7 +21,7 @@ class CodexAgentContractTest(unittest.TestCase):
         for relative_path in (
             "README.md",
             "docs/protocol/planning.md",
-            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/runtime-codex.md",
         ):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -35,7 +35,6 @@ class CodexAgentContractTest(unittest.TestCase):
         expectations = {
             "docs/protocol/execution.md": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.",
             "docs/protocol/session-file.md": "Codex Stage 1: `{exec, polish, docs, security}`.",
-            "skills/execute/SKILL.md": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`.",
         }
         legacy = "Codex Stage 1: `{exec} ⊆ completed_stages`."
         for relative_path, expected in expectations.items():
@@ -72,9 +71,9 @@ class CodexAgentContractTest(unittest.TestCase):
             "README.md",
             "review-loop-config.example.md",
             ".agents/skills/guide/SKILL.md",
-            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/runtime-codex.md",
             "skills/guide/SKILL.md",
-            "skills/review-loop/SKILL.md",
+            "docs/protocol/runtime-claude.md",
         ):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -89,7 +88,7 @@ class CodexAgentContractTest(unittest.TestCase):
         for relative_path in (
             "README.md",
             ".agents/skills/guide/SKILL.md",
-            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/runtime-codex.md",
             "docs/protocol/session-file.md",
         ):
             with self.subTest(path=relative_path):
@@ -103,7 +102,7 @@ class CodexAgentContractTest(unittest.TestCase):
         )
         for relative_path in (
             ".codex/agents/review-loop-executor.toml",
-            ".agents/skills/review-loop/SKILL.md",
+            "docs/protocol/runtime-codex.md",
             "docs/protocol/execution.md",
         ):
             with self.subTest(path=relative_path):
@@ -118,16 +117,22 @@ class CodexAgentContractTest(unittest.TestCase):
         )
         for relative_path in (
             ".codex/agents/review-loop-reviewer.toml",
-            ".agents/skills/review-loop/SKILL.md",
             "docs/protocol/execution.md",
         ):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertIn(expected, text)
 
+        runtime = (ROOT / "docs/protocol/runtime-codex.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "it fails to flag workspace divergence when implementation appears to exist "
+            "only in a different git worktree or repository path than the current workspace",
+            " ".join(runtime.split()),
+        )
+
     def test_codex_completed_agents_are_closed_between_rounds(self):
         expectations = {
-            ".agents/skills/review-loop/SKILL.md": (
+            "docs/protocol/runtime-codex.md": (
                 "Before every new `spawn_agent` call, call `close_agent` on "
                 "any completed Codex subagent id from earlier planning, "
                 "execution, or local-reviewer rounds unless the orchestrator "
@@ -156,7 +161,7 @@ class CodexAgentContractTest(unittest.TestCase):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertIn(expected, text)
 
-        text = (ROOT / ".agents/skills/review-loop/SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "docs/protocol/runtime-codex.md").read_text(encoding="utf-8")
         self.assertIn(claude_cli_exception, text)
 
     def test_codex_umbrella_review_loop_must_not_stop_after_exec_approval(self):
@@ -167,7 +172,7 @@ class CodexAgentContractTest(unittest.TestCase):
             "Consistency, Security Preflight, and delivery unless an explicit "
             "`--stop-after` value says otherwise."
         )
-        text = (ROOT / ".agents/skills/review-loop/SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "docs/protocol/runtime-codex.md").read_text(encoding="utf-8")
         self.assertIn(expected, text)
 
 

@@ -16,43 +16,43 @@
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "--stop-after"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "before-docs"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "before-polish"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "before-security"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "before-delivery"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "exec-round"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "completed_stages"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "rejected at parse time"
+      "path": "skills/execute/references/entry.md",
+      "needle": "Any other value → reject at parse time."
     },
     {
       "kind": "exists",

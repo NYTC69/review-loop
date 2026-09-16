@@ -58,6 +58,11 @@ judgment-tier Codex agents are currently shipped.
 
 ## Usage Notes
 
+- Instructions load by active action via `docs/protocol/loading.md` and
+  `scripts/read_protocol.py`, shared with Claude Code. Only still-available,
+  unchanged units can be reused in one live context; resume/compaction and
+  independent agents reload their prerequisites. All lifecycle gates remain.
+
 - Executor-created hidden worktrees are forbidden in Codex Stage 1.
 - Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
 - Codex repo skills live under `.agents/skills/` in the Codex workspace.

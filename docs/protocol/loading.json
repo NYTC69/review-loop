@@ -1,0 +1,893 @@
+{
+  "schema": 1,
+  "units": {
+    "claude-plan-entry": {
+      "path": "skills/plan/references/entry.md",
+      "sections": [
+        "## Step 0 \u2014 Load config and parse flags"
+      ]
+    },
+    "claude-plan-init": {
+      "path": "skills/plan/references/entry.md",
+      "sections": [
+        "## Step 0.5 \u2014 Initialize session file",
+        "## Step 1 \u2014 Parse the work item",
+        "## Step 1.5 \u2014 Detect pre-existing state (no auto-dispatch)",
+        "## Step 1.6 \u2014 Historical context retrieval (optional, fail-silently)"
+      ]
+    },
+    "claude-execute-entry": {
+      "path": "skills/execute/references/entry.md",
+      "sections": [
+        "## Step 0 \u2014 Parse and validate flags"
+      ]
+    },
+    "claude-execute-init": {
+      "path": "skills/execute/references/entry.md",
+      "sections": [
+        "## Step 0.5 \u2014 Resolve target UUID (no writes yet)",
+        "## Step 1 \u2014 Acquire the single-writer lock",
+        "## Step 1.5 \u2014 Initialize or resume the session (under the lock)",
+        "## Step 2 \u2014 Drift check"
+      ]
+    },
+    "claude-review-loop-entry": {
+      "path": "skills/review-loop/references/entry.md",
+      "sections": [
+        "### Step 0 \u2014 Load config and parse flags"
+      ]
+    },
+    "claude-review-loop-init": {
+      "path": "skills/review-loop/references/entry.md",
+      "sections": [
+        "### Step 0.5 \u2014 Initialize session file",
+        "### Step 1 \u2014 Parse the work item",
+        "### Step 1.5 \u2014 Auto-routing (preserved from v2.5.0)",
+        "### Step 1.6 \u2014 Historical context retrieval (optional, fail-silently)"
+      ]
+    },
+    "codex-plan-entry": {
+      "path": ".agents/skills/plan/references/entry.md",
+      "sections": [
+        "## Step 0 \u2014 Load config and parse flags"
+      ]
+    },
+    "codex-plan-init": {
+      "path": ".agents/skills/plan/references/entry.md",
+      "sections": [
+        "## Step 0.5 \u2014 Initialize session file",
+        "## Step 1 \u2014 Parse the work item",
+        "## Step 1.5 \u2014 Detect pre-existing state (no auto-dispatch)",
+        "## Step 1.6 \u2014 Historical context retrieval (optional, fail-silently)"
+      ]
+    },
+    "codex-execute-entry": {
+      "path": ".agents/skills/execute/references/entry.md",
+      "sections": [
+        "## Step 0 \u2014 Parse and validate flags"
+      ]
+    },
+    "codex-execute-init": {
+      "path": ".agents/skills/execute/references/entry.md",
+      "sections": [
+        "## Step 0.5 \u2014 Resolve target UUID (no writes yet)",
+        "## Step 1 \u2014 Acquire the single-writer lock",
+        "## Step 1.5 \u2014 Initialize or resume the session (under the lock)",
+        "## Step 2 \u2014 Drift check"
+      ]
+    },
+    "codex-review-loop-entry": {
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "sections": [
+        "## Entry"
+      ]
+    },
+    "codex-review-loop-init": {
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "sections": [
+        "## Initialize / route",
+        "## Startup Banner"
+      ]
+    },
+    "session-shape": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Canonical sections",
+        "## Approved Plan \u2014 three Sources",
+        "## Entry-mode initialization table",
+        "## Session Metadata schema"
+      ]
+    },
+    "lock": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Lock file lifecycle"
+      ]
+    },
+    "baseline": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Dirty map construction"
+      ]
+    },
+    "snapshot": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "### Snapshots"
+      ],
+      "requires": [
+        "ledger-interface"
+      ]
+    },
+    "packet": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Current Review Packet",
+        "## Timing Log columns"
+      ]
+    },
+    "resume": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Drift-check decision tree",
+        "## `delivery_blocked_by` lifecycle",
+        "## `--accept-external-state` semantics",
+        "## Backward-compat fallback"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet"
+      ]
+    },
+    "evidence": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Evidence Ledger",
+        "## `completed_stages` lifecycle"
+      ],
+      "requires": [
+        "snapshot"
+      ],
+      "exclude": [
+        "### Snapshots"
+      ]
+    },
+    "model-tiers": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "## Shared model-tier contract"
+      ]
+    },
+    "plan-start": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "## Phase entry conditions",
+        "## Loop state",
+        "### 1. Update context file before calling agents",
+        "### 2. Call the Executor",
+        "### 3. Update context file with the Executor's output"
+      ],
+      "exclude": [
+        "#### Executor dispatch {{claude_code|codex}}"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "question-policy"
+      ]
+    },
+    "plan-review": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "### 4. Call the Reviewer",
+        "### 5. Parse the Reviewer's response",
+        "### 6. Display Live Report",
+        "## Loop control",
+        "## Context management discipline"
+      ],
+      "exclude": [
+        "#### Reviewer dispatch {{claude_code|codex}}"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "question-policy"
+      ]
+    },
+    "executor-dispatch": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "#### Executor dispatch {{claude_code|codex}}"
+      ]
+    },
+    "reviewer-dispatch": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "#### Reviewer dispatch {{claude_code|codex}}"
+      ]
+    },
+    "plan-schema": {
+      "path": "docs/protocol/executor-output.md",
+      "sections": [
+        "## Planning mode output",
+        "## Rejection rules"
+      ]
+    },
+    "exec-schema": {
+      "path": "docs/protocol/executor-output.md",
+      "sections": [
+        "## Execution mode output",
+        "## Direct Implementation Record",
+        "## Rejection rules"
+      ]
+    },
+    "review-schema": {
+      "path": "docs/protocol/reviewer-output.md"
+    },
+    "triage": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "### Mandatory rubric gate"
+      ]
+    },
+    "exec-start": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Phase entry conditions",
+        "## Workspace authority",
+        "### Author route selection",
+        "### Round steps",
+        "### No-op execution round validation",
+        "### review-only first-round skip"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps"
+      ]
+    },
+    "exec-review": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "### Provenance-aware reviewer prompts",
+        "### Codex completed-agent cleanup"
+      ],
+      "requires": [
+        "exec-start",
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps"
+      ]
+    },
+    "stop-flags": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## `--stop-after` enum"
+      ]
+    },
+    "caps": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Per-stage max-round caps"
+      ]
+    },
+    "gate": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Step 3.4 \u2014 Terminal Adversarial Gate"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps"
+      ]
+    },
+    "polish": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Step 3.5 \u2014 Quality Polish"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps",
+        "quality-agent-guard"
+      ]
+    },
+    "docs": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Step 3.6 \u2014 Documentation Consistency"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps",
+        "quality-agent-guard"
+      ]
+    },
+    "security": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Step 3.7 \u2014 Security Preflight"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps",
+        "quality-agent-guard"
+      ]
+    },
+    "delivery": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Delivery gate",
+        "## Step 4 \u2014 Delivery"
+      ],
+      "requires": [
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet",
+        "exit-guards",
+        "evidence",
+        "question-policy",
+        "stop-flags",
+        "caps"
+      ]
+    },
+    "context-persist": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "### 3.5. Optional context-persist sub-step"
+      ]
+    },
+    "codex-config": {
+      "path": "docs/protocol/runtime-codex.md",
+      "sections": [
+        "## Config Loading",
+        "## Runtime Identity"
+      ]
+    },
+    "codex-agents": {
+      "path": "docs/protocol/runtime-codex.md",
+      "sections": [
+        "## Completed Agent Cleanup",
+        "## Orchestrator Discipline"
+      ]
+    },
+    "codex-reviewer": {
+      "path": "docs/protocol/runtime-codex.md",
+      "sections": [
+        "### Default Reviewer Path",
+        "### Optional Local Reviewer Path",
+        "## Codex Hallucination Guard"
+      ],
+      "requires": [
+        "codex-agents"
+      ]
+    },
+    "claude-config": {
+      "path": "docs/protocol/runtime-claude.md",
+      "sections": [
+        "## Configuration",
+        "## Orchestrator rules"
+      ]
+    },
+    "parallel-review": {
+      "path": "docs/protocol/parallel-review.md"
+    },
+    "review-common": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "### 5. Parse the Reviewer's response",
+        "### 6. Display Live Report"
+      ]
+    },
+    "claude-plan-exit": {
+      "path": "skills/plan/references/entry.md",
+      "sections": [
+        "## Step 3 \u2014 Exit with hand-off hint"
+      ]
+    },
+    "codex-plan-exit": {
+      "path": ".agents/skills/plan/references/entry.md",
+      "sections": [
+        "## Step 3 \u2014 Exit with hand-off hint"
+      ]
+    },
+    "exit-guards": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Failure exits"
+      ]
+    },
+    "dispute": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "### Dispute flow"
+      ],
+      "requires": [
+        "evidence",
+        "packet",
+        "lock",
+        "exit-guards",
+        "review-schema"
+      ]
+    },
+    "ledger-interface": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Evidence Ledger"
+      ],
+      "exclude": [
+        "### Snapshots",
+        "### Evidence record",
+        "### Active-record rule",
+        "### Required claim sets and derived `completed_stages`",
+        "### Convergence rule"
+      ]
+    },
+    "question-policy": {
+      "path": "docs/protocol/planning.md",
+      "sections": [
+        "## Question classification"
+      ]
+    },
+    "quality-agent-guard": {
+      "path": "docs/protocol/execution.md",
+      "sections": [
+        "## Quality-agent tool-use guard"
+      ]
+    }
+  },
+  "stages": {
+    "entry-plan": {
+      "claude": [
+        "exit-guards",
+        "model-tiers",
+        "claude-config",
+        "claude-plan-entry"
+      ],
+      "codex": [
+        "exit-guards",
+        "model-tiers",
+        "codex-config",
+        "codex-plan-entry"
+      ]
+    },
+    "plan-init": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "claude-plan-init"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "codex-plan-init"
+      ]
+    },
+    "entry-execute": {
+      "claude": [
+        "exit-guards",
+        "model-tiers",
+        "stop-flags",
+        "claude-config",
+        "claude-execute-entry"
+      ],
+      "codex": [
+        "exit-guards",
+        "model-tiers",
+        "stop-flags",
+        "codex-config",
+        "codex-execute-entry"
+      ]
+    },
+    "execute-init": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "claude-execute-init"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "codex-execute-init"
+      ]
+    },
+    "entry-review-loop": {
+      "claude": [
+        "exit-guards",
+        "model-tiers",
+        "stop-flags",
+        "claude-config",
+        "claude-review-loop-entry"
+      ],
+      "codex": [
+        "exit-guards",
+        "model-tiers",
+        "stop-flags",
+        "codex-config",
+        "codex-review-loop-entry"
+      ]
+    },
+    "review-loop-init": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "claude-review-loop-init"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "codex-review-loop-init"
+      ]
+    },
+    "session-init": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "session-shape",
+        "lock",
+        "baseline",
+        "snapshot",
+        "packet"
+      ]
+    },
+    "resume": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "resume",
+        "evidence"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "resume",
+        "evidence"
+      ]
+    },
+    "planning": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "plan-start",
+        "plan-schema",
+        "executor-dispatch"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "plan-start",
+        "plan-schema",
+        "executor-dispatch",
+        "codex-agents"
+      ]
+    },
+    "planning-review": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "plan-review",
+        "review-schema",
+        "triage",
+        "reviewer-dispatch"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "plan-review",
+        "review-schema",
+        "triage",
+        "reviewer-dispatch",
+        "codex-reviewer"
+      ]
+    },
+    "execution": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "exec-start",
+        "exec-schema",
+        "executor-dispatch",
+        "evidence",
+        "caps"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "exec-start",
+        "exec-schema",
+        "executor-dispatch",
+        "evidence",
+        "caps",
+        "codex-agents"
+      ]
+    },
+    "execution-review": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "exec-review",
+        "review-schema",
+        "triage",
+        "reviewer-dispatch",
+        "review-common"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "exec-review",
+        "review-schema",
+        "triage",
+        "reviewer-dispatch",
+        "review-common",
+        "codex-reviewer"
+      ]
+    },
+    "gate": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "gate",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "gate",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch",
+        "codex-reviewer"
+      ]
+    },
+    "polish": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "polish",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "polish",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch",
+        "codex-reviewer"
+      ]
+    },
+    "docs": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "docs",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "docs",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch",
+        "codex-reviewer"
+      ]
+    },
+    "security": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "security",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "security",
+        "evidence",
+        "caps",
+        "triage",
+        "review-schema",
+        "reviewer-dispatch",
+        "executor-dispatch",
+        "codex-reviewer"
+      ]
+    },
+    "delivery": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "delivery",
+        "evidence",
+        "resume",
+        "caps"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "delivery",
+        "evidence",
+        "resume",
+        "caps"
+      ]
+    },
+    "stop": {
+      "claude": [
+        "exit-guards",
+        "claude-config",
+        "model-tiers",
+        "resume",
+        "caps"
+      ],
+      "codex": [
+        "exit-guards",
+        "codex-config",
+        "model-tiers",
+        "resume",
+        "caps"
+      ]
+    },
+    "parallel-review": {
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "parallel-review",
+        "review-schema",
+        "triage"
+      ]
+    },
+    "context-persist": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "context-persist"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "context-persist"
+      ]
+    },
+    "plan-exit": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "claude-plan-exit",
+        "stop-flags",
+        "resume"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "codex-plan-exit",
+        "stop-flags",
+        "resume"
+      ]
+    },
+    "dispute": {
+      "claude": [
+        "claude-config",
+        "model-tiers",
+        "triage",
+        "dispute"
+      ],
+      "codex": [
+        "codex-config",
+        "model-tiers",
+        "triage",
+        "dispute"
+      ]
+    }
+  }
+}

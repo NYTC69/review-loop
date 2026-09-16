@@ -45,7 +45,18 @@
     "review_target_section_has_scope_content",
     "entry_point_review_only",
     "execute_round_1_reviewer_only",
-    "execute_protocol_imports_read",
+    {
+      "id": "execute_protocol_imports_read",
+      "overrides": {
+        "stages": [
+          "entry-execute",
+          "session-init",
+          "execute-init",
+          "execution-review",
+          "stop"
+        ]
+      }
+    },
     "no_forbidden_review_loop_subagent_types_in_agent_calls",
     {
       "id": "agent_calls_used_at_least_one_subagent",

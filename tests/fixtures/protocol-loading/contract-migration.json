@@ -1,0 +1,3115 @@
+{
+  "schema": 1,
+  "baseline": "cadb06c",
+  "coverage_policy": "Semantic assertion IDs are retained. Removed inline copies now pin the authoritative rule or an explicit equivalent replacement; eager import assumptions are replaced by observable successful stage loading. No historical smoke outcomes were changed.",
+  "replacement_coverage": [
+    "tests/protocol_loading_test.py",
+    "tests/protocol_loading_graph_test.py",
+    "tests/protocol_loading_capture_test.py"
+  ],
+  "migrations": {
+    "tests/skills/contracts/review-loop.json": [
+      {
+        "id": "claude_soft_limit_plan_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_soft_limit_exec_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_current_phase_section_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_approved_plan_section_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_review_history_section_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_quality_polish_flow_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_delivery_flow_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_protocol_import_session_file",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": ".agents/skills/plan/SKILL.md",
+        "old_needle": "docs/protocol/session-file.md",
+        "new_needle": "--runtime codex --stage entry-plan",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_plan_protocol_import_planning",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": ".agents/skills/plan/SKILL.md",
+        "old_needle": "docs/protocol/planning.md",
+        "new_needle": "--runtime codex --stage entry-plan",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_plan_protocol_import_executor_output",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_plan_protocol_import_reviewer_output",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_plan_executor_reference_declared",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_claude_reviewer_command_declared",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_completed_agent_cleanup_before_spawn_declared",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_no_auto_dispatch_documented",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": ".agents/skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_plan_lock_first_ordering",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": ".agents/skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_execute_protocol_import_session_file",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": ".agents/skills/execute/SKILL.md",
+        "old_needle": "docs/protocol/session-file.md",
+        "new_needle": "--runtime codex --stage entry-execute",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_execute_protocol_import_execution",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": ".agents/skills/execute/SKILL.md",
+        "old_needle": "docs/protocol/execution.md",
+        "new_needle": "--runtime codex --stage entry-execute",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_execute_protocol_import_executor_output",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_execute_protocol_import_reviewer_output",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "codex_execute_executor_reference_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_claude_reviewer_command_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_completed_agent_cleanup_before_spawn_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_dispatch_anchor_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Concrete dispatch anchor: `codex_execution_executor_dispatch`",
+        "new_needle": "Execution-phase executor dispatch (dispatch anchor:\n   `protocol_execution_executor_dispatch`)",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_workspace_authority_explicit",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_executor_worktree_forbidden",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_execute_no_op_round_validation_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "unchanged path sets alone do not prove a no-op",
+        "new_needle": "unchanged\npath sets alone do not prove a no-op",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_quality_focus_real_behavior_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_skip_quality_polish_real_behavior_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_provenance_aware_plan_conformance_bullet",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": {
+          "id": "codex_execute_provenance_aware_plan_conformance_bullet",
+          "kind": "consistent_with",
+          "mapping_id": "provenance_aware_prompt_selection"
+        },
+        "old_needle": "- explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "codex_execute_step4_gate_failure_lock_release",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "lock per `docs/protocol/session-file.md` §Lock file lifecycle, and exit",
+        "new_needle": "A delivery gate failure sets `delivery_blocked_by` to the first missing stage,\n  releases the single-writer lock and exits without delivering.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_session_path_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_reviewer_prompt_path_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": ".review-loop/tmp/{uuid}-reviewer-prompt.txt",
+        "new_needle": ".review-loop/tmp/{session_id}-reviewer-prompt.txt",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_executor_reference_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_reviewer_reference_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_session_metadata_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_reviewer_schema_heading_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "old_needle": "### Reviewer Output Schema",
+        "new_needle": "# Protocol — Reviewer Output Schema",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_executor_schema_heading_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "old_needle": "### Executor Output Schema",
+        "new_needle": "# Protocol — Executor Output Schema",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_claude_reviewer_command_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_provenance_aware_plan_conformance_bullet",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": {
+          "id": "codex_umbrella_provenance_aware_plan_conformance_bullet",
+          "kind": "consistent_with",
+          "mapping_id": "provenance_aware_prompt_selection"
+        },
+        "old_needle": "- explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "codex_plan_soft_limit_behavior_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "When `soft_limit_plan` is reached and blocking issues remain",
+        "new_needle": "When `round >= soft_limit_plan` AND the latest verdict is still\n`REQUEST_CHANGES` with CRITICALs, pause and ask:",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_exec_soft_limit_behavior_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "When `soft_limit_exec` is reached and blocking issues remain",
+        "new_needle": "`soft_limit_exec` (default 3). On cap with CRITICALs remaining → ask the user; handsfree → auto hard-stop.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_umbrella_adversarial_gate_before_polish",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_no_direct_exec_mint_after_approve",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_adversarial_gate_before_polish",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_no_direct_exec_mint_after_approve",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_completed_agent_cleanup_before_spawn_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_completed_agent_cleanup_claude_cli_exception_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_hallucination_guard_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_reviewer_prompt_ignores_unrelated_hook_injections",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "ignore unrelated startup or prompt-hook",
+        "new_needle": "Ignore unrelated startup or prompt-hook injections",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_reviewer_prompt_ignores_unrelated_hook_injections",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "ignore unrelated SessionStart /",
+        "new_needle": "Ignore unrelated startup or prompt-hook injections",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_inherited_parent_context_forbidden",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_fanout_anchor_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_fanout_anchor_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "old_needle": "#### Parallel Reviewer Fan-Out (N>1)",
+        "new_needle": "### Parallel Reviewer Fan-Out (N>1)",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_parallel_reviewer_fanout_anchor_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "old_needle": "#### Parallel Reviewer Fan-Out (N>1)",
+        "new_needle": "### Parallel Reviewer Fan-Out (N>1)",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_parallel_reviewer_scheduler_invocation_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_scheduler_invocation_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_scheduler_invocation_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_perjob_prompt_path_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_perjob_prompt_path_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_perjob_prompt_path_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_runtime_codex_label_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_runtime_codex_label_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_runtime_codex_label_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_runtime_claude_code_label_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_runtime_claude_code_label_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_runtime_claude_code_label_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_output_template_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_output_template_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_reviewer_output_template_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_trigger_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_trigger_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_trigger_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_classification_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_classification_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_classification_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_precedence_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_precedence_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_precedence_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_skip_parse_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_skip_parse_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_c_skip_parse_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_enoent_scheduler_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_enoent_scheduler_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_enoent_scheduler_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_orchestrator_warning_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_orchestrator_warning_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_orchestrator_warning_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_policy_clauses_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_policy_clauses_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_edit_d_policy_clauses_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_best_effort_caveat_review_loop",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_best_effort_caveat_plan",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_parallel_best_effort_caveat_execute",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_reviewer_backend_label_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_soft_limit_label_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_print_once_rule_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_historical_context_delegation_note_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "claude_umbrella_startup_banner_section_header_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "claude_umbrella_startup_banner_reviewer_label_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "claude_umbrella_startup_banner_soft_limit_label_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_top_border_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_work_item_label_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_problem_label_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_mode_label_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_umbrella_startup_banner_historical_context_row_template_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "claude_execute_delivery_summary_zhcn_rule_declared",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Render the Delivery Summary in 中文 (Simplified\n   Chinese) per `docs/protocol/execution.md` §Step 4: section\n   headings, prose, and prose-style field values use 中文; ASCII\n   tokens stay in original form.",
+        "new_needle": "**Language: render the Delivery Summary in 中文 (Simplified\n   Chinese)** — section headings, prose, and prose-style field values use\n   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_delivery_summary_zhcn_rule_declared",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Render the Delivery Summary in 中文 (Simplified\n   Chinese) per `docs/protocol/execution.md` §Step 4: section\n   headings, prose, and prose-style field values use 中文; ASCII\n   tokens stay in original form.",
+        "new_needle": "**Language: render the Delivery Summary in 中文 (Simplified\n   Chinese)** — section headings, prose, and prose-style field values use\n   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "review_loop_skill_reviewer_command_flags",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "plan_skill_subagent_whitelist",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "execute_skill_subagent_whitelist",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_executor_stop_surface_lock_release",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Validate the Executor output against the shared schema before persisting",
+        "new_needle": "If Executor output remains invalid after its one correction retry",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "release the single-writer lock before exiting."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_plan_reviewer_claude_path_lock_release",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Record a short failure reason summary in",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "the single-writer lock before exiting; do not mint approval or invent evidence."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_plan_reviewer_codex_path_lock_release",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Optional local Codex reviewer path: spawn",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "the single-writer lock before exiting; do not mint approval or invent evidence."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_execute_executor_stop_surface_lock_release",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Validate the Executor output against the shared schema. If invalid,",
+        "new_needle": "If Executor output remains invalid after its one correction retry",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "release the single-writer lock before exiting."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_execute_reviewer_claude_path_lock_release",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Record a short failure reason summary in",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "the single-writer lock before exiting; do not mint approval or invent evidence."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_execute_reviewer_codex_path_lock_release",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Optional local Codex reviewer path: spawn",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "the single-writer lock before exiting; do not mint approval or invent evidence."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_plan_lock_release_present",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_execute_lock_release_present",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "codex_execute_git_diff_failure_present",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "If git diff --name-only HEAD itself fails",
+        "new_needle": "If `git diff --name-only HEAD` itself fails",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_git_diff_failure_lock_release",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "If git diff --name-only HEAD itself fails",
+        "new_needle": "If `git diff --name-only HEAD` itself fails",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "Release the single-writer lock before exiting."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "codex_plan_executor_stop_surface_present",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Validate the Executor output against the shared schema before persisting",
+        "new_needle": "If Executor output remains invalid after its one correction retry",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_plan_reviewer_claude_path_present",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Record a short failure reason summary in",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_plan_reviewer_codex_path_present",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Optional local Codex reviewer path: spawn",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_executor_stop_surface_present",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Validate the Executor output against the shared schema. If invalid,",
+        "new_needle": "If Executor output remains invalid after its one correction retry",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_reviewer_claude_path_present",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Record a short failure reason summary in",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_reviewer_codex_path_present",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "Optional local Codex reviewer path: spawn",
+        "new_needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_plan_lock_release_present",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "claude_execute_lock_release_present",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "claude_execute_git_diff_failure_present",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "If git diff --name-only HEAD itself fails",
+        "new_needle": "If `git diff --name-only HEAD` itself fails",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_git_diff_failure_lock_release",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "If git diff --name-only HEAD itself fails",
+        "new_needle": "If `git diff --name-only HEAD` itself fails",
+        "old_required_nearby": [
+          "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        ],
+        "new_required_nearby": [
+          "Release the single-writer lock before exiting."
+        ],
+        "reason": "Terminal trigger and nearby lock release are checked together in shared Failure exits; all action stages load that unit."
+      },
+      {
+        "id": "adversarial_gate_claude_step_heading",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_invocation",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_verdict_table_sentinel",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": {
+          "id": "adversarial_gate_claude_verdict_table_sentinel",
+          "kind": "consistent_with",
+          "mapping_id": "adversarial_gate_adapter_verdicts"
+        },
+        "old_needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "adversarial_gate_claude_adapter_exit2_blocks",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "exit 2 → REQUEST_CHANGES",
+        "new_needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "adversarial_gate_claude_adapter_exit2_not_skip",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_skip_banner_format",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_cleanup_failure_blocks",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP",
+        "new_needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP:",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "adversarial_gate_claude_loop_control_interposes_gate",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_single_pass_then_normal_review",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_no_adversarial_self_loop",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_claude_no_direct_step35_loop_control",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_step_heading",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_invocation",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_verdict_table_sentinel",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": {
+          "id": "adversarial_gate_codex_verdict_table_sentinel",
+          "kind": "consistent_with",
+          "mapping_id": "adversarial_gate_adapter_verdicts"
+        },
+        "old_needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "adversarial_gate_codex_adapter_exit2_blocks",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "exit 2 → REQUEST_CHANGES",
+        "new_needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "adversarial_gate_codex_adapter_exit2_not_skip",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_sandbox_boundary",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_cleanup_failure_blocks",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP",
+        "new_needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP:",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "adversarial_gate_codex_loop_control_interposes_gate",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_single_pass_then_normal_review",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_no_adversarial_self_loop",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_codex_no_direct_step35_loop_control",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "adversarial_gate_protocol_cleanup_failure_blocks",
+        "old_source": "docs/protocol/execution.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP",
+        "new_needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP:",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "adversarial_gate_protocol_adapter_exit2_blocks",
+        "old_source": "docs/protocol/execution.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "`2` | Malformed payload — REQUEST_CHANGES",
+        "new_needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "adversarial_gate_invoker_adapter_exit2_blocks",
+        "old_source": "scripts/adversarial_gate_invoke.py",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "adapter output was malformed",
+        "new_needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_current_review_packet_section_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_evidence_ledger_section_declared",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_no_blanket_coding_prohibition",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_no_blanket_work_prohibition",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_author_route_rule",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "Never plan yourself; implement directly only under\n`docs/protocol/execution.md` §Author route selection",
+        "new_needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` §Author route selection",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_umbrella_direct_route_produces_dir",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "produce a Direct Implementation Record per\n`docs/protocol/executor-output.md`",
+        "new_needle": "`orchestrator-direct`, implement the round yourself and produce a\n   **Direct Implementation Record** (DIR) per",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_umbrella_author_route_rule",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_execute_route_facts_before_executor",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": {
+          "id": "claude_execute_route_facts_before_executor",
+          "kind": "consistent_with",
+          "mapping_id": "route_facts_before_author_dispatch"
+        },
+        "old_needle": "`### Route Facts` in the packet + `evidence_ledger.py\nroute --path <touched paths>`",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "codex_execute_route_facts_before_executor",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": {
+          "id": "codex_execute_route_facts_before_executor",
+          "kind": "consistent_with",
+          "mapping_id": "route_facts_before_author_dispatch"
+        },
+        "old_needle": "`### Route Facts` in the packet + `evidence_ledger.py\nroute --path <touched paths>`",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "claude_plan_planning_always_executor_authored",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "planning is always Executor-authored",
+        "new_needle": "planning is always\nExecutor-authored",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_plan_planning_always_executor_authored",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "planning is always Executor-authored",
+        "new_needle": "planning is always\nExecutor-authored",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "protocol_execution_route_facts_packet_only",
+        "old_source": "docs/protocol/execution.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "`### Route Facts` block **only** from `## Current Review Packet`",
+        "new_needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_umbrella_route_facts_packet_only",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "never from history or an old",
+        "new_needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_route_facts_packet_only",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "never from history or an old",
+        "new_needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_umbrella_route_facts_packet_only",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "never from history or an old",
+        "new_needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_route_facts_packet_only",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "never from history or an old",
+        "new_needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "protocol_execution_revalidation_executor_less",
+        "old_source": "docs/protocol/execution.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "no complete gate finding → round step 2 is skipped",
+        "new_needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "protocol_execution_gate_never_rerun",
+        "old_source": "docs/protocol/execution.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "The gate is spent for this convergence and is never re-run.",
+        "new_needle": "Do not run Step 3.4 again while repairing those\n  findings.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "protocol_execution_provenance_disclosed_simplification",
+        "old_source": "docs/protocol/execution.md",
+        "new_source": {
+          "id": "protocol_execution_provenance_disclosed_simplification",
+          "kind": "consistent_with",
+          "mapping_id": "provenance_disclosed_simplification"
+        },
+        "old_needle": "A disclosed\nequivalent simplification that satisfies the plan's intent and the\nacceptance criteria is not automatically CRITICAL.",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "claude_umbrella_triage_step",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_gate_rubric_revalidation",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_plan_triage_step",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_plan_gate_rubric_revalidation",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_execute_triage_step",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_execute_gate_rubric_revalidation",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_triage_step",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_gate_rubric_revalidation",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_triage_step",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_gate_rubric_revalidation",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_triage_step",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_gate_rubric_revalidation",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_dispute_flow",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow",
+        "new_needle": "### Dispute flow",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_umbrella_revalidation_executor_less",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "when none is complete skip the Executor (`revalidation_round: true`",
+        "new_needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_umbrella_gate_never_rerun",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "The gate is\nnever re-run",
+        "new_needle": "Do not run Step 3.4 again while repairing those\n  findings.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_dispute_flow",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow",
+        "new_needle": "### Dispute flow",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_revalidation_executor_less",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "when none is complete skip the Executor (`revalidation_round: true`",
+        "new_needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_gate_never_rerun",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "The gate is\nnever re-run",
+        "new_needle": "Do not run Step 3.4 again while repairing those\n  findings.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_umbrella_dispute_flow",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow",
+        "new_needle": "### Dispute flow",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_umbrella_revalidation_executor_less",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "when none is complete skip the Executor (`revalidation_round: true`",
+        "new_needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_umbrella_gate_never_rerun",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "The gate is\nnever re-run",
+        "new_needle": "Do not run Step 3.4 again while repairing those\n  findings.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_dispute_flow",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow",
+        "new_needle": "### Dispute flow",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_revalidation_executor_less",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "when none is complete skip the Executor (`revalidation_round: true`",
+        "new_needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "codex_execute_gate_never_rerun",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "The gate is\nnever re-run",
+        "new_needle": "Do not run Step 3.4 again while repairing those\n  findings.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_provenance_disclosed_simplification",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": {
+          "id": "claude_execute_provenance_disclosed_simplification",
+          "kind": "consistent_with",
+          "mapping_id": "provenance_disclosed_simplification"
+        },
+        "old_needle": "undisclosed material deviations block; a disclosed equivalent\n  simplification satisfying intent and acceptance criteria is not\n  automatically CRITICAL",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "codex_execute_provenance_disclosed_simplification",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": {
+          "id": "codex_execute_provenance_disclosed_simplification",
+          "kind": "consistent_with",
+          "mapping_id": "provenance_disclosed_simplification"
+        },
+        "old_needle": "undisclosed material deviations block; a disclosed equivalent\n  simplification satisfying intent and acceptance criteria is not\n  automatically CRITICAL",
+        "new_needle": null,
+        "old_kind": "contains",
+        "new_kind": "consistent_with",
+        "reason": "Equivalent source rule needs multiple clauses; replacement mapping checks all of them under the same semantic assertion ID."
+      },
+      {
+        "id": "codex_umbrella_triage_after_schema_validation",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_triage_no_claude_retry",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_triage_fanout",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_umbrella_triage_local_reviewer",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_triage_after_schema_validation",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_triage_no_claude_retry",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_triage_fanout",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_plan_triage_local_reviewer",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_triage_after_schema_validation",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_triage_no_claude_retry",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_triage_fanout",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/parallel-review.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "codex_execute_triage_local_reviewer",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "claude_umbrella_triage_one_retry",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "re-dispatch the Reviewer once with the missing-field list",
+        "new_needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_execute_triage_one_retry",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "re-dispatch the Reviewer once with the missing-field list",
+        "new_needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "claude_plan_triage_one_retry",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "re-dispatch the Reviewer once with the missing-field list",
+        "new_needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      }
+    ],
+    "tests/skills/contracts/shared-schema.json": [
+      {
+        "id": "session_problem_description_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_context_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_acceptance_criteria_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_current_phase_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_approved_plan_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_review_history_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_files_changed_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_key_related_files_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_timing_log_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_metadata_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "reviewer_verdict_heading_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "reviewer_issues_heading_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "reviewer_strengths_heading_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "reviewer_questions_heading_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "reviewer_allowed_severities_rule_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "old_needle": "Allowed issue severities are exactly `[CRITICAL]` and `[MINOR]`.",
+        "new_needle": "Allowed issue severities are **exactly** `[CRITICAL]` and `[MINOR]`.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "reviewer_empty_issues_rule_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "old_needle": "If `### Issues` is present with no issues, it must contain exactly `- None.`.",
+        "new_needle": "If `### Issues` is present with no issues, its body must contain exactly\n  `- None.`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "session_current_review_packet_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_evidence_ledger_section_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "session_route_facts_block_declared",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      }
+    ],
+    "tests/skills/contracts/assertion-mapping.json": [
+      {
+        "id": "consistency_mappings.reviewer_model[3]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_reviewer_backend[4]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_reviewer_model[3]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_model[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_executor_model[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[0]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[4]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[6]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[8]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[10]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[12]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[14]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[16]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[18]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[20]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.executor_schema_parity[22]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/executor-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[0]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[4]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "old_needle": "- [CRITICAL] <description> - must be resolved before proceeding",
+        "new_needle": "- [CRITICAL] <description> — must be resolved before proceeding",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[6]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "old_needle": "- [MINOR] <description> - recommended improvement",
+        "new_needle": "- [MINOR] <description> — recommended improvement",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[8]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[10]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.reviewer_schema_parity[12]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/reviewer-output.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.judgment_model[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.cheap_model[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.cheap_model_backstop_haiku_4_5[1]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.missing_tier_defaults_to_judgment[1]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "missing `tier` defaults to `judgment`.",
+        "new_needle": "Missing `tier` defaults to `judgment`.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.missing_tier_defaults_to_judgment[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_claude_reviewer_backstop_claude_sonnet_4_6[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_claude_reviewer_backstop_claude_sonnet_4_6[4]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_reviewer_requires_explicit_opt_in[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_claude_reviewer_outside_sandbox[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_claude_reviewer_default[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_explicit_codex_opt_in_only[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_downstream_lifecycle[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": ".agents/skills/review-loop/SKILL.md",
+        "old_needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.",
+        "new_needle": "after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_downstream_lifecycle[4]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "skills/review-loop/SKILL.md",
+        "old_needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.",
+        "new_needle": "after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_full_delivery_gate[2]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_quality_focus_real[4]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_skip_quality_polish_real[3]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_skip_quality_polish_real[5]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_stage1_single_workspace_authority[2]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_executor_worktree_switch_forbidden[1]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.codex_reviewer_workspace_divergence_guard[1]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.plan_executor_dispatch_skill[0]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "Dispatch anchor: `plan_executor_dispatch_skill`.",
+        "new_needle": "Concrete dispatch anchor: `protocol_planning_executor_dispatch`.",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.execute_executor_dispatch_skill[0]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Dispatch anchor: `execute_executor_dispatch_skill`.",
+        "new_needle": "Execution-phase executor dispatch (dispatch anchor:\n   `protocol_execution_executor_dispatch`)",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.codex_execution_executor_dispatch[0]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "Concrete dispatch anchor: `codex_execution_executor_dispatch`.",
+        "new_needle": "Execution-phase executor dispatch (dispatch anchor:\n   `protocol_execution_executor_dispatch`)",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.reviewer_only_fast_replay[2]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.reviewer_only_fast_replay[3]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.evidence_ledger[3]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "never write `completed_stages` by hand",
+        "new_needle": "`completed_stages` is **derived** from the\nledger by `evidence_ledger.py check` at every write boundary",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.evidence_ledger[4]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "consistency_mappings.evidence_ledger[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "`## Evidence Ledger` and `completed_stages` are written only through `scripts/evidence_ledger.py`",
+        "new_needle": "`## Evidence Ledger` and `completed_stages` are written only through\n  `scripts/evidence_ledger.py`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.evidence_ledger[6]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "`## Evidence Ledger` and `completed_stages` are written only through `scripts/evidence_ledger.py`",
+        "new_needle": "`## Evidence Ledger` and `completed_stages` are written only through\n  `scripts/evidence_ledger.py`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.evidence_ledger[7]",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": ".agents/skills/plan/references/entry.md",
+        "old_needle": "the only way `## Evidence Ledger` is ever written",
+        "new_needle": "the only way\n   `## Evidence Ledger` is ever written",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "consistency_mappings.evidence_ledger[8]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "old_needle": "`## Evidence Ledger` and `completed_stages` are written only through the helper",
+        "new_needle": "`completed_stages` is **derived** from the\nledger by `evidence_ledger.py check` at every write boundary",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.current_review_packet[3]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.current_review_packet[4]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.current_review_packet[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.current_review_packet[6]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.current_review_packet[7]",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.current_review_packet[8]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.rubric_gate[5]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "never implement a CRITICAL that failed triage",
+        "new_needle": "never implement a CRITICAL that\n  failed triage",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.rubric_gate[6]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "never implement a CRITICAL that failed triage",
+        "new_needle": "never implement a CRITICAL that\n  failed triage",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.rubric_gate[7]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "never implement a CRITICAL that failed triage",
+        "new_needle": "never implement a CRITICAL that\n  failed triage",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.rubric_gate[8]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "never implement a CRITICAL that failed triage",
+        "new_needle": "never implement a CRITICAL that\n  failed triage",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.rubric_gate[9]",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "never implement a CRITICAL that failed triage",
+        "new_needle": "never implement a CRITICAL that\n  failed triage",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.rubric_gate[10]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "old_needle": "never implement a CRITICAL that failed triage",
+        "new_needle": "never implement a CRITICAL that\n  failed triage",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.gate_rubric_revalidation[1]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.gate_rubric_revalidation[2]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.gate_rubric_revalidation[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.gate_rubric_revalidation[4]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.gate_rubric_revalidation[5]",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.gate_rubric_revalidation[6]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.gate_infrastructure_failure[2]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable",
+        "new_needle": "an infrastructure\nfailure, not a finding: it is not partitioned, not revalidated and not\ndisputable",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.gate_infrastructure_failure[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable",
+        "new_needle": "an infrastructure\nfailure, not a finding: it is not partitioned, not revalidated and not\ndisputable",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.gate_infrastructure_failure[4]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable",
+        "new_needle": "an infrastructure\nfailure, not a finding: it is not partitioned, not revalidated and not\ndisputable",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.gate_infrastructure_failure[5]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "an infrastructure failure, not a finding: it is not partitioned, not\nrevalidated and not disputable",
+        "new_needle": "an infrastructure\nfailure, not a finding: it is not partitioned, not revalidated and not\ndisputable",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.route_facts_source[2]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "a packet without the block routes to `executor`",
+        "new_needle": "a packet without the block routes to\n   `executor`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.route_facts_source[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "a packet without the block routes to `executor`",
+        "new_needle": "a packet without the block routes to\n   `executor`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.route_facts_source[4]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "a packet without the block routes to `executor`",
+        "new_needle": "a packet without the block routes to\n   `executor`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.route_facts_source[5]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "a packet without the block routes to `executor`",
+        "new_needle": "a packet without the block routes to\n   `executor`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.author_route[4]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.author_route[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "`evidence_ledger.py route --path <touched paths>`",
+        "new_needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.author_route[6]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "`evidence_ledger.py route` answers `executor` outside the execution phase",
+        "new_needle": "`evidence_ledger.py route` answers\n  `executor` during planning",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.author_route[7]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-codex.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.author_route[8]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "old_needle": "`evidence_ledger.py route --path <touched paths>`",
+        "new_needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.author_route[9]",
+        "old_source": ".agents/skills/plan/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "old_needle": "`evidence_ledger.py route` answers `executor` outside the execution phase",
+        "new_needle": "`evidence_ledger.py route` answers\n  `executor` during planning",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "consistency_mappings.canonical_packet_selection[3]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.canonical_packet_selection[4]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.canonical_packet_selection[5]",
+        "old_source": ".agents/skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "consistency_mappings.canonical_packet_selection[6]",
+        "old_source": ".agents/skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "smoke_assertions.review_loop_protocol_imports_read",
+        "old_source": {
+          "kind": "tool_use_read_covers_paths",
+          "artifact": "tool-use-events.json",
+          "paths": [
+            "docs/protocol/session-file.md",
+            "docs/protocol/planning.md",
+            "docs/protocol/execution.md",
+            "docs/protocol/executor-output.md",
+            "docs/protocol/reviewer-output.md"
+          ]
+        },
+        "new_source": {
+          "mode": "all",
+          "members": [
+            "review_loop_common_stages_loaded",
+            "review_loop_route_stages_loaded"
+          ]
+        },
+        "old_kind": "tool_use_read_covers_paths",
+        "new_kind": null,
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "smoke_assertions.plan_protocol_imports_read",
+        "old_source": {
+          "kind": "tool_use_read_covers_paths",
+          "artifact": "tool-use-events.json",
+          "paths": [
+            "docs/protocol/session-file.md",
+            "docs/protocol/planning.md",
+            "docs/protocol/executor-output.md",
+            "docs/protocol/reviewer-output.md"
+          ]
+        },
+        "new_source": {
+          "kind": "tool_use_protocol_stages_loaded",
+          "artifact": "tool-use-events.json",
+          "runtime": "claude",
+          "stages": [
+            "entry-plan",
+            "session-init",
+            "plan-init",
+            "planning",
+            "planning-review"
+          ]
+        },
+        "old_kind": "tool_use_read_covers_paths",
+        "new_kind": "tool_use_protocol_stages_loaded",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      },
+      {
+        "id": "smoke_assertions.execute_protocol_imports_read",
+        "old_source": {
+          "kind": "tool_use_read_covers_paths",
+          "artifact": "tool-use-events.json",
+          "paths": [
+            "docs/protocol/session-file.md",
+            "docs/protocol/execution.md",
+            "docs/protocol/executor-output.md",
+            "docs/protocol/reviewer-output.md"
+          ]
+        },
+        "new_source": {
+          "kind": "tool_use_protocol_stages_loaded",
+          "artifact": "tool-use-events.json",
+          "runtime": "claude",
+          "stages": [
+            "entry-execute",
+            "execution",
+            "execution-review"
+          ]
+        },
+        "old_kind": "tool_use_read_covers_paths",
+        "new_kind": "tool_use_protocol_stages_loaded",
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/skills/smoke/execute.session-resume.smoke.claude.json": [
+      {
+        "id": "execute_protocol_imports_read",
+        "old_source": {
+          "assertion": "execute_protocol_imports_read"
+        },
+        "new_source": {
+          "id": "execute_protocol_imports_read",
+          "overrides": {
+            "stages": [
+              "entry-execute",
+              "resume",
+              "execute-init",
+              "execution",
+              "execution-review",
+              "stop"
+            ]
+          }
+        },
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/skills/smoke/execute.stop-after-polish.smoke.claude.json": [
+      {
+        "id": "execute_protocol_imports_read",
+        "old_source": {
+          "assertion": "execute_protocol_imports_read"
+        },
+        "new_source": {
+          "id": "execute_protocol_imports_read",
+          "overrides": {
+            "stages": [
+              "entry-execute",
+              "resume",
+              "execute-init",
+              "execution",
+              "execution-review",
+              "gate",
+              "polish",
+              "stop"
+            ]
+          }
+        },
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/skills/smoke/plan.fresh.claude.json": [
+      {
+        "id": "assertions[1]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "skills/plan/SKILL.md",
+        "old_needle": "## Protocol Imports",
+        "new_needle": "--runtime claude --stage entry-plan",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "assertions[3]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[4]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[5]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[6]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[7]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[8]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[9]",
+        "old_source": "skills/plan/SKILL.md",
+        "new_source": "skills/plan/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      }
+    ],
+    "tests/skills/smoke/execute.from-plan.claude.json": [
+      {
+        "id": "assertions[1]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[2]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[4]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[6]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      }
+    ],
+    "tests/skills/smoke/execute.session-resume.claude.json": [
+      {
+        "id": "assertions[1]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/SKILL.md",
+        "old_needle": "## Protocol Imports",
+        "new_needle": "--runtime claude --stage entry-execute",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "assertions[2]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[4]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[6]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[7]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[8]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      }
+    ],
+    "tests/skills/smoke/execute.stop-after-before-security.smoke.claude.json": [
+      {
+        "id": "execute_protocol_imports_read",
+        "old_source": {
+          "assertion": "execute_protocol_imports_read"
+        },
+        "new_source": {
+          "id": "execute_protocol_imports_read",
+          "overrides": {
+            "stages": [
+              "entry-execute",
+              "resume",
+              "execute-init",
+              "execution",
+              "execution-review",
+              "gate",
+              "polish",
+              "docs",
+              "stop"
+            ]
+          }
+        },
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/skills/smoke/review-loop.regression.claude.json": [
+      {
+        "id": "assertions[1]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[2]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[3]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[4]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[5]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[6]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/runtime-claude.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[7]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[8]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "skills/review-loop/SKILL.md",
+        "old_needle": "## Protocol Imports",
+        "new_needle": "--runtime claude --stage entry-review-loop",
+        "reason": "Equivalent authoritative wording or dispatch anchor replaces the removed entry-local alias; semantic ID retained."
+      },
+      {
+        "id": "assertions[9]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[10]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[11]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[12]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[13]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/loading.json",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[14]",
+        "old_source": "skills/review-loop/SKILL.md",
+        "new_source": "docs/protocol/planning.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      }
+    ],
+    "tests/skills/smoke/execute.review-only.smoke.claude.json": [
+      {
+        "id": "execute_protocol_imports_read",
+        "old_source": {
+          "assertion": "execute_protocol_imports_read"
+        },
+        "new_source": {
+          "id": "execute_protocol_imports_read",
+          "overrides": {
+            "stages": [
+              "entry-execute",
+              "session-init",
+              "execute-init",
+              "execution-review",
+              "stop"
+            ]
+          }
+        },
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/skills/smoke/execute.stop-after-before-polish.smoke.claude.json": [
+      {
+        "id": "execute_protocol_imports_read",
+        "old_source": {
+          "assertion": "execute_protocol_imports_read"
+        },
+        "new_source": {
+          "id": "execute_protocol_imports_read",
+          "overrides": {
+            "stages": [
+              "entry-execute",
+              "resume",
+              "execute-init",
+              "execution",
+              "execution-review",
+              "gate",
+              "stop"
+            ]
+          }
+        },
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/skills/smoke/execute.stop-after-polish.claude.json": [
+      {
+        "id": "assertions[1]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[2]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[4]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[6]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[7]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[8]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "old_needle": "rejected at parse time",
+        "new_needle": "Any other value → reject at parse time.",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      }
+    ],
+    "tests/skills/smoke/execute.review-only.claude.json": [
+      {
+        "id": "assertions[1]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[2]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[3]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/execution.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[4]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "docs/protocol/session-file.md",
+        "reason": "Shared rule now checked at its authoritative protocol source; stage graph verifies it reaches the caller."
+      },
+      {
+        "id": "assertions[5]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      },
+      {
+        "id": "assertions[6]",
+        "old_source": "skills/execute/SKILL.md",
+        "new_source": "skills/execute/references/entry.md",
+        "reason": "Native initialization or entry behavior moved intact to the entry reference; graph verifies the correct entry/init stage loads it."
+      }
+    ],
+    "tests/skills/smoke/execute.from-plan.smoke.claude.json": [
+      {
+        "id": "execute_protocol_imports_read",
+        "old_source": {
+          "assertion": "execute_protocol_imports_read"
+        },
+        "new_source": {
+          "id": "execute_protocol_imports_read",
+          "overrides": {
+            "stages": [
+              "entry-execute",
+              "session-init",
+              "execute-init",
+              "execution",
+              "execution-review",
+              "stop"
+            ]
+          }
+        },
+        "reason": "Eager full-file imports replaced by entry/stage loading; runtime graph and successful loader-result assertions replace import-list presence."
+      }
+    ],
+    "tests/review_loop_codex_contract_test.py": [
+      {
+        "id": "test_codex_default_claude_reviewer_backstop_uses_claude_model",
+        "old_source": [
+          "README.md",
+          "docs/protocol/planning.md",
+          ".agents/skills/review-loop/SKILL.md"
+        ],
+        "new_source": [
+          "README.md",
+          "docs/protocol/planning.md",
+          "docs/protocol/runtime-codex.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_delivery_gate_requires_full_downstream_stage_set",
+        "old_source": [
+          "docs/protocol/execution.md",
+          "docs/protocol/session-file.md",
+          "skills/execute/SKILL.md"
+        ],
+        "new_source": [
+          "docs/protocol/execution.md",
+          "docs/protocol/session-file.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_quality_focus_and_skip_quality_polish_are_real_behavior",
+        "old_source": [
+          "README.md",
+          "review-loop-config.example.md",
+          ".agents/skills/guide/SKILL.md",
+          ".agents/skills/review-loop/SKILL.md",
+          "skills/guide/SKILL.md",
+          "skills/review-loop/SKILL.md"
+        ],
+        "new_source": [
+          "README.md",
+          "review-loop-config.example.md",
+          ".agents/skills/guide/SKILL.md",
+          "docs/protocol/runtime-codex.md",
+          "skills/guide/SKILL.md",
+          "docs/protocol/runtime-claude.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_stage1_workspace_authority_is_orchestrator_owned",
+        "old_source": [
+          "README.md",
+          ".agents/skills/guide/SKILL.md",
+          ".agents/skills/review-loop/SKILL.md",
+          "docs/protocol/session-file.md"
+        ],
+        "new_source": [
+          "README.md",
+          ".agents/skills/guide/SKILL.md",
+          "docs/protocol/runtime-codex.md",
+          "docs/protocol/session-file.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_executor_must_not_switch_worktrees",
+        "old_source": [
+          ".codex/agents/review-loop-executor.toml",
+          ".agents/skills/review-loop/SKILL.md",
+          "docs/protocol/execution.md"
+        ],
+        "new_source": [
+          ".codex/agents/review-loop-executor.toml",
+          "docs/protocol/runtime-codex.md",
+          "docs/protocol/execution.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_reviewer_must_flag_workspace_divergence",
+        "old_source": [
+          ".codex/agents/review-loop-reviewer.toml",
+          ".agents/skills/review-loop/SKILL.md",
+          "docs/protocol/execution.md"
+        ],
+        "new_source": [
+          ".codex/agents/review-loop-reviewer.toml",
+          "docs/protocol/execution.md",
+          "docs/protocol/runtime-codex.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_completed_agents_are_closed_between_rounds",
+        "old_source": [
+          ".agents/skills/review-loop/SKILL.md",
+          "docs/protocol/planning.md",
+          "docs/protocol/execution.md",
+          ".agents/skills/review-loop/SKILL.md"
+        ],
+        "new_source": [
+          "docs/protocol/runtime-codex.md",
+          "docs/protocol/planning.md",
+          "docs/protocol/execution.md",
+          "docs/protocol/runtime-codex.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      },
+      {
+        "id": "test_codex_umbrella_review_loop_must_not_stop_after_exec_approval",
+        "old_source": [
+          ".agents/skills/review-loop/SKILL.md"
+        ],
+        "new_source": [
+          "docs/protocol/runtime-codex.md"
+        ],
+        "reason": "Runtime rules pinned to runtime SSOT; existing agent/schema parity remains. Duplicate inline delivery-gate copy is replaced by loading-graph reachability rather than another prose copy."
+      }
+    ]
+  },
+  "added_coverage": [
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "consistency_mappings.provenance_aware_prompt_selection",
+      "coverage": [
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Strict plan-conformance applies: undisclosed material deviations block."
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Plan-conformance deviations become MINOR/advisory; correctness + intent\nalignment still enforced."
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Pure CR mode. No plan-conformance language."
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Review the diff in `## Files Changed` (and the scope described in\n`## Review Target`) for correctness, quality, edge cases, security, and\ntest coverage."
+        }
+      ]
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "consistency_mappings.adversarial_gate_adapter_verdicts",
+      "coverage": [
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "| `0` | APPROVE — mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies."
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "| `1` | REQUEST_CHANGES — do not mint `exec`;"
+        }
+      ]
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "consistency_mappings.route_facts_before_author_dispatch",
+      "coverage": [
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Write a `### Route Facts` block into `## Current Review Packet`, every"
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "On\n   `executor`, continue with round step 2 unchanged."
+        }
+      ]
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "consistency_mappings.provenance_disclosed_simplification",
+      "coverage": [
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "Strict plan-conformance applies: undisclosed material deviations block."
+        },
+        {
+          "path": "docs/protocol/execution.md",
+          "needle": "acceptance criteria is not automatically CRITICAL. A material change to\nuser intent, observable behavior, safety, authorization, data integrity,\nor an explicit constraint"
+        }
+      ]
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_assertions.review_loop_common_stages_loaded",
+      "coverage": {
+        "kind": "tool_use_protocol_stages_loaded",
+        "artifact": "tool-use-events.json",
+        "runtime": "claude",
+        "stages": [
+          "entry-review-loop",
+          "session-init",
+          "review-loop-init",
+          "execution-review",
+          "gate",
+          "polish",
+          "docs",
+          "security",
+          "delivery"
+        ]
+      }
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_assertions.review_loop_planning_stages_loaded",
+      "coverage": {
+        "kind": "tool_use_protocol_stages_loaded",
+        "artifact": "tool-use-events.json",
+        "runtime": "claude",
+        "stages": [
+          "planning",
+          "planning-review",
+          "execution",
+          "execution-review"
+        ]
+      }
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_assertions.review_loop_review_only_stages_loaded",
+      "coverage": {
+        "kind": "tool_use_protocol_stages_loaded",
+        "artifact": "tool-use-events.json",
+        "runtime": "claude",
+        "stages": [
+          "execution-review"
+        ]
+      }
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_groups.review_loop_protocol_imports_read",
+      "coverage": {
+        "mode": "all",
+        "members": [
+          "review_loop_common_stages_loaded",
+          "review_loop_route_stages_loaded"
+        ]
+      }
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_groups.review_loop_route_stages_loaded",
+      "coverage": {
+        "mode": "any",
+        "members": [
+          "review_loop_planned_route_stages_loaded",
+          "review_loop_review_only_route_stages_loaded"
+        ]
+      }
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_groups.review_loop_planned_route_stages_loaded",
+      "coverage": {
+        "mode": "all",
+        "members": [
+          "plan_source_reviewer_approved",
+          "review_loop_planning_stages_loaded"
+        ]
+      }
+    },
+    {
+      "file": "tests/skills/contracts/assertion-mapping.json",
+      "id": "smoke_groups.review_loop_review_only_route_stages_loaded",
+      "coverage": {
+        "mode": "all",
+        "members": [
+          "plan_source_review_only",
+          "review_loop_review_only_stages_loaded"
+        ]
+      }
+    }
+  ]
+}

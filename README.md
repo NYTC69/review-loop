@@ -1,5 +1,12 @@
 # review-loop
 
+Workflow instructions load by active action on both Claude Code and Codex.
+The [loading contract](docs/protocol/loading.md) and its declarative map select
+exact shared-protocol sections before each action. Within a live context,
+unchanged instructions need not be delivered repeatedly; new agents and
+resumed/compacted contexts reload prerequisites. Review and safety gates are
+unchanged. Runtime entry procedures live under each skill's `references/`.
+
 A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
 
 ## Quick Start

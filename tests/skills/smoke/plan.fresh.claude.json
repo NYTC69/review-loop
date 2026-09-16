@@ -16,7 +16,7 @@
     {
       "kind": "contains",
       "path": "skills/plan/SKILL.md",
-      "needle": "## Protocol Imports"
+      "needle": "--runtime claude --stage entry-plan"
     },
     {
       "kind": "contains",
@@ -25,37 +25,37 @@
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "entry_point: plan"
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "plan_source: reviewer-approved"
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/session-file.md"
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/planning.md"
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/executor-output.md"
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/reviewer-output.md"
     },
     {
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "Next: review-loop:execute --session"
     },
     {

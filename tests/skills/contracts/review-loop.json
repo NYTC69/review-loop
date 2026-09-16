@@ -10,43 +10,43 @@
     {
       "id": "claude_soft_limit_plan_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "soft_limit_plan"
     },
     {
       "id": "claude_soft_limit_exec_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "soft_limit_exec"
     },
     {
       "id": "claude_current_phase_section_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Current Phase"
     },
     {
       "id": "claude_approved_plan_section_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Approved Plan"
     },
     {
       "id": "claude_review_history_section_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Review History"
     },
     {
       "id": "claude_quality_polish_flow_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "Quality Polish"
     },
     {
       "id": "claude_delivery_flow_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Delivery"
     },
     {
@@ -68,96 +68,96 @@
       "id": "codex_plan_protocol_import_session_file",
       "kind": "contains",
       "path": ".agents/skills/plan/SKILL.md",
-      "needle": "docs/protocol/session-file.md"
+      "needle": "--runtime codex --stage entry-plan"
     },
     {
       "id": "codex_plan_protocol_import_planning",
       "kind": "contains",
       "path": ".agents/skills/plan/SKILL.md",
-      "needle": "docs/protocol/planning.md"
+      "needle": "--runtime codex --stage entry-plan"
     },
     {
       "id": "codex_plan_protocol_import_executor_output",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/executor-output.md"
     },
     {
       "id": "codex_plan_protocol_import_reviewer_output",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/reviewer-output.md"
     },
     {
       "id": "codex_plan_executor_reference_declared",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "review_loop_executor"
     },
     {
       "id": "codex_plan_claude_reviewer_command_declared",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
     },
     {
       "id": "codex_plan_completed_agent_cleanup_before_spawn_declared",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "Before every new `spawn_agent` call, call `close_agent` on any completed Codex subagent id"
     },
     {
       "id": "codex_plan_no_auto_dispatch_documented",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": ".agents/skills/plan/references/entry.md",
       "needle": "`plan` does not auto-route into execution"
     },
     {
       "id": "codex_plan_lock_first_ordering",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": ".agents/skills/plan/references/entry.md",
       "needle": "2. Acquire the single-writer lock per"
     },
     {
       "id": "codex_execute_protocol_import_session_file",
       "kind": "contains",
       "path": ".agents/skills/execute/SKILL.md",
-      "needle": "docs/protocol/session-file.md"
+      "needle": "--runtime codex --stage entry-execute"
     },
     {
       "id": "codex_execute_protocol_import_execution",
       "kind": "contains",
       "path": ".agents/skills/execute/SKILL.md",
-      "needle": "docs/protocol/execution.md"
+      "needle": "--runtime codex --stage entry-execute"
     },
     {
       "id": "codex_execute_protocol_import_executor_output",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/executor-output.md"
     },
     {
       "id": "codex_execute_protocol_import_reviewer_output",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/reviewer-output.md"
     },
     {
       "id": "codex_execute_executor_reference_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "review_loop_executor"
     },
     {
       "id": "codex_execute_claude_reviewer_command_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
     },
     {
       "id": "codex_execute_completed_agent_cleanup_before_spawn_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "Before every new `spawn_agent` call, call `close_agent` on any completed Codex subagent id"
     },
     {
@@ -169,50 +169,49 @@
     {
       "id": "codex_execute_dispatch_anchor_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Concrete dispatch anchor: `codex_execution_executor_dispatch`"
+      "path": "docs/protocol/execution.md",
+      "needle": "Execution-phase executor dispatch (dispatch anchor:\n   `protocol_execution_executor_dispatch`)"
     },
     {
       "id": "codex_execute_workspace_authority_explicit",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session"
     },
     {
       "id": "codex_execute_executor_worktree_forbidden",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "skills/review-loop/references/entry.md",
       "needle": "Executor-created hidden worktrees are forbidden in Codex Stage 1"
     },
     {
       "id": "codex_execute_no_op_round_validation_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "unchanged path sets alone do not prove a no-op"
+      "path": "docs/protocol/runtime-codex.md",
+      "needle": "unchanged\npath sets alone do not prove a no-op"
     },
     {
       "id": "codex_execute_quality_focus_real_behavior_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "`quality_focus` applies only when Step 3.5 Quality Polish actually runs"
     },
     {
       "id": "codex_execute_skip_quality_polish_real_behavior_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security"
     },
     {
       "id": "codex_execute_provenance_aware_plan_conformance_bullet",
-      "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "- explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)"
+      "kind": "consistent_with",
+      "mapping_id": "provenance_aware_prompt_selection"
     },
     {
       "id": "codex_execute_step4_gate_failure_lock_release",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "lock per `docs/protocol/session-file.md` §Lock file lifecycle, and exit"
+      "path": "docs/protocol/session-file.md",
+      "needle": "A delivery gate failure sets `delivery_blocked_by` to the first missing stage,\n  releases the single-writer lock and exits without delivering."
     },
     {
       "id": "codex_executor_agent_exists",
@@ -227,91 +226,90 @@
     {
       "id": "codex_session_path_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": ".review-loop/sessions/{uuid}.md"
     },
     {
       "id": "codex_reviewer_prompt_path_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": ".review-loop/tmp/{uuid}-reviewer-prompt.txt"
+      "path": "docs/protocol/runtime-codex.md",
+      "needle": ".review-loop/tmp/{session_id}-reviewer-prompt.txt"
     },
     {
       "id": "codex_executor_reference_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "review_loop_executor"
     },
     {
       "id": "codex_reviewer_reference_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "review_loop_reviewer"
     },
     {
       "id": "codex_session_metadata_section_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "## Session Metadata"
     },
     {
       "id": "codex_reviewer_schema_heading_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "### Reviewer Output Schema"
+      "path": "docs/protocol/reviewer-output.md",
+      "needle": "# Protocol — Reviewer Output Schema"
     },
     {
       "id": "codex_executor_schema_heading_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "### Executor Output Schema"
+      "path": "docs/protocol/executor-output.md",
+      "needle": "# Protocol — Executor Output Schema"
     },
     {
       "id": "codex_claude_reviewer_command_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
     },
     {
       "id": "codex_umbrella_provenance_aware_plan_conformance_bullet",
-      "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "- explicit direction to enforce correctness and tests; plan-conformance enforcement follows the §Provenance-aware reviewer prompts block selected by `plan_source` (strict for `reviewer-approved`, advisory/MINOR for `user-supplied`, omitted entirely for `review-only`)"
+      "kind": "consistent_with",
+      "mapping_id": "provenance_aware_prompt_selection"
     },
     {
       "id": "codex_plan_soft_limit_behavior_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "When `soft_limit_plan` is reached and blocking issues remain"
+      "path": "docs/protocol/planning.md",
+      "needle": "When `round >= soft_limit_plan` AND the latest verdict is still\n`REQUEST_CHANGES` with CRITICALs, pause and ask:"
     },
     {
       "id": "codex_exec_soft_limit_behavior_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "When `soft_limit_exec` is reached and blocking issues remain"
+      "path": "docs/protocol/execution.md",
+      "needle": "`soft_limit_exec` (default 3). On cap with CRITICALs remaining → ask the user; handsfree → auto hard-stop."
     },
     {
       "id": "claude_umbrella_adversarial_gate_before_polish",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "run Step 3.4 before Step 3.5"
     },
     {
       "id": "claude_umbrella_no_direct_exec_mint_after_approve",
       "kind": "not_contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "On APPROVE, mint `exec` into `completed_stages` and proceed to Step 3.5"
     },
     {
       "id": "codex_umbrella_adversarial_gate_before_polish",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "run Step 3.4 before Step 3.5"
     },
     {
       "id": "codex_umbrella_no_direct_exec_mint_after_approve",
       "kind": "not_contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "When an execution round reaches reviewer `APPROVE`, mint `exec` into"
     },
     {
@@ -357,13 +355,13 @@
     {
       "id": "codex_completed_agent_cleanup_before_spawn_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "Before every new `spawn_agent` call, call `close_agent` on any completed Codex subagent id"
     },
     {
       "id": "codex_completed_agent_cleanup_claude_cli_exception_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "The Claude CLI reviewer path is a child process, not a Codex subagent, so completed-agent cleanup does not apply to it."
     },
     {
@@ -381,20 +379,20 @@
     {
       "id": "codex_hallucination_guard_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "Reject malformed Executor or Reviewer output instead of guessing."
     },
     {
       "id": "codex_reviewer_prompt_ignores_unrelated_hook_injections",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "ignore unrelated startup or prompt-hook"
+      "path": "docs/protocol/execution.md",
+      "needle": "Ignore unrelated startup or prompt-hook injections"
     },
     {
       "id": "claude_reviewer_prompt_ignores_unrelated_hook_injections",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "ignore unrelated SessionStart /"
+      "path": "docs/protocol/planning.md",
+      "needle": "Ignore unrelated startup or prompt-hook injections"
     },
     {
       "id": "claude_plugin_agent_type_guard_doc_present",
@@ -433,7 +431,7 @@
       "kind": "forbidden_pattern",
       "applies_to": "codex-subagent-prompts",
       "needle": "inherited or forked parent thread context",
-      "guard_path": ".agents/skills/review-loop/SKILL.md",
+      "guard_path": "docs/protocol/runtime-codex.md",
       "guard_needle": "Do not rely on inherited or forked parent"
     },
     {
@@ -641,80 +639,80 @@
     {
       "id": "codex_parallel_reviewer_fanout_anchor_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "### Parallel Reviewer Fan-Out (N>1)"
     },
     {
       "id": "codex_parallel_reviewer_fanout_anchor_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "#### Parallel Reviewer Fan-Out (N>1)"
+      "path": "docs/protocol/parallel-review.md",
+      "needle": "### Parallel Reviewer Fan-Out (N>1)"
     },
     {
       "id": "codex_parallel_reviewer_fanout_anchor_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "#### Parallel Reviewer Fan-Out (N>1)"
+      "path": "docs/protocol/parallel-review.md",
+      "needle": "### Parallel Reviewer Fan-Out (N>1)"
     },
     {
       "id": "codex_parallel_reviewer_scheduler_invocation_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "python3 scripts/review_verification.py --jobs"
     },
     {
       "id": "codex_parallel_reviewer_scheduler_invocation_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "python3 scripts/review_verification.py --jobs"
     },
     {
       "id": "codex_parallel_reviewer_scheduler_invocation_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "python3 scripts/review_verification.py --jobs"
     },
     {
       "id": "codex_parallel_reviewer_perjob_prompt_path_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
     },
     {
       "id": "codex_parallel_reviewer_perjob_prompt_path_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
     },
     {
       "id": "codex_parallel_reviewer_perjob_prompt_path_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
     },
     {
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.8.0\""
+      "needle": "\"version\": \"2.8.1\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.0\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.1\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.8.0\",\n      \"author\""
+      "needle": "\"version\": \"2.8.1\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.8.0\""
+      "needle": "\"version\": \"2.8.1\""
     },
     {
       "id": "codex_marketplace_manifest_name",
@@ -767,181 +765,181 @@
     {
       "id": "codex_parallel_runtime_codex_label_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
     },
     {
       "id": "codex_parallel_runtime_codex_label_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
     },
     {
       "id": "codex_parallel_runtime_codex_label_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
     },
     {
       "id": "codex_parallel_runtime_claude_code_label_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
     },
     {
       "id": "codex_parallel_runtime_claude_code_label_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
     },
     {
       "id": "codex_parallel_runtime_claude_code_label_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
     },
     {
       "id": "codex_parallel_reviewer_output_template_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
     },
     {
       "id": "codex_parallel_reviewer_output_template_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
     },
     {
       "id": "codex_parallel_reviewer_output_template_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
     },
     {
       "id": "codex_parallel_edit_c_trigger_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
     },
     {
       "id": "codex_parallel_edit_c_trigger_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
     },
     {
       "id": "codex_parallel_edit_c_trigger_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
     },
     {
       "id": "codex_parallel_edit_c_classification_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "classify as a **command-execution failure**"
     },
     {
       "id": "codex_parallel_edit_c_classification_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "classify as a **command-execution failure**"
     },
     {
       "id": "codex_parallel_edit_c_classification_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "classify as a **command-execution failure**"
     },
     {
       "id": "codex_parallel_edit_c_precedence_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "diagnostic fields take precedence over stream-json parse outcome."
     },
     {
       "id": "codex_parallel_edit_c_precedence_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "diagnostic fields take precedence over stream-json parse outcome."
     },
     {
       "id": "codex_parallel_edit_c_precedence_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "diagnostic fields take precedence over stream-json parse outcome."
     },
     {
       "id": "codex_parallel_edit_c_skip_parse_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "Do not attempt to parse `stdout` for that entry"
     },
     {
       "id": "codex_parallel_edit_c_skip_parse_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "Do not attempt to parse `stdout` for that entry"
     },
     {
       "id": "codex_parallel_edit_c_skip_parse_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "Do not attempt to parse `stdout` for that entry"
     },
     {
       "id": "codex_parallel_edit_d_enoent_scheduler_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
     },
     {
       "id": "codex_parallel_edit_d_enoent_scheduler_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
     },
     {
       "id": "codex_parallel_edit_d_enoent_scheduler_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
     },
     {
       "id": "codex_parallel_edit_d_orchestrator_warning_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "non-ENOENT failure to delete them"
     },
     {
       "id": "codex_parallel_edit_d_orchestrator_warning_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "non-ENOENT failure to delete them"
     },
     {
       "id": "codex_parallel_edit_d_orchestrator_warning_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "non-ENOENT failure to delete them"
     },
     {
       "id": "codex_parallel_edit_d_policy_clauses_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
     },
     {
       "id": "codex_parallel_edit_d_policy_clauses_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
     },
     {
       "id": "codex_parallel_edit_d_policy_clauses_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
     },
     {
@@ -953,19 +951,19 @@
     {
       "id": "codex_parallel_best_effort_caveat_review_loop",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
     },
     {
       "id": "codex_parallel_best_effort_caveat_plan",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
     },
     {
       "id": "codex_parallel_best_effort_caveat_execute",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
     },
     {
@@ -1037,92 +1035,92 @@
     {
       "id": "codex_umbrella_startup_banner_section_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "## Startup Banner"
     },
     {
       "id": "codex_umbrella_startup_banner_reviewer_backend_label_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Reviewer backend: {claude-cli ({reviewer_model | judgment_model | claude-sonnet-4-6}) | codex (review_loop_reviewer / {codex_reviewer_model})}"
     },
     {
       "id": "codex_umbrella_startup_banner_soft_limit_label_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)"
     },
     {
       "id": "codex_umbrella_startup_banner_print_once_rule_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Print this banner once per session, immediately after entry-point"
     },
     {
       "id": "codex_umbrella_historical_context_delegation_note_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "the umbrella does not run Step 1.6\ninline. The plan sub-skill at `.agents/skills/plan/SKILL.md` Step 1.6\nowns historical-context retrieval"
     },
     {
       "id": "claude_umbrella_startup_banner_section_header_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "skills/review-loop/references/entry.md",
       "needle": "── review-loop: Starting ──"
     },
     {
       "id": "claude_umbrella_startup_banner_reviewer_label_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "skills/review-loop/references/entry.md",
       "needle": "Reviewer: {codex | subagent} ({reviewer_model})"
     },
     {
       "id": "claude_umbrella_startup_banner_soft_limit_label_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "skills/review-loop/references/entry.md",
       "needle": "Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)"
     },
     {
       "id": "codex_umbrella_startup_banner_top_border_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "── review-loop: Starting ──"
     },
     {
       "id": "codex_umbrella_startup_banner_work_item_label_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Work item: {title}"
     },
     {
       "id": "codex_umbrella_startup_banner_problem_label_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Problem: {problem_description}"
     },
     {
       "id": "codex_umbrella_startup_banner_mode_label_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Mode: {interactive | handsfree}"
     },
     {
       "id": "codex_umbrella_startup_banner_historical_context_row_template_declared",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "Historical context: {N} relevant memories loaded"
     },
     {
       "id": "claude_execute_delivery_summary_zhcn_rule_declared",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "Render the Delivery Summary in 中文 (Simplified\n   Chinese) per `docs/protocol/execution.md` §Step 4: section\n   headings, prose, and prose-style field values use 中文; ASCII\n   tokens stay in original form."
+      "path": "docs/protocol/execution.md",
+      "needle": "**Language: render the Delivery Summary in 中文 (Simplified\n   Chinese)** — section headings, prose, and prose-style field values use\n   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form."
     },
     {
       "id": "codex_execute_delivery_summary_zhcn_rule_declared",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Render the Delivery Summary in 中文 (Simplified\n   Chinese) per `docs/protocol/execution.md` §Step 4: section\n   headings, prose, and prose-style field values use 中文; ASCII\n   tokens stay in original form."
+      "path": "docs/protocol/execution.md",
+      "needle": "**Language: render the Delivery Summary in 中文 (Simplified\n   Chinese)** — section headings, prose, and prose-style field values use\n   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form."
     },
     {
       "id": "claude_reviewer_command_flags_present"
@@ -1133,7 +1131,7 @@
     {
       "id": "review_loop_skill_reviewer_command_flags",
       "kind": "command_flag_co_occurrence",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "anchor": "claude -p",
       "required_flags": [
         "--no-session-persistence",
@@ -1144,7 +1142,7 @@
     {
       "id": "plan_skill_subagent_whitelist",
       "kind": "agent_subagent_type_whitelist",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/planning.md",
       "whitelist": [
         "general-purpose"
       ],
@@ -1153,7 +1151,7 @@
     {
       "id": "execute_skill_subagent_whitelist",
       "kind": "agent_subagent_type_whitelist",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "whitelist": [
         "general-purpose"
       ],
@@ -1171,285 +1169,283 @@
     {
       "id": "codex_plan_executor_stop_surface_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "Validate the Executor output against the shared schema before persisting",
+      "path": "docs/protocol/session-file.md",
+      "needle": "If Executor output remains invalid after its one correction retry",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "release the single-writer lock before exiting."
       ],
-      "window_lines": 5
+      "window_lines": 3
     },
     {
       "id": "codex_plan_reviewer_claude_path_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "Record a short failure reason summary in",
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "the single-writer lock before exiting; do not mint approval or invent evidence."
       ],
-      "window_lines": 6
+      "window_lines": 3
     },
     {
       "id": "codex_plan_reviewer_codex_path_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "Optional local Codex reviewer path: spawn",
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "the single-writer lock before exiting; do not mint approval or invent evidence."
       ],
-      "window_lines": 7
+      "window_lines": 3
     },
     {
       "id": "codex_execute_executor_stop_surface_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Validate the Executor output against the shared schema. If invalid,",
+      "path": "docs/protocol/session-file.md",
+      "needle": "If Executor output remains invalid after its one correction retry",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "release the single-writer lock before exiting."
       ],
-      "window_lines": 4
+      "window_lines": 3
     },
     {
       "id": "codex_execute_reviewer_claude_path_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Record a short failure reason summary in",
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "the single-writer lock before exiting; do not mint approval or invent evidence."
       ],
-      "window_lines": 6
+      "window_lines": 3
     },
     {
       "id": "codex_execute_reviewer_codex_path_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Optional local Codex reviewer path: spawn",
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "the single-writer lock before exiting; do not mint approval or invent evidence."
       ],
-      "window_lines": 7
+      "window_lines": 3
     },
     {
       "id": "codex_plan_lock_release_present",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
     },
     {
       "id": "codex_execute_lock_release_present",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
     },
     {
       "id": "codex_execute_git_diff_failure_present",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "If git diff --name-only HEAD itself fails"
+      "path": "docs/protocol/session-file.md",
+      "needle": "If `git diff --name-only HEAD` itself fails"
     },
     {
       "id": "codex_execute_git_diff_failure_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "If git diff --name-only HEAD itself fails",
+      "path": "docs/protocol/session-file.md",
+      "needle": "If `git diff --name-only HEAD` itself fails",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "Release the single-writer lock before exiting."
       ],
-      "window_lines": 2
+      "window_lines": 3
     },
     {
       "id": "codex_plan_executor_stop_surface_present",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "Validate the Executor output against the shared schema before persisting"
+      "path": "docs/protocol/session-file.md",
+      "needle": "If Executor output remains invalid after its one correction retry"
     },
     {
       "id": "codex_plan_reviewer_claude_path_present",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "Record a short failure reason summary in"
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active"
     },
     {
       "id": "codex_plan_reviewer_codex_path_present",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "Optional local Codex reviewer path: spawn"
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active"
     },
     {
       "id": "codex_execute_executor_stop_surface_present",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Validate the Executor output against the shared schema. If invalid,"
+      "path": "docs/protocol/session-file.md",
+      "needle": "If Executor output remains invalid after its one correction retry"
     },
     {
       "id": "codex_execute_reviewer_claude_path_present",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Record a short failure reason summary in"
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active"
     },
     {
       "id": "codex_execute_reviewer_codex_path_present",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Optional local Codex reviewer path: spawn"
+      "path": "docs/protocol/session-file.md",
+      "needle": "A terminal Reviewer command/parse/schema/rubric failure follows the active"
     },
     {
       "id": "claude_plan_lock_release_present",
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
     },
     {
       "id": "claude_execute_lock_release_present",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/plan/references/entry.md",
       "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
     },
     {
       "id": "claude_execute_git_diff_failure_present",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "If git diff --name-only HEAD itself fails"
+      "path": "docs/protocol/session-file.md",
+      "needle": "If `git diff --name-only HEAD` itself fails"
     },
     {
       "id": "claude_execute_git_diff_failure_lock_release",
       "kind": "pattern_requires_adjacent",
-      "path": "skills/execute/SKILL.md",
-      "needle": "If git diff --name-only HEAD itself fails",
+      "path": "docs/protocol/session-file.md",
+      "needle": "If `git diff --name-only HEAD` itself fails",
       "required_nearby": [
-        "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+        "Release the single-writer lock before exiting."
       ],
-      "window_lines": 2
+      "window_lines": 3
     },
     {
       "id": "adversarial_gate_claude_step_heading",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "## Step 3.4 — Terminal Adversarial Gate"
     },
     {
       "id": "adversarial_gate_claude_invocation",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "python3 scripts/adversarial_gate_invoke.py"
     },
     {
       "id": "adversarial_gate_claude_verdict_table_sentinel",
-      "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES"
+      "kind": "consistent_with",
+      "mapping_id": "adversarial_gate_adapter_verdicts"
     },
     {
       "id": "adversarial_gate_claude_adapter_exit2_blocks",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "exit 2 → REQUEST_CHANGES"
+      "path": "docs/protocol/execution.md",
+      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_claude_adapter_exit2_not_skip",
       "kind": "not_contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "adapter-exit-2-malformed"
     },
     {
       "id": "adversarial_gate_claude_skip_banner_format",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "adversarial-gate: SKIP reason="
     },
     {
       "id": "adversarial_gate_claude_cleanup_failure_blocks",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP"
+      "path": "docs/protocol/execution.md",
+      "needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP:"
     },
     {
       "id": "adversarial_gate_claude_loop_control_interposes_gate",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "run Step 3.4 before Step 3.5"
     },
     {
       "id": "adversarial_gate_claude_single_pass_then_normal_review",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "single-pass per execution convergence"
     },
     {
       "id": "adversarial_gate_claude_no_adversarial_self_loop",
       "kind": "not_contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "gate fires again on the next APPROVE"
     },
     {
       "id": "adversarial_gate_claude_no_direct_step35_loop_control",
       "kind": "not_contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "exit the execution loop. Proceed to Step 3.5"
     },
     {
       "id": "adversarial_gate_codex_step_heading",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "## Step 3.4 — Terminal Adversarial Gate"
     },
     {
       "id": "adversarial_gate_codex_invocation",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "python3 scripts/adversarial_gate_invoke.py"
     },
     {
       "id": "adversarial_gate_codex_verdict_table_sentinel",
-      "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "exit 0 → APPROVE; exit 1 → REQUEST_CHANGES"
+      "kind": "consistent_with",
+      "mapping_id": "adversarial_gate_adapter_verdicts"
     },
     {
       "id": "adversarial_gate_codex_adapter_exit2_blocks",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "exit 2 → REQUEST_CHANGES"
+      "path": "docs/protocol/execution.md",
+      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_codex_adapter_exit2_not_skip",
       "kind": "not_contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "adapter-exit-2-malformed"
     },
     {
       "id": "adversarial_gate_codex_sandbox_boundary",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Run the adversarial gate invocation outside the sandbox."
     },
     {
       "id": "adversarial_gate_codex_cleanup_failure_blocks",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Fallback cleanup failure is a blocking REQUEST_CHANGES, not SKIP"
+      "path": "docs/protocol/execution.md",
+      "needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP:"
     },
     {
       "id": "adversarial_gate_codex_loop_control_interposes_gate",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "run Step 3.4 before Step 3.5"
     },
     {
       "id": "adversarial_gate_codex_single_pass_then_normal_review",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "single-pass per execution convergence"
     },
     {
       "id": "adversarial_gate_codex_no_adversarial_self_loop",
       "kind": "not_contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "gate fires again on the next APPROVE"
     },
     {
       "id": "adversarial_gate_codex_no_direct_step35_loop_control",
       "kind": "not_contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "exit the execution loop. Proceed to Step 3.5"
     },
     {
@@ -1486,13 +1482,13 @@
       "id": "adversarial_gate_protocol_cleanup_failure_blocks",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP"
+      "needle": "Fallback cleanup failure is a synthetic REQUEST_CHANGES, not SKIP:"
     },
     {
       "id": "adversarial_gate_protocol_adapter_exit2_blocks",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`2` | Malformed payload — REQUEST_CHANGES"
+      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_protocol_adapter_exit2_not_skip",
@@ -1503,8 +1499,8 @@
     {
       "id": "adversarial_gate_invoker_adapter_exit2_blocks",
       "kind": "contains",
-      "path": "scripts/adversarial_gate_invoke.py",
-      "needle": "adapter output was malformed"
+      "path": "docs/protocol/execution.md",
+      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_invoker_adapter_exit2_no_skip",
@@ -1725,13 +1721,13 @@
     {
       "id": "claude_current_review_packet_section_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Current Review Packet"
     },
     {
       "id": "claude_evidence_ledger_section_declared",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Evidence Ledger"
     },
     {
@@ -2008,56 +2004,54 @@
     {
       "id": "claude_umbrella_no_blanket_coding_prohibition",
       "kind": "not_contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "Never do the planning or coding yourself."
     },
     {
       "id": "claude_umbrella_no_blanket_work_prohibition",
       "kind": "not_contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-claude.md",
       "needle": "**Never do the work yourself**"
     },
     {
       "id": "claude_umbrella_author_route_rule",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "Never plan yourself; implement directly only under\n`docs/protocol/execution.md` §Author route selection"
+      "path": "docs/protocol/runtime-codex.md",
+      "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` §Author route selection"
     },
     {
       "id": "claude_umbrella_direct_route_produces_dir",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "produce a Direct Implementation Record per\n`docs/protocol/executor-output.md`"
+      "path": "docs/protocol/execution.md",
+      "needle": "`orchestrator-direct`, implement the round yourself and produce a\n   **Direct Implementation Record** (DIR) per"
     },
     {
       "id": "codex_umbrella_author_route_rule",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` §Author route selection"
     },
     {
       "id": "claude_execute_route_facts_before_executor",
-      "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "`### Route Facts` in the packet + `evidence_ledger.py\nroute --path <touched paths>`"
+      "kind": "consistent_with",
+      "mapping_id": "route_facts_before_author_dispatch"
     },
     {
       "id": "codex_execute_route_facts_before_executor",
-      "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "`### Route Facts` in the packet + `evidence_ledger.py\nroute --path <touched paths>`"
+      "kind": "consistent_with",
+      "mapping_id": "route_facts_before_author_dispatch"
     },
     {
       "id": "claude_plan_planning_always_executor_authored",
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
-      "needle": "planning is always Executor-authored"
+      "path": "docs/protocol/planning.md",
+      "needle": "planning is always\nExecutor-authored"
     },
     {
       "id": "codex_plan_planning_always_executor_authored",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
-      "needle": "planning is always Executor-authored"
+      "path": "docs/protocol/planning.md",
+      "needle": "planning is always\nExecutor-authored"
     },
     {
       "id": "evidence_ledger_fixture_declares_route_facts",
@@ -2081,7 +2075,7 @@
       "id": "protocol_execution_route_facts_packet_only",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`### Route Facts` block **only** from `## Current Review Packet`"
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "protocol_execution_route_facts_absent_reason",
@@ -2092,26 +2086,26 @@
     {
       "id": "claude_umbrella_route_facts_packet_only",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "never from history or an old"
+      "path": "docs/protocol/execution.md",
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "claude_execute_route_facts_packet_only",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "never from history or an old"
+      "path": "docs/protocol/execution.md",
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "codex_umbrella_route_facts_packet_only",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "never from history or an old"
+      "path": "docs/protocol/execution.md",
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "codex_execute_route_facts_packet_only",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "never from history or an old"
+      "path": "docs/protocol/execution.md",
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "route_facts_source_consistent",
@@ -2330,13 +2324,13 @@
       "id": "protocol_execution_revalidation_executor_less",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "no complete gate finding → round step 2 is skipped"
+      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "protocol_execution_gate_never_rerun",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "The gate is spent for this convergence and is never re-run."
+      "needle": "Do not run Step 3.4 again while repairing those\n  findings."
     },
     {
       "id": "protocol_execution_revalidation_counts_soft_limit",
@@ -2352,9 +2346,8 @@
     },
     {
       "id": "protocol_execution_provenance_disclosed_simplification",
-      "kind": "contains",
-      "path": "docs/protocol/execution.md",
-      "needle": "A disclosed\nequivalent simplification that satisfies the plan's intent and the\nacceptance criteria is not automatically CRITICAL."
+      "kind": "consistent_with",
+      "mapping_id": "provenance_disclosed_simplification"
     },
     {
       "id": "protocol_planning_loop_state_pending_rubric",
@@ -2437,248 +2430,246 @@
     {
       "id": "claude_umbrella_triage_step",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "`finding_triage.py check`"
     },
     {
       "id": "claude_umbrella_gate_rubric_revalidation",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Gate rubric revalidation"
     },
     {
       "id": "claude_plan_triage_step",
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/reviewer-output.md",
       "needle": "`finding_triage.py check`"
     },
     {
       "id": "claude_plan_gate_rubric_revalidation",
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
+      "path": "docs/protocol/planning.md",
       "needle": "Gate rubric revalidation"
     },
     {
       "id": "claude_execute_triage_step",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "`finding_triage.py check`"
     },
     {
       "id": "claude_execute_gate_rubric_revalidation",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Gate rubric revalidation"
     },
     {
       "id": "codex_umbrella_triage_step",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "`finding_triage.py check`"
     },
     {
       "id": "codex_umbrella_gate_rubric_revalidation",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Gate rubric revalidation"
     },
     {
       "id": "codex_plan_triage_step",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/reviewer-output.md",
       "needle": "`finding_triage.py check`"
     },
     {
       "id": "codex_plan_gate_rubric_revalidation",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/planning.md",
       "needle": "Gate rubric revalidation"
     },
     {
       "id": "codex_execute_triage_step",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "`finding_triage.py check`"
     },
     {
       "id": "codex_execute_gate_rubric_revalidation",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Gate rubric revalidation"
     },
     {
       "id": "claude_umbrella_dispute_flow",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+      "path": "docs/protocol/execution.md",
+      "needle": "### Dispute flow"
     },
     {
       "id": "claude_umbrella_revalidation_executor_less",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+      "path": "docs/protocol/execution.md",
+      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "claude_umbrella_gate_never_rerun",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "The gate is\nnever re-run"
+      "path": "docs/protocol/execution.md",
+      "needle": "Do not run Step 3.4 again while repairing those\n  findings."
     },
     {
       "id": "claude_execute_dispute_flow",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+      "path": "docs/protocol/execution.md",
+      "needle": "### Dispute flow"
     },
     {
       "id": "claude_execute_revalidation_executor_less",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+      "path": "docs/protocol/execution.md",
+      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "claude_execute_gate_never_rerun",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "The gate is\nnever re-run"
+      "path": "docs/protocol/execution.md",
+      "needle": "Do not run Step 3.4 again while repairing those\n  findings."
     },
     {
       "id": "codex_umbrella_dispute_flow",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+      "path": "docs/protocol/execution.md",
+      "needle": "### Dispute flow"
     },
     {
       "id": "codex_umbrella_revalidation_executor_less",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+      "path": "docs/protocol/execution.md",
+      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "codex_umbrella_gate_never_rerun",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "The gate is\nnever re-run"
+      "path": "docs/protocol/execution.md",
+      "needle": "Do not run Step 3.4 again while repairing those\n  findings."
     },
     {
       "id": "codex_execute_dispute_flow",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "Dispute flow per `docs/protocol/execution.md` §Dispute flow"
+      "path": "docs/protocol/execution.md",
+      "needle": "### Dispute flow"
     },
     {
       "id": "codex_execute_revalidation_executor_less",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "when none is complete skip the Executor (`revalidation_round: true`"
+      "path": "docs/protocol/execution.md",
+      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "codex_execute_gate_never_rerun",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "The gate is\nnever re-run"
+      "path": "docs/protocol/execution.md",
+      "needle": "Do not run Step 3.4 again while repairing those\n  findings."
     },
     {
       "id": "claude_execute_provenance_disclosed_simplification",
-      "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "undisclosed material deviations block; a disclosed equivalent\n  simplification satisfying intent and acceptance criteria is not\n  automatically CRITICAL"
+      "kind": "consistent_with",
+      "mapping_id": "provenance_disclosed_simplification"
     },
     {
       "id": "codex_execute_provenance_disclosed_simplification",
-      "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
-      "needle": "undisclosed material deviations block; a disclosed equivalent\n  simplification satisfying intent and acceptance criteria is not\n  automatically CRITICAL"
+      "kind": "consistent_with",
+      "mapping_id": "provenance_disclosed_simplification"
     },
     {
       "id": "codex_umbrella_triage_after_schema_validation",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
     },
     {
       "id": "codex_umbrella_triage_no_claude_retry",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
     },
     {
       "id": "codex_umbrella_triage_fanout",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "on every validated `result` (mandatory rubric gate)"
     },
     {
       "id": "codex_umbrella_triage_local_reviewer",
       "kind": "contains",
-      "path": ".agents/skills/review-loop/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
     },
     {
       "id": "codex_plan_triage_after_schema_validation",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
     },
     {
       "id": "codex_plan_triage_no_claude_retry",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
     },
     {
       "id": "codex_plan_triage_fanout",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "on every validated `result` (mandatory rubric gate)"
     },
     {
       "id": "codex_plan_triage_local_reviewer",
       "kind": "contains",
-      "path": ".agents/skills/plan/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
     },
     {
       "id": "codex_execute_triage_after_schema_validation",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
     },
     {
       "id": "codex_execute_triage_no_claude_retry",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
     },
     {
       "id": "codex_execute_triage_fanout",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/parallel-review.md",
       "needle": "on every validated `result` (mandatory rubric gate)"
     },
     {
       "id": "codex_execute_triage_local_reviewer",
       "kind": "contains",
-      "path": ".agents/skills/execute/SKILL.md",
+      "path": "docs/protocol/runtime-codex.md",
       "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
     },
     {
       "id": "claude_umbrella_triage_one_retry",
       "kind": "contains",
-      "path": "skills/review-loop/SKILL.md",
-      "needle": "re-dispatch the Reviewer once with the missing-field list"
+      "path": "docs/protocol/execution.md",
+      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "claude_execute_triage_one_retry",
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
-      "needle": "re-dispatch the Reviewer once with the missing-field list"
+      "path": "docs/protocol/execution.md",
+      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "claude_plan_triage_one_retry",
       "kind": "contains",
-      "path": "skills/plan/SKILL.md",
-      "needle": "re-dispatch the Reviewer once with the missing-field list"
+      "path": "docs/protocol/execution.md",
+      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "rubric_gate_consistent",

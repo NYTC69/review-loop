@@ -16,41 +16,41 @@
     {
       "kind": "contains",
       "path": "skills/execute/SKILL.md",
-      "needle": "## Protocol Imports"
+      "needle": "--runtime claude --stage entry-execute"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "--session <uuid>"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "Step 1 — Acquire the single-writer lock"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "Step 2 — Drift check"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/session-file.md"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/execution.md"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/executor-output.md"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/loading.json",
       "needle": "docs/protocol/reviewer-output.md"
     },
     {

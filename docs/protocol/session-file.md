@@ -269,6 +269,26 @@ session-owned progress from external drift over time.
 
 ---
 
+## Failure exits
+
+These guards are shared by both runtimes and all entry skills. They preserve
+the formerly inline execute/plan exit rules after instruction deduplication.
+
+- If `git diff --name-only HEAD` itself fails (non-zero exit, missing repo,
+  etc.) when computing a pre/post changed set, stop and surface the failure.
+  Release the single-writer lock before exiting. Do not proceed with a partial
+  or invented changed-set.
+- If Executor output remains invalid after its one correction retry, stop and
+  surface the failure; release the single-writer lock before exiting.
+- A terminal Reviewer command/parse/schema/rubric failure follows the active
+  backend's retry/fallback policy. On terminal failure, surface it and release
+  the single-writer lock before exiting; do not mint approval or invent evidence.
+- A delivery gate failure sets `delivery_blocked_by` to the first missing stage,
+  releases the single-writer lock and exits without delivering.
+- Suggest-and-exit, missing resumed session, drift abort, clean stop and signal
+  abort release the lock under the lock lifecycle. Unrecoverable errors preserve
+  `last_verified_*` and `delivery_blocked_by` unchanged, as before.
+
 ## Dirty map construction
 
 The dirty map is a `{path: hash_or_tombstone}` object built from

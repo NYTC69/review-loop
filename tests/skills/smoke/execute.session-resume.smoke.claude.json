@@ -40,7 +40,19 @@
     "plan_source_reviewer_approved",
     "entry_point_plan",
     "approved_plan_section_present",
-    "execute_protocol_imports_read",
+    {
+      "id": "execute_protocol_imports_read",
+      "overrides": {
+        "stages": [
+          "entry-execute",
+          "resume",
+          "execute-init",
+          "execution",
+          "execution-review",
+          "stop"
+        ]
+      }
+    },
     "no_forbidden_review_loop_subagent_types_in_agent_calls",
     {
       "id": "agent_calls_used_at_least_one_subagent",

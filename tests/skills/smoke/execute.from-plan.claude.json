@@ -16,32 +16,32 @@
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "--plan <text|path>"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "plan_source: user-supplied"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "entry_point: execute-from-plan"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "skills/execute/references/entry.md",
       "needle": "provenance-aware reviewer"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "advisory"
     },
     {
       "kind": "contains",
-      "path": "skills/execute/SKILL.md",
+      "path": "docs/protocol/execution.md",
       "needle": "Provenance-aware reviewer prompts"
     },
     {

@@ -19,6 +19,7 @@ from scripts.run_skill_smoke_lib import (
     cleanup_stale_review_loop_runtime,
     cleanup_timed_out_process,
     finalize_stream_capture_artifact,
+    protocol_stages_loaded,
     select_primary_session_path,
     triage_report_fields,
 )
@@ -176,7 +177,7 @@ def reset_artifact_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-_SMOKE_ALLOWED_OVERRIDE_KEYS = frozenset({"min", "tool", "artifact", "requires_subagent_type"})
+_SMOKE_ALLOWED_OVERRIDE_KEYS = frozenset({"min", "tool", "artifact", "requires_subagent_type", "stages"})
 
 
 def _resolve_smoke_assertion_entry(smoke_assertions, raw_entry):
@@ -188,7 +189,8 @@ def _resolve_smoke_assertion_entry(smoke_assertions, raw_entry):
     #     are silently dropped (treated as schema-stable metadata such as
     #     `_comment` / `_reason` / `_note`). Non-`_`-prefixed override keys
     #     must be in the allowed list (`min`, `tool`, `artifact`,
-    #     `requires_subagent_type`).
+    #     `requires_subagent_type`, `stages`). Kind-specific evaluators validate
+    #     override values (including protocol_stages_loaded for `stages`).
     if isinstance(raw_entry, str):
         return raw_entry, smoke_assertions.get(raw_entry), None
 
@@ -417,6 +419,16 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
         artifact_path = artifact_dir / artifact_name if isinstance(artifact_name, str) else None
         kind = assertion.get("kind")
         needle = assertion.get("needle")
+
+        if kind == "tool_use_protocol_stages_loaded":
+            if artifact_path is None or not artifact_path.exists():
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+            try:
+                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                return {"id": assertion_id, "status": "fail", "message": f"invalid capture: {exc}"}
+            passed, message = protocol_stages_loaded(payload, assertion)
+            return {"id": assertion_id, "status": "pass" if passed else "fail", "message": message}
 
         if kind == "artifact_exists":
             if artifact_path and artifact_path.exists():

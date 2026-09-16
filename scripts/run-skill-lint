@@ -295,11 +295,10 @@ def forbidden_scope_files(root: Path, applies_to: str):
     for scope_root in scope_roots:
         if not scope_root.exists():
             continue
-        # `all-skill-bodies` scopes by SKILL.md only — sibling files
-        # (notes, fixtures, READMEs) are not invocation surfaces and would
-        # generate noise on the line-pattern + adjacent-warning checks.
+        # Entry references now carry native procedures. Include only their
+        # maintained references/ tree, not arbitrary notes or test fixtures.
         if applies_to == "all-skill-bodies":
-            candidates = scope_root.rglob("SKILL.md")
+            candidates = list(scope_root.rglob("SKILL.md")) + list(scope_root.glob("*/references/*.md"))
         else:
             candidates = scope_root.rglob("*")
         for path in sorted(candidate for candidate in candidates if candidate.is_file()):

@@ -54,6 +54,12 @@ Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
 ## Usage
 
+Both runtimes load instructions by active action using
+`docs/protocol/loading.md` and `scripts/read_protocol.py`. Shared rules are
+read before the action they govern; independent agents and resumed/compacted
+contexts reload their prerequisites. This changes instruction transport only,
+not the required review, evidence, authorization or delivery gates.
+
 ```bash
 # Basic — starts full plan→review→implement→CR loop
 /review-loop add rate limiting to the /api/upload endpoint
