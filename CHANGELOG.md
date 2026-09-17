@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-17
+
+### v2.8.1 活体指标补测（无代码改动）
+
+- 首次取得真实 native-runtime 的规则输入实测，补上 v2.8.1 唯一未验证的验收项。
+  载体是 compass 仓库的真实 work item，Claude Code runtime，plan 2 轮 + execute 1 轮。
+- 按计划文档 L114-118 口径（含 agent body 与 task packet）：AFTER 实测 166,644 B
+  vs BEFORE 反事实 233,780 B = **−28.7%**，达标 ≥25%。扣除因配额作废的 27,427 B
+  reviewer prompt 后为 −40.4%。
+- **边界**：observed-AFTER 对 reconstructed-BEFORE。BEFORE 列仍是 `cadb06c` 静态
+  inventory，因为 observed BEFORE 需要把同一 work item 在 v2.8.0 下重跑一遍。
+  引用 28.7% 必须带这个限定。分母场景比本轮轻，故为保守下界。
+- 静态表测不出的一条：planning-review bundle 在第 2 轮重载时投递 **0 字节**
+  （15 个指纹全部复用，全量为 54,612 B）。跨轮指纹去重是主要收益来源。
+- 同轮实测：必要规则漏加载 = 0；未预加载任何后续 stage。
+- 数据：`.compass/results/2026-09-17_v2.8.1-live-workflow-measurement.json`
+
 ## 2026-09-16
 
 ### v2.8.1 — 按阶段加载协议与入口去重
