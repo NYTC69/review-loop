@@ -4,6 +4,10 @@
 
 ## P1 — high priority
 
+- [new] Cut review-loop cross-model token waste: 3 correctness bugs + 4 reviewer-prompt/polling fixes. (added 2026-09-19)
+  - Note: 30-day audit — review-loop ≈91% of Claude spend and ≈100% of Codex usage (Codex weekly limit hit 4×). Batch 1 bugs: `review_verification.py` Codex fan-out uses `--full-auto` (writable) and drops `-m`; Codex→Claude reviewer prompt lacks the CRITICAL rubric (wasted rounds); Claude→Codex reviewer command unpinned. Batch 2: Codex reviewer self-loads review-loop skills (~29K tok/round); plan sent twice; plan body grows ~20%/round. Batch 3: wrapper so the Codex orchestrator stops polling `claude -p` stream-json (24% of its context). Executed by a Codex orchestrator (not via review-loop) with Claude as supervisor. Spec: `.compass/results/2026-09-19_orchestrator-context-token-audit-brief.md`; data: `…-token-audit.json`. Out of scope: orchestrator context hygiene, model choice, reviewer resume/fork spike.
+  - Progress 2026-09-20 — all 3 batches delivered as v2.8.4 (Codex implementer, Claude supervisor, file-mailbox handoff). Verified: lint exit 0, pytest 605 passed, live wrapper smoke on Claude Code 2.1.278. Also fixed: `claude -p … stream-json` needs `--verbose` on 2.1.278. Kept open until the token effect is measured on real review-loop runs (reviewer no longer loads skills; Codex poll output shrinks; plan-review prompt stops growing).
+
 ~~Debug Claude review stall in manual / review-loop review flows.~~ (closed 2026-04-26 — root cause: `--output-format json` buffers all output until generation ends; sonnet-4-6 with extended thinking on 70k cached tokens takes 2-3 min, producing no visible output. With `--include-partial-messages` the first thinking_delta arrives at ~3.7s confirming the process is alive. Fix: switched Codex Stage 1 reviewer command to `--output-format stream-json --include-partial-messages`; orchestrator now scans line-by-line for `type == "result"` event. Updated SKILL.md, docs/protocol/planning.md, CLAUDE.md, and contract test needle.)
 
 ## P2 — normal

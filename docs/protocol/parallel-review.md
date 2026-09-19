@@ -23,10 +23,12 @@ round, matching the schema accepted by `_load_jobs` in
   prompt body, identical to what would be rendered into
   `.review-loop/tmp/{session_id}-reviewer-prompt.txt` in the single-shot
   path
-- `reviewer_model` — resolved via the same shared model-tier rule used by
-  the single-shot path: `reviewer_model if set; else judgment_model if
+- `reviewer_model` — for `runtime: "codex"`, resolved via the same shared
+  model-tier rule used by the single-shot path: `reviewer_model if set; else judgment_model if
   set; else claude-sonnet-4-6` (per `docs/protocol/planning.md` §Shared
-  model-tier contract)
+  model-tier contract). For `runtime: "claude_code"`, use `reviewer_model`
+  only: a Codex model, or empty to omit `-m`. Never apply `judgment_model`
+  or the Claude-tier fallback to these Codex CLI jobs.
 - `timeout_secs` (optional, default `300.0`)
 - `conflict_keys`, `capacity_keys`, `extra_argv`, `worktree` (optional;
   omit unless overriding scheduler defaults)

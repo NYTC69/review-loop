@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-09-20
+
+### v2.8.4 降低跨模型 reviewer 的 token 浪费，修复 3 个派发 bug
+
+依据 30 天用量审计（review-loop 约占 Claude 用量 91%、Codex 约 100%）。由 Codex 实现、Claude 监工，未走 review-loop。
+
+- **bug**：`scripts/review_verification.py` 的 `claude_code` 分支从 `codex exec --full-auto`（可写沙箱、不传模型）
+  改为 `-s read-only` + 仅在配置时传 `-m`；Claude 档位的模型兜底不再泄漏到 `codex -m`。
+- **bug**：Codex→Claude reviewer prompt 现在必须带 `agents/reviewer.md` 正文（含六字段 `[CRITICAL]` 评审标准），
+  避免 CRITICAL 被 `finding_triage` 判为 incomplete 而整轮白跑。
+- **bug**：`claude -p … --output-format stream-json` 在 Claude Code 2.1.278 上必须加 `--verbose`，否则直接报错；
+  两个 argv 构造处和协议文档里的命令都已补上。
+- Claude→Codex reviewer 命令在 `planning.md` 写死：`codex exec -s read-only [-m {reviewer_model}] -o <round file> -`。
+- reviewer prompt 第一段声明「本 prompt 自足，不要加载 review-loop 技能 / `SKILL.md` / `docs/protocol/**`」
+  （审计实测 Codex reviewer 每轮自行加载约 29K token）。
+- plan 审查不再让 reviewer 重读 session 文件里的 plan（prompt 里已内联）。
+- executor 的逐条回应改放顶层 `## Response to Reviewer` 小节，plan 正文只保留当前 plan
+  （此前 plan 审查 prompt 每轮增长约 20%）。Claude 与 Codex 两侧 executor 定义同步。
+- 新增 `scripts/run_claude_reviewer.py`：Codex orchestrator 不再轮询原始 stream-json
+  （审计中占其 context 约 24%）；完整流落盘，只输出约 30 秒一次的心跳和最终状态；
+  退出码 1/2/3 对应命令执行 / JSON 解析 / 缺少 result；有有效 result 时容忍无效行。
+- 删除 `test_behavior_engines_untouched_by_loading_refactor`（用户授权）：它是 v2.8.1 的一次性交付核对，
+  把 5 个脚本永久冻结在 `cadb06c`，阻止任何正当修改。
+- 验证：lint exit 0；`pytest tests -q` 605 passed；包装脚本用真实 CLI 试跑成功/失败路径均通过。
+  **实际 token 降幅尚未实测**，待下次真实 review-loop 运行后对比。
+
 ## 2026-09-19
 
 ### v2.8.3 更正 agent 调用方式的过时说明

@@ -28,6 +28,10 @@ Use `parallel-review` only in the Codex orchestrator for N>1 Claude-CLI
 reviewer jobs (never in Claude Code or for local Codex Reviewer agents); load
 `context-persist` only when that optional substep is applicable.
 
+Single default Claude-CLI reviewer job:
+`python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}`
+Rules: `docs/protocol/runtime-codex.md` §Reviewer dispatch.
+
 The caller owns the session file and lock. Preserve unrelated dirty work;
 read-only/plan-only scope and user authorization override implementation steps.
 Independent Reviewer approval, output validation, rubric/triage and evidence

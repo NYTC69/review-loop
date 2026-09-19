@@ -1,7 +1,6 @@
 """Action prerequisites and cross-runtime coverage of the production loading map."""
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -120,10 +119,3 @@ def test_resume_reloads_after_context_loss(runtime):
     assert "session-shape" in row["trace"][reset + 1]["emitted"]
     assert "lock" in row["trace"][reset + 1]["emitted"]
     assert "evidence" in row["trace"][reset + 1]["emitted"]
-
-
-def test_behavior_engines_untouched_by_loading_refactor():
-    for name in ["evidence_ledger.py", "finding_triage.py", "adversarial_gate_adapter.py", "adversarial_gate_invoke.py", "review_verification.py"]:
-        path = "scripts/" + name
-        original = subprocess.check_output(["git", "show", "cadb06c:" + path], cwd=ROOT)
-        assert (ROOT / path).read_bytes() == original, path

@@ -691,6 +691,7 @@ class BuildArgvTest(unittest.TestCase):
         self.assertIn("--output-format", argv)
         self.assertIn("stream-json", argv)
         self.assertIn("--include-partial-messages", argv)
+        self.assertEqual(argv[argv.index("--include-partial-messages") + 1], "--verbose")
         self.assertIn("--model", argv)
         self.assertIn("gpt-5.5", argv)
 
@@ -701,15 +702,25 @@ class BuildArgvTest(unittest.TestCase):
             argv = rv._build_argv(job, sched)
         self.assertIn("claude-sonnet-4-6", argv)
 
-    def test_claude_code_runtime_uses_codex_exec(self):
+    def test_claude_code_runtime_is_read_only_and_uses_configured_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             sched = rv.Scheduler(tmp_dir=tmp)
-            job = _make_job(runtime="claude_code")
+            job = _make_job(runtime="claude_code", reviewer_model="gpt-5.6-sol")
             argv = rv._build_argv(job, sched)
         self.assertEqual(argv[0], "codex")
         self.assertEqual(argv[1], "exec")
-        self.assertIn("--full-auto", argv)
+        self.assertNotIn("--full-auto", argv)
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+        self.assertEqual(argv[argv.index("-m") + 1], "gpt-5.6-sol")
         self.assertIn("-o", argv)
+
+    def test_claude_code_runtime_omits_model_when_unconfigured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = rv.Scheduler(tmp_dir=tmp)
+            job = _make_job(runtime="claude_code", reviewer_model="")
+            argv = rv._build_argv(job, sched)
+        self.assertNotIn("-m", argv)
+        self.assertNotIn("claude-sonnet-4-6", argv)
 
     def test_unknown_runtime_raises_value_error(self):
         with tempfile.TemporaryDirectory() as tmp:

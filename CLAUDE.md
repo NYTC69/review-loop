@@ -63,8 +63,8 @@ natural-language only. Full step-by-step + verification:
 
 - Codex skills live under `.agents/skills/`.
 - Codex subagents live under `.codex/agents/*.toml`.
-- The Claude reviewer contract for Codex uses `claude -p --no-session-persistence --output-format stream-json --include-partial-messages < prompt-file`. Read stdout line-by-line; find the event where `type == "result"` and use its `result` field.
-- This reviewer call must run outside the Codex sandbox.
+- Codex invokes `python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}` with the script path resolved against the support repository and cwd kept in the task workspace. Its child contract is `claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model MODEL < prompt-file`; `--verbose` is required for print-mode stream-json.
+- Run the wrapper and child outside the Codex sandbox. Poll only bounded heartbeat/status output; never stream or poll raw reviewer logs into the orchestrator context. Retain `.review-loop/tmp/{session_id}-reviewer-stream.jsonl` and `{session_id}-reviewer-stderr.log` as audit artifacts. On wrapper exit `0` only, read `{session_id}-reviewer-result.txt` in the same directory, then apply the existing schema and triage gates. Exits `1`, `2`, and `3` mean command execution, JSON parsing, and missing `result` respectively.
 - Sandbox diagnostic caveat: a sandboxed `claude -p` rehearsal is not a valid
   substitute for the real Codex reviewer path. If the sandboxed call fails,
   rerun the same command outside the Codex sandbox before changing protocol
@@ -83,7 +83,8 @@ natural-language only. Full step-by-step + verification:
   Stage 1 scope only). Orchestrator wiring lives once in
   `docs/protocol/parallel-review.md`, loaded by the `parallel-review`
   action in `docs/protocol/loading.json`; single-shot N=1 dispatch keeps the existing
-  `claude -p` shell-out byte-identical and only N>1 fans out via
+  `claude -p` shell-out behind the wrapper, with the same required `--verbose`
+  flag as parallel dispatch; only N>1 fans out via
   `python3 scripts/review_verification.py --jobs <path> --output <path>`.
   Claude/plugin-side reviewer dispatch is in-process Agent-tool
   dispatch and is not externally wrappable.

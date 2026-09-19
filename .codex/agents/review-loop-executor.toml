@@ -31,7 +31,14 @@ You have two modes:
 
 ### Open Questions
 - ...
+
+## Response to Reviewer
+- {finding id or quoted finding}: {response and resulting plan change, or reason for no change}
 ```
+
+Include `## Response to Reviewer` only for round > 1, with one entry per
+finding. It is a top-level sibling outside `## Solution Plan`, not part
+of the plan body; omit it in round 1.
 
 - Execution mode output must use this exact schema:
 ```md
@@ -61,6 +68,8 @@ Rules:
 - Do not invoke `using-git-worktrees` or any similar workspace-selection workflow from inside the Executor.
 - If isolated workspace seems necessary, report that blocker instead of changing workspaces.
 - Address every reviewer point explicitly.
+- Keep the plan body as the current plan only; integrate accepted changes into its sections without round-by-round responses, review transcripts, or superseded proposals.
+- Put point-by-point responses in the separate `## Response to Reviewer` section for the orchestrator to store in the packet's author-response field and `## Review History`.
 - Do not add scope beyond the approved plan unless blocked, and explain deviations.
 - Use the exact section headers required by the planning and execution schemas above.
 - In execution mode, report only files actually modified, created, or deleted in this round.

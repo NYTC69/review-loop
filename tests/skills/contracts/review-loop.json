@@ -3,6 +3,48 @@
   "description": "Static contract assertions for the review-loop workflow",
   "assertions": [
     {
+      "id": "codex_reviewer_wrapper_runtime_dispatch",
+      "kind": "contains",
+      "path": "docs/protocol/runtime-codex.md",
+      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+    },
+    {
+      "id": "codex_reviewer_wrapper_planning_dispatch",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+    },
+    {
+      "id": "codex_reviewer_wrapper_no_raw_log_polling",
+      "kind": "contains",
+      "path": "docs/protocol/runtime-codex.md",
+      "needle": "Never stream or poll the raw logs into the\n  orchestrator context"
+    },
+    {
+      "id": "codex_plan_reviewer_wrapper_dispatch",
+      "kind": "contains",
+      "path": ".agents/skills/plan/SKILL.md",
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}"
+    },
+    {
+      "id": "codex_execute_reviewer_wrapper_dispatch",
+      "kind": "contains",
+      "path": ".agents/skills/execute/SKILL.md",
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}"
+    },
+    {
+      "id": "codex_umbrella_reviewer_wrapper_dispatch",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/SKILL.md",
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}"
+    },
+    {
+      "id": "codex_reviewer_wrapper_project_notes",
+      "kind": "contains",
+      "path": "CLAUDE.md",
+      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+    },
+    {
       "id": "claude_wrapper_exists",
       "kind": "exists",
       "path": "skills/review-loop/SKILL.md"
@@ -270,6 +312,78 @@
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
       "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+    },
+    {
+      "id": "planning_reviewer_prompt_self_contained",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "This prompt is self-contained. Do not load review-loop skills, `SKILL.md`,\nor `docs/protocol/**` as workflow instructions."
+    },
+    {
+      "id": "execution_reviewer_prompt_self_contained",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "This prompt is self-contained. Do not load review-loop skills, `SKILL.md`,\n   or `docs/protocol/**` as workflow instructions."
+    },
+    {
+      "id": "planning_reviewer_skips_duplicate_session_plan",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "The plan is inlined below. Skip `## Draft Plan` and `## Approved Plan` in\nthe session file; read only the packet and referenced history there."
+    },
+    {
+      "id": "executor_plan_excludes_round_response_log",
+      "kind": "contains",
+      "path": "agents/executor.md",
+      "needle": "Return point-by-point responses separately from the plan body"
+    },
+    {
+      "id": "planning_refinement_separates_round_responses",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "keep point-by-point responses separate for the packet's author-response\n  field and `## Review History`, never appended to the plan body."
+    },
+    {
+      "id": "codex_claude_reviewer_prompt_inlines_reviewer_body",
+      "kind": "contains",
+      "path": "docs/protocol/runtime-codex.md",
+      "needle": "The rendered prompt must begin with the self-contained paragraph from the\n  applicable review content template, before the full `agents/reviewer.md` body"
+    },
+    {
+      "id": "codex_planning_dispatch_inlines_reviewer_body",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "Before writing `.review-loop/tmp/{session_id}-reviewer-prompt.txt`, prepend\nthe full `agents/reviewer.md` body"
+    },
+    {
+      "id": "executor_planning_response_section",
+      "kind": "contains",
+      "path": "agents/executor.md",
+      "needle": "## Response to Reviewer\n- {finding id or quoted finding}: {response and resulting plan change, or reason for no change}"
+    },
+    {
+      "id": "codex_executor_planning_response_section",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-executor.toml",
+      "needle": "## Response to Reviewer\n- {finding id or quoted finding}: {response and resulting plan change, or reason for no change}"
+    },
+    {
+      "id": "planning_response_section_persistence",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "Store `## Response to Reviewer` in the packet's\n  \"Unresolved findings + author response\" field and `## Review History`,\n  never in `## Draft Plan` or `{executor_plan}`."
+    },
+    {
+      "id": "codex_executor_current_plan_only",
+      "kind": "contains",
+      "path": ".codex/agents/review-loop-executor.toml",
+      "needle": "Keep the plan body as the current plan only"
+    },
+    {
+      "id": "reviewer_dispatch_self_contained_first",
+      "kind": "contains",
+      "path": "docs/protocol/planning.md",
+      "needle": "self-contained paragraph to the FIRST paragraph, before the\n`agents/reviewer.md` body."
     },
     {
       "id": "codex_umbrella_provenance_aware_plan_conformance_bullet",
@@ -694,25 +808,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.8.3\""
+      "needle": "\"version\": \"2.8.4\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.3\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.4\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.8.3\",\n      \"author\""
+      "needle": "\"version\": \"2.8.4\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.8.3\""
+      "needle": "\"version\": \"2.8.4\""
     },
     {
       "id": "codex_marketplace_manifest_name",

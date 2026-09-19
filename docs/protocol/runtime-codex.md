@@ -84,24 +84,52 @@
 Unless `codex_reviewer_backend: codex` is set, use this default reviewer path:
 
 ```bash
-claude -p --no-session-persistence --output-format stream-json --include-partial-messages --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
+python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}
+```
+
+Resolve the wrapper against the support repository and keep cwd in the task
+workspace. The wrapper runs this child command with the prompt file
+on stdin (this is the child contract, not a second orchestrator invocation):
+
+```bash
+claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
 ```
 
 Rules:
 
-- Run the Claude call outside the sandbox.
+- Keep `--verbose`: Claude Code requires it for print-mode stream-json output.
+- Run the Claude call outside the sandbox. Run its wrapper outside as well.
 - Do not treat a sandboxed `claude -p` rehearsal as representative of this
   reviewer path. If the command fails inside the sandbox, rerun the same
   command outside before declaring the Claude reviewer path unhealthy or
   switching to fallback.
 - Render the full reviewer prompt into
   `.review-loop/tmp/{session_id}-reviewer-prompt.txt`.
-- Read stdout line by line. Each line is a JSON event object. Find the line
-  where `type == "result"` and use its `result` field as the reviewer output.
-  Intermediate events (thinking deltas, assistant blocks, rate limit events)
-  are heartbeat signals confirming the process is alive — log them if helpful
-  but do not treat them as output. If no `type == "result"` line appears
-  before the process exits, treat that as a command execution failure.
+- The rendered prompt must begin with the self-contained paragraph from the
+  applicable review content template, before the full `agents/reviewer.md` body
+  (everything below its frontmatter). Append the remaining review content
+  template without duplicating its opening paragraph. The agent body supplies the output schema
+  and complete six-field `[CRITICAL]` blocking rubric.
+- The wrapper writes the full stream to
+  `.review-loop/tmp/{session_id}-reviewer-stream.jsonl` and stderr to
+  `.review-loop/tmp/{session_id}-reviewer-stderr.log`. It prints a one-line
+  heartbeat roughly every 30 seconds (elapsed time, event count, last event
+  type), including while the child is silent, until a result event or stdout
+  EOF. Its final status includes artifact paths, child exit code, and
+  `invalid_lines` count. Never stream or poll the raw logs into the
+  orchestrator context; retain them as audit artifacts.
+- On a nonzero child exit, the final status also includes `stderr_head`, at
+  most the first 300 characters of stderr's first line, for CLI diagnostics.
+- On wrapper exit `0` only, read
+  `.review-loop/tmp/{session_id}-reviewer-result.txt`, containing the extracted
+  string `result` field of the `type == "result"` event. Wrapper failures map
+  to exit `1` = command execution, `2` = no valid result with invalid stream
+  lines, `3` = missing `result` without invalid stream lines. With child exit
+  `0`, a valid result survives unparseable lines; inspect the final status's
+  `invalid_lines` count without replaying the raw stream.
+  On any failure,
+  do not read or accept the result file on failure. The wrapper does not
+  validate the reviewer schema or run finding triage.
 - Validate the `result` field against the shared reviewer schema.
 - Then run `python3 scripts/finding_triage.py check --input <result file>`
   (mandatory rubric gate per `docs/protocol/execution.md` §Mandatory rubric

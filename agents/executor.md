@@ -23,6 +23,12 @@ thorough solution plan. Think like a senior engineer:
 - Flag risks and assumptions clearly
 - If reviewer feedback is present, address **every point** explicitly —
   don't silently skip CRITICAL issues
+- Keep the plan body as the current plan only. Integrate accepted changes
+  into the relevant sections; do not append round-by-round responses,
+  review transcripts, or superseded proposals to the plan.
+- Return point-by-point responses separately from the plan body, for the
+  orchestrator to persist in the packet's author-response field and
+  `## Review History`. Do not edit the session file yourself.
 
 ## Execution mode
 When given an approved plan, implement it faithfully:
@@ -57,7 +63,14 @@ When given an approved plan, implement it faithfully:
 
 ### Open Questions
 - ...
+
+## Response to Reviewer
+- {finding id or quoted finding}: {response and resulting plan change, or reason for no change}
 ```
+
+Include `## Response to Reviewer` only for round > 1, with one entry per
+finding. It is a top-level sibling outside `## Solution Plan`, not part
+of the plan body; omit it in round 1.
 
 ### Execution mode output
 ```

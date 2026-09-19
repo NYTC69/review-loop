@@ -182,11 +182,13 @@ def _build_argv(job: ReviewJob, scheduler: "Scheduler") -> list:
 
     `runtime == "codex"` (Codex Stage 1 reviewer fan-out) maps to
     `claude -p --no-session-persistence --output-format stream-json
-    --include-partial-messages --model <reviewer_model>`. Stdin is
+    --include-partial-messages --verbose --model <reviewer_model>`. Stdin is
     delivered separately by `_run_one` via FD handoff.
 
-    `runtime == "claude_code"` maps to `codex exec --full-auto -o
-    <output-file>`. Output file lives under the scheduler's tmp dir.
+    `runtime == "claude_code"` maps to `codex exec -s read-only
+    [-m <reviewer_model>] -o <output-file>`. Output file lives under the
+    scheduler's tmp dir. Unlike the Claude CLI path, an empty model stays
+    unset so the Claude-model fallback cannot leak into `codex -m`.
 
     Unknown runtime raises `ValueError`.
     """
@@ -198,6 +200,7 @@ def _build_argv(job: ReviewJob, scheduler: "Scheduler") -> list:
             "--output-format",
             "stream-json",
             "--include-partial-messages",
+            "--verbose",
             "--model",
             _resolve_reviewer_model(job),
         ]
@@ -208,7 +211,10 @@ def _build_argv(job: ReviewJob, scheduler: "Scheduler") -> list:
             scheduler.tmp_dir,
             f"{job.session_id}-reviewer-output.{job.job_id}.txt",
         )
-        argv = ["codex", "exec", "--full-auto", "-o", out_path]
+        argv = ["codex", "exec", "-s", "read-only"]
+        if job.reviewer_model:
+            argv.extend(["-m", job.reviewer_model])
+        argv.extend(["-o", out_path])
         argv.extend(job.extra_argv)
         return argv
     raise ValueError(f"unknown runtime: {job.runtime!r}")
