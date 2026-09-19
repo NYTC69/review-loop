@@ -2,6 +2,13 @@
 
 ## 2026-09-19
 
+### v2.8.3 更正 agent 调用方式的过时说明
+
+- `docs/protocol/{planning,execution,runtime-claude}.md`、`skills/{review-pr,code-quality-loop}/SKILL.md`、
+  `agents/code-simplifier.md` 不再称「plugin sandbox bug / tools silently blocked」；改为说明协议统一用
+  `general-purpose` + 内联 agent 正文调用，并注明 v2.8.2 之前 `tools:` 取值无效导致插件 agent 拿不到工具。
+- 仅改措辞，调用规则不变；`CRITICAL` 警告与 lint 守卫句保留。
+
 ### v2.8.2 修复 agent `tools:` frontmatter
 
 - 12 个 agent 的 `tools:` 取值无效：`read-only`（10 个）和 `all`（`executor`、`code-simplifier`）都不是工具名，

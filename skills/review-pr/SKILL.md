@@ -80,10 +80,10 @@ For each applicable aspect, invoke the corresponding agent via the **Agent tool*
 
 ### All agents (code, errors, comments, types, tests, simplify)
 
-Due to a known plugin agent type sandbox bug, **all** plugin-defined agent types
-have their tools silently blocked (both `tools: read-only` and `tools: all`).
-Therefore, all agents must be invoked via `subagent_type: general-purpose` with
-the agent's full body inlined in the prompt.
+All agents are invoked via `subagent_type: general-purpose` with the agent's
+full body inlined in the prompt; the review-loop protocol does not use plugin
+agent types (before v2.8.2 their `tools:` frontmatter was invalid, so they got
+zero tools).
 
 **Read-only agents** (code, errors, comments, types, tests):
 
@@ -131,8 +131,8 @@ Concrete dispatch inventory:
 
 The `code-simplifier` agent modifies files to apply simplifications.
 
-**CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:code-simplifier`.
-That agent type has tools silently blocked — it will produce `tool_uses: 0` hallucinated output.
+**CRITICAL — single spawning path**: Do NOT use `subagent_type: review-loop:code-simplifier`.
+The protocol spawns every agent through `general-purpose` (see `CLAUDE.md`, plugin agent `tools:` frontmatter).
 Always use `subagent_type: general-purpose` with the agent's full body inlined in the
 prompt:
 

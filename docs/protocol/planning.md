@@ -150,11 +150,11 @@ instructions.
 
 {{claude_code}}
 
-Use the Agent tool with `subagent_type: general-purpose`. Do **not** use
-`subagent_type: review-loop:executor` — plugin-defined agent types have their
-Write/Edit tools silently blocked by the Claude Code sandbox; the Executor
-will be unable to create or modify files, `tool_uses` will be 0, and the
-output will be hallucinated. Always inline the full body of
+Use the Agent tool with `subagent_type: general-purpose`. Never use
+`subagent_type: review-loop:executor` — the review-loop protocol spawns
+every agent through `general-purpose` with the body inlined (before v2.8.2
+the plugin agents' `tools:` frontmatter was invalid, so plugin agent types
+got zero tools and hallucinated output). Always inline the full body of
 `agents/executor.md` in the `prompt` parameter.
 
 Concrete dispatch anchor: `protocol_planning_executor_dispatch`.
@@ -313,12 +313,12 @@ Two modes, controlled by `reviewer:` in `.review-loop/config.md`.
   Capture output with `-o` to a round-scoped temp file, then read the file.
   If `codex exec` fails non-zero, fall back to subagent mode **for this
   round only**; do not ask the user and do not stop the loop. Never fall
-  back to `subagent_type: review-loop:reviewer` — plugin agent types have
-  tools silently blocked.
+  back to `subagent_type: review-loop:reviewer` — the protocol spawns
+  agents only through `general-purpose` with the body inlined.
 - **Mode `subagent`** — use the Agent tool with
   `subagent_type: general-purpose`. Inline the `agents/reviewer.md` body at
   the top of the `prompt`, then append the review content template. Plugin
-  agent types are off-limits (sandbox bug). Include an explicit
+  agent types are not used by the protocol. Include an explicit
   "Report only, do not modify any files" instruction at the end of the
   prompt.
 

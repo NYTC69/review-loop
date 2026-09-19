@@ -956,10 +956,9 @@ These language agents are `cheap` tier dispatches and therefore resolve
 
 {{claude_code}}
 
-Use the Agent tool with `subagent_type: general-purpose`. Plugin-defined
-agent types (e.g. `review-loop:<name>`) have their tools silently blocked
-by the Claude Code sandbox — always inline the full body of
-`agents/<agent-name>.md` in the `prompt` parameter.
+Use the Agent tool with `subagent_type: general-purpose`. The protocol does
+not use plugin agent types (e.g. `review-loop:<name>`) — always inline the
+full body of `agents/<agent-name>.md` in the `prompt` parameter.
 
 ```
 Agent prompt:
@@ -1057,9 +1056,9 @@ Concrete dispatch anchor: `protocol_execution_code_simplifier_dispatch`.
 
 {{claude_code}}
 
-Use the Agent tool with `subagent_type: general-purpose`. Plugin agent
-type `review-loop:code-simplifier` has tools silently blocked — do not
-use it.
+Use the Agent tool with `subagent_type: general-purpose`. Do not use the
+plugin agent type `review-loop:code-simplifier`; the protocol spawns every
+agent through `general-purpose` with the body inlined.
 
 ```
 Agent prompt:
@@ -1106,8 +1105,8 @@ Concrete dispatch anchor: `protocol_execution_pr_test_analyzer_dispatch`.
 
 {{claude_code}}
 
-Use the Agent tool with `subagent_type: general-purpose`. Plugin agent
-types are off-limits (sandbox bug) — always inline the full body of
+Use the Agent tool with `subagent_type: general-purpose`. The protocol does
+not use plugin agent types — always inline the full body of
 `agents/pr-test-analyzer.md` in the `prompt` parameter.
 
 ```

@@ -375,8 +375,8 @@ Run `/review-loop:reorganize diff` to restructure changed files. The reorganize 
 
 Launch the `code-simplifier` agent for final code polish (auto-fix).
 
-**CRITICAL — plugin sandbox bug**: Do NOT use `subagent_type: review-loop:code-simplifier`.
-That agent type has tools silently blocked — it will produce `tool_uses: 0` hallucinated output.
+**CRITICAL — single spawning path**: Do NOT use `subagent_type: review-loop:code-simplifier`.
+The protocol spawns every agent through `general-purpose` (see `CLAUDE.md`, plugin agent `tools:` frontmatter).
 Always use `subagent_type: general-purpose` with the agent body inlined in the prompt:
 
 ```
