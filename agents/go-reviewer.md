@@ -3,7 +3,7 @@ name: go-reviewer
 description: Run Go static analysis tools and generate a categorized review report. Use before committing or creating PRs for Go code.
 model: inherit
 tier: cheap
-tools: read-only
+tools: Read, Grep, Glob, Bash
 ---
 
 # Go Code Review

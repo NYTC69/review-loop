@@ -7,7 +7,6 @@ description: >
   actual code changes. This agent does the planning and coding work.
 model: inherit
 tier: judgment
-tools: all
 ---
 
 # Executor Agent

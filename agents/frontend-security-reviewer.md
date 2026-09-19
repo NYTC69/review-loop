@@ -3,7 +3,7 @@ name: frontend-security-reviewer
 description: Review frontend code for common web security vulnerabilities. Use before committing or creating PRs for frontend code.
 model: inherit
 tier: cheap
-tools: read-only
+tools: Read, Grep, Glob, Bash
 ---
 
 # Frontend Security Review

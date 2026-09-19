@@ -2,15 +2,15 @@
 
 ## Known Pitfalls
 
-### Plugin agent type sandbox bug (CRITICAL)
+### Plugin agent `tools:` frontmatter (root cause of the "sandbox bug")
 
-**ALL plugin-defined agent types have their tools silently blocked by Claude Code sandbox.** This applies to both `tools: all` AND `tools: read-only`. Agents invoked via `subagent_type: review-loop:<name>` get zero tool access — they cannot Read, Grep, or Bash. The result is `tool_uses: 0` and completely hallucinated output.
+**Root cause (found 2026-09-19, fixed in v2.8.2):** `tools:` is a list of tool names. The old values `read-only` and `all` are not tool names, so Claude Code resolved every review-loop agent to **zero tools**. Older Claude Code versions spawned them anyway, giving `tool_uses: 0` and hallucinated output; Claude Code 2.1.278 refuses the spawn with `would be spawned with zero tools — unrecognized [read-only]` (or `[all]`). This was never a sandbox restriction on plugin agents.
 
-**Fix**: Always use `subagent_type: general-purpose` and inline the agent's `.md` body in the prompt. For read-only agents, add "Report only, do not modify files" to the prompt.
+**Fix:** read-only agents declare `tools: Read, Grep, Glob, Bash` (no Edit/Write); agents that edit files (`executor`, `code-simplifier`) omit `tools` and inherit everything. Never put a policy word in `tools:` — valid values are tool names, `*`, or an omitted field.
 
-**History**: First discovered with Executor (`tools: all`) in commit `8506809`. We incorrectly concluded `tools: read-only` was safe. This wrong assumption was recorded in memory and carried forward through 4+ commits (including a code-simplifier recurrence on 2026-04-06) until `rust-reviewer` was caught hallucinating (issue #3). The root cause is Claude Code's sandbox, not the `tools:` declaration.
+**History:** first seen with Executor (`tools: all`) in commit `8506809`, then with `code-simplifier` (2026-04-06) and `rust-reviewer` (issue #3). Each time the conclusion was "plugin agent types are sandboxed", so the protocol switched to `subagent_type: general-purpose` with the agent body inlined in the prompt.
 
-**Rule**: When adding ANY new agent invocation, always use `subagent_type: general-purpose` with inlined body. Never use `subagent_type: review-loop:<name>`.
+**Rule**: When adding ANY new agent invocation, always use `subagent_type: general-purpose` with inlined body. Never use `subagent_type: review-loop:<name>`. The agents now resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work.
 
 ### README.md must stay intact (lint SSOT dependency)
 

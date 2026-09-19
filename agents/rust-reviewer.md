@@ -3,7 +3,7 @@ name: rust-reviewer
 description: Run Rust static analysis tools and generate a categorized review report. Use before committing or creating PRs for Rust code.
 model: inherit
 tier: cheap
-tools: read-only
+tools: Read, Grep, Glob, Bash
 ---
 
 # Rust Code Review

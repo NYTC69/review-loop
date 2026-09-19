@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-19
+
+### v2.8.2 修复 agent `tools:` frontmatter
+
+- 12 个 agent 的 `tools:` 取值无效：`read-only`（10 个）和 `all`（`executor`、`code-simplifier`）都不是工具名，
+  Claude Code 解析出零个工具。2.1.278 直接拒绝启动（`would be spawned with zero tools — unrecognized [...]`），
+  旧版则静默启动、`tool_uses: 0` 并编造输出。
+- 只读类 agent 改为 `tools: Read, Grep, Glob, Bash`（不含 Edit/Write）；`executor`、`code-simplifier` 删除 `tools` 字段，继承全部工具。
+- 更正 `CLAUDE.md` 的记录：此前归因为「插件 agent 被 sandbox 屏蔽工具」，真正原因是 `tools:` 取值无效。
+  各 skill 与协议文档仍用 `general-purpose` + 内联 agent 正文的方式调用，本次不改。
+
 ## 2026-09-17
 
 ### v2.8.1 活体指标补测（无代码改动）
