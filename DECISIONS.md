@@ -82,3 +82,11 @@ entry; never edit history.
 - **Consequences**: Worst-case CI wall time per the active Branch B is approximately 41 minutes (plan-quoted figure). Branch A figure (29 min) and Branch C figure (10.5 min) are recorded for completeness but do not apply. The B3 shared-mapping default (`min: 1`) is unchanged (AC-5). AC-6 is mechanically pinned via JSON-parse verification: shared `min: 1`, every per-fixture B3 override has `min: 1`, NO fixture retains `min: 0`. Per Round-1 reviewer MINOR #2 explicit framing: 240s and 480s values are extrapolated from the spike's event-rate model, validated empirically only at the NEAR_DISPATCH tier (180s probe at v2.6.31, falsified; 240s probe at v2.6.31, confirmed). The IN_DOC_RECON 360s and full-pipeline 600s values (Branch B linear scale-up) remain best-guess until a future re-measurement falsifies them; this is recorded as an explicit consequence of single-probe scoping per HANDOFF Codex-hang practice. ADR-2 is NOT mutated (append-only).
 
 ---
+
+### ADR-5: paired-session 各角色模型固定 — Claude 全用 claude-opus-5-5，Codex 全用 gpt-6-luna
+- **Date**: 2026-09-23
+- **Status**: Accepted
+- **Context**: paired-session 协调程序的各次运行用过不同模型（run #1-#4 Codex 为 `gpt-6-astra`，run #5 为 `gpt-5.6-sol`；Claude 侧写的是 `claude-opus-5` 或别名），跨运行的成本与评审质量对比因此混入模型变量。Codex 侧曾用 `claude-opus-5.5` 调用失败（"model may not exist"），正确的 CLI 值需要固定下来。
+- **Options considered**: (A) 每次运行按当时情况选模型 — 灵活，但运行之间不可比；(B) 按角色固定模型（实现方 / 持久 reviewer / 影子 / gate 各不同）— 可调优但组合多；(C) 按厂商固定：Claude 侧所有角色一个模型，Codex 侧所有角色一个模型 — 简单、可比。
+- **Decision**: 选 (C)。今后 paired-session 的配置：Claude 侧所有角色（author、持久 reviewer、影子、adversarial gate，无论执行还是评审）都用 `--model claude-opus-5-5`（用连字符；`claude-opus-5.5` 无效；不用会漂移的别名 `opus`）；Codex 侧所有角色都用 `gpt-6-luna`。owner 2026-09-23 决定。
+- **Consequences**: 运行之间的模型变量被消除，成本与质量可以直接对比。`claude-opus-5-5` 已于 2026-09-23 在本机 Claude Code 2.1.280 上用 `claude -p --no-session-persistence --model claude-opus-5-5 --effort medium` 实测可用；`gpt-6-luna` 在记录时尚未实测，第一次使用前需用 probe 轮确认。以后换模型要新开 ADR supersede 本条，并在报告中注明换模型前后的运行不可直接比较。run #5 及之前的数据属于旧配置。
