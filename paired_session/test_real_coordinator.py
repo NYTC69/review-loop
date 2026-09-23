@@ -339,6 +339,37 @@ class RealCoordinatorTests(unittest.TestCase):
         with rc.run_lease(self.run_dir):
             pass
 
+    def test_workspace_lease_path_is_stable_and_outside_workspace(self):
+        lease_path = rc.workspace_lease_path(self.workspace)
+        self.assertEqual(lease_path, rc.workspace_lease_path(self.workspace / '.'))
+        self.assertNotEqual(lease_path, self.workspace)
+        self.assertNotIn(self.workspace, lease_path.parents)
+
+    def test_one_workspace_lease_blocks_a_second_run_directory_cli_process(self):
+        second_run = self.root / 'second-run'
+        with rc.workspace_lease(self.workspace, self.run_dir):
+            result = self.run_coordinator('--run-dir', str(second_run), '--skip-probe')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('another coordinator currently owns this workspace', result.stdout)
+            self.assertIn(f'owner pid {os.getpid()}', result.stdout)
+            self.assertIn(f'run_dir {self.run_dir.resolve()}', result.stdout)
+            self.assertFalse((second_run / 'state.json').exists())
+        with rc.workspace_lease(self.workspace, second_run):
+            pass
+
+    def test_workspace_lease_refuses_a_non_private_lock_directory(self):
+        with tempfile.TemporaryDirectory(dir=self.root) as temp:
+            temp_root = Path(temp)
+            workspace = temp_root / 'workspace'
+            workspace.mkdir()
+            with patch.object(rc, '_workspace_lease_temp_roots', return_value=(temp_root,)):
+                lease_dir = rc.workspace_lease_path(workspace).parent
+                lease_dir.mkdir(mode=0o700)
+                lease_dir.chmod(0o755)
+                with self.assertRaisesRegex(rc.RunLeaseError, 'private directory'):
+                    with rc.workspace_lease(workspace, self.run_dir):
+                        self.fail('untrusted lock directory should fail closed')
+
     def test_rubric_requires_six_nonempty_segments(self):
         valid = ('Trigger: x. Reachability: y. Impact: z. Likelihood: often. '
                  'Fix cost: small. Cheaper response: none.')

@@ -211,6 +211,89 @@ def run_lease(run_dir: Path):
         os.close(fd)
 
 
+def _workspace_lease_temp_roots() -> tuple[Path, ...]:
+    roots = (Path('/tmp'), Path('/var/tmp'), Path(tempfile.gettempdir()))
+    return tuple(dict.fromkeys(root.expanduser().resolve() for root in roots))
+
+
+def workspace_lease_path(workspace: Path) -> Path:
+    """Return a stable per-user lock path outside the resolved product workspace."""
+    root = Path(workspace).expanduser().resolve()
+    uid = os.getuid()
+    for temp_root in _workspace_lease_temp_roots():
+        lock_dir = temp_root / f'paired-session-workspace-leases-{uid}'
+        try:
+            lock_dir.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            continue
+        key = hashlib.sha256(os.fsencode(str(root))).hexdigest()
+        return lock_dir / (key + '.lock')
+    raise RunLeaseError('cannot locate workspace lease outside the product workspace')
+
+
+@contextmanager
+def workspace_lease(workspace: Path, run_dir: Path):
+    """Allow only one mutating coordinator across run directories for a workspace."""
+    root = Path(workspace).expanduser().resolve()
+    lock_path = workspace_lease_path(root)
+    lock_dir = lock_path.parent
+    try:
+        lock_dir.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise RunLeaseError('cannot create workspace lease directory: ' + str(exc)) from exc
+    try:
+        directory_info = lock_dir.lstat()
+    except OSError as exc:
+        raise RunLeaseError('cannot inspect workspace lease directory: ' + str(exc)) from exc
+    if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.getuid()
+            or stat.S_IMODE(directory_info.st_mode) & 0o077):
+        raise RunLeaseError('workspace lease directory is not a private directory owned by this user')
+
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise RunLeaseError('cannot open workspace lease: ' + str(exc)) from exc
+    acquired = False
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            raise RunLeaseError('workspace lease path is not a private regular file owned by this user')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError as exc:
+            os.lseek(fd, 0, os.SEEK_SET)
+            owner = os.read(fd, 4096).decode('utf-8', 'replace').strip()
+            try:
+                details = json.loads(owner)
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+            pid = details.get('pid', 'unknown')
+            holder_run_dir = details.get('run_dir', 'unknown')
+            raise RunLeaseError(
+                'another coordinator currently owns this workspace '
+                f'(owner pid {pid}, run_dir {holder_run_dir})') from exc
+        payload = json.dumps({
+            'pid': os.getpid(), 'run_dir': str(Path(run_dir).expanduser().resolve()),
+            'workspace': str(root), 'started_at': datetime.now().astimezone().isoformat(),
+        })
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, payload.encode('utf-8'))
+        os.fsync(fd)
+        yield
+    finally:
+        if acquired:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
@@ -2752,7 +2835,7 @@ def main(argv=None) -> int:
             print('REFUSED: ' + str(exc))
             return 2
     try:
-        with run_lease(Path(args.run_dir)):
+        with run_lease(Path(args.run_dir)), workspace_lease(workspace, run_dir):
             return _execute_locked(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
