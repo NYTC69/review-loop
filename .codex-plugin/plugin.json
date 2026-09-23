@@ -1,7 +1,7 @@
 {
   "name": "review-loop",
-  "version": "2.8.7",
-  "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 5 skills, full Plan-Execute-Review-Polish pipeline.",
+  "version": "2.8.8",
+  "description": "AI-driven code review with independent adversarial review, automated quality polish, and a paired-session workflow. The paired-session entry is opt-in during staged migration.",
   "author": {
     "name": "NYTC69",
     "url": "https://github.com/NYTC69"
@@ -16,20 +16,22 @@
     "automation",
     "dual-agent",
     "agentic-coding",
+    "paired-session",
     "codex"
   ],
   "skills": "./.agents/skills/",
   "interface": {
     "displayName": "review-loop",
-    "shortDescription": "Plan-Execute-Review pipeline with independent adversarial review",
-    "longDescription": "review-loop drives work items from raw description through plan → execute → review → delivery, with an independent reviewer agent catching issues before merge. Codex marketplace install exposes the four Stage 1 native skills (guide, plan, execute, review-loop) under `.agents/skills/`, paired with the reviewer + executor agents at `.codex/agents/*.toml`. The top-level `./skills/` tree (review-pr, code-quality-loop, reorganize, etc.) is Claude Code-specific — it dispatches via the Claude Agent tool and is intentionally not exposed via this Codex manifest.",
+    "shortDescription": "Plan-Execute-Review workflows, including explicit paired-session opt-in",
+    "longDescription": "review-loop supports the legacy plan → execute → review → delivery workflow and an explicit paired-session coordinator skill for work items in other repositories. The paired-session entry remains opt-in during staged migration. Codex marketplace install exposes the five Stage 1 native skills (guide, plan, execute, review-loop, paired-session) under `.agents/skills/`, paired with the reviewer + executor agents at `.codex/agents/*.toml`.",
     "developerName": "NYTC69",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
       "run review-loop on this branch",
       "review the pending changes",
-      "plan this task with review-loop"
+      "plan this task with review-loop",
+      "use paired-session for this task"
     ]
   }
 }

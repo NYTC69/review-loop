@@ -86,3 +86,4 @@ logs/
 # Python bytecode caches (pytest creates these)
 __pycache__/
 *.pyc
+paired_session/test-tmp/

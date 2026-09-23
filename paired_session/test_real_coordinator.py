@@ -1,0 +1,2352 @@
+import importlib.util
+import io
+import json
+import os
+import signal
+import socket
+from pathlib import Path
+import subprocess
+import shutil
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+MODULE_PATH = Path(__file__).with_name('coordinator.py')
+SPEC = importlib.util.spec_from_file_location('real_coordinator', MODULE_PATH)
+rc = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(rc)
+FAKE = Path(__file__).with_name('fake_cli.py')
+
+
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate JSON key: ' + key)
+        result[key] = value
+    return result
+
+
+class RealCoordinatorTests(unittest.TestCase):
+    def setUp(self):
+        temp_root = Path(__file__).parent / 'test-tmp'
+        temp_root.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=temp_root)
+        self.root = Path(self.temp.name)
+        self.workspace = self.root / 'workspace'
+        self.workspace.mkdir()
+        subprocess.run(['git', 'init', '-q'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'config', 'user.email', 'fake@example.test'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Fake'], cwd=self.workspace, check=True)
+        (self.workspace / 'tracked.txt').write_text('base\n')
+        (self.workspace / '.gitignore').write_text('__pycache__/\n*.cache\n')
+        subprocess.run(['git', 'add', 'tracked.txt', '.gitignore'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'base'], cwd=self.workspace, check=True)
+        self.workitem = self.root / 'WORKITEM.md'
+        self.workitem.write_text('# Toy\nCreate sum_ints; reject booleans.\n')
+        self.run_dir = self.root / 'run'
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def command(self, *extra):
+        return [sys.executable, str(MODULE_PATH), 'run', '--workspace', str(self.workspace),
+                '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                '--codex-bin', str(FAKE), '--claude-bin', str(FAKE), '--timeout', '10',
+                '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                '--test-command', 'python3 -m unittest',
+                *extra]
+
+    def run_coordinator(self, *extra, env=None, skip_probe=True):
+        merged = os.environ.copy()
+        if env:
+            merged.update(env)
+        command = self.command(*extra)
+        if skip_probe:
+            command.append('--skip-probe')
+        return subprocess.run(command, cwd=self.root, env=merged,
+                              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def coordinator(self, *extra):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(FAKE), '--claude-bin', str(FAKE), *extra])
+        return rc.Coordinator(args)
+
+    def test_failed_first_persistent_claude_turn_rotates_session(self):
+        for role, flags in (('author', ['--author-vendor', 'claude']),
+                            ('reviewer', ['--reviewer-vendor', 'claude'])):
+            with self.subTest(role=role):
+                self.run_dir = self.root / ('failed-' + role)
+                co = self.coordinator(*flags)
+                original = co.state['sessions'][role]
+                with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}):
+                    with self.assertRaisesRegex(RuntimeError, 'rate_limited'):
+                        co._invoke_once(role, 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+                state = json.loads(co.state_path.read_text())
+                self.assertNotEqual(state['sessions'][role], original)
+                self.assertFalse(state['started'][role])
+                rotated = state['sessions'][role]
+                receipt = json.loads((co.evidence / f"001-plan-{role}.receipt.json").read_text())
+                self.assertEqual(receipt['error_kind'], 'rate_limited')
+                self.assertIn('--session-id', receipt['command'])
+                self.assertIn(original, receipt['command'])
+                co._invoke_once(role, 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+                retry_receipt = json.loads((co.evidence / f"002-plan-{role}.receipt.json").read_text())
+                session_index = retry_receipt['command'].index('--session-id')
+                self.assertEqual(retry_receipt['command'][session_index:session_index + 2],
+                                 ['--session-id', rotated])
+
+    def test_non_rate_limit_failed_first_claude_turn_rotates_and_counts_invocation(self):
+        co = self.coordinator('--author-vendor', 'claude')
+        original = co.state['sessions']['author']
+        failing_cli = self.root / 'fail-claude-cli'
+        failing_cli.write_text(f'#!{sys.executable}\nimport sys\nprint("ordinary CLI failure", file=sys.stderr)\nsys.exit(7)\n')
+        failing_cli.chmod(0o755)
+        co.args.claude_bin = str(failing_cli)
+
+        with self.assertRaisesRegex(RuntimeError, 'CLI exit 7'):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+
+        state = json.loads(co.state_path.read_text())
+        self.assertNotEqual(state['sessions']['author'], original)
+        self.assertFalse(state['started']['author'])
+        receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        self.assertEqual(receipt['returncode'], 7)
+        self.assertNotIn('error_kind', receipt)
+        self.assertTrue(receipt['invocation_budget_counted'])
+        self.assertEqual(state['invocations_used'], 1)
+
+    def test_timed_out_cli_with_rate_limit_output_remains_counted(self):
+        co = self.coordinator()
+        co.args.timeout = 1.0
+        slow_cli = self.root / 'slow-rate-limit-cli'
+        slow_cli.write_text(
+            f'#!{sys.executable}\nimport sys, time\n'
+            'print("429 too many requests", file=sys.stderr, flush=True)\n'
+            'time.sleep(5)\n'
+        )
+        slow_cli.chmod(0o755)
+        co.args.codex_bin = str(slow_cli)
+
+        with self.assertRaisesRegex(RuntimeError, 'CLI exit'):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+
+        state = json.loads(co.state_path.read_text())
+        receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        stderr_path = co.evidence / '001-plan-author.stderr.log'
+        self.assertIn('429', stderr_path.read_text())
+        self.assertTrue(receipt['timed_out'])
+        self.assertTrue(receipt['invocation_budget_counted'])
+        self.assertNotEqual(receipt.get('error_kind'), 'rate_limited')
+        self.assertEqual(state['invocations_used'], 1)
+
+    def test_timeout_race_with_positive_rate_limit_exit_remains_counted(self):
+        co = self.coordinator()
+
+        class TimeoutRaceProcess:
+            pid = 12345
+            returncode = None
+
+            def communicate(self, *_args, **_kwargs):
+                raise subprocess.TimeoutExpired('mock-cli', 1)
+
+            def wait(self):
+                self.returncode = 7
+                return self.returncode
+
+        real_popen = rc.subprocess.Popen
+
+        def popen(*args, **kwargs):
+            if not hasattr(kwargs.get('stderr'), 'write'):
+                return real_popen(*args, **kwargs)
+            kwargs['stderr'].write(b'429 too many requests\n')
+            return TimeoutRaceProcess()
+
+        with patch.object(rc.subprocess, 'Popen', side_effect=popen):
+            with patch.object(rc.os, 'killpg'):
+                with patch.object(rc, 'classify_rate_limit_failure') as classifier:
+                    with self.assertRaisesRegex(RuntimeError, 'CLI exit 7'):
+                        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+
+        classifier.assert_not_called()
+        receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        self.assertEqual(receipt['returncode'], 7)
+        self.assertTrue(receipt['timed_out'])
+        self.assertTrue(receipt['invocation_budget_counted'])
+        self.assertNotEqual(receipt.get('error_kind'), 'rate_limited')
+        self.assertIn('429', (co.evidence / '001-plan-author.stderr.log').read_text())
+        self.assertEqual(co.state['invocations_used'], 1)
+
+    def test_sigkilled_cli_with_rate_limit_output_remains_counted(self):
+        co = self.coordinator()
+        killed_cli = self.root / 'sigkill-rate-limit-cli'
+        killed_cli.write_text(
+            f'#!{sys.executable}\nimport os, signal, sys\n'
+            'print("429 too many requests", file=sys.stderr, flush=True)\n'
+            'os.kill(os.getpid(), signal.SIGKILL)\n'
+        )
+        killed_cli.chmod(0o755)
+        co.args.codex_bin = str(killed_cli)
+
+        with self.assertRaisesRegex(RuntimeError, 'CLI exit -9'):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+
+        state = json.loads(co.state_path.read_text())
+        receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        self.assertIn('429', (co.evidence / '001-plan-author.stderr.log').read_text())
+        self.assertEqual(receipt['returncode'], -signal.SIGKILL)
+        self.assertTrue(receipt['invocation_budget_counted'])
+        self.assertNotEqual(receipt.get('error_kind'), 'rate_limited')
+        self.assertEqual(state['invocations_used'], 1)
+
+    def test_failed_cli_without_usage_is_unknown_in_usage_reconciliation(self):
+        co = self.coordinator()
+        failing_cli = self.root / 'failed-empty-usage-cli'
+        failing_cli.write_text(f'#!{sys.executable}\nraise SystemExit(7)\n')
+        failing_cli.chmod(0o755)
+        co.args.codex_bin = str(failing_cli)
+
+        with self.assertRaisesRegex(RuntimeError, 'CLI exit 7'):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        co.write_usage()
+
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(usage['turns'][0]['input'], 0)
+        self.assertEqual(usage['turns'][0]['output'], 0)
+        self.assertEqual(usage['usage_reconciliation'], [{
+            'source': 'cli_turn', 'sequence': 1, 'role': 'author', 'phase': 'PLAN',
+            'invocation_budget_counted': True, 'provider_usage': 'unknown',
+        }])
+        usage_md = (self.run_dir / 'usage.md').read_text()
+        self.assertIn('| cli_turn | 1 | author | PLAN | True | unknown |', usage_md)
+
+    def test_successful_cli_turn_without_usage_detail_is_unknown(self):
+        co = self.coordinator()
+        co.state['turns'] = [{
+            'sequence': 1, 'role': 'author', 'phase': 'PLAN', 'returncode': 0,
+            'invocation_budget_counted': True,
+        }]
+
+        co.write_usage()
+
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(usage['turns'][0]['input'], 0)
+        self.assertEqual(usage['turns'][0]['output'], 0)
+        self.assertEqual(usage['usage_reconciliation'], [{
+            'source': 'cli_turn', 'sequence': 1, 'role': 'author', 'phase': 'PLAN',
+            'invocation_budget_counted': True, 'provider_usage': 'unknown',
+        }])
+
+    def test_uncertain_first_claude_retry_rotates_only_unstarted_role(self):
+        co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'claude')
+        old_author = co.state['sessions']['author']
+        existing_reviewer = co.state['sessions']['reviewer']
+        co.state['started']['reviewer'] = True
+        co.state['uncertain_active'] = {'role': 'author', 'fresh': False, 'pid': 20001}
+        co.state['status'] = 'HOLD'
+
+        def retry():
+            return co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+
+        with patch('os.killpg', side_effect=ProcessLookupError):
+            with patch.object(co, 'drive', side_effect=retry):
+                co.resume(retry_uncertain=True)
+        state = json.loads(co.state_path.read_text())
+        author_command = state['turns'][-1]['command']
+        rotated = state['sessions']['author']
+        self.assertNotEqual(rotated, old_author)
+        self.assertIn('--session-id', author_command)
+        self.assertIn(rotated, author_command)
+        self.assertNotIn(old_author, author_command)
+        self.assertEqual(state['sessions']['reviewer'], existing_reviewer)
+        self.assertTrue(state['started']['reviewer'])
+
+        # With --author-vendor omitted, the configured default is Codex; its
+        # uncertain retry must not apply Claude's session rotation behavior.
+        self.run_dir = self.root / 'uncertain-default-codex-author'
+        codex_co = self.coordinator()
+        self.assertEqual(codex_co.args.author_vendor, 'codex')
+        codex_co.state['uncertain_active'] = {'role': 'author', 'fresh': False, 'pid': 20002}
+        codex_co.state['status'] = 'HOLD'
+
+        with patch('os.killpg', side_effect=ProcessLookupError):
+            with patch.object(codex_co, 'drive') as drive:
+                codex_co.resume(retry_uncertain=True)
+        drive.assert_called_once_with()
+        self.assertFalse(codex_co.state['started']['author'])
+        self.assertEqual(codex_co.state['turns'], [])
+
+    def test_failed_started_claude_role_keeps_session_and_retry_uses_original(self):
+        co = self.coordinator('--author-vendor', 'claude')
+        original = co.state['sessions']['author']
+        co.state['started']['author'] = True
+        co.save()
+        with patch.dict(os.environ, {'FAKE_PLAN_MUTATE': '1'}):
+            with self.assertRaisesRegex(RuntimeError, 'mutated workspace during PLAN'):
+                co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        failed_receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        self.assertTrue(failed_receipt['error'])
+        resume_index = failed_receipt['command'].index('--resume')
+        self.assertEqual(failed_receipt['command'][resume_index:resume_index + 2], ['--resume', original])
+        self.assertNotIn('--session-id', failed_receipt['command'])
+        with patch.dict(os.environ, {'FAKE_PLAN_MUTATE': ''}):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        state = json.loads(co.state_path.read_text())
+        self.assertEqual(state['sessions']['author'], original)
+        retry_command = state['turns'][-1]['command']
+        resume_index = retry_command.index('--resume')
+        self.assertEqual(retry_command[resume_index:resume_index + 2], ['--resume', original])
+        self.assertNotIn('--session-id', retry_command)
+
+    def test_failed_fresh_claude_and_codex_turns_do_not_rotate(self):
+        for role, flags, fresh in (
+                ('author', ['--author-vendor', 'claude'], True),
+                ('author', ['--author-vendor', 'codex'], False)):
+            with self.subTest(flags=flags, fresh=fresh):
+                self.run_dir = self.root / ('control-' + flags[-1] + str(fresh))
+                co = self.coordinator(*flags)
+                original = co.state['sessions']['author']
+                with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}):
+                    with self.assertRaisesRegex(RuntimeError, 'rate_limited'):
+                        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.',
+                                        {}, fresh=fresh)
+                state = json.loads(co.state_path.read_text())
+                self.assertEqual(state['sessions']['author'], original)
+                self.assertFalse(state['started']['author'])
+
+    def test_git_snapshot_tracks_untracked_symlink_and_ignores_cache(self):
+        first, manifest = rc.git_snapshot(self.workspace)
+        (self.workspace / 'ignored.cache').write_text('ignored')
+        self.assertEqual(first, rc.git_snapshot(self.workspace)[0])
+        (self.workspace / 'new.txt').write_text('new')
+        second = rc.git_snapshot(self.workspace)[0]
+        self.assertNotEqual(first, second)
+        (self.workspace / 'link').symlink_to('new.txt')
+        self.assertNotEqual(second, rc.git_snapshot(self.workspace)[0])
+        self.assertIn(['tracked.txt', manifest[-1][1]], manifest)
+
+    def test_one_live_coordinator_lease_blocks_a_second_cli_process(self):
+        with rc.run_lease(self.run_dir):
+            result = self.run_coordinator('--skip-probe')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('another coordinator currently owns this run', result.stdout)
+            self.assertFalse((self.run_dir / 'state.json').exists())
+            owner = json.loads((self.run_dir / '.coordinator.lock').read_text())
+            self.assertEqual(owner['pid'], os.getpid())
+        with rc.run_lease(self.run_dir):
+            pass
+
+    def test_rubric_requires_six_nonempty_segments(self):
+        valid = ('Trigger: x. Reachability: y. Impact: z. Likelihood: often. '
+                 'Fix cost: small. Cheaper response: none.')
+        self.assertEqual(rc.missing_rubric(valid), [])
+        self.assertIn('Impact', rc.missing_rubric(valid.replace('Impact: z.', 'Impact: .')))
+        self.assertIn('Cheaper response', rc.missing_rubric('Trigger: x'))
+
+    def test_codex_command_events_become_observed_commands(self):
+        rows = [{'type': 'item.completed', 'item': {'type': 'command_execution',
+                 'command': "/bin/zsh -lc 'python3 -m unittest -v'", 'exit_code': 0,
+                 'status': 'completed'}}]
+        commands, calls = rc.observed_events('codex', rows)
+        self.assertEqual(commands[0]['exit_code'], 0)
+        self.assertTrue(rc.command_invokes_test(commands[0]['command'], 'python3 -m unittest -v'))
+        self.assertFalse(rc.command_invokes_test('python3 -m unittest -v 2>&1',
+                                                 'python3 -m unittest -v'))
+        self.assertFalse(rc.command_invokes_test('python3 -m unittest -v; echo $?',
+                                                 'python3 -m unittest -v'))
+        self.assertFalse(rc.observed_test_succeeded(
+            {'command': 'python3 -m unittest -v', 'exit_code': 0, 'error': False,
+             'output': 'FAILED (failures=1)'}, 'python3 -m unittest -v'))
+        self.assertEqual(calls[0]['tool'], 'command_execution')
+
+    def test_codex_code_mode_rollout_recovers_attempt_but_never_invents_success(self):
+        home = self.root / 'fake-home'
+        sessions = home / '.codex' / 'sessions'
+        sessions.mkdir(parents=True)
+        command = 'echo x > forbidden-probe'
+        code = 'const r = await tools.exec_command(' + json.dumps({'cmd': command}) + ');\ntext(r.output);'
+        rows = [
+            {'timestamp': '2026-09-21T00:00:00Z', 'type': 'response_item',
+             'payload': {'type': 'custom_tool_call', 'name': 'exec', 'call_id': 'c1', 'input': code}},
+            {'timestamp': '2026-09-21T00:00:01Z', 'type': 'response_item',
+             'payload': {'type': 'custom_tool_call_output', 'call_id': 'c1',
+                         'output': [{'text': 'zsh: operation not permitted: forbidden-probe'}]}},
+        ]
+        path = sessions / 'rollout-test-session.jsonl'
+        path.write_text('\n'.join(json.dumps(row) for row in rows))
+        start = rc.datetime.fromisoformat('2026-09-21T00:00:00+00:00').timestamp()
+        with patch.object(Path, 'home', return_value=home):
+            attempts, calls = rc.codex_rollout_attempts('test-session', start, start + 2)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0]['command'], command)
+            self.assertIsNone(attempts[0]['exit_code'])
+            self.assertFalse(rc.observed_test_succeeded(attempts[0], command))
+            self.assertEqual(calls[0]['tool'], 'code_mode')
+            rows[0]['payload']['input'] = code.replace('text(r.output)', 'text(JSON.stringify(r))')
+            rows[1]['payload']['output'] = [{'text': json.dumps({'exit_code': 1, 'output': 'operation not permitted'})}]
+            path.write_text('\n'.join(json.dumps(row) for row in rows))
+            recovered, _ = rc.codex_rollout_attempts('test-session', start, start + 2)
+            self.assertEqual(recovered[0]['exit_code'], 1)
+            self.assertTrue(recovered[0]['error'])
+            rows[0]['payload']['input'] = 'if (false) { ' + code + ' }'
+            path.write_text('\n'.join(json.dumps(row) for row in rows))
+        self.assertEqual(rc.codex_rollout_attempts('test-session', start, start + 2)[0], [])
+
+    def test_rate_limit_rejection_is_logged_without_spending_invocation_budget(self):
+        rejected = self.run_coordinator('--max-invocations', '1',
+                                        env={'FAKE_RATE_LIMIT': '1'})
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn('rate_limited', rejected.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['sequence'], 1)
+        self.assertEqual(state['invocations_used'], 0)
+        failed = state['turns'][0]
+        self.assertEqual(failed['error_kind'], 'rate_limited')
+        self.assertFalse(failed['invocation_budget_counted'])
+        self.assertIn('Sep 26th 5:13 PM', failed['reset_hint'])
+        rejected_usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(rejected_usage['invocations_used'], 0)
+        self.assertFalse(rejected_usage['turns'][0]['invocation_budget_counted'])
+        usage_md = (self.run_dir / 'usage.md').read_text()
+        self.assertIn('| Turn | Role | Phase | Budget counted | Error kind | Reset hint | Requests |', usage_md)
+        self.assertIn('| 1 | author | PLAN | False | rate_limited | Try again at Sep 26th 5:13 PM |', usage_md)
+
+        command = self.command('--max-invocations', '1', '--skip-probe')
+        command[2] = 'resume'
+        resumed = subprocess.run(command, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(resumed.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['sequence'], 2)
+        self.assertEqual(state['invocations_used'], 1)
+
+    def test_rate_limit_classifier_requires_an_error_signal(self):
+        classified = rc.classify_rate_limit_failure(
+            1, '', '{"type":"error","message":"HTTP 429: rate limit; try again at 10:00"}')
+        self.assertEqual(classified['kind'], 'rate_limited')
+        self.assertTrue(classified['reset_hint'].startswith('try again at 10:00'))
+        self.assertEqual(rc.classify_rate_limit_failure(
+            1, '', '{"type":"error","code":"rate_limit_exceeded","message":"please wait"}')['kind'],
+            'rate_limited')
+        self.assertEqual(rc.classify_rate_limit_failure(
+            1, '', '{"type":"error","code":"","message":"HTTP 429 rate limit exceeded"}')['kind'],
+            'rate_limited')
+        self.assertIsNone(rc.classify_rate_limit_failure(
+            1, '', '{"type":"agent_message","text":"rate limit is part of the task description"}'))
+        self.assertIsNone(rc.classify_rate_limit_failure(
+            1, '', '{"type":"error","code":"invalid_output","message":"prompt mentioned HTTP 429"}'))
+        self.assertIsNone(rc.classify_rate_limit_failure(1, 'permission denied', ''))
+        retry_after = rc.classify_rate_limit_failure(
+            1, 'HTTP 429 Too Many Requests\nRetry-After: 32\n', '')
+        self.assertEqual(retry_after['reset_hint'], 'Retry-After: 32')
+
+    def test_legacy_invocation_budget_migration_exempts_only_logged_rate_limits(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'legacy-budget-run'),
+            '--codex-bin', str(FAKE), '--claude-bin', str(FAKE)])
+        co = rc.Coordinator(args)
+        turns = [
+            {'sequence': 1, 'role': 'reviewer', 'phase': 'EXEC', 'returncode': 1},
+            {'sequence': 2, 'role': 'author', 'phase': 'EXEC', 'returncode': 1,
+             'invocation_budget_counted': False},
+            {'sequence': 3, 'role': 'reviewer', 'phase': 'EXEC', 'returncode': 0},
+        ]
+        co.state['sequence'] = 3
+        co.state['turns'] = turns
+        del co.state['invocations_used']
+        del co.state['invocation_budget_version']
+        (co.evidence / '001-exec-reviewer.stderr.log').write_text(
+            'HTTP 429 Too Many Requests. Try again at 10:00\n')
+        (co.evidence / '002-exec-author.stderr.log').write_text('permission denied\n')
+        rc.atomic_json(co.state_path, co.state)
+
+        migrated = rc.Coordinator(args)
+        self.assertEqual(migrated.state['sequence'], 3)
+        self.assertEqual(migrated.state['invocations_used'], 2)
+        self.assertEqual(migrated.state['turns'][0]['error_kind'], 'rate_limited')
+        self.assertFalse(migrated.state['turns'][0]['invocation_budget_counted'])
+        self.assertTrue(migrated.state['turns'][1]['invocation_budget_counted'])
+
+    def test_codex_readonly_roles_do_not_inherit_execpolicy_bypass_grants(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
+        co = rc.Coordinator(args)
+        schema = self.root / 'schema.json'
+        for role in ('reviewer', 'shadow', 'gate', 'probe'):
+            command = co._codex_command(role, schema, True)
+            self.assertIn('--ignore-rules', command)
+            self.assertIn('sandbox_mode="read-only"', command)
+            self.assertIn('approval_policy="never"', command)
+        self.assertIn('--ignore-rules', co._codex_command('author', schema, False))
+        self.assertTrue(co.reviewer_flags()['ignore_execpolicy_rules'])
+        self.assertEqual(co.author_flags()['author_binary'], args.claude_bin)
+
+    def test_model_facing_review_schemas_do_not_request_snapshot_or_exit_code(self):
+        for schema in (rc.review_schema(), rc.gate_schema()):
+            self.assertNotIn('reviewed_snapshot', schema['properties'])
+            evidence = schema['properties']['self_run_evidence']['items']
+            self.assertNotIn('exit_code', evidence['properties'])
+        prior = rc.review_schema()['properties']['prior_findings']['items']
+        self.assertEqual(prior['properties']['disposition']['enum'],
+                         ['fixed', 'still_open', 'withdrawn'])
+
+    def test_sensitive_shadow_and_adversarial_paths_are_rejected(self):
+        for filename in ('07-shadow-approve.md', '11-adversarial-approve.md'):
+            calls = [{'tool': 'Read', 'input': {'file_path': str(self.run_dir / 'rounds' / filename)}}]
+            self.assertIsNotNone(rc.sensitive_access(calls, 'reviewer', self.run_dir / 'evidence',
+                                                     self.run_dir / 'rounds'))
+
+    def test_claude_readonly_command_has_restricted_allowlist(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        schema = self.root / 'schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        command = co.command('reviewer', schema, False)
+        self.assertIn('--restricted', command)
+        self.assertEqual(command[command.index('--permission-mode') + 1], 'dontAsk')
+        self.assertEqual(command[command.index('--permission-prompts') + 1], 'none')
+        allowed = command[command.index('--allowedTools') + 1]
+        self.assertIn('Bash(npm test)', allowed)
+        self.assertNotIn(':*', allowed)
+        self.assertNotIn('Bash(git ', allowed)
+        self.assertNotIn('Bash(echo', allowed)
+        self.assertNotIn('Bash(rm', allowed)
+        self.assertIn('Edit,Write', command[command.index('--disallowedTools') + 1])
+        add_dir = command[command.index('--add-dir') + 1]
+        self.assertEqual(add_dir, str(co.context))
+        self.assertNotEqual(add_dir, str(co.run_dir))
+
+    def test_all_claude_roles_use_strict_fail_closed_bash_sandbox(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--author-vendor', 'codex', '--reviewer-vendor', 'claude'])
+        co = rc.Coordinator(args)
+        schema = self.root / 'sandbox-schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        for role in ('reviewer', 'shadow', 'gate', 'probe'):
+            with self.subTest(role=role):
+                command = co.command(role, schema, role != 'reviewer')
+                self.assertIn('--setting-sources', command)
+                self.assertEqual(command[command.index('--setting-sources') + 1], '')
+                settings = json.loads(command[command.index('--settings') + 1],
+                                       object_pairs_hook=unique_json_object)
+                self.assertIs(settings['sandbox']['enabled'], True)
+                self.assertIs(settings['sandbox']['failIfUnavailable'], True)
+                self.assertIs(settings['sandbox']['allowUnsandboxedCommands'], False)
+                self.assertIs(settings['sandbox']['autoAllowBashIfSandboxed'], False)
+                self.assertEqual(settings['sandbox']['excludedCommands'], [])
+                self.assertIs(settings['sandbox']['network']['strictAllowlist'], True)
+                self.assertEqual(settings['sandbox']['network']['allowedDomains'], [])
+                self.assertIs(settings['sandbox']['network']['allowLocalBinding'], False)
+                self.assertEqual(settings['sandbox']['credentials']['envVars'], sorted(
+                    settings['sandbox']['credentials']['envVars'], key=lambda row: row['name']))
+                self.assertTrue(all(row['mode'] == 'deny' for row in
+                                    settings['sandbox']['credentials']['envVars']))
+                self.assertTrue(all(row['mode'] == 'deny' for row in
+                                    settings['sandbox']['credentials']['files']))
+                filesystem = settings['sandbox']['filesystem']
+                self.assertNotIn('allowWrite', filesystem)
+                self.assertEqual(settings['sandbox']['filesystem']['denyWrite'], [str(co.run_dir)])
+                self.assertNotIn(str(co.workspace), json.dumps(filesystem))
+                self.assertNotIn('.paired-session-claude-session-', json.dumps(filesystem))
+                self.assertEqual(settings['permissions']['deny'], [
+                    f'Edit(//{co.run_dir.as_posix().lstrip("/")}/**)'])
+                self.assertIn('--settings', command)
+                self.assertEqual(command.count('--settings'), 1)
+        author_args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'claude-author-run'),
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex'])
+        author_co = rc.Coordinator(author_args)
+        author = author_co.command('author', schema, False)
+        author_settings = json.loads(author[author.index('--settings') + 1])
+        self.assertIs(author_settings['sandbox']['enabled'], True)
+        self.assertIs(author_settings['sandbox']['failIfUnavailable'], True)
+        self.assertIs(author_settings['sandbox']['allowUnsandboxedCommands'], False)
+        self.assertEqual(author_settings['sandbox']['network']['allowedDomains'], [])
+        self.assertEqual(author_settings['sandbox']['filesystem']['denyWrite'], [str(author_co.run_dir)])
+        self.assertEqual(author_settings['permissions']['deny'], [
+            f'Edit(//{author_co.run_dir.as_posix().lstrip("/")}/**)'])
+        self.assertEqual(author.count('--settings'), 1)
+        self.assertEqual(author.count('--add-dir'), 1)
+
+    def test_claude_author_workspace_override_uses_disposable_cwd_without_write_expansion(self):
+        co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'codex')
+        disposable = self.root / 'disposable-author-workspace'
+        disposable.mkdir()
+        schema = self.root / 'override-schema.json'
+        rc.atomic_json(schema, rc.review_schema(verified=False))
+        captured = {}
+
+        real_popen = subprocess.Popen
+
+        def capture_cli_spawn(command, **kwargs):
+            if command[0] != co.args.claude_bin:
+                return real_popen(command, **kwargs)
+            captured['command'] = command
+            captured.update(kwargs)
+            raise OSError('contract capture')
+
+        with patch.object(rc.subprocess, 'Popen', side_effect=capture_cli_spawn):
+            with self.assertRaisesRegex(RuntimeError, 'CLI process failed to start'):
+                co._invoke_once('author', 'AUTHOR_PERMISSION_PROBE', 'disposable workspace probe',
+                                rc.review_schema(verified=False), fresh=True,
+                                workspace_override=disposable)
+        self.assertEqual(captured['cwd'], disposable.resolve())
+        command = captured['command']
+        settings = json.loads(command[command.index('--settings') + 1],
+                               object_pairs_hook=unique_json_object)
+        filesystem = settings['sandbox']['filesystem']
+        self.assertNotIn('allowWrite', filesystem)
+        self.assertEqual(filesystem['denyWrite'], [str(co.run_dir)])
+        self.assertEqual(command[command.index('--add-dir') + 1], str(co.context))
+        self.assertNotIn(str(co.workspace), json.dumps(filesystem))
+        self.assertNotIn(str(disposable), json.dumps(filesystem))
+        self.assertEqual(settings['permissions']['deny'], [
+            f'Edit(//{co.run_dir.as_posix().lstrip("/")}/**)'])
+
+    def test_claude_author_routes_gate_to_fresh_readonly_codex(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
+        co = rc.Coordinator(args)
+        schema = self.root / 'gate-schema.json'
+        rc.atomic_json(schema, rc.gate_schema())
+        author = co.command('author', schema, False)
+        gate = co.command('gate', schema, True)
+        self.assertIn('acceptEdits', author)
+        self.assertEqual(gate[0], 'codex')
+        self.assertIn('sandbox_mode="read-only"', gate)
+        self.assertNotIn('resume', gate)
+
+    def test_optional_reviewer_command_is_an_exact_rule(self):
+        run_dir = self.root / 'extra-command-run'
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(run_dir),
+            '--reviewer-command', 'node check.js'])
+        co = rc.Coordinator(args)
+        schema = self.root / 'extra-schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        command = co.command('reviewer', schema, False)
+        allowed = command[command.index('--allowedTools') + 1]
+        self.assertIn('Bash(node check.js)', allowed)
+        self.assertNotIn('Bash(node check.js:*)', allowed)
+
+    def test_all_readonly_roles_receive_extra_exact_commands_and_probe_digest_covers_them(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--reviewer-command', 'node corpus.js'])
+        co = rc.Coordinator(args)
+        schema = self.root / 'all-role-schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        for role in ('reviewer', 'shadow', 'gate'):
+            command = co.command(role, schema, role != 'reviewer')
+            if '--allowedTools' in command:
+                self.assertIn('Bash(node corpus.js)', command[command.index('--allowedTools') + 1])
+        self.assertIn('node corpus.js', co._review_prompt('shadow', 'snapshot'))
+        self.assertIn('node corpus.js', co._gate_prompt('snapshot'))
+        digest = co.reviewer_flags_digest()
+        prior_surface = co.reviewer_flags()
+        prior_surface['surface_version'] = 5
+        prior_digest = __import__('hashlib').sha256(json.dumps(
+            prior_surface, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        self.assertNotEqual(digest, prior_digest, 'surface bump must stale pre-sandbox permission probes')
+        args_without = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'other-run')])
+        self.assertNotEqual(digest, rc.Coordinator(args_without).reviewer_flags_digest())
+
+    def test_fresh_roles_have_no_ledger_channel_and_leaks_are_rejected_before_launch(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        co.record_findings('persistent-reviewer', 'EXEC', 1, [{
+            'severity': 'MINOR', 'file': 'tracked.txt', 'summary': 'secret persistent summary',
+            'failure_scenario': 'secret scenario'}])
+        shadow_prompt = co._review_prompt('shadow', 'snapshot')
+        gate_prompt = co._gate_prompt('snapshot')
+        for prompt in (shadow_prompt, gate_prompt):
+            self.assertNotIn('F001', prompt)
+            self.assertNotIn('secret persistent summary', prompt)
+            self.assertNotIn('prior_findings', prompt)
+        self.assertNotIn('prior_findings', rc.fresh_review_schema()['properties'])
+        sequence = co.state['sequence']
+        with patch('subprocess.Popen') as popen:
+            with self.assertRaisesRegex(RuntimeError, 'independence check rejected prompt leak'):
+                co.invoke('shadow', 'EXEC', shadow_prompt + '\nF001: secret persistent summary',
+                          rc.fresh_review_schema(), fresh=True)
+            popen.assert_not_called()
+        self.assertEqual(co.state['sequence'], sequence)
+
+    def test_plan_prompts_omit_exec_instructions(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        reviewer = co._review_prompt('reviewer', 'snapshot')
+        for forbidden in ('Run this test command', 'delta.patch',
+                          'self_run_evidence', 'Inspect the complete current delta'):
+            self.assertNotIn(forbidden, reviewer)
+        self.assertIn('No implementation exists yet and none is expected', reviewer)
+        self.assertNotIn('Do not run commands', reviewer)
+        self.assertIn('Read existing workspace source', reviewer)
+        self.assertIn('Commands you may run', reviewer)
+        self.assertIn('missing source files, implementation, or tests are out of scope', reviewer)
+        author = co._author_prompt()
+        self.assertIn('PLAN only: return a plan', author)
+        self.assertIn('do not implement, edit the workspace, or run implementation checks', author)
+        self.assertNotIn('For long commands', author)
+        self.assertIn('Include this exact verification command in the plan', author)
+        self.assertIn('npm test', author)
+        self.assertIn('coordinator dispatches the independent reviewer', author)
+        self.assertIn('Use HOLD only when a required product/authorization decision is missing', author)
+
+    def test_test_command_executable_preflight_fails_before_state_creation(self):
+        command = self.command('--test-command', 'paired-session-command-that-does-not-exist')
+        result = subprocess.run(command, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('REFUSED: configured test executable is missing or not on PATH', result.stdout)
+        self.assertFalse(self.run_dir.exists())
+        self.assertEqual((self.workspace / 'tracked.txt').read_text(), 'base\n')
+
+    def test_project_json_config_sets_defaults_and_cli_values_override(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir()
+        (config_dir / 'paired-session.json').write_text(json.dumps({
+            'author_vendor': 'codex', 'author_model': 'gpt-6-luna', 'author_effort': 'low',
+            'reviewer_command': ['python3 -m unittest'], 'max_invocations': 17,
+        }))
+        args = rc.configure_parser(rc.parser(), [
+            'run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+            '--run-dir', str(self.run_dir), '--author-effort=high',
+        ]).parse_args(['run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                       '--run-dir', str(self.run_dir), '--author-effort=high'])
+        self.assertEqual(args.author_vendor, 'codex')
+        self.assertEqual(args.author_model, 'gpt-6-luna')
+        self.assertEqual(args.author_effort, 'high')
+        self.assertEqual(args.reviewer_command, ['python3 -m unittest'])
+        self.assertEqual(args.max_invocations, 17)
+
+    def test_role_model_defaults_follow_vendor_pinned_adr(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        rc.Coordinator(args)
+        self.assertEqual((args.author_model, args.reviewer_model, args.gate_model),
+                         ('gpt-6-luna', 'claude-opus-5-5', 'claude-opus-5-5'))
+        swapped = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'swapped-model-run'),
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex'])
+        rc.Coordinator(swapped)
+        self.assertEqual((swapped.author_model, swapped.reviewer_model, swapped.gate_model),
+                         ('claude-opus-5-5', 'gpt-6-luna', 'gpt-6-luna'))
+
+    def test_vendor_override_rejects_incompatible_profile_models_before_state_creation(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir()
+        (config_dir / 'paired-session.json').write_text(json.dumps({
+            'author_vendor': 'codex', 'author_model': 'gpt-6-luna',
+            'reviewer_vendor': 'claude', 'reviewer_model': 'claude-opus-5-5',
+            'gate_model': 'claude-opus-5-5', 'test_command': 'python3 -m unittest',
+        }))
+        with patch('sys.stdout', new=io.StringIO()) as output:
+            result = rc.main(['run', '--workspace', str(self.workspace),
+                '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                '--author-vendor', 'claude'])
+        self.assertEqual(result, 2)
+        self.assertIn('author_model must be claude-opus-5-5', output.getvalue())
+        self.assertFalse(self.run_dir.exists())
+
+    def test_project_json_config_rejects_unknown_keys(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir()
+        (config_dir / 'paired-session.json').write_text('{"skip_probe": true}')
+        with self.assertRaisesRegex(ValueError, 'unsupported paired-session config keys: skip_probe'):
+            rc.configure_parser(rc.parser(), ['run', '--workspace', str(self.workspace),
+                '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+
+    def test_project_json_config_rejects_noninteger_numeric_values(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir()
+        for value in ('true', '3.9', '"25"'):
+            with self.subTest(value=value):
+                (config_dir / 'paired-session.json').write_text(
+                    '{"max_invocations":' + value + '}')
+                with self.assertRaisesRegex(ValueError, 'must be an integer'):
+                    rc.configure_parser(rc.parser(), ['run', '--workspace', str(self.workspace),
+                        '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+
+    def test_abbreviated_options_are_rejected_instead_of_merging_profile_lists(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir()
+        (config_dir / 'paired-session.json').write_text(
+            '{"reviewer_command":["python3 -m unittest"]}')
+        argv = ['run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                '--run-dir', str(self.run_dir), '--reviewer-comm', 'echo unsafe']
+        with patch('sys.stderr', new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                rc.configure_parser(rc.parser(), argv).parse_args(argv)
+
+    def test_cli_paths_expand_home_before_validation_and_state_use(self):
+        fake_home = self.root / 'fake-home'
+        fake_home.mkdir()
+        workspace = fake_home / 'workspace'
+        workspace.mkdir()
+        args = rc.parser().parse_args(['run', '--workspace', '~/workspace',
+            '--workitem', '~/WORKITEM.md', '--run-dir', '~/workspace/.compass/run'])
+        with patch.dict(os.environ, {'HOME': str(fake_home)}):
+            rc.normalize_cli_paths(args)
+        self.assertEqual(Path(args.workspace), workspace)
+        self.assertEqual(Path(args.workitem), fake_home / 'WORKITEM.md')
+        self.assertEqual(Path(args.run_dir), workspace / '.compass' / 'run')
+
+    def test_bundled_gate_prompt_config_is_stable_across_plugin_cache_roots(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        old_default = self.root / 'cache' / '2.8.7' / 'scripts' / 'gate.txt'
+        new_default = self.root / 'cache' / '2.8.8' / 'scripts' / 'gate.txt'
+        old_default.parent.mkdir(parents=True)
+        new_default.parent.mkdir(parents=True)
+        old_default.write_text('stable gate prompt\n')
+        new_default.write_text('stable gate prompt\n')
+        args.gate_prompt = str(old_default)
+        with patch.object(rc, 'DEFAULT_GATE_PROMPT', old_default):
+            old_config = rc.Coordinator(args)._config()['gate_prompt']
+        args.gate_prompt = str(new_default)
+        with patch.object(rc, 'DEFAULT_GATE_PROMPT', new_default):
+            new_config = rc.Coordinator(args)._config()['gate_prompt']
+        self.assertEqual(old_config, new_config)
+
+    def test_run_directory_inside_workspace_is_refused_before_state_creation(self):
+        command = self.command()
+        command[command.index('--run-dir') + 1] = str(self.workspace / '.compass' / 'run')
+        result = subprocess.run(command, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('REFUSED: --run-dir must be outside --workspace', result.stdout)
+        self.assertFalse((self.workspace / '.compass').exists())
+        self.assertEqual((self.workspace / 'tracked.txt').read_text(), 'base\n')
+
+    def test_test_command_preflight_accepts_environment_assignments_and_env_wrappers(self):
+        expected = shutil.which('python3')
+        self.assertEqual(rc.resolve_test_executable(self.workspace, 'NODE_ENV=test python3 -m unittest'),
+                         expected)
+        self.assertEqual(rc.resolve_test_executable(self.workspace, 'env NODE_ENV=test python3 -m unittest'),
+                         expected)
+        self.assertEqual(rc.resolve_test_executable(self.workspace, 'env -- NODE_ENV=test python3 -m unittest'),
+                         expected)
+        self.assertEqual(rc.resolve_test_executable(self.workspace,
+            "env -S 'NODE_ENV=test python3 -m unittest'"), expected)
+
+    def test_test_command_preflight_resolves_relative_env_launcher_from_workspace(self):
+        launcher = self.workspace / 'tools' / 'env'
+        launcher.parent.mkdir()
+        launcher.write_text('#!/bin/sh\nexec /usr/bin/env "$@"\n')
+        launcher.chmod(0o755)
+        resolved = rc.resolve_test_executable(
+            self.workspace, './tools/env NODE_ENV=test python3 -m unittest')
+        self.assertEqual(resolved, shutil.which('python3'))
+        with self.assertRaisesRegex(ValueError, 'launcher is missing'):
+            rc.resolve_test_executable(self.workspace, './missing/env python3 -m unittest')
+
+    def test_out_of_phase_plan_critical_is_recorded_minor_and_cannot_force_revise(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off',
+                                      env={'FAKE_PLAN_CODE_FINDING': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['plan_rounds'], state['plan_reviews']), (1, 1))
+        finding = state['finding_ledger'][0]
+        self.assertEqual(finding['severity'], 'MINOR')
+        self.assertTrue(finding['summary'].startswith('[out-of-phase]'))
+        plan_round = next((self.run_dir / 'rounds').glob('*-supervisor-approve.md')).read_text()
+        self.assertIn('[out-of-phase]', plan_round)
+
+    def test_codex_plan_receives_full_inputs_without_requiring_shell_reads(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
+        co = rc.Coordinator(args)
+        (co.context / 'plan.md').write_text('Unique plan body with verification.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        self.assertIn(self.workitem.read_text(), prompt)
+        self.assertIn('Unique plan body with verification.', prompt)
+        self.assertNotIn('Do not run commands', prompt)
+        self.assertIn('cat, sed, or rg', prompt)
+        self.assertNotIn('Run this test command', prompt)
+        co.state['phase'] = 'EXEC'
+        for role in ('reviewer', 'shadow'):
+            self.assertIn('cat, sed, or rg', co._review_prompt(role, 'snapshot'))
+        gate = co._gate_prompt('snapshot')
+        self.assertIn('cat, sed, or rg', gate)
+        self.assertNotIn('Open finding ledger', gate)
+
+    def test_codex_plan_fake_cli_reads_source_but_cannot_mutate_snapshot(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--reviewer-vendor', 'codex', '--codex-bin', str(FAKE),
+            '--reviewer-command', "sed -n '1,20p' tracked.txt"])
+        co = rc.Coordinator(args)
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        before = rc.git_snapshot(self.workspace)[0]
+        with patch.dict(os.environ, {'FAKE_PLAN_INSPECT': '1'}):
+            result = co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+        self.assertEqual(before, result['snapshot'])
+        self.assertTrue(any(row['command'] == "sed -n '1,20p' tracked.txt"
+                            for row in result['answer']['observed_commands']))
+        command = co.state['turns'][-1]['command']
+        self.assertIn('sandbox_mode="read-only"', command)
+        self.assertIn('--ignore-rules', command)
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}):
+            with self.assertRaisesRegex(RuntimeError, 'reviewer mutated workspace'):
+                co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+
+    def test_verified_claims_required_rendered_and_empty_approval_retries_once(self):
+        for schema in (rc.review_schema(), rc.fresh_review_schema(), rc.gate_schema()):
+            self.assertIn('verified_claims', schema['required'])
+            self.assertEqual(schema['properties']['verified_claims']['items']['required'],
+                             ['claim', 'file', 'line'])
+        for role in ('reviewer', 'shadow', 'gate'):
+            run = self.root / ('retry-' + role)
+            result = self.run_coordinator('--run-dir', str(run), '--polish-round', 'off',
+                                          env={'FAKE_EMPTY_CLAIMS': role})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            state = json.loads((run / 'state.json').read_text())
+            turns = [t for t in state['turns'] if t['role'] == role]
+            for index, turn in enumerate(turns):
+                if turn.get('verified_claims_error'):
+                    self.assertNotIn('verified_claims_error', turns[index + 1])
+                    self.assertEqual(turn['phase'], turns[index + 1]['phase'])
+            self.assertTrue(any(t.get('verified_claims_error') for t in turns))
+            self.assertTrue(any('## Verified Claims' in p.read_text()
+                                for p in (run / 'rounds').glob('*.md')))
+            retry_prompts = [p.read_text() for p in (run / 'evidence').glob('*.prompt.txt')
+                             if 'Evidence contract retry:' in p.read_text()]
+            self.assertTrue(retry_prompts)
+            if role != 'reviewer':
+                self.assertTrue(all('prior_findings' not in p for p in retry_prompts))
+
+    def test_verified_claims_still_empty_after_one_retry_holds_each_role(self):
+        for role in ('reviewer', 'shadow', 'gate'):
+            run = self.root / ('hold-' + role)
+            result = self.run_coordinator('--run-dir', str(run), '--polish-round', 'off',
+                env={'FAKE_EMPTY_CLAIMS': role, 'FAKE_ALWAYS_EMPTY_CLAIMS': '1'})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            state = json.loads((run / 'state.json').read_text())
+            self.assertEqual(state['status'], 'HOLD')
+            self.assertIn('verified_claims protocol error after one retry', state['hold_reason'])
+            turns = [t for t in state['turns'] if t['role'] == role]
+            self.assertEqual(len(turns), 2)
+            self.assertTrue(all(t.get('verified_claims_error') for t in turns))
+
+    def test_verified_claims_invalid_entries_do_not_satisfy_approval(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      env={'FAKE_MALFORMED_CLAIMS': 'reviewer'})
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertIn('verified_claims protocol error after one retry', state['hold_reason'])
+        self.assertTrue(rc.verified_claims_error({'status': 'APPROVE'}))
+        self.assertEqual(rc.verified_claims_error({'status': 'REVISE', 'verified_claims': []}), '')
+
+    def test_out_of_phase_normalization_cannot_bypass_verified_claims(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+            env={'FAKE_PLAN_CODE_FINDING': '1', 'FAKE_EMPTY_CLAIMS': 'reviewer',
+                 'FAKE_ALWAYS_EMPTY_CLAIMS': '1'})
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertIn('verified_claims protocol error after one retry', state['hold_reason'])
+
+    def test_fresh_roles_reject_ledger_ids_in_referenced_plan_before_launch(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        (co.context / 'plan.md').write_text('# Plan\n## Response to F002\nPrior review discussion.\n')
+        for role in ('shadow', 'gate'):
+            with self.assertRaisesRegex(RuntimeError, 'ledger ids in context/plan.md'):
+                co.invoke(role, 'EXEC', 'Clean prompt referencing the plan file.',
+                          rc.fresh_review_schema(), fresh=True)
+        self.assertEqual(co.state['sequence'], 0)
+        self.assertEqual(list(co.evidence.glob('*.prompt.txt')), [])
+        self.assertIn('current plan only', co._author_prompt())
+
+    def test_fresh_roles_scan_all_context_and_history_before_process_launch(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        for filename in ('plan.md', 'workitem.md', 'delta.patch', 'extra.md'):
+            path = co.context / filename
+            original = path.read_text() if path.exists() else None
+            for leak in ('Response to reviewer', 'Prior verdict: APPROVE',
+                         'Codex requested this', 'Reviewer found a defect', 'F002'):
+                path.write_text(leak)
+                for role in ('shadow', 'gate'):
+                    with patch('subprocess.Popen') as popen:
+                        with self.assertRaisesRegex(RuntimeError, 'independence check rejected'):
+                            co.invoke(role, 'EXEC', 'Clean prompt', rc.fresh_review_schema(), fresh=True)
+                        popen.assert_not_called()
+            if original is None:
+                path.unlink()
+            else:
+                path.write_text(original)
+        self.assertEqual(co.state['sequence'], 0)
+        co.assert_fresh_prompt('shadow', co._review_prompt('shadow', 'snapshot'))
+        audit = json.loads((co.evidence / '001-shadow.independence-inputs.json').read_text())
+        self.assertEqual(audit['status'], 'PASS')
+        self.assertIn('context/workitem.md', audit['inputs'])
+        self.assertEqual(audit['inputs']['prompt']['content'], co._review_prompt('shadow', 'snapshot'))
+
+    def test_fresh_path_names_pass_fake_cli_but_prose_history_is_rejected(self):
+        result = self.run_coordinator('--exercise-revisions', env={'FAKE_DOC_DELTA': '1'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        fresh = list((self.run_dir / 'evidence').glob('*-shadow.independence-inputs.json'))
+        self.assertTrue(fresh)
+        self.assertTrue(any('CLAUDE.md' in p.read_text() for p in fresh))
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'prose-check')])
+        co = rc.Coordinator(args)
+        for text in ('Restore the entry in CLAUDE.md.', 'Read `docs/Codex.md`.',
+                     'See "tools/Astra.js"; inspect /tmp/Claude.txt:7.'):
+            (co.context / 'plan.md').write_text(text)
+            co.assert_fresh_prompt('shadow', 'Clean prompt')
+        for text in ('Codex approved this.', 'Claude requested the change.',
+                     'Read CLAUDE.md. Prior verdict: APPROVE',
+                     'See tools/Codex.js:7. Response to reviewer: fixed.'):
+            (co.context / 'plan.md').write_text(text)
+            with patch('subprocess.Popen') as popen:
+                with self.assertRaisesRegex(RuntimeError, 'independence check rejected'):
+                    co.invoke('shadow', 'EXEC', 'Clean prompt', rc.fresh_review_schema(), fresh=True)
+                popen.assert_not_called()
+
+    def test_approve_with_minor_is_advisory_in_next_author_prompt(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off',
+                                      env={'FAKE_APPROVE_MINOR': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prompts = [path.read_text() for path in sorted(
+            (self.run_dir / 'evidence').glob('*-exec-author.prompt.txt'))]
+        self.assertTrue(prompts)
+        self.assertIn('ADVISORY', prompts[0])
+        self.assertIn('explicitly non-blocking', prompts[0])
+        self.assertIn('style remains untidy', prompts[0])
+
+    def test_workitem_reviewer_commands_merge_into_roles_and_probe_digest(self):
+        self.workitem.write_text('# Toy\n```reviewer-commands\nnode verify-real-data.mjs\npython3 audit.py\n```\n')
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--reviewer-command', 'node cli-check.mjs'])
+        co = rc.Coordinator(args)
+        self.assertEqual(co.reviewer_commands(), ['npm test', 'node cli-check.mjs',
+                                                  'node verify-real-data.mjs', 'python3 audit.py'])
+        co.state['phase'] = 'EXEC'
+        for prompt in (co._review_prompt('reviewer', 'snapshot'),
+                       co._review_prompt('shadow', 'snapshot'), co._gate_prompt('snapshot')):
+            self.assertIn('Commands you may run exactly as written', prompt)
+            self.assertIn('node verify-real-data.mjs', prompt)
+        self.assertIn('node verify-real-data.mjs', co.reviewer_flags()['reviewer_commands'])
+
+    def test_polish_round_decline_and_critical_fix_are_bounded(self):
+        declined = self.run_coordinator('--exercise-revisions', env={'FAKE_POLISH_DECLINE': '1'})
+        self.assertEqual(declined.returncode, 0, declined.stderr + declined.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertTrue(state['polish']['completed'])
+        self.assertEqual((state['polish']['author_turns'], state['polish']['reviewer_turns']), (1, 1))
+        self.assertEqual(sum(t['phase'] == 'POLISH' and t['role'] == 'shadow' for t in state['turns']), 0)
+        open_report = (self.run_dir / 'open-findings.md').read_text()
+        self.assertIn('declined: deferred by fake', open_report)
+
+        self.run_dir = self.root / 'critical-polish'
+        fixed = self.run_coordinator('--exercise-revisions', env={'FAKE_POLISH_CRITICAL': '1'})
+        self.assertEqual(fixed.returncode, 0, fixed.stderr + fixed.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertTrue(state['polish']['fix_used'])
+        self.assertEqual((state['polish']['author_turns'], state['polish']['reviewer_turns']), (2, 2))
+        self.assertEqual(sum(t['phase'] == 'POLISH' for t in state['turns']), 4)
+        self.assertEqual(sum(t['role'] == 'gate' for t in state['turns']), 1)
+
+    def test_nonblocking_gate_finding_gets_id_and_enters_polish(self):
+        result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        gate_rows = [row for row in state['finding_ledger']
+                     if row['source'] == 'adversarial-gate']
+        self.assertEqual(len(gate_rows), 1)
+        self.assertRegex(gate_rows[0]['id'], r'^F\d{3}$')
+        self.assertTrue(state['polish']['completed'])
+        polish_author = next(path.read_text() for path in
+                             (self.run_dir / 'evidence').glob('*-polish-author.prompt.txt'))
+        self.assertIn(gate_rows[0]['id'], polish_author)
+
+    def test_resume_polish_copies_old_real_run_imports_gate_and_reuses_sessions(self):
+        # Generate a completed, pre-polish run using only fake CLIs. A live run
+        # is mutable and may already have consumed its one-time polish round.
+        fixture_options = ('--polish-round', 'off', '--shadow', 'off',
+                           '--max-invocations', '40')
+        generated = self.run_coordinator(*fixture_options,
+                                         env={'FAKE_GATE_MINOR': '1'})
+        self.assertEqual(generated.returncode, 0, generated.stderr + generated.stdout)
+        source = self.run_dir
+        fixture = json.loads((source / 'state.json').read_text())
+        self.assertEqual(fixture['status'], 'DONE')
+        self.assertFalse(fixture['polish']['completed'])
+        self.assertTrue(fixture['gate_ran'])
+        self.assertTrue(any(row['source'] == 'adversarial-gate'
+                            for row in fixture['finding_ledger']))
+        source_state = (source / 'state.json').read_bytes()
+        source_ledger = (source / 'findings-ledger.json').read_bytes()
+        self.run_dir = self.root / 'copied-old-run'
+        shutil.copytree(source, self.run_dir)
+        state_path = self.run_dir / 'state.json'
+        state = json.loads(state_path.read_text())
+        original_turns = len(state['turns'])
+        author_session = state['sessions']['author']
+        reviewer_session = state['sessions']['reviewer']
+        state['workspace'] = str(self.workspace)
+        state['workitem'] = str(self.workitem)
+        state['base_commit'] = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'], cwd=self.workspace, check=True,
+            text=True, stdout=subprocess.PIPE).stdout.strip()
+        state['finding_ledger'] = [row for row in state['finding_ledger']
+                                   if row['source'] != 'adversarial-gate']
+        state['config']['codex_bin'] = str(FAKE)
+        state['config']['claude_bin'] = str(FAKE)
+        del state['config']['author_subagents']  # older runs predate this key
+        rc.atomic_json(state_path, state)
+        probe_command = self.command(*fixture_options)
+        probe_command[2] = 'permission-probe'
+        probe_result = subprocess.run(probe_command, cwd=self.root, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(probe_result.returncode, 0, probe_result.stdout + probe_result.stderr)
+        command = self.command(*fixture_options, '--polish')
+        command[2] = 'resume'
+        result = subprocess.run(command, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        final = json.loads(state_path.read_text())
+        self.assertEqual(final['status'], 'DONE')
+        self.assertEqual(final['sessions']['author'], author_session)
+        self.assertEqual(final['sessions']['reviewer'], reviewer_session)
+        self.assertEqual(len(final['turns']), original_turns + 4)
+        self.assertTrue(any(row['source'] == 'adversarial-gate'
+                            for row in final['finding_ledger']))
+        self.assertTrue(final['polish']['completed'])
+        self.assertTrue((self.run_dir / 'open-findings.md').exists())
+        self.assertEqual((source / 'state.json').read_bytes(), source_state)
+        self.assertEqual((source / 'findings-ledger.json').read_bytes(), source_ledger)
+
+    def test_large_observed_output_is_not_delivered_and_round_render_is_bounded(self):
+        result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
+                                      '--adversarial-gate', 'off',
+                                      env={'FAKE_HUGE_OUTPUT': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        revision_prompts = [path.read_text() for path in
+                            (self.run_dir / 'evidence').glob('*-author.prompt.txt')
+                            if 'Delivered review:' in path.read_text()]
+        self.assertTrue(revision_prompts)
+        self.assertLess(max(map(len, revision_prompts)), 10000)
+        self.assertTrue(all('observed_commands' not in prompt and 'line\nline\nline' not in prompt
+                            for prompt in revision_prompts))
+        reviewer_rounds = list((self.run_dir / 'rounds').glob('*-supervisor-*.md'))
+        self.assertTrue(any('(truncated, full output in evidence/' in path.read_text()
+                            for path in reviewer_rounds))
+        self.assertLess(max(path.stat().st_size for path in reviewer_rounds), 10000)
+        receipts = list((self.run_dir / 'evidence').glob('*-reviewer.receipt.json'))
+        self.assertTrue(any(path.stat().st_size > 50000 for path in receipts))
+
+    def test_missing_ledger_disposition_retries_once_then_holds(self):
+        retry = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
+                                     '--adversarial-gate', 'off',
+                                     env={'FAKE_OMIT_DISPOSITION': '1'})
+        self.assertEqual(retry.returncode, 0, retry.stderr + retry.stdout)
+        prompts = [path.read_text() for path in (self.run_dir / 'evidence').glob('*-reviewer.prompt.txt')]
+        self.assertEqual(sum('one allowed protocol retry' in prompt for prompt in prompts), 3)
+
+        self.run_dir = self.root / 'always-omit'
+        held = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
+                                    '--adversarial-gate', 'off',
+                                    env={'FAKE_ALWAYS_OMIT_DISPOSITION': '1'})
+        self.assertEqual(held.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertIn('omitted open finding dispositions after retry', state['hold_reason'])
+
+    def test_ledger_comparison_and_per_turn_usage_are_terminal_artifacts(self):
+        result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_BLOCK': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        ledger = json.loads((self.run_dir / 'findings-ledger.json').read_text())
+        self.assertGreaterEqual(len(ledger), 3)
+        self.assertEqual([row['id'] for row in ledger],
+                         [f'F{index:03d}' for index in range(1, len(ledger) + 1)])
+        self.assertTrue(all(row['status_history'] for row in ledger))
+        self.assertTrue((self.run_dir / 'findings-ledger.md').exists())
+        comparison = (self.run_dir / 'review-comparison.md').read_text()
+        self.assertIn('EXEC round 1', comparison)
+        self.assertIn('| persistent |', comparison)
+        self.assertIn('| shadow |', comparison)
+        self.assertIn('| gate |', comparison)
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(len(usage['turns']), usage['total_cli_turns'])
+        usage_md = (self.run_dir / 'usage.md').read_text()
+        self.assertIn('## Per turn', usage_md)
+        self.assertIn('| Turn | Role | Phase | Budget counted | Error kind | Reset hint | Requests |', usage_md)
+
+    def test_full_fake_run_forces_both_revisions_and_shadow(self):
+        result = self.run_coordinator('--exercise-revisions')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual((state['plan_rounds'], state['exec_rounds']), (2, 2))
+        self.assertEqual((state['plan_reviews'], state['exec_reviews']), (2, 2))
+        self.assertTrue(state['gate_ran'])
+        self.assertEqual(len(state['turns']), 13)
+        self.assertEqual(sum(t['role'] == 'shadow' for t in state['turns']), 2)
+        self.assertEqual(sum(t['role'] == 'gate' for t in state['turns']), 1)
+        self.assertIn('type(x) is int', (self.workspace / 'sum_ints.py').read_text())
+        self.assertIn('sum_ints.py', (self.run_dir / 'context' / 'delta.patch').read_text())
+        self.assertIn('sum_ints.py', (self.run_dir / 'context' / 'status.txt').read_text())
+        self.assertTrue((self.run_dir / 'context' / 'delta.stat').exists())
+        self.assertTrue((self.run_dir / 'context' / 'delta-since-last-review.patch').exists())
+        self.assertEqual(len(list((self.run_dir / 'rounds').glob('*.md'))), 13)
+        prompts = list((self.run_dir / 'evidence').glob('*.prompt.txt'))
+        self.assertTrue(prompts)
+        self.assertLessEqual(max(len(path.read_text().splitlines()) for path in prompts), 60)
+        self.assertTrue(all('Reviewed snapshot must be exactly' not in path.read_text() for path in prompts))
+        fresh_prompts = [path.read_text() for path in prompts
+                         if '-shadow.prompt.' in path.name or '-gate.prompt.' in path.name]
+        self.assertTrue(fresh_prompts)
+        self.assertTrue(all(not __import__('re').search(r'\bF\d{3,}\b', text)
+                            for text in fresh_prompts))
+        fresh_schemas = [json.loads(path.read_text()) for path in
+                         (self.run_dir / 'evidence').glob('*-shadow.schema.json')]
+        self.assertTrue(all('prior_findings' not in schema['properties']
+                            for schema in fresh_schemas))
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(usage['waiting_model_calls'], 0)
+        self.assertEqual(usage['total_cli_turns'], 13)
+        self.assertIn('author', usage['by_role'])
+        self.assertEqual(usage['overall']['cli_turns'], 13)
+        self.assertIn('uncached_input_tokens', usage['overall'])
+        usage_md = (self.run_dir / 'usage.md').read_text()
+        self.assertIn('Uncached input', usage_md)
+        self.assertIn('author/TOTAL', usage_md)
+        self.assertIn('OVERALL', usage_md)
+        self.assertTrue(any(e['command'] == 'python3 -m unittest' for
+                            t in state['turns'] if t.get('answer') for e in t['answer'].get('self_run_evidence', [])))
+        approvals = [t for t in state['turns'] if t['phase'] == 'EXEC' and
+                     t.get('answer', {}).get('status') == 'APPROVE']
+        self.assertTrue(approvals)
+        self.assertTrue(all(t['answer']['observed_commands'] for t in approvals))
+        round_text = '\n'.join(p.read_text() for p in (self.run_dir / 'rounds').glob('*.md'))
+        self.assertIn('Observed Commands', round_text)
+        self.assertIn('Claimed Self Run Evidence', round_text)
+
+    def test_permission_probe_runs_exact_allowed_and_checks_writes(self):
+        command = self.command('--exercise-revisions')
+        command[2] = 'permission-probe'
+        result = subprocess.run(command, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'PASS')
+        self.assertEqual(report['author_permission_probe']['status'], 'PASS')
+        self.assertTrue(all(report['author_permission_probe']['outcomes'].values()))
+        self.assertTrue(report['author_permission_probe']['outcomes']['run_tmpdir_write_allowed'])
+        self.assertTrue(report['author_permission_probe']['outcomes']['external_tmpdir_write_denied'])
+        probe_args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                                             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                                             '--author-effort', 'low', '--reviewer-effort', 'low',
+                                             '--gate-effort', 'low', '--test-command', 'python3 -m unittest',
+                                             '--timeout', '10', '--exercise-revisions',
+                                             '--codex-bin', str(FAKE), '--claude-bin', str(FAKE)])
+        self.assertEqual(report['author_flags_digest'], rc.Coordinator(probe_args).author_flags_digest())
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        author_probe_turns = [row for row in state['turns']
+                              if row['role'] == 'author' and row['phase'] == 'AUTHOR_PERMISSION_PROBE']
+        self.assertEqual(len(author_probe_turns), 1)
+        author_probe_command = author_probe_turns[0]['command']
+        self.assertIn('--ignore-rules', author_probe_command)
+        self.assertIn('sandbox_mode="workspace-write"', author_probe_command)
+        expected_tmpdir = rc.Coordinator(probe_args).author_temp_dir
+        self.assertIn('sandbox_workspace_write.writable_roots=' +
+                      json.dumps([str(expected_tmpdir)]), author_probe_command)
+        for setting in ('sandbox_workspace_write.exclude_tmpdir_env_var=false',
+                        'sandbox_workspace_write.exclude_slash_tmp=true'):
+            self.assertIn(setting, author_probe_command)
+        self.assertEqual(author_probe_turns[0]['environment_overrides'],
+                         {'TMPDIR': str(expected_tmpdir)})
+        self.assertTrue(report['allowed_command_ran'])
+        self.assertEqual(len(report['write_attempts_denied']), 10)
+        self.assertTrue(all(report['write_attempts_denied'].values()))
+        self.assertEqual(set(report['write_attempt_outcomes'].values()), {'denied'})
+        self.assertEqual(report['failure_reasons'], [])
+        self.assertTrue(report['snapshot_unchanged'])
+        probe_prompt = next((self.run_dir / 'evidence').glob('*-probe-probe.prompt.txt')).read_text()
+        self.assertIn('authorized test of the harness', probe_prompt)
+        self.assertIn('MUST attempt every command', probe_prompt)
+        self.assertNotIn('read-only permission probe', probe_prompt)
+        main = self.run_coordinator('--exercise-revisions', skip_probe=False)
+        self.assertEqual(main.returncode, 0, main.stderr + main.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(len(state['turns']), 15)
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertIn('probe', usage['by_role'])
+        self.assertEqual(usage['by_role']['probe']['cli_turns'], 1)
+
+    def test_claude_permission_probe_requires_observed_os_sandbox_denial_and_cleans_escape(self):
+        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        command[2] = 'permission-probe'
+        passing = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+        self.assertEqual(passing.returncode, 0, passing.stderr + passing.stdout)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'PASS')
+        self.assertTrue(report['claude_sandbox_write_denied'])
+        transient = [row for row in report['observed_commands']
+                     if ('paired-session-claude-sandbox-' in row.get('command', '') or
+                     '.paired-session-run-dir-probe-' in row.get('command', '') or
+                     '.paired-session-context-probe-' in row.get('command', ''))]
+        self.assertEqual(len(transient), 3)
+        self.assertTrue(all(row['error'] for row in transient))
+        self.assertNotIn(json.dumps(transient), json.dumps(report['reviewer_flags']))
+        config = json.loads((self.run_dir / 'state.json').read_text())['config']
+        self.assertNotIn(json.dumps(transient), json.dumps(config))
+        self.assertEqual(set(report['claude_sandbox_write_denials']), {'host_tmp', 'run_dir', 'context'})
+        self.assertTrue(all(all(check.values()) for check in report['claude_sandbox_write_denials'].values()))
+        for row in transient:
+            target = Path(row['command'].split('>', 1)[1].strip().strip("'\""))
+            self.assertFalse(target.exists())
+
+        self.run_dir = self.root / 'sandbox-escape-run'
+        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        command[2] = 'permission-probe'
+        escaped = subprocess.run(command, cwd=self.root, env={**os.environ, 'FAKE_SANDBOX_WRITE': '1'},
+                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(escaped.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertFalse(report['claude_sandbox_write_denied'])
+        self.assertIn('claude_sandbox_write_denials', report)
+        self.assertFalse(all(all(check.values()) for check in report['claude_sandbox_write_denials'].values()))
+        self.assertTrue(any(reason.startswith('claude-sandbox-') and 'write-not-denied-or-not-observed' in reason
+                            for reason in report['failure_reasons']))
+        escaped_rows = [row for row in report['observed_commands']
+                        if ('paired-session-claude-sandbox-' in row.get('command', '') or
+                            '.paired-session-run-dir-probe-' in row.get('command', '') or
+                            '.paired-session-context-probe-' in row.get('command', ''))]
+        self.assertEqual(len(escaped_rows), 3)
+        escaped_paths = [Path(row['command'].split('>', 1)[1].strip().strip("'\""))
+                         for row in escaped_rows]
+        self.assertTrue(all(not path.exists() for path in escaped_paths),
+                        'coordinator must clean only its unique transient probe files')
+
+        self.run_dir = self.root / 'sandbox-no-os-marker-run'
+        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        command[2] = 'permission-probe'
+        no_marker = subprocess.run(command, cwd=self.root,
+                                   env={**os.environ, 'FAKE_SANDBOX_NO_OS_MARKER': '1'},
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(no_marker.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertTrue(all(check['exact_command_observed_once'] and check['target_absent']
+                            for check in report['claude_sandbox_write_denials'].values()))
+        self.assertTrue(all(not check['failed_at_os_sandbox']
+                            for check in report['claude_sandbox_write_denials'].values()))
+
+    def test_claude_probe_runtime_error_records_escape_before_cleanup(self):
+        co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        created = []
+
+        def escape_then_fail(role, phase, prompt, schema, **kwargs):
+            import shlex
+            # Extract the literal unique write commands from the generated probe.
+            for line in prompt.splitlines():
+                if line.startswith('printf probe > '):
+                    target = Path(shlex.split(line)[-1])
+                    target.write_text('escaped')
+                    created.append(target)
+            raise RuntimeError('simulated probe failure')
+
+        with patch.object(co, 'invoke', side_effect=escape_then_fail):
+            self.assertFalse(co.permission_probe())
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertIn('claude-sandbox-probe-write-escaped', report['failure_reasons'])
+        self.assertEqual(len(created), 3)
+        self.assertEqual(len(report['claude_sandbox_escape_targets_cleaned']), 3)
+        self.assertEqual(set(report['claude_sandbox_write_denials']), {'host_tmp', 'run_dir', 'context'})
+        self.assertTrue(all(not check['target_absent']
+                            for check in report['claude_sandbox_write_denials'].values()))
+        self.assertTrue(all(not path.exists() for path in created))
+
+    def test_author_permission_probe_requires_unique_structured_exit_events(self):
+        for mode in ('missing-exit', 'duplicate-event'):
+            with self.subTest(mode=mode):
+                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.root / ('probe-' + mode)),
+                    '--codex-bin', str(FAKE), '--author-vendor', 'codex'])
+                co = rc.Coordinator(args)
+
+                def simulate(role, phase, prompt, schema, **kwargs):
+                    self.assertEqual((role, phase), ('author', 'AUTHOR_PERMISSION_PROBE'))
+                    commands = json.loads(prompt.split('PROBE_COMMANDS_JSON: ', 1)[1].splitlines()[0])
+                    import shlex
+                    for command in commands[:2]:
+                        parts = shlex.split(command)
+                        target_arg = parts[parts.index('>') + 1]
+                        target = (co.author_temp_dir / target_arg[len('$TMPDIR/'):]
+                                  if target_arg.startswith('$TMPDIR/') else Path(target_arg))
+                        target.write_text('probe\n')
+                    rows = [{'command': command,
+                             'exit_code': (0 if index < 2 else
+                                           None if mode == 'missing-exit' else 126),
+                             'error': index >= 2}
+                            for index, command in enumerate(commands)]
+                    if mode == 'duplicate-event':
+                        rows.append(dict(rows[0]))
+                    return {'answer': {'observed_commands': rows}, 'snapshot': 'scratch-snapshot'}
+
+                with patch.object(co, 'invoke', side_effect=simulate):
+                    report = co._author_permission_probe()
+                self.assertEqual(report['status'], 'FAIL')
+                failed_outcome = ('workspace_write_allowed' if mode == 'duplicate-event'
+                                  else 'external_tmpdir_write_denied')
+                self.assertFalse(report['outcomes'][failed_outcome])
+
+    def test_fresh_shadow_critical_is_ledgered_and_delivered_even_if_reviewer_approves(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'shadow-critical-run'),
+            '--shadow', 'on', '--author-vendor', 'codex', '--reviewer-vendor', 'claude'])
+        co = rc.Coordinator(args)
+        co.state['phase'] = 'EXEC'
+        co.state['next'] = 'reviewer'
+        co.state['exec_rounds'] = 1
+        current = rc.git_snapshot(self.workspace)[0]
+        persistent = {'answer': {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
+                                 'self_run_evidence': [{'command': 'python3 -m unittest'}],
+                                 'reviewed_snapshot': current},
+                      'snapshot': current, 'sequence': 1, 'role': 'reviewer'}
+        shadow_finding = {'severity': 'CRITICAL', 'file': 'tracked.txt',
+                          'summary': 'fresh-role blocker',
+                          'failure_scenario': 'the reviewed behavior remains incorrect'}
+        shadow = {'answer': {'status': 'APPROVE', 'full_review': [shadow_finding],
+                             'self_run_evidence': []},
+                  'snapshot': current, 'sequence': 2, 'role': 'shadow'}
+
+        def fake_invoke(role, *_args, **_kwargs):
+            return persistent if role == 'reviewer' else shadow
+
+        with patch.object(co, 'materialize_review_context'), patch.object(co, 'invoke', side_effect=fake_invoke):
+            co.reviewer_turn()
+
+        ledger_row = next(row for row in co.state['finding_ledger'] if row['source'] == 'fresh-shadow')
+        self.assertEqual(ledger_row['severity'], 'CRITICAL')
+        self.assertEqual(ledger_row['status'], 'open')
+        self.assertEqual(co.state['next'], 'author')
+        delivered = json.loads(co.state['delivered_review'])
+        self.assertEqual(delivered['status'], 'REVISE')
+        self.assertEqual(delivered['source'], 'persistent-reviewer+fresh-shadow')
+        self.assertEqual(delivered['findings'][0]['source'], 'fresh-shadow')
+        comparison = co.state['exec_comparisons'][0]
+        self.assertEqual(comparison['persistent']['verdict'], 'APPROVE')
+        self.assertEqual(comparison['effective_verdict'], 'REVISE')
+        co.write_comparison()
+        comparison_text = (co.run_dir / 'review-comparison.md').read_text()
+        self.assertIn('persistent | APPROVE', comparison_text)
+        self.assertIn('Effective workflow verdict: **REVISE**', comparison_text)
+
+    def test_done_and_done_resumes_reject_open_blocking_findings(self):
+        for action in ('done', 'resume', 'polish'):
+            with self.subTest(action=action):
+                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.root / ('done-' + action))])
+                co = rc.Coordinator(args)
+                co.state['status'] = 'DONE'
+                co.state['finding_ledger'].append({
+                    'id': 'F900', 'origin_round': 1, 'phase': 'EXEC',
+                    'source': 'fresh-shadow', 'severity': 'CRITICAL', 'file': 'tracked.txt',
+                    'summary': 'blocking regression', 'failure_scenario': 'unsafe behavior persists',
+                    'body': '', 'status': 'open', 'status_history': []})
+                if action == 'done':
+                    result = co.done()
+                elif action == 'resume':
+                    result = co.resume()
+                else:
+                    result = co.resume_polish()
+                self.assertEqual(result, 'HOLD')
+                self.assertIn('F900', co.state['hold_reason'])
+
+    def test_run_refuses_pass_probe_bound_to_different_author_flags(self):
+        command = self.command()
+        command[2] = 'permission-probe'
+        probe = subprocess.run(command, cwd=self.root, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(probe.returncode, 0, probe.stderr + probe.stdout)
+        report_path = self.run_dir / 'permission-probe.json'
+        report = json.loads(report_path.read_text())
+        report['author_flags_digest'] = '0' * 64
+        rc.atomic_json(report_path, report)
+        result = self.run_coordinator(skip_probe=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('author flags do not match', result.stdout)
+
+    def test_failed_mutating_probe_always_writes_report(self):
+        command = self.command()
+        command[2] = 'permission-probe'
+        env = os.environ.copy()
+        env['FAKE_PROBE_MUTATE'] = '1'
+        result = subprocess.run(command, cwd=self.root, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertFalse(report['snapshot_unchanged'])
+        self.assertIn('snapshot-mutated', report['failure_reasons'])
+
+    def test_run_refuses_pass_probe_bound_to_different_reviewer_flags(self):
+        command = self.command()
+        command[2] = 'permission-probe'
+        probe = subprocess.run(command, cwd=self.root, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(probe.returncode, 0, probe.stderr + probe.stdout)
+        report_path = self.run_dir / 'permission-probe.json'
+        report = json.loads(report_path.read_text())
+        report['reviewer_flags_digest'] = '0' * 64
+        rc.atomic_json(report_path, report)
+        result = self.run_coordinator(skip_probe=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('reviewer flags do not match', result.stdout)
+
+    def test_resume_refuses_when_permission_probe_is_missing_or_stale(self):
+        for mode in ('missing', 'stale'):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('resume-probe-' + mode)
+                result = self.run_coordinator('--stop-after-plan')
+                self.assertIn('HOLD', result.stdout)
+                if mode == 'stale':
+                    probe_command = self.command()
+                    probe_command[2] = 'permission-probe'
+                    probe = subprocess.run(probe_command, cwd=self.root, text=True,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+                    report_path = self.run_dir / 'permission-probe.json'
+                    report = json.loads(report_path.read_text())
+                    report['author_flags_digest'] = '0' * 64
+                    rc.atomic_json(report_path, report)
+                command = self.command()
+                command[2] = 'resume'
+                resumed = subprocess.run(command, cwd=self.root, text=True,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(resumed.returncode, 2)
+                expected = ('permission probe author flags do not match' if mode == 'stale'
+                            else 'permission-probe.json is missing')
+                self.assertIn('REFUSED: ' + expected, resumed.stdout)
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                self.assertEqual(state['exec_rounds'], 0)
+
+    def test_resume_config_mismatch_is_refused_without_traceback(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--test-command', 'python3 -m unittest'])
+        co = rc.Coordinator(args)
+        co.state['config']['author_effort'] = 'high'
+        co.save()
+        command = self.command('--skip-probe')
+        command[2] = 'resume'
+        result = subprocess.run(command, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('REFUSED: resume configuration differs: author_effort', result.stdout)
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_resume_promotes_active_receipt_to_uncertain_without_replay(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        active = {'pid': os.getpid(), 'role': 'author', 'phase': 'EXEC', 'sequence': 2}
+        co.state['active'] = active
+        co.state['hold_reason'] = ''
+        co.save()
+        with patch.object(co, 'drive') as drive:
+            self.assertEqual(co.resume(), 'HOLD')
+        drive.assert_not_called()
+        self.assertEqual(co.state['uncertain_active'], active)
+        self.assertIsNone(co.state['active'])
+        self.assertIn('uncertain in-flight', co.state['hold_reason'])
+        with patch('os.killpg') as kill_group:
+            self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        kill_group.assert_called_once_with(os.getpid(), 0)
+        drive.assert_not_called()
+        self.assertIn('still alive', co.state['hold_reason'])
+
+    def test_resume_fails_closed_when_uncertain_process_group_cannot_be_checked(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        co.state['uncertain_active'] = {'pid': 2000, 'role': 'author', 'phase': 'EXEC'}
+        co.state['status'] = 'HOLD'
+        with patch('os.killpg', side_effect=PermissionError):
+            with patch.object(co, 'drive') as drive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        drive.assert_not_called()
+        self.assertIn('cannot verify uncertain CLI process group', co.state['hold_reason'])
+
+    def test_resume_fails_closed_for_uncertain_receipt_without_pid(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        uncertain = {'role': 'author', 'phase': 'EXEC', 'sequence': 1}
+        co.state['uncertain_active'] = uncertain
+        co.state['status'] = 'HOLD'
+        with patch('os.killpg') as kill_group:
+            with patch.object(co, 'drive') as drive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        kill_group.assert_not_called()
+        drive.assert_not_called()
+        self.assertEqual(co.state['uncertain_active'], uncertain)
+        self.assertIn('process existence cannot be verified', co.state['hold_reason'])
+        self.assertIn('operator/manual resolution', co.state['hold_reason'])
+
+    def test_permission_probe_preserves_active_receipt_instead_of_overwriting_it(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        active = {'pid': os.getpid(), 'role': 'reviewer', 'phase': 'EXEC', 'sequence': 3}
+        co.state['active'] = active
+        co.save()
+        with patch.object(co, 'invoke') as invoke:
+            self.assertFalse(co.permission_probe())
+        invoke.assert_not_called()
+        self.assertEqual(co.state['uncertain_active'], active)
+        self.assertIsNone(co.state['active'])
+
+    def test_stopped_permission_probe_requires_explicit_retry_before_new_probe(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        active = {'pid': 987654321, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
+                  'sequence': 2}
+        co.state['active'] = active
+        co.save()
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
+                  'snapshot': snapshot, 'sequence': 1, 'role': 'probe'}
+        with patch('os.killpg', side_effect=ProcessLookupError):
+            with patch.object(co, 'invoke', return_value=result) as invoke:
+                with patch.object(co, '_author_permission_probe', return_value={'status': 'PASS'}):
+                    self.assertFalse(co.permission_probe())
+                    self.assertEqual(co.state['uncertain_active'], active)
+                    invoke.assert_not_called()
+                    self.assertFalse(co.permission_probe(retry_uncertain=True))
+        invoke.assert_called_once()
+        self.assertIsNone(co.state['uncertain_active'])
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertIn('permission probe failed', co.state['hold_reason'])
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(len(saved['abandoned_turns']), 1)
+        self.assertTrue(saved['abandoned_turns'][0]['group_gone'])
+        self.assertEqual(saved['abandoned_turns'][0]['provider_usage'], 'unknown')
+        reloaded = rc.Coordinator(args)
+        self.assertEqual(len(reloaded.state['abandoned_turns']), 1)
+
+    def test_permission_probe_clears_unverifiable_hold_after_later_group_check(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        uncertain = {'pid': 987654322, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
+                     'sequence': 2}
+        co.state['uncertain_active'] = uncertain
+        co.state['status'] = 'HOLD'
+        co.save()
+        with patch('os.killpg', side_effect=PermissionError):
+            self.assertFalse(co.permission_probe(retry_uncertain=True))
+        self.assertIn('cannot verify uncertain permission-probe', co.state['hold_reason'])
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
+                  'snapshot': snapshot, 'sequence': 3, 'role': 'probe'}
+        with patch('os.killpg', side_effect=ProcessLookupError):
+            with patch.object(co, 'invoke', return_value=result):
+                with patch.object(co, '_author_permission_probe', return_value={'status': 'PASS'}):
+                    self.assertFalse(co.permission_probe(retry_uncertain=True))
+        self.assertIsNone(co.state['uncertain_active'])
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertIn('permission probe failed', co.state['hold_reason'])
+        self.assertNotIn('cannot verify', co.state['hold_reason'])
+        self.assertEqual(len(co.state['abandoned_turns']), 1)
+
+    def test_uncertain_permission_probe_refuses_live_or_unverifiable_process_group(self):
+        for side_effect in (None, PermissionError, OSError('operation unavailable')):
+            with self.subTest(side_effect=side_effect):
+                label = ('alive' if side_effect is None else
+                         'denied' if isinstance(side_effect, PermissionError) else 'unavailable')
+                self.run_dir = self.root / ('probe-group-' + label)
+                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+                co = rc.Coordinator(args)
+                active = {'pid': 12345, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
+                          'sequence': 2}
+                co.state['active'] = active
+                co.save()
+                with patch('os.killpg', side_effect=side_effect) as kill_group:
+                    with patch.object(co, 'invoke') as invoke:
+                        with patch.object(co, '_author_permission_probe') as probe:
+                            self.assertFalse(co.permission_probe(retry_uncertain=True))
+                kill_group.assert_called_once_with(12345, 0)
+                invoke.assert_not_called()
+                probe.assert_not_called()
+                self.assertEqual(co.state['uncertain_active'], active)
+                self.assertIsNone(co.state['active'])
+
+    def test_uncertain_permission_probe_without_valid_group_id_fails_closed(self):
+        for pid in (None, 0, True, '12345', 2**31, -1):
+            with self.subTest(pid=pid):
+                self.run_dir = self.root / ('probe-group-invalid-' + str(pid))
+                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+                co = rc.Coordinator(args)
+                uncertain = {'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
+                             'sequence': 2}
+                if pid is not None:
+                    uncertain['pid'] = pid
+                co.state['uncertain_active'] = uncertain
+                co.save()
+                with patch('os.killpg') as kill_group:
+                    with patch.object(co, 'invoke') as invoke:
+                        with patch.object(co, '_author_permission_probe') as probe:
+                            self.assertFalse(co.permission_probe(retry_uncertain=True))
+                kill_group.assert_not_called()
+                invoke.assert_not_called()
+                probe.assert_not_called()
+                self.assertEqual(co.state['uncertain_active'], uncertain)
+
+    def test_popen_failure_clears_known_unstarted_receipt_and_budget(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        before = co.state['invocations_used']
+        actual_popen = subprocess.Popen
+        def fail_cli_spawn(*popen_args, **popen_kwargs):
+            if popen_kwargs.get('start_new_session'):
+                raise OSError('executable missing')
+            return actual_popen(*popen_args, **popen_kwargs)
+        with patch('subprocess.Popen', side_effect=fail_cli_spawn):
+            with self.assertRaisesRegex(RuntimeError, 'failed to start'):
+                co.invoke('author', 'EXEC', co._author_prompt(), rc.review_schema())
+        self.assertIsNone(co.state['active'])
+        self.assertEqual(co.state['invocations_used'], before)
+        saved = json.loads(co.state_path.read_text())
+        self.assertIsNone(saved['active'])
+        self.assertEqual(saved['invocations_used'], before)
+        self.assertEqual(saved['turns'], [])
+        failure = saved['spawn_failures'][-1]
+        self.assertIn('executable missing', failure['error'])
+        self.assertFalse(failure['invocation_budget_counted'])
+        self.assertFalse(failure['child_created'])
+        self.assertEqual(failure['sequence'], 1)
+        with patch.object(co, 'drive', return_value='DONE') as drive:
+            self.assertEqual(co.resume(), 'DONE')
+        drive.assert_called_once()
+
+    def test_usage_report_distinguishes_abandoned_invocation_and_spawn_failure(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        co.archive_abandoned_turn({'sequence': 8, 'role': 'reviewer', 'phase': 'PLAN_REVIEW',
+                                   'invocation_budget_counted': True})
+        co.state['invocations_used'] = 1
+        actual_popen = subprocess.Popen
+        def fail_cli_spawn(*popen_args, **popen_kwargs):
+            if popen_kwargs.get('start_new_session'):
+                raise OSError('executable missing')
+            return actual_popen(*popen_args, **popen_kwargs)
+        with patch('subprocess.Popen', side_effect=fail_cli_spawn):
+            with self.assertRaisesRegex(RuntimeError, 'failed to start'):
+                co.invoke('author', 'EXEC', co._author_prompt(), rc.review_schema())
+
+        co.write_usage()
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(usage['invocations_used'], 1)
+        self.assertEqual(usage['total_cli_turns'], 0)
+        self.assertEqual(usage['usage_reconciliation'], [
+            {'source': 'abandoned_turn', 'sequence': 8, 'role': 'reviewer',
+             'phase': 'PLAN_REVIEW', 'invocation_budget_counted': True,
+             'provider_usage': 'unknown'},
+            {'source': 'spawn_failure', 'sequence': 1, 'role': 'author',
+             'phase': 'EXEC', 'invocation_budget_counted': False,
+             'provider_usage': 'none'},
+        ])
+        usage_md = (self.run_dir / 'usage.md').read_text()
+        self.assertIn('| abandoned_turn | 8 | reviewer | PLAN_REVIEW | True | unknown |', usage_md)
+        self.assertIn('| spawn_failure | 1 | author | EXEC | False | none |', usage_md)
+
+    def test_usage_report_includes_unresolved_active_receipt_once(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        receipt = {'sequence': 12, 'role': 'author', 'phase': 'EXEC',
+                   'invocation_budget_counted': True}
+        co.state['uncertain_active'] = receipt
+        co.state['usage_reconciliation'] = [{'source': 'abandoned_turn', 'sequence': 7,
+            'role': 'reviewer', 'phase': 'PLAN_REVIEW', 'invocation_budget_counted': True,
+            'provider_usage': 'unknown'}]
+        co.write_usage()
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        matches = [row for row in usage['usage_reconciliation'] if row['sequence'] == 12]
+        self.assertEqual(matches, [{'source': 'uncertain_active', 'sequence': 12,
+            'role': 'author', 'phase': 'EXEC', 'invocation_budget_counted': True,
+            'provider_usage': 'unknown'}])
+        usage_md = (self.run_dir / 'usage.md').read_text()
+        self.assertIn('| uncertain_active | 12 | author | EXEC | True | unknown |', usage_md)
+
+    def test_opening_cli_output_path_failure_is_refunded_and_durable(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        before = co.state['invocations_used']
+        original_open = Path.open
+        def fail_log_open(path, *open_args, **open_kwargs):
+            if path.name.endswith('.stdout.jsonl') or path.name.endswith('.stderr.log'):
+                raise PermissionError('log path denied')
+            return original_open(path, *open_args, **open_kwargs)
+        with patch.object(Path, 'open', new=fail_log_open):
+            with self.assertRaisesRegex(RuntimeError, 'failed to start'):
+                co.invoke('author', 'EXEC', co._author_prompt(), rc.review_schema())
+        saved = json.loads(co.state_path.read_text())
+        self.assertIsNone(saved['active'])
+        self.assertEqual(saved['invocations_used'], before)
+        self.assertEqual(saved['turns'], [])
+        self.assertEqual(saved['spawn_failures'][-1]['error'], 'PermissionError: log path denied')
+
+    def test_command_preparation_failure_does_not_spend_budget(self):
+        co = rc.Coordinator(rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)]))
+        with patch.object(co, 'command', side_effect=OSError('command preparation failed')):
+            with self.assertRaisesRegex(OSError, 'command preparation failed'):
+                co.invoke('author', 'EXEC', co._author_prompt(), rc.review_schema())
+        reloaded = rc.Coordinator(co.args)
+        self.assertEqual(reloaded.state['invocations_used'], 0)
+        self.assertEqual(reloaded.state['turns'], [])
+
+    def test_close_error_after_popen_preserves_pid_and_budget(self):
+        co = rc.Coordinator(rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)]))
+        original_open = Path.open
+        class CloseError:
+            def __init__(self, file): self.file = file
+            def __enter__(self): return self.file.__enter__()
+            def __exit__(self, *exc):
+                self.file.__exit__(*exc)
+                raise OSError('close failed')
+        def wrapped_open(path, *args, **kwargs):
+            opened = original_open(path, *args, **kwargs)
+            return CloseError(opened) if path.name.endswith('.stdout.jsonl') else opened
+        child = type('Child', (), {'pid': 43210})()
+        actual_popen = subprocess.Popen
+        def cli_popen(*args, **kwargs):
+            return child if kwargs.get('start_new_session') else actual_popen(*args, **kwargs)
+        with patch.object(Path, 'open', new=wrapped_open):
+            with patch('subprocess.Popen', side_effect=cli_popen):
+                with patch('os.killpg') as kill_group:
+                    with self.assertRaisesRegex(OSError, 'close failed'):
+                        co.invoke('author', 'EXEC', co._author_prompt(), rc.review_schema())
+        kill_group.assert_called_once_with(43210, signal.SIGKILL)
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['active']['pid'], 43210)
+        self.assertIsNone(saved.get('uncertain_active'))
+        self.assertEqual(saved['invocations_used'], 1)
+        self.assertEqual(saved.get('spawn_failures', []), [])
+
+    def test_active_retry_flag_verifies_and_recovers_in_one_resume(self):
+        co = rc.Coordinator(rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)]))
+        active = {'pid': 43211, 'role': 'author', 'phase': 'EXEC', 'sequence': 4,
+                  'invocation_budget_counted': True}
+        co.state['active'] = active
+        co.save()
+        with patch('os.killpg', side_effect=ProcessLookupError) as kill_group:
+            with patch.object(co, 'drive', return_value='DONE') as drive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'DONE')
+        kill_group.assert_called_once_with(43211, 0)
+        drive.assert_called_once_with()
+        reloaded = rc.Coordinator(co.args)
+        self.assertEqual(len(reloaded.state['abandoned_turns']), 1)
+        self.assertEqual(reloaded.state['turns'], [])
+
+    def test_retry_refusals_durably_hold_active_receipts_and_block_drive(self):
+        cases = (
+            ('missing-pid', {'role': 'author', 'phase': 'EXEC', 'sequence': 11}, None),
+            ('live', {'pid': 43212, 'role': 'author', 'phase': 'EXEC', 'sequence': 12}, None),
+            ('unverifiable', {'pid': 43213, 'role': 'author', 'phase': 'EXEC', 'sequence': 13},
+             PermissionError('not permitted')),
+        )
+        for name, receipt, error in cases:
+            with self.subTest(name=name):
+                self.run_dir = self.root / name
+                co = self.coordinator()
+                co.state['status'] = 'ACTIVE'
+                co.state['active'] = dict(receipt)
+                co.save()
+                if name == 'missing-pid':
+                    result = co.resume(retry_uncertain=True)
+                else:
+                    with patch('os.killpg', side_effect=error or None):
+                        result = co.resume(retry_uncertain=True)
+                self.assertEqual(result, 'HOLD')
+                saved = json.loads(co.state_path.read_text())
+                self.assertEqual(saved['status'], 'HOLD')
+                self.assertIsNone(saved['active'])
+                self.assertEqual(saved['uncertain_active'], receipt)
+                reloaded = rc.Coordinator(co.args)
+                with patch.object(reloaded, 'author_turn') as author_turn:
+                    self.assertEqual(reloaded.drive(), 'HOLD')
+                author_turn.assert_not_called()
+
+    def test_migration_counts_uncertain_and_abandoned_invocations_once(self):
+        co = self.coordinator()
+        co.state['invocations_used'] = 0
+        co.state['invocation_budget_version'] = 0
+        co.state['uncertain_active'] = {'sequence': 20, 'invocation_budget_counted': True}
+        co.state['abandoned_turns'] = [
+            {'sequence': 21, 'invocation_budget_counted': True},
+            {'sequence': 22, 'invocation_budget_counted': True},
+        ]
+        co.state['spawn_failures'] = [{'sequence': 23, 'invocation_budget_counted': False}]
+        self.assertEqual(co._migrate_invocation_budget(), 3)
+
+    def test_migration_keeps_timed_out_429_invocation_counted(self):
+        co = self.coordinator()
+        co.state['invocations_used'] = 0
+        co.state['invocation_budget_version'] = 0
+        co.state['turns'] = [{
+            'sequence': 24, 'phase': 'PLAN', 'role': 'author',
+            'returncode': -9, 'timed_out': True,
+        }]
+        (co.evidence / '024-plan-author.stderr.log').write_text('429 too many requests\n')
+
+        self.assertEqual(co._migrate_invocation_budget(), 1)
+        self.assertTrue(co.state['turns'][0]['invocation_budget_counted'])
+
+    def test_migration_keeps_positive_returncode_timed_out_429_counted(self):
+        co = self.coordinator()
+        co.state['invocations_used'] = 0
+        co.state['invocation_budget_version'] = 0
+        co.state['turns'] = [{
+            'sequence': 26, 'phase': 'PLAN', 'role': 'author',
+            'returncode': 7, 'timed_out': True,
+        }]
+        (co.evidence / '026-plan-author.stderr.log').write_text('429 too many requests\n')
+
+        self.assertEqual(co._migrate_invocation_budget(), 1)
+        self.assertTrue(co.state['turns'][0]['invocation_budget_counted'])
+        self.assertNotEqual(co.state['turns'][0].get('error_kind'), 'rate_limited')
+
+    def test_migration_keeps_legacy_sigkilled_429_invocation_counted(self):
+        co = self.coordinator()
+        co.state['invocations_used'] = 0
+        co.state['invocation_budget_version'] = 0
+        co.state['turns'] = [{
+            'sequence': 25, 'phase': 'PLAN', 'role': 'author', 'returncode': -9,
+        }]
+        (co.evidence / '025-plan-author.stderr.log').write_text('429 too many requests\n')
+
+        self.assertEqual(co._migrate_invocation_budget(), 1)
+        self.assertTrue(co.state['turns'][0]['invocation_budget_counted'])
+
+    def test_probe_retries_after_real_group_leader_exits_but_descendant_lives(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        parent_signal, descendant_signal = socket.socketpair()
+        descendant_signal.set_inheritable(True)
+        child = subprocess.Popen([sys.executable, '-c',
+            'import socket,subprocess,sys; '
+            'fd=int(sys.argv[1]); '
+            'subprocess.Popen([sys.executable,"-c",'
+            '"import socket,sys,time; s=socket.socket(fileno=int(sys.argv[1])); '
+            's.sendall(b\\\"R\\\"); time.sleep(600)",str(fd)], pass_fds=(fd,))',
+            str(descendant_signal.fileno())], start_new_session=True,
+            pass_fds=(descendant_signal.fileno(),))
+        descendant_signal.close()
+        try:
+            child.wait(timeout=5)
+            parent_signal.settimeout(5)
+            self.assertEqual(parent_signal.recv(1), b'R')
+            active = {'pid': child.pid, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
+                      'sequence': 2}
+            co.state['active'] = active
+            co.state['hold_reason'] = 'uncertain permission-probe turn; stale'
+            co.save()
+            with patch.object(co, 'invoke') as invoke:
+                self.assertFalse(co.permission_probe(retry_uncertain=True))
+            invoke.assert_not_called()
+            self.assertEqual(co.state['uncertain_active'], active)
+            # The descendant's ready byte proves the original group is still
+            # owned and alive. Kill it before waiting for EOF; never poll its
+            # numeric PGID after it may have disappeared or been reused.
+            parent_signal.setblocking(False)
+            try:
+                self.assertEqual(parent_signal.recv(1), b'')
+                owns_socket = False
+            except BlockingIOError:
+                owns_socket = True
+            self.assertTrue(owns_socket, 'descendant must still own the sentinel socket before kill')
+            if owns_socket:
+                os.killpg(child.pid, signal.SIGKILL)
+                parent_signal.settimeout(5)
+                self.assertEqual(parent_signal.recv(1), b'')
+        finally:
+            try:
+                # This fallback is safe only while the inherited sentinel has
+                # not reached EOF, which means the descendant still owns the
+                # original process group.
+                if parent_signal.fileno() >= 0:
+                    parent_signal.settimeout(0)
+                    try:
+                        descendant_gone = parent_signal.recv(1) == b''
+                    except BlockingIOError:
+                        descendant_gone = False
+                    if not descendant_gone:
+                        os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                parent_signal.close()
+                child.wait(timeout=5)
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
+                  'snapshot': snapshot, 'sequence': 3, 'role': 'probe'}
+        def check_cleared(*unused, **kwargs):
+            self.assertIsNone(co.state['active'])
+            self.assertIsNone(co.state['uncertain_active'])
+            self.assertIn('permission probe is pending', co.state['hold_reason'])
+            saved = json.loads(co.state_path.read_text())
+            self.assertIsNone(saved['active'])
+            self.assertIsNone(saved['uncertain_active'])
+            self.assertIn('permission probe is pending', saved['hold_reason'])
+            return result
+        with patch('os.killpg', side_effect=ProcessLookupError) as kill_group:
+            with patch.object(co, 'invoke', side_effect=check_cleared) as invoke:
+                with patch.object(co, '_author_permission_probe', return_value={'status': 'PASS'}):
+                    self.assertFalse(co.permission_probe(retry_uncertain=True))
+        kill_group.assert_called_once_with(child.pid, 0)
+        invoke.assert_called_once()
+        self.assertIn('permission probe failed', co.state['hold_reason'])
+
+    def test_uncertain_turn_requires_explicit_retry_after_abort_hold(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        active = {'pid': os.getpid(), 'role': 'author', 'phase': 'EXEC', 'sequence': 4}
+        co.state['active'] = active
+        self.assertEqual(co.hold('aborted by operator'), 'HOLD')
+        self.assertEqual(co.state['uncertain_active'], active)
+        with patch.object(co, 'drive') as drive:
+            self.assertEqual(co.resume(), 'HOLD')
+        drive.assert_not_called()
+
+    def test_run_refuses_without_matching_pass_probe_unless_explicitly_skipped(self):
+        result = self.run_coordinator(skip_probe=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('REFUSED: permission-probe.json is missing', result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['turns'], [])
+        bypass = self.run_coordinator()
+        self.assertEqual(bypass.returncode, 0, bypass.stderr + bypass.stdout)
+
+    def test_probe_reports_not_attempted_as_distinct_failure(self):
+        command = self.command()
+        command[2] = 'permission-probe'
+        env = os.environ.copy()
+        env['FAKE_MISSING_OBSERVED'] = '1'
+        result = subprocess.run(command, cwd=self.root, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertEqual(set(report['write_attempt_outcomes'].values()), {'not-attempted'})
+        self.assertEqual(len([x for x in report['failure_reasons'] if x.startswith('not-attempted:')]), 11)
+        before = len(json.loads((self.run_dir / 'state.json').read_text())['turns'])
+        run = self.run_coordinator(skip_probe=False)
+        self.assertEqual(run.returncode, 2)
+        self.assertIn('permission probe status is not PASS', run.stdout)
+        after = len(json.loads((self.run_dir / 'state.json').read_text())['turns'])
+        self.assertEqual(before, after)
+
+    def test_exec_approve_rejects_claimed_but_unobserved_test(self):
+        result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
+                                      '--adversarial-gate', 'off',
+                                      env={'FAKE_MISSING_OBSERVED': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertIn('lacks an observed successful configured test command', state['hold_reason'])
+        self.assertNotIn('reason', state)
+        self.assertIn('HOLD:', result.stdout)
+
+    def test_wrapped_observed_test_command_does_not_count(self):
+        result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
+                                      '--adversarial-gate', 'off',
+                                      env={'FAKE_WRAPPED_TEST': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertIn('lacks an observed successful configured test command', state['hold_reason'])
+
+    def test_wrong_or_missing_model_snapshot_is_ignored_and_program_bound(self):
+        for mode in ('wrong', 'missing'):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('snapshot-' + mode)
+                result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
+                                              '--adversarial-gate', 'off',
+                                              env={'FAKE_SNAPSHOT_MODE': mode})
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                reviews = [t for t in state['turns'] if t['role'] == 'reviewer']
+                self.assertTrue(reviews)
+                self.assertTrue(all(len(t['answer']['reviewed_snapshot']) == 64 for t in reviews))
+                self.assertTrue(all(t['answer']['reviewed_snapshot'] == t['snapshot_before'] for t in reviews))
+
+    def test_persistent_reviewer_sensitive_path_access_holds(self):
+        secret = str(self.run_dir / 'evidence' / 'secret.json')
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      env={'FAKE_SENSITIVE_READ': secret})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertIn('accessed isolated evidence directory', state['hold_reason'])
+
+    def test_valid_gate_blocker_delivered_once_then_re_reviewed(self):
+        result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_BLOCK': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual(state['exec_rounds'], 3)
+        self.assertEqual(sum(t['role'] == 'gate' for t in state['turns']), 1)
+        prompts = [p.read_text() for p in (self.run_dir / 'evidence').glob('*-author.prompt.txt')]
+        self.assertTrue(any('adversarial-gate' in p for p in prompts))
+
+    def test_malformed_gate_blocker_is_recorded_but_not_delivered(self):
+        result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_MALFORMED': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['exec_rounds'], 2)
+        gate_md = next((self.run_dir / 'rounds').glob('*-adversarial-*.md')).read_text()
+        self.assertIn('discard_reason', gate_md)
+
+    def test_exec_approve_without_self_run_evidence_holds(self):
+        # Exercise the invariant directly because the standard fake emits allowed evidence.
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        co.state.update(phase='EXEC', next='reviewer', exec_rounds=1)
+        co.save()
+        snap = rc.git_snapshot(self.workspace)[0]
+        answer = {'status': 'APPROVE', 'reviewed_snapshot': snap, 'prior_findings': [],
+                  'full_review': [], 'self_run_evidence': []}
+        with patch.object(co, 'invoke', return_value={'answer': answer, 'snapshot': snap, 'sequence': 1}), \
+             patch.object(co, 'render'):
+            co.reviewer_turn()
+        self.assertEqual(co.state['status'], 'HOLD')
+
+    def test_exec_approve_allows_open_minor_but_not_open_critical(self):
+        for severity, expected in (('MINOR', 'DONE'), ('CRITICAL', 'HOLD')):
+            with self.subTest(severity=severity):
+                self.run_dir = self.root / ('open-' + severity.lower())
+                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                    '--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off'])
+                co = rc.Coordinator(args)
+                co.state.update(phase='EXEC', next='reviewer', exec_rounds=1)
+                co.state['finding_ledger'] = [{
+                    'id': 'F001', 'origin_round': 1, 'phase': 'EXEC',
+                    'source': 'persistent-reviewer', 'severity': severity, 'file': 'sum_ints.py',
+                    'summary': 'open issue', 'status': 'open',
+                    'status_history': [{'round': 1, 'status': 'open', 'evidence': 'test'}]}]
+                co.state['next_finding_id'] = 2
+                co.save()
+                snap = rc.git_snapshot(self.workspace)[0]
+                answer = {'status': 'APPROVE', 'reviewed_snapshot': snap,
+                          'prior_findings': [{'id': 'F001', 'disposition': 'still_open',
+                                              'evidence': 'must observe in production'}],
+                          'full_review': [],
+                          'self_run_evidence': [{'command': 'npm test'}]}
+                result = {'answer': answer, 'snapshot': snap, 'sequence': 2, 'role': 'reviewer'}
+                with patch.object(co, 'invoke', return_value=result), patch.object(co, 'render'):
+                    co.reviewer_turn()
+                self.assertEqual(co.state['status'], expected)
+
+    def test_write_attempts_are_detected_and_fail_round(self):
+        for mode in ('echo', 'checkout', 'rm'):
+            with self.subTest(mode=mode):
+                run_dir = self.root / ('run-' + mode)
+                self.run_dir = run_dir
+                result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                              env={'FAKE_MUTATION': mode})
+                self.assertEqual(result.returncode, 2)
+                state = json.loads((run_dir / 'state.json').read_text())
+                self.assertEqual(state['status'], 'HOLD')
+                self.assertIn('mutated workspace', state['hold_reason'])
+                # Restore fixture for the next subtest without hiding the detected failure.
+                subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.workspace, check=True)
+                extra = self.workspace / 'forbidden.txt'
+                if extra.exists():
+                    extra.unlink()
+
+    def test_plan_author_cannot_mutate_workspace(self):
+        result = self.run_coordinator(env={'FAKE_PLAN_MUTATE': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertIn('mutated workspace during PLAN', state['hold_reason'])
+
+
+    def test_stop_after_plan_holds_once_and_resume_enters_exec(self):
+        for label, resume_flags in (('with-flag', ('--stop-after-plan',)), ('without-flag', ())):
+            with self.subTest(resume=label):
+                self.run_dir = self.root / f'stop-{label}'
+                subprocess.run(['git', 'checkout', '-q', '--', '.'], cwd=self.workspace, check=True)
+                subprocess.run(['git', 'clean', '-qfd'], cwd=self.workspace, check=True)
+                self._stop_then_resume(resume_flags)
+
+    def _stop_then_resume(self, resume_flags):
+        stopped = self.run_coordinator('--stop-after-plan')
+        self.assertIn('HOLD', stopped.stdout + stopped.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertEqual(state['hold_reason'], rc.PLAN_STOP_REASON)
+        self.assertEqual((state['phase'], state['next']), ('EXEC', 'author'))
+        self.assertEqual(state['exec_rounds'], 0)
+        self.assertTrue(state['plan_stop_done'])
+        self.assertTrue((self.run_dir / 'plan.md').exists())
+        self.assertTrue((self.run_dir / 'usage.md').exists())
+        self.assertNotIn('stop_after_plan', state['config'])
+        turns_at_stop = state['sequence']
+        # A state written before author_subagents existed must still resume.
+        del state['config']['author_subagents']
+        rc.atomic_json(self.run_dir / 'state.json', state)
+        command = self.command(*resume_flags) + ['--skip-probe']
+        command[2] = 'resume'
+        resumed = subprocess.run(command, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE', resumed.stdout + resumed.stderr)
+        self.assertGreater(state['sequence'], turns_at_stop)
+        self.assertGreaterEqual(state['exec_rounds'], 1)
+
+    def test_author_subagents_switch_only_changes_the_author_surface(self):
+        def commands(*extra):
+            args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                '--workitem', str(self.workitem), '--run-dir', str(self.root / ('r' + str(len(extra)))),
+                '--author-vendor', 'claude', '--reviewer-vendor', 'claude', *extra])
+            co = rc.Coordinator(args)
+            schema = self.root / 'schema-sub.json'
+            rc.atomic_json(schema, rc.review_schema())
+            return co, co.command('author', schema, False), co.command('reviewer', schema, False)
+        co, author, reviewer = commands()
+        self.assertEqual(co.state['config']['author_subagents'], 'on')
+        self.assertIn('Agent', author[author.index('--tools') + 1].split(','))
+        self.assertIn('Agent', author[author.index('--allowedTools') + 1].split(','))
+        self.assertEqual(author[author.index('--disallowedTools') + 1], 'NotebookEdit')
+        self.assertIn('Agent', reviewer[reviewer.index('--disallowedTools') + 1].split(','))
+        self.assertNotIn('Agent', reviewer[reviewer.index('--tools') + 1].split(','))
+        _, author_off, _ = commands('--author-subagents', 'off')
+        self.assertNotIn('Agent', author_off[author_off.index('--tools') + 1].split(','))
+        self.assertIn('Agent', author_off[author_off.index('--disallowedTools') + 1].split(','))
+
+
+    def test_claude_subagent_requests_are_counted_once_per_message(self):
+        def start(tokens):
+            return {'type': 'stream_event', 'event': {'type': 'message_start', 'message': {
+                'usage': {'input_tokens': 10, 'cache_creation_input_tokens': tokens, 'cache_read_input_tokens': 5,
+                          'output_tokens': 1}}}}
+        def sub(message_id, output):
+            return {'type': 'assistant', 'parent_tool_use_id': 'toolu_1', 'message': {'id': message_id, 'usage': {
+                'input_tokens': 10, 'cache_creation_input_tokens': 9680, 'cache_read_input_tokens': 0,
+                'output_tokens': output}}}
+        rows = [start(100), {'type': 'assistant', 'parent_tool_use_id': None,
+                             'message': {'id': 'main', 'usage': {'input_tokens': 999}}},
+                sub('msg_a', 4), sub('msg_a', 9), sub('msg_b', 2), start(200),
+                # modelUsage is cumulative over a resumed session and must not be used as a turn total.
+                {'type': 'result', 'is_error': False, 'session_id': 's', 'structured_output': {'status': 'DONE'},
+                 'modelUsage': {'m': {'inputTokens': 10 ** 9}}}]
+        path = self.root / 'stream.jsonl'
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                                       '--run-dir', str(self.root / 'usage-run'), '--author-vendor', 'claude',
+                                       '--reviewer-vendor', 'codex'])
+        _, _, usage, count, _, _ = rc.Coordinator(args)._collect('claude', path)
+        self.assertEqual(count, 4)
+        self.assertEqual([use['source'] for use in usage].count('subagent-message'), 2)
+        self.assertEqual(sum(use['input'] for use in usage), (115 + 215) + 2 * 9690)
+        self.assertEqual(sorted(use['output'] for use in usage if use['source'] == 'subagent-message'), [2, 9])
+
+
+    def test_background_subagent_or_second_result_is_rejected(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                                       '--run-dir', str(self.root / 'bg-run'), '--author-vendor', 'claude',
+                                       '--reviewer-vendor', 'codex'])
+        co = rc.Coordinator(args)
+        def result(background):
+            return {'type': 'result', 'is_error': False, 'session_id': 's', 'structured_output': {'status': 'DONE'},
+                    'subagent_stats': {'spawned': 1, 'started_in_background': background, 'completed': 1}}
+        path = self.root / 'bg.jsonl'
+        for rows in ([result(1)], [result(0), result(0)]):
+            path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            with self.assertRaisesRegex(ValueError, 'not authoritative'):
+                co._collect('claude', path)
+        path.write_text(json.dumps(result(0)) + '\n')
+        self.assertEqual(co._collect('claude', path)[0], {'status': 'DONE'})
+        self.assertEqual(rc.cli_env()['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'], '1')
+
+
+    def test_fresh_scan_rejects_ledger_ids_but_not_lowercase_identifiers(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                                       '--run-dir', str(self.root / 'scan-run')])
+        co = rc.Coordinator(args)
+        (co.context / 'delta.patch').write_text('+    f720 = cap720.decode(t)\n+    frame1080 = None\n')
+        co.assert_fresh_prompt('shadow', 'Review the delta.')  # must not raise
+        (co.context / 'delta.patch').write_text('+    # see F015 for context\n')
+        with self.assertRaisesRegex(RuntimeError, 'F015'):
+            co.assert_fresh_prompt('shadow', 'Review the delta.')
+
+
+
+    def test_codex_author_permissions_survive_fake_plan_and_exec_resume(self):
+        result = self.run_coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        authors = [row for row in state['turns'] if row['role'] == 'author']
+        self.assertGreaterEqual(len(authors), 2)
+        self.assertTrue(any('resume' in row['command'] for row in authors))
+        for row in authors:
+            command = row['command']
+            self.assertEqual(row['environment_overrides']['TMPDIR'], str(self.run_dir / 'author-tmp'))
+            self.assertIn('--ignore-rules', command)
+            self.assertIn('sandbox_mode="workspace-write"', command)
+            self.assertIn('approval_policy="never"', command)
+            for setting in ('sandbox_workspace_write.writable_roots=' +
+                            json.dumps([str((self.run_dir / 'author-tmp').resolve())]),
+                            'sandbox_workspace_write.exclude_tmpdir_env_var=false',
+                            'sandbox_workspace_write.exclude_slash_tmp=true'):
+                self.assertIn(setting, command)
+
+
+    def test_real_toy_workitem_exercise_reaches_done_without_fresh_history(self):
+        self.workitem.write_text(MODULE_PATH.with_name('TOY-WORKITEM.md').read_text())
+        result = self.run_coordinator('--exercise-revisions',
+                                      '--test-command', 'python3 -m unittest -v')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual(state['plan_rounds'], 2)
+        self.assertEqual(state['exec_rounds'], 2)
+        self.assertTrue(state['gate_ran'])
+        self.assertTrue(state['polish']['completed'])
+        self.assertEqual(sum(t['role'] == 'shadow' for t in state['turns']), 2)
+        self.assertTrue((self.run_dir / 'open-findings.md').is_file())
+
+
+if __name__ == '__main__':
+    unittest.main()

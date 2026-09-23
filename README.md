@@ -18,6 +18,12 @@ A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill 
 
 Start a new session. The `/review-loop` command is now available in all your projects.
 
+The paired-session coordinator is also available as an explicit opt-in through
+`/review-loop:paired-session <work item>`. This does not change the current
+default route. Per-project coordinator settings live in
+`.review-loop/paired-session.json`; the plugin ships
+`paired_session/paired-session-config.example.json` as a starting profile.
+
 **Optional** — copy the config template to customize per-project defaults:
 
 ```bash
@@ -36,7 +42,8 @@ Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
 `review-loop` skill shares `.review-loop/config.md` and `.review-loop/sessions/`
 with Claude Code, so both runtimes work against the same project state.
 The rest of this README primarily documents the current Claude Code plugin
-surface; Codex Stage 1 currently exposes only `review-loop` and `guide`.
+surface; Codex Stage 1 also exposes the paired-session skill as an explicit
+opt-in while migration is staged.
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
@@ -46,6 +53,10 @@ The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
 (`claude -p`) and stays on that outside-sandbox Claude path unless you
 explicitly opt into the local Codex reviewer with
 `codex_reviewer_backend: codex` in `.review-loop/config.md`.
+When a Claude reviewer is selected, the permission probe checks unique writes
+to host `/tmp`, the run directory, and the `context` directory passed through
+`--add-dir`. Strict sandboxing requires a supported Claude host/backend; the
+probe fails closed when the OS sandbox is unavailable.
 In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
 `judgment_model` is its shared-tier fallback, and the empty backstop is an
 explicit `--model claude-sonnet-4-6`.
@@ -67,6 +78,7 @@ parallel to the Claude Code plugin install at the top of this README).
 
 ```bash
 codex plugin marketplace add NYTC69/review-loop
+codex plugin add review-loop@review-loop-marketplace
 ```
 
 Then, inside a fresh Codex session:
@@ -75,19 +87,25 @@ Then, inside a fresh Codex session:
 /plugins
 ```
 
-Pick `review-loop` and enable it. Codex CLI 0.130 has no
-`codex plugin install` / `enable` subcommand — install/enable goes through
-the `/plugins` TUI, which writes
-`[plugins."review-loop@review-loop-marketplace"] enabled = true` to
-`~/.codex/config.toml`.
+The CLI install command above is sufficient; `/plugins` is an optional UI for
+inspecting the installed plugin and its skills.
 
-Once enabled, the four Stage 1 skills under `.agents/skills/` (`review-loop`,
-`plan`, `execute`, `guide`) are exposed to the Codex agent and respond to
+The plugin is cached under `$CODEX_HOME/plugins/cache/` (default
+`~/.codex/plugins/cache/`). The paired-session skill reads the installed plugin
+version from `codex plugin list --json` rather than assuming a fixed versioned
+path.
+
+Once enabled, the five Stage 1 skills under `.agents/skills/` (`review-loop`,
+`plan`, `execute`, `guide`, `paired-session`) are exposed to the Codex agent and respond to
 natural-language triggers like "run review-loop on this branch" or
 "plan this task with review-loop". Codex matches plugin skills by their
 `SKILL.md` `description`, not by literal slash commands —
 `/review-loop:plan` etc. are Claude-only and surface as `Unrecognized` in
 Codex.
+
+Ask Codex to "use paired-session for this task" to opt into the coordinator.
+It reads `.review-loop/paired-session.json` when present and stores its run
+artifacts outside the product workspace under the user-level Codex state folder.
 
 Full step-by-step + verification: [`docs/install-codex.md`](docs/install-codex.md).
 
