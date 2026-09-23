@@ -702,6 +702,20 @@ def compact_command(command: dict, evidence_file: str) -> dict:
     return row
 
 
+def cleanup_probe_targets(paths: list[Path]) -> tuple[list[str], list[str], list[str], list[dict]]:
+    """Attempt probe cleanup and report only targets confirmed absent afterward."""
+    found = [str(path) for path in paths if path.exists()]
+    errors = []
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append({'path': str(path), 'error': type(exc).__name__})
+    cleaned = [str(path) for path in paths if str(path) in found and not path.exists()]
+    remaining = [str(path) for path in paths if path.exists()]
+    return found, cleaned, remaining, errors
+
+
 def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
                     evidence_file: str = 'receipt.json') -> str:
     status = payload.get('status', payload.get('verdict', 'message'))
@@ -2320,15 +2334,15 @@ class Coordinator:
             unchanged = result['snapshot'] == snapshot
         except Exception as exc:
             escaped_probe_targets = []
+            cleaned_probe_targets = []
+            remaining_probe_targets = []
+            cleanup_errors = []
             target_absent_before_cleanup = {}
             if sandbox_probe_paths:
                 escaped_probe_targets = [str(path) for path in sandbox_probe_paths if path.exists()]
                 target_absent_before_cleanup = {str(path): not path.exists() for path in sandbox_probe_paths}
-                for path in sandbox_probe_paths:
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                (escaped_probe_targets, cleaned_probe_targets,
+                 remaining_probe_targets, cleanup_errors) = cleanup_probe_targets(sandbox_probe_paths)
                 self._probe_sandbox_commands = None
             latest = next((turn for turn in reversed(self.state['turns'])
                            if turn.get('sequence') == probe_sequence), {})
@@ -2339,7 +2353,10 @@ class Coordinator:
                       'snapshot_unchanged': git_snapshot(self.workspace)[0] == snapshot,
                       'observed_commands': latest.get('observed_commands', []),
                       'claimed_self_run_evidence': [],
-                      'claude_sandbox_escape_targets_cleaned': escaped_probe_targets,
+                      'claude_sandbox_escape_targets_found': escaped_probe_targets,
+                      'claude_sandbox_escape_targets_cleaned': cleaned_probe_targets,
+                      'claude_sandbox_escape_targets_remaining': remaining_probe_targets,
+                      'claude_sandbox_cleanup_errors': cleanup_errors,
                       'claude_sandbox_write_denials': ({
                           'host_tmp': {'exact_command_observed_once': False, 'failed_at_os_sandbox': False,
                                        'target_absent': target_absent_before_cleanup.get(str(sandbox_probe_paths[0]), False)},
@@ -2351,6 +2368,8 @@ class Coordinator:
                       'claude_sandbox_write_denied': False if sandbox_probe_paths else None}
             if escaped_probe_targets:
                 report['failure_reasons'].append('claude-sandbox-probe-write-escaped')
+            if remaining_probe_targets:
+                report['failure_reasons'].append('claude-sandbox-probe-cleanup-incomplete')
             if sandbox_probe_paths:
                 report['failure_reasons'].append('claude-sandbox-write-not-denied-or-not-observed')
             atomic_json(self.run_dir / 'permission-probe.json', report)
@@ -2421,15 +2440,17 @@ class Coordinator:
                     report['failure_reasons'].append('claude-sandbox-' + label + '-write-not-denied-or-not-observed')
             report['claude_sandbox_write_denials'] = checks
             report['claude_sandbox_write_denied'] = all(all(item.values()) for item in checks.values())
-            escaped_probe_targets = [str(path) for path in sandbox_probe_paths if path.exists()]
-            report['claude_sandbox_escape_targets_cleaned'] = escaped_probe_targets
-            for path in sandbox_probe_paths:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            (escaped_probe_targets, cleaned_probe_targets,
+             remaining_probe_targets, cleanup_errors) = cleanup_probe_targets(sandbox_probe_paths)
+            report['claude_sandbox_escape_targets_found'] = escaped_probe_targets
+            report['claude_sandbox_escape_targets_cleaned'] = cleaned_probe_targets
+            report['claude_sandbox_escape_targets_remaining'] = remaining_probe_targets
+            report['claude_sandbox_cleanup_errors'] = cleanup_errors
             if escaped_probe_targets:
                 report['failure_reasons'].append('claude-sandbox-probe-write-escaped')
+                report['status'] = 'FAIL'
+            if remaining_probe_targets:
+                report['failure_reasons'].append('claude-sandbox-probe-cleanup-incomplete')
                 report['status'] = 'FAIL'
             if not report['claude_sandbox_write_denied']:
                 report['status'] = 'FAIL'
@@ -2829,6 +2850,9 @@ def main(argv=None) -> int:
         print('REFUSED: --run-dir must be outside --workspace')
         return 2
     if args.action in ('run', 'resume', 'permission-probe'):
+        if re.search(r'[*?\[\]{}]', str(run_dir)):
+            print('REFUSED: --run-dir must not contain glob metacharacters used by Claude Edit deny rules')
+            return 2
         try:
             resolve_test_executable(workspace, args.test_command)
         except ValueError as exc:

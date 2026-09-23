@@ -340,6 +340,13 @@ class RealCoordinatorTests(unittest.TestCase):
         with rc.run_lease(self.run_dir):
             pass
 
+    def test_coordinator_refuses_run_dir_glob_metacharacters(self):
+        unsafe_run_dir = self.root / 'run[alias]'
+        result = self.run_coordinator('--run-dir', str(unsafe_run_dir), '--skip-probe')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('REFUSED: --run-dir must not contain glob metacharacters', result.stdout)
+        self.assertFalse(unsafe_run_dir.exists())
+
     def test_workspace_lease_path_is_stable_and_outside_workspace(self):
         lease_path = rc.workspace_lease_path(self.workspace)
         self.assertEqual(lease_path, rc.workspace_lease_path(self.workspace / '.'))
@@ -1408,11 +1415,48 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(report['status'], 'FAIL')
         self.assertIn('claude-sandbox-probe-write-escaped', report['failure_reasons'])
         self.assertEqual(len(created), 3)
-        self.assertEqual(len(report['claude_sandbox_escape_targets_cleaned']), 3)
+        self.assertEqual(report['claude_sandbox_escape_targets_found'], [str(path) for path in created])
+        self.assertEqual(report['claude_sandbox_escape_targets_cleaned'], [str(path) for path in created])
+        self.assertEqual(report['claude_sandbox_escape_targets_remaining'], [])
         self.assertEqual(set(report['claude_sandbox_write_denials']), {'host_tmp', 'run_dir', 'context'})
         self.assertTrue(all(not check['target_absent']
                             for check in report['claude_sandbox_write_denials'].values()))
         self.assertTrue(all(not path.exists() for path in created))
+
+    def test_claude_probe_reports_a_target_that_cleanup_could_not_remove(self):
+        co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        created = []
+
+        def escape_then_fail(role, phase, prompt, schema, **kwargs):
+            import shlex
+            for line in prompt.splitlines():
+                if line.startswith('printf probe > '):
+                    target = Path(shlex.split(line)[-1])
+                    target.write_text('escaped')
+                    created.append(target)
+            raise RuntimeError('simulated probe failure')
+
+        real_unlink = Path.unlink
+
+        def fail_first_cleanup(path, *args, **kwargs):
+            if created and path == created[0]:
+                raise OSError('simulated cleanup denial')
+            return real_unlink(path, *args, **kwargs)
+
+        try:
+            with patch.object(co, 'invoke', side_effect=escape_then_fail):
+                with patch.object(Path, 'unlink', new=fail_first_cleanup):
+                    self.assertFalse(co.permission_probe())
+            report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+            self.assertEqual(report['claude_sandbox_escape_targets_found'], [str(path) for path in created])
+            self.assertEqual(report['claude_sandbox_escape_targets_cleaned'], [str(path) for path in created[1:]])
+            self.assertEqual(report['claude_sandbox_escape_targets_remaining'], [str(created[0])])
+            self.assertEqual(report['claude_sandbox_cleanup_errors'], [
+                {'path': str(created[0]), 'error': 'OSError'}])
+            self.assertIn('claude-sandbox-probe-cleanup-incomplete', report['failure_reasons'])
+        finally:
+            if created:
+                real_unlink(created[0], missing_ok=True)
 
     def test_author_permission_probe_requires_unique_structured_exit_events(self):
         for mode in ('missing-exit', 'duplicate-event'):
