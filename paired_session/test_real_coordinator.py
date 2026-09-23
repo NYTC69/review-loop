@@ -9,6 +9,7 @@ import subprocess
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1612,6 +1613,92 @@ class RealCoordinatorTests(unittest.TestCase):
         kill_group.assert_called_once_with(os.getpid(), 0)
         drive.assert_not_called()
         self.assertIn('still alive', co.state['hold_reason'])
+
+    def test_cli_interrupt_then_fake_cli_resume_recovers_uncertain_turn(self):
+        marker = self.root / 'blocking-fake-started'
+        blocking_cli = self.root / 'blocking-fake-codex'
+        blocking_cli.write_text(
+            f'#!{sys.executable}\n'
+            'import os, sys, time\n'
+            'from pathlib import Path\n'
+            'marker = Path(os.environ["FAKE_RECOVERY_MARKER"])\n'
+            'if not marker.exists():\n'
+            '    marker.write_text(str(os.getpid()))\n'
+            '    time.sleep(15)\n'
+            'else:\n'
+            f'    os.execv({sys.executable!r}, [{sys.executable!r}, {str(FAKE)!r}, *sys.argv[1:]])\n'
+        )
+        blocking_cli.chmod(0o755)
+        env = {**os.environ, 'FAKE_RECOVERY_MARKER': str(marker)}
+        command = self.command('--skip-probe', '--codex-bin', str(blocking_cli))
+        coordinator_process = subprocess.Popen(command, cwd=self.root, env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        child_pid = None
+        try:
+            deadline = time.monotonic() + 10
+            active = None
+            while time.monotonic() < deadline and coordinator_process.poll() is None:
+                if marker.exists():
+                    try:
+                        marker_pid = int(marker.read_text())
+                        active = json.loads((self.run_dir / 'state.json').read_text()).get('active')
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        active = None
+                    if isinstance(active, dict) and active.get('pid') == marker_pid:
+                        child_pid = marker_pid
+                        break
+                time.sleep(0.02)
+            self.assertIsNotNone(child_pid, 'fake provider PID was not recorded in active state')
+            self.assertEqual(active['phase'], 'PLAN')
+
+            coordinator_process.kill()
+            coordinator_process.communicate(timeout=5)
+
+            resume_command = list(command)
+            resume_command[2] = 'resume'
+            held = subprocess.run(resume_command, cwd=self.root, env=env, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+            self.assertEqual(held.returncode, 2)
+            self.assertIn('uncertain in-flight', held.stdout)
+
+            retry_command = [*resume_command, '--retry-uncertain']
+            still_live = subprocess.run(retry_command, cwd=self.root, env=env, text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+            self.assertEqual(still_live.returncode, 2)
+            self.assertIn('still alive', still_live.stdout)
+
+            try:
+                os.killpg(child_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            wait_dead_by = time.monotonic() + 5
+            while time.monotonic() < wait_dead_by:
+                try:
+                    os.killpg(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail('interrupted fake-provider process group did not stop')
+            child_pid = None
+
+            recovered = subprocess.run(retry_command, cwd=self.root, env=env, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+            self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+            self.assertIn('DONE', recovered.stdout)
+            state = json.loads((self.run_dir / 'state.json').read_text())
+            self.assertEqual(state['status'], 'DONE')
+            self.assertIsNone(state['uncertain_active'])
+            self.assertEqual(len(state['abandoned_turns']), 1)
+        finally:
+            if coordinator_process.poll() is None:
+                coordinator_process.kill()
+                coordinator_process.communicate(timeout=5)
+            if child_pid is not None:
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_resume_fails_closed_when_uncertain_process_group_cannot_be_checked(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
