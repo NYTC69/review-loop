@@ -38,6 +38,14 @@ Explicit subscription/rate-limit rejections are held with any reported reset
 hint and do not consume the invocation budget; their failed attempts remain in
 the turn receipt.
 
+## Local marketplace installs
+
+Installing a plugin from a local directory marketplace copies the whole directory,
+including Git-ignored files, into the host plugin cache. That can include
+`.compass/`, `.claude/`, `HANDOFF.md`, and local caches. Install from a clean
+checkout or the GitHub marketplace to avoid copying working-tree state into the
+plugin cache.
+
 ## Start a task
 
 Use a dedicated Git worktree for each product task and keep run artifacts in a

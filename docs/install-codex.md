@@ -35,6 +35,11 @@ codex plugin marketplace add /path/to/review-loop
 codex plugin add review-loop@review-loop-marketplace
 ```
 
+Installing from a local directory marketplace copies the whole directory,
+including Git-ignored files, into the host plugin cache. This may copy `.compass/`,
+`.claude/`, `HANDOFF.md`, and local caches. Use a clean checkout or the GitHub
+marketplace to keep local working-tree state out of the plugin cache.
+
 Start a fresh Codex session after installation. The plugin cache is under
 `$CODEX_HOME/plugins/cache/review-loop-marketplace/review-loop/<version>/`
 (default `~/.codex/plugins/cache/review-loop-marketplace/review-loop/<version>/`).
