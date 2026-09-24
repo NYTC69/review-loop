@@ -237,6 +237,10 @@ def main():
         emit_codex(answer, session, events)
         return 0
 
+    if (os.environ.get('FAKE_REVIEW_HOLD') and 'Role: reviewer,' in prompt and
+            'Phase: PLAN' in prompt):
+        answer = {'status': 'HOLD', 'prior_findings': [], 'full_review': [],
+                  'self_run_evidence': []}
     if 'Role: persistent' not in prompt and 'Role: permission-system probe' not in prompt:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')

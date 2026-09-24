@@ -2122,6 +2122,126 @@ sys.exit(result.returncode)
         self.assertIn('REFUSED: resume configuration differs: author_effort', result.stdout)
         self.assertNotIn('Traceback', result.stderr)
 
+    def test_resume_reuses_recorded_reviewer_verdict_before_state_advances(self):
+        co = self.coordinator('--stop-after-plan')
+        co.state.update(phase='PLAN', next='reviewer')
+        co.save()
+        co.materialize_review_context()
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        prompt = co._review_prompt('reviewer', snapshot)
+
+        # Simulate interruption after the fake CLI verdict receipt is durable,
+        # before reviewer_turn advances phase/next.
+        first = co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+        self.assertEqual(first['answer']['status'], 'APPROVE')
+        self.assertEqual(co.state['next'], 'reviewer')
+        self.assertEqual([row['role'] for row in co.state['turns']].count('reviewer'), 1)
+
+        resumed = rc.Coordinator(co.args)
+        self.assertEqual(resumed.resume(), 'HOLD')  # expected --stop-after-plan pause
+        self.assertEqual(resumed.state['phase'], 'EXEC')
+        self.assertEqual(resumed.state['next'], 'author')
+        self.assertEqual(resumed.state['plan_reviews'], 1)
+        self.assertEqual([row['role'] for row in resumed.state['turns']].count('reviewer'), 1)
+
+    def test_resume_replaying_partly_applied_reviewer_result_is_idempotent(self):
+        co = self.coordinator('--stop-after-plan')
+        co.state.update(phase='PLAN', next='reviewer')
+        co.save()
+        co.materialize_review_context()
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        with patch.dict(os.environ, {'FAKE_APPROVE_MINOR': '1'}):
+            co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', snapshot), rc.review_schema())
+
+        class SimulatedCrash(BaseException):
+            pass
+
+        resumed = rc.Coordinator(co.args)
+        capture = resumed.capture_review_baseline
+
+        def save_then_interrupt(sequence, phase):
+            capture(sequence, phase)
+            raise SimulatedCrash()
+
+        with patch.object(resumed, 'capture_review_baseline', side_effect=save_then_interrupt):
+            with self.assertRaises(SimulatedCrash):
+                resumed.resume()
+        self.assertEqual(resumed.state.get('pending_reviewer_result_sequence'), 1)
+        self.assertEqual([row['role'] for row in resumed.state['turns']].count('reviewer'), 1)
+
+        recovered = rc.Coordinator(co.args)
+        self.assertEqual(recovered.state.get('pending_reviewer_result_sequence'), 1)
+        self.assertEqual([row['role'] for row in recovered.state['turns']].count('reviewer'), 1)
+        self.assertIsNotNone(recovered._recorded_reviewer_result('PLAN'))
+        self.assertEqual(recovered.resume(), 'HOLD')
+        self.assertEqual(recovered.state['plan_reviews'], 1)
+        self.assertEqual(recovered.state['reviews_completed'], 1)
+        self.assertEqual(len(recovered.state['finding_ledger']), 1)
+        self.assertEqual([row['role'] for row in recovered.state['turns']].count('reviewer'), 1)
+
+    def test_exec_resume_reuses_reviewer_and_shadow_receipts(self):
+        co = self.coordinator('--shadow', 'on', '--adversarial-gate', 'off', '--polish-round', 'off')
+        co.state.update(phase='EXEC', next='reviewer', exec_rounds=1)
+        co.save()
+        co.materialize_review_context()
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        co.invoke('reviewer', 'EXEC', co._review_prompt('reviewer', snapshot), rc.review_schema())
+
+        class SimulatedCrash(BaseException):
+            pass
+
+        resumed = rc.Coordinator(co.args)
+        capture = resumed.capture_review_baseline
+
+        def save_then_interrupt(sequence, phase):
+            capture(sequence, phase)
+            raise SimulatedCrash()
+
+        with patch.object(resumed, 'capture_review_baseline', side_effect=save_then_interrupt):
+            with self.assertRaises(SimulatedCrash):
+                resumed.resume()
+
+        recovered = rc.Coordinator(co.args)
+        self.assertEqual(recovered.resume(), 'DONE')
+        self.assertEqual([row['role'] for row in recovered.state['turns']].count('reviewer'), 1)
+        self.assertEqual([row['role'] for row in recovered.state['turns']].count('shadow'), 1)
+        self.assertEqual(recovered.state['exec_reviews'], 1)
+        self.assertEqual(len(recovered.state['exec_comparisons']), 1)
+        self.assertEqual(recovered.state['exec_comparisons'][0]['round'], 1)
+
+    def test_resume_after_reviewer_hold_dispatches_a_fresh_turn(self):
+        co = self.coordinator('--stop-after-plan')
+        co.state.update(phase='PLAN', next='reviewer')
+        co.save()
+        co.materialize_review_context()
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        with patch.dict(os.environ, {'FAKE_REVIEW_HOLD': '1'}):
+            co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', snapshot), rc.review_schema())
+
+        resumed = rc.Coordinator(co.args)
+        self.assertEqual(resumed.resume(), 'HOLD')
+        self.assertIsNone(resumed.state['pending_reviewer_result_sequence'])
+        recovered = rc.Coordinator(co.args)
+        self.assertEqual(recovered.resume(), 'HOLD')  # second call approves and honors stop-after-plan
+        self.assertEqual([row['role'] for row in recovered.state['turns']].count('reviewer'), 2)
+
+    def test_shadow_receipt_replay_revalidates_verified_claims(self):
+        co = self.coordinator()
+        co.state['turns'].append({'sequence': 3, 'role': 'shadow', 'phase': 'EXEC',
+            'snapshot_before': 'snapshot', 'answer': {'status': 'APPROVE', 'verified_claims': [],
+            'full_review': [], 'prior_findings': [], 'self_run_evidence': [{'command': 'test'}]}})
+        self.assertIsNone(co._recorded_shadow_result('EXEC', 2))
+
+    def test_gate_finding_import_preserves_each_receipt_index(self):
+        co = self.coordinator()
+        rc.atomic_json(co.evidence / '007-exec-gate.receipt.json', {
+            'sequence': 7, 'answer': {'findings': [
+                {'severity': 'medium', 'file': 'a.py', 'recommendation': 'first'},
+                {'severity': 'low', 'file': 'b.py', 'recommendation': 'second'}]}})
+        co.import_gate_findings()
+        imported = [row for row in co.state['finding_ledger'] if row['source'] == 'adversarial-gate']
+        self.assertEqual([row['finding_index'] for row in imported], [0, 1])
+
     def test_resume_promotes_active_receipt_to_uncertain_without_replay(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])

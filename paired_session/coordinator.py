@@ -8,6 +8,7 @@ shadow and adversarial reviewers are always fresh.
 from __future__ import annotations
 
 import argparse
+import copy
 from contextlib import contextmanager
 from datetime import datetime
 import difflib
@@ -892,6 +893,8 @@ class Coordinator:
                               if re.fullmatch(r'F\d+', row.get('id', ''))), default=0)
             self.state.setdefault('next_finding_id', highest_id + 1)
             self.state.setdefault('exec_comparisons', [])
+            self.state.setdefault('reviewed_reviewer_sequences', [])
+            self.state.setdefault('pending_reviewer_result_sequence', None)
             self.state.setdefault('polish', {'active': False, 'completed': False,
                                              'author_turns': 0, 'reviewer_turns': 0,
                                              'fix_used': False})
@@ -927,6 +930,7 @@ class Coordinator:
                 'last_end': {}, 'waiting_model_calls': 0, 'base_commit': self._head_commit(),
                 'reviews_completed': 0,
                 'finding_ledger': [], 'next_finding_id': 1, 'exec_comparisons': [],
+                'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
@@ -1207,9 +1211,17 @@ class Coordinator:
         elif since.exists():
             since.unlink()
 
-    def capture_review_baseline(self) -> None:
+    def capture_review_baseline(self, sequence: Optional[int] = None,
+                                phase: Optional[str] = None) -> None:
         self._mirror_workspace(self.internal / 'last-review')
-        self.state['reviews_completed'] = self.state.get('reviews_completed', 0) + 1
+        reviewed = self.state.setdefault('reviewed_reviewer_sequences', [])
+        if sequence is None or sequence not in reviewed:
+            self.state['reviews_completed'] = self.state.get('reviews_completed', 0) + 1
+            if sequence is not None:
+                reviewed.append(sequence)
+                if phase:
+                    key = f'{phase.lower()}_reviews'
+                    self.state[key] = self.state.get(key, 0) + 1
         self.save()
 
     def open_findings(self) -> list[dict]:
@@ -1238,15 +1250,27 @@ class Coordinator:
         return normalized, out_of_phase
 
     def record_findings(self, source: str, phase: str, origin_round: int,
-                        findings: list[dict]) -> list[dict]:
+                        findings: list[dict],
+                        finding_indexes: Optional[list[int]] = None) -> list[dict]:
         recorded = []
-        for finding in findings:
+        existing = {row['finding_index']: row for row in self.state['finding_ledger']
+                    if row.get('source') == source and row.get('phase') == phase and
+                    row.get('origin_round') == origin_round and
+                    type(row.get('finding_index')) is int}
+        changed = False
+        for index, finding in enumerate(findings):
+            finding_index = finding_indexes[index] if finding_indexes is not None else index
+            prior = existing.get(finding_index)
+            if prior:
+                recorded.append({'id': prior['id'], **finding})
+                continue
             finding_id = f"F{self.state['next_finding_id']:03d}"
             self.state['next_finding_id'] += 1
             severity = str(finding['severity']).upper()
             summary = finding.get('summary') or finding.get('recommendation') or str(finding.get('body', '')).splitlines()[0]
             entry = {'id': finding_id, 'origin_round': origin_round, 'phase': phase,
-                     'source': source, 'severity': severity, 'file': finding.get('file', ''),
+                     'source': source, 'finding_index': finding_index,
+                     'severity': severity, 'file': finding.get('file', ''),
                      'summary': summary, 'status': 'open',
                      'failure_scenario': finding.get('failure_scenario', ''),
                      'body': finding.get('body', ''),
@@ -1254,25 +1278,46 @@ class Coordinator:
                                         'evidence': 'program assigned identity'}]}
             self.state['finding_ledger'].append(entry)
             recorded.append({'id': finding_id, **finding})
-        self.write_ledger()
+            changed = True
+        if changed:
+            self.write_ledger()
         return recorded
 
-    def apply_dispositions(self, dispositions: list[dict], origin_round: int) -> list[str]:
+    def apply_dispositions(self, dispositions: list[dict], origin_round: int,
+                           expected_ids: Optional[list[str]] = None) -> list[str]:
         open_by_id = {finding['id']: finding for finding in self.open_findings()}
+        all_by_id = {finding['id']: finding for finding in self.state['finding_ledger']}
         supplied = [row.get('id') for row in dispositions]
-        missing = sorted(set(open_by_id) - set(supplied))
-        if len(supplied) != len(set(supplied)) or set(supplied) - set(open_by_id):
+        expected = set(expected_ids) if expected_ids is not None else set(open_by_id)
+        missing = sorted(expected - set(supplied))
+        if len(supplied) != len(set(supplied)):
             raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
         if missing:
             return missing
         for row in dispositions:
-            finding = open_by_id[row['id']]
+            finding = all_by_id.get(row['id'])
+            if finding is None or row['id'] not in expected:
+                raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
+            if finding['id'] not in open_by_id and not any(
+                    item.get('round') == origin_round and item.get('status') == row['disposition']
+                    and item.get('evidence') == row['evidence']
+                    for item in finding.get('status_history', [])):
+                raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
+        changed = False
+        for row in dispositions:
+            finding = all_by_id[row['id']]
             disposition = row['disposition']
+            if any(item.get('round') == origin_round and item.get('status') == disposition
+                   and item.get('evidence') == row['evidence']
+                   for item in finding.get('status_history', [])):
+                continue
             finding['status_history'].append({'round': origin_round, 'status': disposition,
                                               'evidence': row['evidence']})
             if disposition in ('fixed', 'withdrawn'):
                 finding['status'] = disposition
-        self.write_ledger()
+            changed = True
+        if changed:
+            self.write_ledger()
         return []
 
     def write_ledger(self) -> None:
@@ -1425,13 +1470,14 @@ class Coordinator:
         existing = {(row['source'], row['file'], row['summary']) for row in self.state['finding_ledger']}
         for path in sorted(self.evidence.glob('*-gate.receipt.json')):
             receipt = json.loads(path.read_text())
-            for finding in receipt.get('answer', {}).get('findings', []):
+            for finding_index, finding in enumerate(receipt.get('answer', {}).get('findings', [])):
                 if str(finding.get('severity', '')).lower() not in ('medium', 'low'):
                     continue
                 summary = finding.get('recommendation') or str(finding.get('body', '')).splitlines()[0]
                 signature = ('adversarial-gate', finding.get('file', ''), summary)
                 if signature not in existing:
-                    self.record_findings('adversarial-gate', 'EXEC', receipt.get('sequence', 0), [finding])
+                    self.record_findings('adversarial-gate', 'EXEC', receipt.get('sequence', 0),
+                                         [finding], finding_indexes=[finding_index])
                     existing.add(signature)
                 else:
                     row = next(item for item in self.state['finding_ledger']
@@ -1819,7 +1865,12 @@ class Coordinator:
                     effective = {**answer, 'status': 'APPROVE'}
             error = verified_claims_error(effective)
             if not error:
+                if role == 'reviewer' and phase in ('PLAN', 'EXEC'):
+                    self.state['pending_reviewer_result_sequence'] = result['sequence']
+                    self.save()
                 return result
+            if role == 'reviewer' and phase in ('PLAN', 'EXEC'):
+                self.state['pending_reviewer_result_sequence'] = None
             self.state['turns'][-1]['verified_claims_error'] = error
             prefix = self.evidence / f'{result["sequence"]:03d}-{phase.lower()}-{role}.receipt.json'
             atomic_json(prefix, self.state['turns'][-1])
@@ -1853,6 +1904,8 @@ class Coordinator:
                    'context_before': context_before,
                    'start': now, 'gap': now - self.state['last_end'].get(role, now), 'fresh': fresh,
                    'invocation_budget_counted': False}
+        if role == 'reviewer':
+            receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
         if env_overrides:
             receipt['environment_overrides'] = dict(env_overrides)
         env = cli_env()
@@ -2011,8 +2064,11 @@ class Coordinator:
         self.state['turns'].append(receipt)
         self.state['last_end'][role] = receipt['end']
         self.state['active'] = None
+        if role == 'reviewer' and phase in ('PLAN', 'EXEC'):
+            self.state['pending_reviewer_result_sequence'] = seq
         self.save()
-        return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role}
+        return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role,
+                'open_finding_ids': receipt.get('open_finding_ids', [])}
 
     def render(self, result: dict, actor: str, phase: str) -> None:
         payload = result['answer']
@@ -2081,19 +2137,39 @@ class Coordinator:
             self.polish_reviewer_turn()
             return
         phase = self.state['phase']
-        self.materialize_review_context()
-        snapshot, _ = git_snapshot(self.workspace)
-        result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), review_schema())
+        result = self._recorded_reviewer_result(phase)
+        if result is None:
+            self.materialize_review_context()
+            snapshot, _ = git_snapshot(self.workspace)
+            result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), review_schema())
+        result['answer'] = copy.deepcopy(result['answer'])
+        self.state['pending_reviewer_result_sequence'] = result['sequence']
+        self.save()
+        snapshot = result['snapshot']
         answer = result['answer']
-        missing = self.apply_dispositions(answer['prior_findings'], result['sequence'])
+        try:
+            missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
+                                               result.get('open_finding_ids'))
+        except RuntimeError as exc:
+            self.state['pending_reviewer_result_sequence'] = None
+            self.hold('reviewer invalid finding dispositions: ' + str(exc))
+            return
         if missing:
             retry_prompt = (self._review_prompt('reviewer', snapshot) +
                             '\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
                             '. This is the one allowed protocol retry; include every open id.')
             result = self.invoke('reviewer', phase, retry_prompt, review_schema())
+            result['answer'] = copy.deepcopy(result['answer'])
             answer = result['answer']
-            missing = self.apply_dispositions(answer['prior_findings'], result['sequence'])
+            try:
+                missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
+                                                  result.get('open_finding_ids'))
+            except RuntimeError as exc:
+                self.state['pending_reviewer_result_sequence'] = None
+                self.hold('reviewer invalid finding dispositions after retry: ' + str(exc))
+                return
             if missing:
+                self.state['pending_reviewer_result_sequence'] = None
                 self.hold('reviewer omitted open finding dispositions after retry: ' + ', '.join(missing))
                 return
         if phase == 'PLAN':
@@ -2110,8 +2186,11 @@ class Coordinator:
         if phase == 'EXEC' and self.args.shadow == 'on':
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
-            shadow = self.invoke('shadow', phase, self._review_prompt('shadow', shadow_snapshot),
-                                 fresh_review_schema(), fresh=True)
+            shadow = self._recorded_shadow_result(phase, result['sequence'])
+            if shadow is None:
+                shadow = self.invoke('shadow', phase, self._review_prompt('shadow', shadow_snapshot),
+                                     fresh_review_schema(), fresh=True)
+            shadow['answer'] = copy.deepcopy(shadow['answer'])
             shadow_rows = self.record_findings('fresh-shadow', phase, shadow['sequence'],
                                                shadow['answer']['full_review'])
             for row in shadow_rows:
@@ -2124,7 +2203,11 @@ class Coordinator:
                     answer['status'] = 'REVISE'
             self.render(shadow, 'shadow', phase)
         if phase == 'EXEC':
-            comparison = {'round': self.state['exec_reviews'] + 1,
+            previous_comparison = next((row for row in self.state['exec_comparisons']
+                                        if row.get('review_sequence') == result['sequence']), None)
+            comparison = {'round': (previous_comparison['round'] if previous_comparison else
+                                    self.state['exec_reviews'] + 1),
+                          'review_sequence': result['sequence'],
                           'effective_verdict': answer['status'],
                           'persistent': {'verdict': persistent_verdict,
                                          'findings': self.comparison_findings(
@@ -2132,17 +2215,22 @@ class Coordinator:
             if shadow:
                 comparison['shadow'] = {'verdict': shadow['answer']['status'],
                                         'findings': self.comparison_findings(shadow['answer'])}
+            self.state['exec_comparisons'] = [
+                row for row in self.state['exec_comparisons']
+                if row.get('review_sequence') != result['sequence']]
             self.state['exec_comparisons'].append(comparison)
-        self.capture_review_baseline()
-        self.state[f'{phase.lower()}_reviews'] += 1
+        self.capture_review_baseline(result['sequence'], phase)
         if answer['status'] == 'HOLD':
+            self.state['pending_reviewer_result_sequence'] = None
             self.hold('reviewer HOLD')
             return
         if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence']:
+            self.state['pending_reviewer_result_sequence'] = None
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
             return
         blocking = self.blocking_open_findings()
         if answer['status'] == 'APPROVE' and blocking:
+            self.state['pending_reviewer_result_sequence'] = None
             self.hold('APPROVE rejected with open blocking findings: ' +
                       ', '.join(finding['id'] for finding in blocking))
             return
@@ -2150,6 +2238,7 @@ class Coordinator:
             limit = self.args.max_plan_rounds if phase == 'PLAN' else self.args.max_exec_rounds
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
+                self.state['pending_reviewer_result_sequence'] = None
                 self.hold(f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
@@ -2174,9 +2263,11 @@ class Coordinator:
             self.state['review_findings'] = []
             if self.args.stop_after_plan and not self.state.get('plan_stop_done'):
                 self.state['plan_stop_done'] = True
+                self.state['pending_reviewer_result_sequence'] = None
                 self.hold(PLAN_STOP_REASON)
                 return
         elif answer['reviewed_snapshot'] != git_snapshot(self.workspace)[0]:
+            self.state['pending_reviewer_result_sequence'] = None
             self.hold('stale EXEC approval')
             return
         elif self.args.adversarial_gate == 'on' and not self.state['gate_ran']:
@@ -2185,9 +2276,51 @@ class Coordinator:
                                               if advisory else '')
             self.state['next'] = 'gate'
         else:
+            self.state['pending_reviewer_result_sequence'] = None
             self.start_polish_or_done()
             return
+        self.state['pending_reviewer_result_sequence'] = None
         self.save()
+
+    def _recorded_reviewer_result(self, phase: str) -> Optional[dict]:
+        """Reuse a durable verdict when a crash preceded reviewer state advancement."""
+        turns = self.state.get('turns', [])
+        pending = self.state.get('pending_reviewer_result_sequence')
+        if pending is None:
+            return None
+        receipt = next((row for row in turns if row.get('sequence') == pending), None)
+        if receipt is None:
+            return None
+        answer = receipt.get('answer')
+        if (receipt.get('role') != 'reviewer' or receipt.get('phase') != phase or
+                not isinstance(answer, dict) or receipt.get('error') or
+                receipt.get('verified_claims_error')):
+            return None
+        effective = answer
+        if phase == 'PLAN' and answer.get('status') == 'REVISE':
+            findings, out_of_phase = self.normalize_plan_findings(answer.get('full_review', []))
+            if findings and out_of_phase == len(findings):
+                effective = {**answer, 'status': 'APPROVE'}
+        if verified_claims_error(effective):
+            return None
+        return {'answer': copy.deepcopy(answer), 'snapshot': receipt['snapshot_before'],
+                'sequence': receipt['sequence'], 'role': 'reviewer',
+                'open_finding_ids': receipt.get('open_finding_ids')}
+
+    def _recorded_shadow_result(self, phase: str, reviewer_sequence: int) -> Optional[dict]:
+        for receipt in reversed(self.state.get('turns', [])):
+            if receipt.get('sequence', 0) <= reviewer_sequence:
+                break
+            if (receipt.get('role') == 'shadow' and receipt.get('phase') == phase and
+                    isinstance(receipt.get('answer'), dict) and not receipt.get('error') and
+                    not receipt.get('verified_claims_error')):
+                if verified_claims_error(receipt['answer']):
+                    continue
+                return {'answer': copy.deepcopy(receipt['answer']),
+                        'snapshot': receipt['snapshot_before'],
+                        'sequence': receipt['sequence'], 'role': 'shadow',
+                        'open_finding_ids': receipt.get('open_finding_ids')}
+        return None
 
     def polish_reviewer_turn(self) -> None:
         polish = self.state['polish']
@@ -2199,13 +2332,15 @@ class Coordinator:
         prompt = self._review_prompt('reviewer', snapshot)
         result = self.invoke('reviewer', 'POLISH', prompt, review_schema())
         answer = result['answer']
-        missing = self.apply_dispositions(answer['prior_findings'], result['sequence'])
+        missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
+                                           result.get('open_finding_ids'))
         if missing:
             retry = prompt + ('\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
                               '. This is the one allowed protocol retry; include every open id.')
             result = self.invoke('reviewer', 'POLISH', retry, review_schema())
             answer = result['answer']
-            missing = self.apply_dispositions(answer['prior_findings'], result['sequence'])
+            missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
+                                               result.get('open_finding_ids'))
             if missing:
                 self.hold('polish reviewer omitted open finding dispositions after retry: ' +
                           ', '.join(missing))
