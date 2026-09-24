@@ -140,7 +140,7 @@ and do not use this Claude-specific invocation pattern.
 
 Even with `general-purpose`, agents may not use tools and fabricate output. Two defenses:
 
-1. **Agent-side**: All language agents (rust/go/python/frontend-security) have a `**MANDATORY**` tool-use instruction at the top of their `.md` body.
+1. **Agent-side**: All language agents (rust/go/python/frontend-security) open their `.md` body with an instruction to run the analysis commands and read every in-scope file before any analysis, and to base the report only on that output.
 2. **Orchestrator-side**: After every agent call, check `tool_uses` in metadata. If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report.
 
 <!-- 迁移自 README.md:1-4 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->

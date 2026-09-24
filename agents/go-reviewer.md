@@ -8,7 +8,7 @@ tools: Read, Grep, Glob, Bash
 
 # Go Code Review
 
-**MANDATORY**: You MUST use the Bash tool to run actual commands and the Read tool to read actual files BEFORE producing any analysis. Do NOT guess, infer, or fabricate code content or tool output. If a tool call fails, report the failure — do not invent a result.
+Before writing any analysis, run the analysis commands with the Bash tool and read every changed file in scope with the Read tool; base the report only on that output. If a tool call fails, report the failure instead of a result.
 
 Run all Go static analysis tools on changed files, categorize issues by severity, and provide a clear verdict.
 
