@@ -217,8 +217,12 @@ def _workspace_lease_temp_roots() -> tuple[Path, ...]:
 
 
 def workspace_lease_path(workspace: Path) -> Path:
-    """Return a stable per-user lock path outside the resolved product workspace."""
+    """Return a per-user lock path keyed by the resolved workspace's filesystem identity."""
     root = Path(workspace).expanduser().resolve()
+    try:
+        identity = root.stat()
+    except OSError as exc:
+        raise RunLeaseError('cannot stat workspace for lease key: ' + str(exc)) from exc
     uid = os.getuid()
     for temp_root in _workspace_lease_temp_roots():
         lock_dir = temp_root / f'paired-session-workspace-leases-{uid}'
@@ -228,7 +232,8 @@ def workspace_lease_path(workspace: Path) -> Path:
             pass
         else:
             continue
-        key = hashlib.sha256(os.fsencode(str(root))).hexdigest()
+        identity_key = f'{identity.st_dev}:{identity.st_ino}'
+        key = hashlib.sha256(identity_key.encode('ascii')).hexdigest()
         return lock_dir / (key + '.lock')
     raise RunLeaseError('cannot locate workspace lease outside the product workspace')
 
@@ -2859,7 +2864,10 @@ def main(argv=None) -> int:
             print('REFUSED: ' + str(exc))
             return 2
     try:
-        with run_lease(Path(args.run_dir)), workspace_lease(workspace, run_dir):
+        with run_lease(Path(args.run_dir)):
+            if args.action in ('run', 'resume', 'permission-probe'):
+                with workspace_lease(workspace, run_dir):
+                    return _execute_locked(args)
             return _execute_locked(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))

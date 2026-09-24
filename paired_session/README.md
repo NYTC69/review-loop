@@ -12,9 +12,28 @@ The preflight must pass before either a fresh run or a resumed run can invoke an
 author. The Codex author permission probe uses a disposable Git workspace and
 checks that workspace and run-owned `$TMPDIR` writes succeed while external
 temporary paths and `/tmp` writes fail.
-One OS-backed lease serializes mutating coordinator commands for a run
-directory. Fresh-shadow CRITICALs enter the findings ledger and follow the
-author repair path even when the persistent reviewer approves.
+One OS-backed lease serializes commands that mutate a run directory. A second
+worktree lease prevents `run`, `resume`, or `permission-probe` commands using
+different run directories from coordinating on the same workspace at once. Its
+key is the resolved workspace directory's `(st_dev, st_ino)` identity, so
+case-variant or symlink paths to the same directory share a lock.
+
+The workspace lock lives outside the product workspace in
+`/tmp/paired-session-workspace-leases-<uid>/<sha256-of-device-and-inode>.lock`.
+If that location would be inside the workspace, the coordinator tries `/var/tmp`
+and then the configured system temporary directory. It uses a private `0700`
+per-user directory and fails closed if it cannot create or validate the lock.
+A contention HOLD reports the holder PID and `run_dir`. The OS releases the
+`flock` when the process exits; the small lock file remains for reuse. Do not
+remove a lock file or its directory while a coordinator may hold it. Normal
+operation needs no manual cleanup; remove stale files only after confirming no
+coordinator can still hold the corresponding lease.
+
+`abort` takes only its own run-directory lease. It marks that run HOLD without
+modifying the product workspace, so an operator can abort a stale run while a
+different run holds the workspace lease. Fresh-shadow CRITICALs enter the
+findings ledger and follow the author repair path even when the persistent
+reviewer approves.
 Explicit subscription/rate-limit rejections are held with any reported reset
 hint and do not consume the invocation budget; their failed attempts remain in
 the turn receipt.
@@ -81,9 +100,8 @@ bin/paired-session resume \
   --test-command 'python3 -m unittest'
 ```
 
-`bin/paired-session --help` lists all supported options. `snapshot` is read-only;
-all state-changing actions use an exclusive run-directory lease. Each run
-directory belongs to one task and must not be shared between tasks.
+`bin/paired-session --help` lists all supported options. `snapshot` is read-only.
+Each run directory belongs to one task and must not be shared between tasks.
 
 The workflow still needs the remaining productization and protocol batches
 listed in the repository backlog. The legacy implementation remains available

@@ -353,6 +353,36 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertNotEqual(lease_path, self.workspace)
         self.assertNotIn(self.workspace, lease_path.parents)
 
+    def test_workspace_lease_key_uses_device_and_inode_not_path_text(self):
+        alias = self.root / 'case-alias'
+        canonical_paths = {self.workspace.resolve(), alias.resolve()}
+        identity = type('Stat', (), {'st_dev': 17, 'st_ino': 29})()
+        real_stat = Path.stat
+
+        def same_identity_for_aliases(path, *args, **kwargs):
+            if path.resolve() in canonical_paths:
+                return identity
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(Path, 'stat', new=same_identity_for_aliases):
+            self.assertNotEqual(self.workspace.resolve(), alias.resolve())
+            self.assertEqual(rc.workspace_lease_path(self.workspace), rc.workspace_lease_path(alias))
+
+    def test_workspace_lease_key_uses_device_and_inode_not_path_text(self):
+        alias = self.root / 'case-alias'
+        canonical_paths = {self.workspace.resolve(), alias.resolve()}
+        identity = type('Stat', (), {'st_dev': 17, 'st_ino': 29})()
+        real_stat = Path.stat
+
+        def same_identity_for_aliases(path, *args, **kwargs):
+            if path.resolve() in canonical_paths:
+                return identity
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(Path, 'stat', new=same_identity_for_aliases):
+            self.assertNotEqual(self.workspace.resolve(), alias.resolve())
+            self.assertEqual(rc.workspace_lease_path(self.workspace), rc.workspace_lease_path(alias))
+
     def test_one_workspace_lease_blocks_a_second_run_directory_cli_process(self):
         second_run = self.root / 'second-run'
         with rc.workspace_lease(self.workspace, self.run_dir):
@@ -364,6 +394,36 @@ class RealCoordinatorTests(unittest.TestCase):
             self.assertFalse((second_run / 'state.json').exists())
         with rc.workspace_lease(self.workspace, second_run):
             pass
+
+    def test_abort_uses_per_run_lease_without_workspace_lease(self):
+        run_a = self.root / 'run-a'
+        self.run_dir = self.root / 'run-b'
+        co = self.coordinator('--timeout', '10', '--author-effort', 'low',
+                              '--reviewer-effort', 'low', '--gate-effort', 'low',
+                              '--test-command', 'python3 -m unittest')
+        before = rc.git_snapshot(self.workspace)[0]
+
+        with rc.run_lease(run_a), rc.workspace_lease(self.workspace, run_a):
+            abort_command = self.command('--skip-probe')
+            abort_command[2] = 'abort'
+            aborted = subprocess.run(abort_command, cwd=self.root, text=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(aborted.returncode, 2)
+            self.assertIn('HOLD: aborted by operator', aborted.stdout)
+            state = json.loads((self.run_dir / 'state.json').read_text())
+            self.assertEqual(state['status'], 'HOLD')
+            self.assertEqual(rc.git_snapshot(self.workspace)[0], before)
+
+            running = self.run_coordinator('--skip-probe')
+            self.assertEqual(running.returncode, 2)
+            self.assertIn('another coordinator currently owns this workspace', running.stdout)
+
+            resume_command = self.command('--skip-probe')
+            resume_command[2] = 'resume'
+            resumed = subprocess.run(resume_command, cwd=self.root, text=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(resumed.returncode, 2)
+            self.assertIn('another coordinator currently owns this workspace', resumed.stdout)
 
     def test_workspace_lease_refuses_a_non_private_lock_directory(self):
         with tempfile.TemporaryDirectory(dir=self.root) as temp:
