@@ -89,6 +89,17 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-checkpoint-helper-write-and-verify"></a> Write Compass checkpoints only through the state helper and re-read the saved Next after every write.
+- **Date**: 2026-09-25
+- **Task context**: Round 3/4 paired-session closeout while recording Compass checkpoint state and advancing batch plans.
+- **What broke**: Rev23 in `.compass/CHECKPOINT.md` retained a stale Next on 2026-09-24; on 2026-09-25, rev45 in the same file was written outside the helper and acquired an invalid predecessor, requiring explicit replacement with a fresh task identity.
+- **Root cause**: Candidate editing and state publication were conflated, and the saved Next was not consistently read back after each write; a direct filesystem edit bypassed helper validation and broke lineage.
+- **Rule going forward**: Write Compass checkpoints only through the state helper and re-read the saved Next after every write.
+- **Scope**: Compass checkpoint, state helper, saved Next verification, checkpoint lineage
+- **Promotion candidacy**: project-only
+
+---
+
 Entry template (copy as you add each new learning):
 
 ```markdown
