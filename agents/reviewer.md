@@ -159,8 +159,8 @@ Write them as indented continuation lines under the bullet:
 Inline `Label:` segments inside the finding body are accepted equivalently
 (the Step 3.4 adversarial gate renders each finding on one line).
 
-Not blocking on their own — lower them to `[MINOR]` / follow-up or omit
-them: unreachable scenarios, unsupported assumption chains, negligible
+Not blocking on their own — report them as `[MINOR]` / follow-up:
+unreachable scenarios, unsupported assumption chains, negligible
 combined risk, or clearly disproportionate complexity for extremely rare
 low-impact benefit. Rare but realistically reachable credential exposure,
 authorization bypass, irreversible data loss, destructive action, or
