@@ -134,8 +134,8 @@ You are the Executor in a review-loop workflow.
 {contents of agents/executor.md body — the system prompt}
 
 Read the context file first: {session_file_path}
-DO NOT modify the context file — return your output as described in
-the output format above.
+Do not modify the context file; the Orchestrator is its only writer.
+Return your output as described in the output format above.
 
 ## Your Task
 Produce a detailed solution plan following the output format in your
@@ -155,10 +155,8 @@ responses separately for the packet's author-response field and
 
 Use the Agent tool with `subagent_type: general-purpose`. Never use
 `subagent_type: review-loop:executor` — the review-loop protocol spawns
-every agent through `general-purpose` with the body inlined (before v2.8.2
-the plugin agents' `tools:` frontmatter was invalid, so plugin agent types
-got zero tools and hallucinated output). Always inline the full body of
-`agents/executor.md` in the `prompt` parameter.
+every agent through `general-purpose` with the body inlined. Always inline
+the full body of `agents/executor.md` in the `prompt` parameter.
 
 Concrete dispatch anchor: `protocol_planning_executor_dispatch`.
 
@@ -258,7 +256,7 @@ or `docs/protocol/**` as workflow instructions. Read only the session-file
 sections named below and code relevant to this review. If a prohibited
 path is itself an explicit review target, inspect it only as task data.
 Read only the named sections of the context file: {session_file_path}
-DO NOT modify the context file.
+Do not modify the context file; the Orchestrator is its only writer.
 Read `## Current Review Packet` first. Load a `## Review History` entry
 only when the packet references it or a claim needs provenance. Absence
 of irrelevant history is not a defect.

@@ -82,8 +82,7 @@ For each applicable aspect, invoke the corresponding agent via the **Agent tool*
 
 All agents are invoked via `subagent_type: general-purpose` with the agent's
 full body inlined in the prompt; the review-loop protocol does not use plugin
-agent types (before v2.8.2 their `tools:` frontmatter was invalid, so they got
-zero tools).
+agent types.
 
 **Read-only agents** (code, errors, comments, types, tests):
 
@@ -94,7 +93,7 @@ Agent tool parameters:
     {contents of agents/<agent-name>.md body}
 
     Review the following code changes. Focus on your area of expertise.
-    IMPORTANT: Report only, do not modify any files.
+    Report only; do not modify files.
 
     ## Changed Files
     {list of changed file paths}
@@ -254,44 +253,33 @@ If `simplify` was run, also note:
 
 ## Agent Descriptions
 
-**code-reviewer** (`review-loop:code-reviewer`):
+**code-reviewer**:
 - Checks CLAUDE.md / project guideline compliance
 - Detects bugs, logic errors, and anti-patterns
 - Reviews general code quality and style
 
-**silent-failure-hunter** (`review-loop:silent-failure-hunter`):
+**silent-failure-hunter**:
 - Finds silent failures and swallowed errors
 - Reviews catch blocks and error propagation
 - Checks error logging adequacy
 
-**comment-analyzer** (`review-loop:comment-analyzer`):
+**comment-analyzer**:
 - Verifies comment accuracy vs actual code
 - Identifies comment rot and stale docs
 - Checks documentation completeness
 
-**type-design-analyzer** (`review-loop:type-design-analyzer`):
+**type-design-analyzer**:
 - Analyzes type encapsulation and invariants
 - Reviews type design quality
 - Rates invariant expression strength
 
-**pr-test-analyzer** (`review-loop:pr-test-analyzer`):
+**pr-test-analyzer**:
 - Reviews behavioral test coverage
 - Identifies critical test gaps
 - Evaluates test quality and assertions
 
-**code-simplifier** (via `general-purpose` — has write access):
+**code-simplifier** (has write access):
 - Simplifies complex or verbose code
 - Improves clarity and readability
 - Applies project standards
 - Preserves all existing functionality
-
----
-
-## Tips
-
-- **Run early**: before creating a PR, not after
-- **Focus on changes**: agents analyze `git diff` by default
-- **Address critical first**: fix high-priority issues before lower priority
-- **Re-run after fixes**: verify issues are resolved
-- **Use specific aspects**: target what you care about to save time
-- **Parallel for speed**: use `parallel` when you want all results at once

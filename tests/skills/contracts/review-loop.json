@@ -808,25 +808,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.8.7\""
+      "needle": "\"version\": \"2.8.8\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.7\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.8.8\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.8.7\",\n      \"author\""
+      "needle": "\"version\": \"2.8.8\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.8.7\""
+      "needle": "\"version\": \"2.8.8\""
     },
     {
       "id": "codex_marketplace_manifest_name",

@@ -10,7 +10,7 @@
 
 **History:** first seen with Executor (`tools: all`) in commit `8506809`, then with `code-simplifier` (2026-04-06) and `rust-reviewer` (issue #3). Each time the conclusion was "plugin agent types are sandboxed", so the protocol switched to `subagent_type: general-purpose` with the agent body inlined in the prompt.
 
-**Rule**: When adding ANY new agent invocation, always use `subagent_type: general-purpose` with inlined body. Never use `subagent_type: review-loop:<name>`. The agents now resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work.
+**Rule**: Every agent invocation uses `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. The agents resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work.
 
 ### README.md must stay intact (lint SSOT dependency)
 

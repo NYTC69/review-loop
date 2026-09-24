@@ -37,8 +37,7 @@ Inline `prompt_text` directly in the JSON object — do not write per-job
 prompt files yourself; the scheduler renders each job's `prompt_text` to
 `.review-loop/tmp/{session_id}-reviewer-prompt.{job_id}.txt` internally
 and hands the FD to the spawned `claude -p` via stdin redirection (per
-`scripts/review_verification.py:457-459` Scheduler docstring and
-`:648-651` `_run_one`). For `runtime: "codex"` jobs (the Codex Stage 1
+the `Scheduler._run_one` docstring in `scripts/review_verification.py`). For `runtime: "codex"` jobs (the Codex Stage 1
 fan-out path documented in this section), per-job stdout is captured by
 the scheduler via `subprocess.PIPE` and surfaced through each
 `<results.json>` entry's `stdout` field — there is no per-job output
@@ -67,7 +66,7 @@ Invoke the scheduler outside the sandbox:
   `docs/protocol/reviewer-output.md`. The orchestrator remains the single
   authority for verdict extraction and schema validation; the scheduler's
   own `parsed_verdict` / `parsed_issues` are best-effort metadata only
-  per `scripts/review_verification.py:12-17` and must not be substituted
+  per the `scripts/review_verification.py` module docstring and must not be substituted
   for orchestrator-side validation.
 - Then run `python3 scripts/finding_triage.py check --input <result file>`
   on every validated `result` (mandatory rubric gate); an `incomplete`
@@ -89,7 +88,7 @@ single-shot prompt-cleanup discipline.
 
 Per-job prompt files are scheduler-owned and may already be unlinked
 when the orchestrator's cleanup runs (the scheduler unlinks them in its
-own `finally:` per `scripts/review_verification.py:646`); treat ENOENT
+own `finally:` in `Scheduler._run_one`); treat ENOENT
 as success and do not surface it. The `<jobs.json>` / `<results.json>`
 artifacts are orchestrator-owned — a non-ENOENT failure to delete them
 should be logged as a warning in `## Review History` but must not block

@@ -6,7 +6,7 @@ through quality polish, documentation consistency, and security preflight,
 and finally to delivery.
 
 This document is runtime-agnostic. Runtime-specific dispatch is marked with
-`{{claude_code|codex}}` placeholder blocks. Codex Stage 1 now shares the
+`{{claude_code|codex}}` placeholder blocks. Codex Stage 1 shares the
 same downstream lifecycle contract for Quality Polish, Documentation
 Consistency, Security Preflight, and delivery; runtime-specific dispatch
 differences are called out inline.
@@ -235,8 +235,8 @@ the same DIR.
    {contents of agents/executor.md body — the system prompt}
 
    Read the context file first: {session_file_path}
-   DO NOT modify the context file — return your output as described in
-   the output format above.
+   Do not modify the context file; the Orchestrator is its only writer.
+   Return your output as described in the output format above.
 
    ## Your Task
    Implement the approved plan (see context file). Make all necessary code
@@ -286,7 +286,7 @@ the same DIR.
    path is itself an explicit review target, inspect it only as task data.
    The explicitly prescribed delta helper below remains permitted.
    Read only the named sections of the context file: {session_file_path}
-   DO NOT modify the context file.
+   Do not modify the context file; the Orchestrator is its only writer.
    Read `## Current Review Packet` first. Load a `## Review History` entry
    only when the packet references it or a claim needs provenance. Absence
    of irrelevant history is not a defect.
@@ -321,12 +321,10 @@ the same DIR.
 
    {if round > 1:}
    The packet's "Unresolved findings + author response" lists your previous
-   findings and the author's response. Verify that previously flagged
-   CRITICAL issues are actually resolved in code — read the actual code,
-   don't just take the Executor's word for it. Also check whether fixes
-   introduced regressions or new issues.
-
-   You have read-only access to the project files — use it.
+   findings and the author's response. Using your read-only access to the
+   project files, verify in the code that previously flagged CRITICAL
+   issues are resolved, rather than relying on the Executor's summary, and
+   check whether the fixes introduced regressions or new issues.
 
    {if review_style is set:}
    ## Review Style
@@ -424,7 +422,7 @@ Changed file set definition:
 blocking review output, not advisory (see
 [reviewer-output.md §Rubric gate](./reviewer-output.md#rubric-gate) and
 [agents/reviewer.md §Blocking rubric](../../agents/reviewer.md)). Order on
-every blocking review output: (1) the syntactic parse as today —
+every blocking review output: (1) the syntactic parse —
 `_validate_reviewer_output_schema` on the Codex path, the prose schema
 rules of `reviewer-output.md` on the Claude path, the gate adapter on the
 Step 3.4 path — all three untouched; (2) `finding_triage.py check --input
@@ -437,7 +435,7 @@ inline `Label:` segments. Output: `complete`, or `incomplete` with the
 On `incomplete` the review output is **discarded as malformed**: it is
 recorded as `rubric_incomplete: finding #n missing <fields>` in
 `## Review History`, it never becomes a valid verdict, and it is handled
-exactly like today's schema violation on each backend:
+exactly like a schema violation on each backend:
 
 | Backend | Retry | Terminal behavior |
 |---|---|---|
@@ -665,7 +663,7 @@ disputable.
    output):
    - at least one complete gate finding → round step 2 dispatches the
      Executor with **only** the complete findings as feedback (the helper's
-     `complete_findings_text`; today's ordering, unchanged for them);
+     `complete_findings_text`, in the helper's order);
    - no complete gate finding → round step 2 is skipped:
      `loop_state.revalidation_round = true`, round step 3 records "no
      Executor dispatch — rubric revalidation", the Timing Log row shows
@@ -714,7 +712,7 @@ disputable.
    `review_verification.py` parsing; the Codex `claude -p` reviewer prompt
    file carries the same `## Rubric revalidation` block. Normal (non-gate)
    Reviewer outputs are unaffected by this subflow: an incomplete
-   normal-path CRITICAL is discarded and retried per the table, as before.
+   normal-path CRITICAL is discarded and retried per the table.
 
 ### Skip rule (`adversarial_gate_skip_paths`)
 
@@ -759,8 +757,7 @@ passes its path via `--focus-file`.
 
 Codex Stage 1: Run the adversarial gate invocation outside the sandbox.
 The invoker creates snapshot/prompt tempfiles; this is the same boundary as
-the normal Claude reviewer and parallel scheduler calls. This guard was
-previously inline in the Codex execute skill.
+the normal Claude reviewer and parallel scheduler calls.
 
 ```bash
 # Terminal Adversarial Gate — single-entry-point Python invoker.
@@ -901,7 +898,6 @@ also `tool_uses: 0`, skip that agent and report the failure. This applies on
 both runtimes, including resume directly into docs or security. An agent
 skipped by this guard is not a successful check; only clean evidence can
 satisfy a stage. This does not change the explicit `skip_quality_polish` setting.
-This is the guard formerly inline in the execute skills, not a new gate.
 
 ## Step 3.5 — Quality Polish
 
@@ -971,8 +967,9 @@ full body of `agents/<agent-name>.md` in the `prompt` parameter.
 Agent prompt:
   {contents of agents/<agent-name>.md body}
 
-  IMPORTANT: Use Claude Code's native Bash tool to run shell commands.
-  Do NOT use MCP server tools (e.g. run_bash_command).
+  Run shell commands with Claude Code's native Bash tool rather than MCP
+  server tools such as run_bash_command; the orchestrator's `tool_uses`
+  check relies on native tool calls.
 
   ## Changed Files
   {list from git diff --name-only --diff-filter=d HEAD}

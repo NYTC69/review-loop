@@ -80,8 +80,9 @@ Agent tool parameters:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
-    IMPORTANT: Use Claude Code's native Bash tool to run shell commands.
-    Do NOT use MCP server tools (e.g. run_bash_command).
+    Run shell commands with Claude Code's native Bash tool rather than MCP
+    server tools such as run_bash_command; the orchestrator's `tool_uses`
+    check relies on native tool calls.
 
     ## Changed Files
     {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}

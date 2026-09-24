@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-25
+
+### v2.8.8 按 claude-opus-5-5 清理过时的 prompt 写法
+
+依据 prompt 审计（`.compass/results/2026-09-25_prompt-audit/`）。约束一条不删，只改语气、补理由、去掉历史叙述。
+
+- reviewer / code-reviewer 不再在报告阶段过滤发现：非阻断项报为 `[MINOR]`，不再「或省略」；code-reviewer 改为具体的报告门槛。
+- 4 个语言 reviewer 的 `**MANDATORY**` 横幅改为正常语气的同一约束；orchestrator 侧 `tool_uses: 0` 检查不变。
+- 协议与技能：`DO NOT modify the context file` 补上理由（Orchestrator 是唯一写入者）；native Bash 规则写明原因；
+  去掉「now / today / as before / formerly inline / before v2.8.2」这类迁移与历史措辞；`parallel-review.md` 的失效行号改为符号锚点。
+- agent 正文：去掉结尾打气话和「non-negotiable / absolutely forbidden」；code-simplifier 不再写死上游项目的 JS/React 规范。
+- review-pr / reorganize：agent 标签去掉 `review-loop:<name>`，删掉给人看的 Tips，抽取规则改为判断式。
+
 ## 2026-09-20
 
 ### v2.8.4 降低跨模型 reviewer 的 token 浪费，修复 3 个派发 bug

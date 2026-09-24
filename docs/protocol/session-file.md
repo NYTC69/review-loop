@@ -447,9 +447,8 @@ path-category rule anywhere.
 ### Reviewer-only fast-replay
 
 This is the narrow path on which already-earned `completed_stages` survive a
-Step 3.5.4 or Step 3.6 write. It is no longer decided by looking at the
-diff's prose-likeness: the orchestrator runs `evidence_ledger.py classify`,
-which is a dependency-closure proof (see
+Step 3.5.4 or Step 3.6 write. The orchestrator decides it by running
+`evidence_ledger.py classify`, which is a dependency-closure proof (see
 [§Convergence rule](#convergence-rule)). A write is eligible for
 `reviewer-only fast-replay` only when all of the following are true:
 
