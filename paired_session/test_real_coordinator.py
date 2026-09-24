@@ -48,14 +48,377 @@ class RealCoordinatorTests(unittest.TestCase):
         self.workitem = self.root / 'WORKITEM.md'
         self.workitem.write_text('# Toy\nCreate sum_ints; reject booleans.\n')
         self.run_dir = self.root / 'run'
+        self.test_home = self.root / 'home'
+        (self.test_home / '.codex').mkdir(parents=True)
+        (self.test_home / '.claude' / 'plugins').mkdir(parents=True)
+        (self.test_home / '.codex' / 'config.toml').write_text('model = "gpt-6-luna"\n')
+        (self.test_home / '.claude' / 'settings.json').write_text('{}\n')
+        (self.test_home / '.claude' / 'plugins' / 'installed_plugins.json').write_text(
+            json.dumps({'plugins': []}))
+        self.original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(self.test_home)
+
+    def test_global_hash_attribution_accepts_only_trust_and_last_updated_autochanges(self):
+        home = self.root / 'global-state'
+        (home / '.codex').mkdir(parents=True)
+        (home / '.claude' / 'plugins').mkdir(parents=True)
+        config = home / '.codex' / 'config.toml'
+        settings = home / '.claude' / 'settings.json'
+        plugins = home / '.claude' / 'plugins' / 'installed_plugins.json'
+        config.write_text('model = "gpt-6-luna"\n')
+        settings.write_text('{"theme":"dark"}\n')
+        plugins.write_text(json.dumps({'plugins': [{'name': 'compass', 'version': '0.6.1',
+                                                    'lastUpdated': 'before'}]}))
+        before = rc.global_config_snapshot(home)
+        workspace = self.workspace.resolve()
+        config.write_text(config.read_text() + f'\n[projects.{json.dumps(str(workspace))}]\n'
+                          'trust_level = "trusted"\n')
+        plugins.write_text(json.dumps({'plugins': [{'name': 'compass', 'version': '0.6.1',
+                                                    'lastUpdated': 'after'}]}))
+        after = rc.global_config_snapshot(home)
+
+        result = rc.attribute_global_config_changes(before, after, [workspace])
+
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertEqual({item['change'] for item in result['expected_changes']},
+                         {'trusted-probe-workspace-entry', 'plugin-lastUpdated'})
+        self.assertEqual(result['findings'], [])
+
+    def test_global_hash_attribution_flags_any_non_allowlisted_change(self):
+        cases = ('codex-config', 'claude-settings', 'plugin-version')
+        for case in cases:
+            with self.subTest(case=case):
+                home = self.root / ('global-state-' + case)
+                (home / '.codex').mkdir(parents=True)
+                (home / '.claude' / 'plugins').mkdir(parents=True)
+                config = home / '.codex' / 'config.toml'
+                settings = home / '.claude' / 'settings.json'
+                plugins = home / '.claude' / 'plugins' / 'installed_plugins.json'
+                config.write_text('model = "gpt-6-luna"\n')
+                settings.write_text('{"theme":"dark"}\n')
+                plugins.write_text(json.dumps({'plugins': [{'name': 'compass', 'version': '0.6.1',
+                                                            'lastUpdated': 'before'}]}))
+                before = rc.global_config_snapshot(home)
+                if case == 'codex-config':
+                    config.write_text('model = "gpt-6-astra"\n')
+                elif case == 'claude-settings':
+                    settings.write_text('{"theme":"light"}\n')
+                else:
+                    plugins.write_text(json.dumps({'plugins': [{'name': 'compass', 'version': '0.7.0',
+                                                                'lastUpdated': 'after'}]}))
+
+                result = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home),
+                                                            [self.workspace])
+
+                self.assertEqual(result['status'], 'FAIL', result)
+                self.assertTrue(result['findings'])
+
+    def test_global_hash_attribution_handles_new_codex_config_and_rejects_bad_trust_entries(self):
+        home = self.root / 'global-state-new-codex-config'
+        (home / '.codex').mkdir(parents=True)
+        (home / '.claude' / 'plugins').mkdir(parents=True)
+        (home / '.claude' / 'settings.json').write_text('{}\n')
+        (home / '.claude' / 'plugins' / 'installed_plugins.json').write_text('{}\n')
+        before = rc.global_config_snapshot(home)
+        workspace = self.workspace.resolve()
+        config_path = home / '.codex' / 'config.toml'
+        header = '[projects.' + json.dumps(str(workspace)) + ']'
+        config_path.write_text(header + '\ntrust_level = "trusted"\n')
+        result = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home), [workspace])
+        self.assertEqual(result['status'], 'PASS', result)
+
+        invalid_entries = (
+            '[projects."/tmp/not-the-probe"]\ntrust_level = "trusted"\n',
+            header + '\ntrust_level = "untrusted"\n',
+            header + '\ntrust_level = "trusted"\napproval_policy = "never"\n',
+        )
+        for index, addition in enumerate(invalid_entries):
+            with self.subTest(index=index):
+                case_home = self.root / f'global-state-bad-trust-{index}'
+                (case_home / '.codex').mkdir(parents=True)
+                (case_home / '.claude' / 'plugins').mkdir(parents=True)
+                (case_home / '.codex' / 'config.toml').write_text('model = "gpt-6-luna"\n')
+                (case_home / '.claude' / 'settings.json').write_text('{}\n')
+                (case_home / '.claude' / 'plugins' / 'installed_plugins.json').write_text('{}\n')
+                old = rc.global_config_snapshot(case_home)
+                (case_home / '.codex' / 'config.toml').write_text(
+                    (case_home / '.codex' / 'config.toml').read_text() + '\n' + addition)
+                changed = rc.global_config_snapshot(case_home)
+                self.assertEqual(rc.attribute_global_config_changes(old, changed, [workspace])['status'],
+                                 'FAIL')
+
+        separated_home = self.root / 'global-state-separated-trust-lines'
+        (separated_home / '.codex').mkdir(parents=True)
+        (separated_home / '.claude' / 'plugins').mkdir(parents=True)
+        config = separated_home / '.codex' / 'config.toml'
+        config.write_text('model = "gpt-6-luna"\n')
+        (separated_home / '.claude' / 'settings.json').write_text('{}\n')
+        (separated_home / '.claude' / 'plugins' / 'installed_plugins.json').write_text('{}\n')
+        before = rc.global_config_snapshot(separated_home)
+        config.write_text(header + '\nmodel = "gpt-6-luna"\n\ntrust_level = "trusted"\n')
+        after = rc.global_config_snapshot(separated_home)
+        self.assertEqual(rc.attribute_global_config_changes(before, after, [workspace])['status'], 'FAIL')
+
+    def test_permission_probe_records_known_codex_and_claude_autoupdates(self):
+        home = self.root / 'probe-home'
+        (home / '.codex').mkdir(parents=True)
+        (home / '.claude' / 'plugins').mkdir(parents=True)
+        (home / '.codex' / 'config.toml').write_text('model = "gpt-6-luna"\n')
+        (home / '.claude' / 'settings.json').write_text('{}\n')
+        (home / '.claude' / 'plugins' / 'installed_plugins.json').write_text(
+            json.dumps({'plugins': [{'name': 'compass', 'version': '0.6.1', 'lastUpdated': 'before'}]}))
+        command = self.command()
+        command[2] = 'permission-probe'
+        command += ['--claude-bin', str(self.fake_claude_cli())]
+        result = subprocess.run(command, cwd=self.root,
+                                env={**os.environ, 'HOME': str(home),
+                                     'FAKE_CODEX_AUTO_TRUST_ENTRY': '1',
+                                     'FAKE_CLAUDE_PLUGIN_LAST_UPDATED': '1'},
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        changes = report['global_config_changes']
+        self.assertEqual(changes['status'], 'PASS', changes)
+        self.assertEqual({(row['file'], row['change']) for row in changes['expected_changes']}, {
+            ('codex_config', 'trusted-probe-workspace-entry'),
+            ('claude_plugins', 'plugin-lastUpdated'),
+        })
+        self.assertEqual(changes['findings'], [])
+
+    def test_permission_probe_fails_on_unrelated_fake_global_change(self):
+        home = self.root / 'probe-home-unexpected'
+        (home / '.codex').mkdir(parents=True)
+        (home / '.claude' / 'plugins').mkdir(parents=True)
+        (home / '.codex' / 'config.toml').write_text('model = "gpt-6-luna"\n')
+        (home / '.claude' / 'settings.json').write_text('{}\n')
+        (home / '.claude' / 'plugins' / 'installed_plugins.json').write_text('{}\n')
+        command = self.command()
+        command[2] = 'permission-probe'
+        result = subprocess.run(command, cwd=self.root,
+                                env={**os.environ, 'HOME': str(home),
+                                     'FAKE_CODEX_AUTO_TRUST_ENTRY': '1',
+                                     'FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE': '1'},
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertIn('unexpected-global-config-change', report['failure_reasons'])
+        self.assertEqual(report['global_config_changes']['status'], 'FAIL')
+        self.assertTrue(any(row['file'] == 'codex_config'
+                            for row in report['global_config_changes']['findings']))
+
+    def test_permission_probe_fails_when_codex_sandbox_positive_controls_fail(self):
+        for mode in ('readonly', 'no-writable-root', 'escape', 'no-marker'):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('codex-sandbox-' + mode)
+                command = self.command()
+                command[2] = 'permission-probe'
+                result = subprocess.run(command, cwd=self.root,
+                                        env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': mode},
+                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode, 2)
+                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+                self.assertEqual(report['status'], 'FAIL')
+                self.assertEqual(report['author_permission_probe']['model_probe'], 'NOT-ATTEMPTED')
+                checks = report['author_permission_probe']['codex_sandbox_checks']['checks']
+                if mode == 'readonly':
+                    self.assertFalse(checks['workspace_write_allowed']['policy_observed'])
+                    self.assertFalse(checks['run_tmpdir_write_allowed']['policy_observed'])
+                    self.assertTrue(checks['external_tmpdir_denied']['policy_observed'])
+                    self.assertTrue(checks['slash_tmp_denied']['policy_observed'])
+                elif mode == 'no-writable-root':
+                    self.assertTrue(checks['workspace_write_allowed']['policy_observed'])
+                    self.assertFalse(checks['run_tmpdir_write_allowed']['policy_observed'])
+                    self.assertTrue(checks['external_tmpdir_denied']['policy_observed'])
+                    self.assertTrue(checks['slash_tmp_denied']['policy_observed'])
+                else:
+                    self.assertTrue(checks['workspace_write_allowed']['policy_observed'])
+                    self.assertTrue(checks['run_tmpdir_write_allowed']['policy_observed'])
+                    self.assertFalse(checks['external_tmpdir_denied']['policy_observed'])
+                    self.assertFalse(checks['slash_tmp_denied']['policy_observed'])
+
+    def test_resume_refuses_probe_with_unattributed_global_config_change(self):
+        self.run_dir = self.root / 'resume-global-change'
+        initial = self.run_coordinator('--stop-after-plan')
+        self.assertIn('HOLD', initial.stdout)
+        args = rc.parser().parse_args(self.command()[2:])
+        co = rc.Coordinator(args)
+        rc.atomic_json(self.run_dir / 'permission-probe.json', {
+            'status': 'PASS',
+            'reviewer_flags_digest': co.reviewer_flags_digest(),
+            'author_flags_digest': co.author_flags_digest(),
+            'author_permission_probe': {'status': 'PASS'},
+            'global_config_changes': {'status': 'FAIL', 'findings': [
+                {'file': 'claude_settings', 'reason': 'unexpected-content-change'}]},
+        })
+        command = self.command()
+        command[2] = 'resume'
+        resumed = subprocess.run(command, cwd=self.root, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('global config changes were not fully attributed', resumed.stdout)
+
+    def test_author_escape_checks_use_codex_sandbox_with_author_overrides(self):
+        co = self.coordinator('--author-vendor', 'codex')
+        co.author_temp_dir.mkdir(parents=True, exist_ok=True)
+        log = self.root / 'codex-sandbox-log.jsonl'
+        target = self.root / 'external-target'
+        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
+                                     'FAKE_CODEX_SANDBOX_LOG': str(log)}):
+            denied = co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', target)
+        self.assertEqual(denied['status'], 'PASS', denied)
+        self.assertIn('touch ', denied['command'])
+        self.assertTrue(denied['os_denial_observed'])
+        self.assertTrue(denied['target_absent_before_cleanup'])
+        invocation = json.loads(log.read_text().splitlines()[0])
+        self.assertIn('--log-denials', invocation['args'])
+        self.assertEqual(invocation['tmpdir'], str(co.author_temp_dir))
+        config_values = [invocation['args'][i + 1] for i, arg in
+                         enumerate(invocation['args'][:-1]) if arg == '-c']
+        expected = co._author_sandbox_config_args()
+        self.assertEqual(config_values, expected[1::2])
+        self.assertEqual(invocation['command'][0], 'touch')
+
+        escaped_target = self.root / 'escaped-target'
+        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'escape',
+                                     'FAKE_CODEX_SANDBOX_LOG': str(log)}):
+            escaped = co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', escaped_target)
+        self.assertEqual(escaped['status'], 'FAIL')
+        self.assertFalse(escaped['target_absent_before_cleanup'])
+        self.assertTrue(escaped['cleanup_ok'])
+        self.assertFalse(escaped_target.exists())
 
     def tearDown(self):
+        if self.original_home is None:
+            os.environ.pop('HOME', None)
+        else:
+            os.environ['HOME'] = self.original_home
         self.temp.cleanup()
+
+    def fake_codex_cli(self):
+        path = self.root / 'fake-codex'
+        script = f'''#!{sys.executable}
+import json, os, subprocess, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args and args[0] == "sandbox":
+    command = args[args.index("--") + 1:] if "--" in args else []
+    config = {{}}
+    for index, arg in enumerate(args[:-1]):
+        if arg in ("-c", "--config") and "=" in args[index + 1]:
+            key, raw = args[index + 1].split("=", 1)
+            try:
+                config[key] = json.loads(raw)
+            except ValueError:
+                config[key] = raw.strip('"')
+    target = Path(command[-1]).resolve() if command else None
+    cwd = Path(args[args.index("-C") + 1]).resolve() if "-C" in args else Path.cwd().resolve()
+    roots = [Path(item).resolve() for item in config.get("sandbox_workspace_write.writable_roots", [])]
+    tmpdir = Path(os.environ.get("TMPDIR", "/nonexistent")).resolve()
+    def below(path, root):
+        return path == root or root in path.parents
+    workspace_write = config.get("sandbox_mode") == "workspace-write"
+    in_workspace = bool(target and below(target, cwd))
+    in_tmpdir = bool(target and below(target, tmpdir))
+    in_roots = bool(target and any(below(target, root) for root in roots))
+    direct_slash_tmp = bool(target and target.parent == Path("/tmp").resolve())
+    allowed = workspace_write and in_workspace
+    if workspace_write and not allowed and in_roots:
+        allowed = (not in_tmpdir or config.get("sandbox_workspace_write.exclude_tmpdir_env_var") is False)
+        if direct_slash_tmp and config.get("sandbox_workspace_write.exclude_slash_tmp") is True:
+            allowed = False
+    if workspace_write and direct_slash_tmp and config.get("sandbox_workspace_write.exclude_slash_tmp") is False:
+        allowed = True
+    record = {{"args": args, "command": command, "config": config,
+              "tmpdir": os.environ.get("TMPDIR"), "cwd": os.getcwd()}}
+    log_path = os.environ.get("FAKE_CODEX_SANDBOX_LOG")
+    if log_path:
+        log = Path(log_path); log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as handle: handle.write(json.dumps(record) + "\\n")
+    mode = os.environ.get("FAKE_CODEX_SANDBOX_MODE", "deny")
+    if mode == "no-writable-root":
+        if in_tmpdir and not in_workspace:
+            allowed = False
+    if mode == "readonly":
+        allowed = False
+    if target and (allowed or mode == "escape"):
+        target.write_text("fake sandbox write\\n"); sys.exit(0)
+    if mode == "no-marker":
+        print("fake sandbox failure without a denial marker", file=sys.stderr); sys.exit(1)
+    print("sandbox-exec: deny file-write-create " + str(target) + ": Operation not permitted", file=sys.stderr); sys.exit(1)
+
+prompt = sys.stdin.read()
+if args and args[0] == "exec" and os.environ.get("FAKE_CODEX_AUTO_TRUST_ENTRY"):
+    config_path = Path.home() / ".codex" / "config.toml"; config_path.parent.mkdir(parents=True, exist_ok=True)
+    with config_path.open("a") as handle:
+        handle.write("\\n[projects." + json.dumps(str(Path.cwd().resolve())) + "]\\ntrust_level = \\"trusted\\"\\n")
+    if os.environ.get("FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE"):
+        with config_path.open("a") as handle: handle.write("\\n[unrelated]\\nchange = true\\n")
+result = subprocess.run([sys.executable, {str(FAKE)!r}, *args], input=prompt, text=True)
+sys.exit(result.returncode)
+'''
+        path.write_text(script)
+        path.chmod(0o755)
+        return path
+
+    def fake_claude_cli(self):
+        path = self.root / 'fake-claude'
+        path.write_text(
+            f'#!{sys.executable}\n'
+            'import json, os, shlex, subprocess, sys\n'
+            'from pathlib import Path\n'
+            'args = sys.argv[1:]; prompt = sys.stdin.read()\n'
+            'if os.environ.get("FAKE_CLAUDE_PLUGIN_LAST_UPDATED"):\n'
+            '    path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"\n'
+            '    if path.is_file():\n'
+            '        data = json.loads(path.read_text()); plugins = data.get("plugins", [])\n'
+            '        if isinstance(plugins, list) and plugins:\n'
+            '            plugins[0]["lastUpdated"] = "after-fake-probe"; path.write_text(json.dumps(data))\n'
+            'if os.environ.get("FAKE_CLAUDE_INVOCATION_LOG"):\n'
+            '    Path(os.environ["FAKE_CLAUDE_INVOCATION_LOG"]).write_text(json.dumps(args))\n'
+            'delegate_env = os.environ.copy(); delegate_env.pop("FAKE_SANDBOX_WRITE", None)\n'
+            f'result = subprocess.run([sys.executable, {str(FAKE)!r}, *args], input=prompt,\n'
+            '                        text=True, capture_output=True, env=delegate_env)\n'
+            'if "Role: permission-system probe" in prompt and result.returncode == 0:\n'
+            '    pending = {}; output_rows = []\n'
+            '    for line in result.stdout.splitlines():\n'
+            '        row = json.loads(line)\n'
+            '        if row.get("type") == "assistant":\n'
+            '            for block in row.get("message", {}).get("content", []):\n'
+            '                if block.get("type") == "tool_use" and block.get("name") == "Bash":\n'
+            '                    pending[block.get("id")] = block.get("input", {}).get("command", "")\n'
+            '        elif row.get("type") == "user":\n'
+            '            for block in row.get("message", {}).get("content", []):\n'
+            '                command = pending.get(block.get("tool_use_id"), "")\n'
+            '                if block.get("type") != "tool_result" or not command:\n'
+            '                    continue\n'
+            '                is_dedicated = command.startswith("touch ") and ".paired-session-run-dir-probe-" in command\n'
+            '                is_other_probe = ("paired-session-claude-sandbox-" in command or\n'
+            '                                  ".paired-session-context-probe-" in command)\n'
+            '                if is_dedicated and os.environ.get("FAKE_SANDBOX_WRITE"):\n'
+            '                    Path(shlex.split(command)[-1]).write_text("escape\\n")\n'
+            '                    block["content"] = "fake sandbox escape"; block["is_error"] = False\n'
+            '                elif is_dedicated and os.environ.get("FAKE_CLAUDE_DENY_OS_PROBE"):\n'
+            '                    block["content"] = "Claude requested permissions to use Bash, but you have not granted it yet."; block["is_error"] = True\n'
+            '                elif is_dedicated and os.environ.get("FAKE_SANDBOX_NO_OS_MARKER"):\n'
+            '                    block["content"] = "fake sandbox failure without an OS marker"; block["is_error"] = True\n'
+            '                elif is_dedicated:\n'
+            '                    block["content"] = "zsh: operation not permitted"; block["is_error"] = True\n'
+            '                elif is_other_probe and os.environ.get("FAKE_CLAUDE_ALLOW_OTHER_PROBE"):\n'
+            '                    block["content"] = "zsh: operation not permitted"; block["is_error"] = True\n'
+            '                elif is_other_probe:\n'
+            '                    block["content"] = "Claude requested permissions to use Bash, but you have not granted it yet."; block["is_error"] = True\n'
+            '        output_rows.append(row)\n'
+            '    result.stdout = "\\n".join(json.dumps(row) for row in output_rows) + "\\n"\n'
+            'sys.stdout.write(result.stdout); sys.stderr.write(result.stderr); sys.exit(result.returncode)\n')
+        path.chmod(0o755)
+        return path
 
     def command(self, *extra):
         return [sys.executable, str(MODULE_PATH), 'run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--codex-bin', str(FAKE), '--claude-bin', str(FAKE), '--timeout', '10',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', '10',
                 '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                 '--test-command', 'python3 -m unittest',
                 *extra]
@@ -73,7 +436,7 @@ class RealCoordinatorTests(unittest.TestCase):
     def coordinator(self, *extra):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(FAKE), '--claude-bin', str(FAKE), *extra])
+            '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), *extra])
         return rc.Coordinator(args)
 
     def test_failed_first_persistent_claude_turn_rotates_session(self):
@@ -352,21 +715,6 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(lease_path, rc.workspace_lease_path(self.workspace / '.'))
         self.assertNotEqual(lease_path, self.workspace)
         self.assertNotIn(self.workspace, lease_path.parents)
-
-    def test_workspace_lease_key_uses_device_and_inode_not_path_text(self):
-        alias = self.root / 'case-alias'
-        canonical_paths = {self.workspace.resolve(), alias.resolve()}
-        identity = type('Stat', (), {'st_dev': 17, 'st_ino': 29})()
-        real_stat = Path.stat
-
-        def same_identity_for_aliases(path, *args, **kwargs):
-            if path.resolve() in canonical_paths:
-                return identity
-            return real_stat(path, *args, **kwargs)
-
-        with patch.object(Path, 'stat', new=same_identity_for_aliases):
-            self.assertNotEqual(self.workspace.resolve(), alias.resolve())
-            self.assertEqual(rc.workspace_lease_path(self.workspace), rc.workspace_lease_path(alias))
 
     def test_workspace_lease_key_uses_device_and_inode_not_path_text(self):
         alias = self.root / 'case-alias'
@@ -1211,8 +1559,8 @@ class RealCoordinatorTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE).stdout.strip()
         state['finding_ledger'] = [row for row in state['finding_ledger']
                                    if row['source'] != 'adversarial-gate']
-        state['config']['codex_bin'] = str(FAKE)
-        state['config']['claude_bin'] = str(FAKE)
+        state['config']['codex_bin'] = str(self.fake_codex_cli())
+        state['config']['claude_bin'] = str(self.fake_claude_cli())
         del state['config']['author_subagents']  # older runs predate this key
         rc.atomic_json(state_path, state)
         probe_command = self.command(*fixture_options)
@@ -1345,7 +1693,10 @@ class RealCoordinatorTests(unittest.TestCase):
     def test_permission_probe_runs_exact_allowed_and_checks_writes(self):
         command = self.command('--exercise-revisions')
         command[2] = 'permission-probe'
-        result = subprocess.run(command, cwd=self.root, text=True,
+        sandbox_log = self.root / 'codex-sandbox-invocations.jsonl'
+        result = subprocess.run(command, cwd=self.root,
+                                env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': 'deny',
+                                     'FAKE_CODEX_SANDBOX_LOG': str(sandbox_log)}, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
@@ -1353,13 +1704,41 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(report['author_permission_probe']['status'], 'PASS')
         self.assertTrue(all(report['author_permission_probe']['outcomes'].values()))
         self.assertTrue(report['author_permission_probe']['outcomes']['run_tmpdir_write_allowed'])
-        self.assertTrue(report['author_permission_probe']['outcomes']['external_tmpdir_write_denied'])
+        sandbox_checks = report['author_permission_probe']['codex_sandbox_checks']
+        self.assertEqual(sandbox_checks['status'], 'PASS')
+        self.assertEqual(set(sandbox_checks['checks']), {
+            'workspace_write_allowed', 'run_tmpdir_write_allowed',
+            'external_tmpdir_denied', 'slash_tmp_denied'})
+        self.assertTrue(all(sandbox_checks['checks'][name]['policy_observed']
+                            and sandbox_checks['checks'][name]['target_present_after_command']
+                            and sandbox_checks['checks'][name]['cleanup_ok']
+                            for name in ('workspace_write_allowed', 'run_tmpdir_write_allowed')))
+        self.assertTrue(all(sandbox_checks['checks'][name]['policy_observed']
+                            and sandbox_checks['checks'][name]['os_denial_observed']
+                            and sandbox_checks['checks'][name]['target_absent_before_cleanup']
+                            and sandbox_checks['checks'][name]['cleanup_ok']
+                            for name in ('external_tmpdir_denied', 'slash_tmp_denied')))
+        invocations = [json.loads(line) for line in sandbox_log.read_text().splitlines()]
+        self.assertEqual(len(invocations), 4)
+        expected_tmpdir = self.run_dir / 'author-tmp'
+        for invocation in invocations:
+            self.assertIn('--log-denials', invocation['args'])
+            self.assertEqual(invocation['tmpdir'], str(expected_tmpdir))
+            configs = [invocation['args'][i + 1] for i, arg in enumerate(invocation['args'][:-1])
+                       if arg == '-c']
+            self.assertIn('sandbox_mode="workspace-write"', configs)
+            self.assertIn('sandbox_workspace_write.writable_roots=' +
+                          json.dumps([str(expected_tmpdir)]), configs)
+            self.assertIn('sandbox_workspace_write.exclude_tmpdir_env_var=false', configs)
+            self.assertIn('sandbox_workspace_write.exclude_slash_tmp=true', configs)
+        self.assertEqual(report['global_config_changes']['status'], 'PASS')
         probe_args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
                                              '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                                              '--author-effort', 'low', '--reviewer-effort', 'low',
                                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest',
                                              '--timeout', '10', '--exercise-revisions',
-                                             '--codex-bin', str(FAKE), '--claude-bin', str(FAKE)])
+                                             '--codex-bin', str(self.fake_codex_cli()),
+                                             '--claude-bin', str(self.fake_claude_cli())])
         self.assertEqual(report['author_flags_digest'], rc.Coordinator(probe_args).author_flags_digest())
         state = json.loads((self.run_dir / 'state.json').read_text())
         author_probe_turns = [row for row in state['turns']
@@ -1385,6 +1764,7 @@ class RealCoordinatorTests(unittest.TestCase):
         probe_prompt = next((self.run_dir / 'evidence').glob('*-probe-probe.prompt.txt')).read_text()
         self.assertIn('authorized test of the harness', probe_prompt)
         self.assertIn('MUST attempt every command', probe_prompt)
+        self.assertIn('Exactly one dedicated run-directory touch command', probe_prompt)
         self.assertNotIn('read-only permission probe', probe_prompt)
         main = self.run_coordinator('--exercise-revisions', skip_probe=False)
         self.assertEqual(main.returncode, 0, main.stderr + main.stdout)
@@ -1397,12 +1777,21 @@ class RealCoordinatorTests(unittest.TestCase):
     def test_claude_permission_probe_requires_observed_os_sandbox_denial_and_cleans_escape(self):
         command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
         command[2] = 'permission-probe'
-        passing = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE,
+        invocation_log = self.root / 'fake-claude-invocation.json'
+        passing = subprocess.run(command, cwd=self.root,
+                                 env={**os.environ, 'FAKE_CLAUDE_INVOCATION_LOG': str(invocation_log)},
+                                 text=True, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE)
         self.assertEqual(passing.returncode, 0, passing.stderr + passing.stdout)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         self.assertEqual(report['status'], 'PASS')
         self.assertTrue(report['claude_sandbox_write_denied'])
+        invocation = json.loads(invocation_log.read_text())
+        allowed = invocation[invocation.index('--allowedTools') + 1]
+        self.assertEqual(allowed.count('Bash(touch '), 1)
+        self.assertIn('.paired-session-run-dir-probe-', allowed)
+        self.assertNotIn('paired-session-claude-sandbox-', allowed)
+        self.assertNotIn('.paired-session-context-probe-', allowed)
         transient = [row for row in report['observed_commands']
                      if ('paired-session-claude-sandbox-' in row.get('command', '') or
                      '.paired-session-run-dir-probe-' in row.get('command', '') or
@@ -1413,9 +1802,16 @@ class RealCoordinatorTests(unittest.TestCase):
         config = json.loads((self.run_dir / 'state.json').read_text())['config']
         self.assertNotIn(json.dumps(transient), json.dumps(config))
         self.assertEqual(set(report['claude_sandbox_write_denials']), {'host_tmp', 'run_dir', 'context'})
-        self.assertTrue(all(all(check.values()) for check in report['claude_sandbox_write_denials'].values()))
+        checks = report['claude_sandbox_write_denials']
+        self.assertTrue(checks['run_dir']['failed_at_os_sandbox'])
+        self.assertFalse(checks['run_dir']['cli_permission_denied'])
+        for label in ('host_tmp', 'context'):
+            self.assertTrue(checks[label]['cli_permission_denied'])
+            self.assertFalse(checks[label]['failed_at_os_sandbox'])
         for row in transient:
-            target = Path(row['command'].split('>', 1)[1].strip().strip("'\""))
+            import shlex
+            parts = shlex.split(row['command'])
+            target = Path(parts[-1] if parts[0] == 'touch' else parts[parts.index('>') + 1])
             self.assertFalse(target.exists())
 
         self.run_dir = self.root / 'sandbox-escape-run'
@@ -1428,16 +1824,19 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(report['status'], 'FAIL')
         self.assertFalse(report['claude_sandbox_write_denied'])
         self.assertIn('claude_sandbox_write_denials', report)
-        self.assertFalse(all(all(check.values()) for check in report['claude_sandbox_write_denials'].values()))
-        self.assertTrue(any(reason.startswith('claude-sandbox-') and 'write-not-denied-or-not-observed' in reason
+        self.assertFalse(report['claude_sandbox_write_denials']['run_dir']['failed_at_os_sandbox'])
+        self.assertTrue(any(reason.startswith('claude-sandbox-') and 'write-not-denied-at-os' in reason
                             for reason in report['failure_reasons']))
         escaped_rows = [row for row in report['observed_commands']
                         if ('paired-session-claude-sandbox-' in row.get('command', '') or
-                            '.paired-session-run-dir-probe-' in row.get('command', '') or
-                            '.paired-session-context-probe-' in row.get('command', ''))]
+                        '.paired-session-run-dir-probe-' in row.get('command', '') or
+                        '.paired-session-context-probe-' in row.get('command', ''))]
         self.assertEqual(len(escaped_rows), 3)
-        escaped_paths = [Path(row['command'].split('>', 1)[1].strip().strip("'\""))
-                         for row in escaped_rows]
+        import shlex
+        def target_path(command):
+            parts = shlex.split(command)
+            return Path(parts[-1] if parts[0] == 'touch' else parts[parts.index('>') + 1])
+        escaped_paths = [target_path(row['command']) for row in escaped_rows]
         self.assertTrue(all(not path.exists() for path in escaped_paths),
                         'coordinator must clean only its unique transient probe files')
 
@@ -1450,10 +1849,35 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(no_marker.returncode, 2)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         self.assertEqual(report['status'], 'FAIL')
-        self.assertTrue(all(check['exact_command_observed_once'] and check['target_absent']
-                            for check in report['claude_sandbox_write_denials'].values()))
-        self.assertTrue(all(not check['failed_at_os_sandbox']
-                            for check in report['claude_sandbox_write_denials'].values()))
+        checks = report['claude_sandbox_write_denials']
+        self.assertTrue(checks['run_dir']['exact_command_observed_once'] and checks['run_dir']['target_absent'])
+        self.assertFalse(checks['run_dir']['failed_at_os_sandbox'])
+
+        self.run_dir = self.root / 'sandbox-cli-layer-only-run'
+        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        command[2] = 'permission-probe'
+        cli_blocked = subprocess.run(command, cwd=self.root,
+                                     env={**os.environ, 'FAKE_CLAUDE_DENY_OS_PROBE': '1'},
+                                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(cli_blocked.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        dedicated = report['claude_sandbox_write_denials']['run_dir']
+        self.assertTrue(dedicated['cli_permission_denied'])
+        self.assertFalse(dedicated['failed_at_os_sandbox'])
+        self.assertFalse(report['claude_sandbox_write_denied'])
+
+        self.run_dir = self.root / 'sandbox-more-than-one-allowlisted-run'
+        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        command[2] = 'permission-probe'
+        extra_allowed = subprocess.run(command, cwd=self.root,
+                                       env={**os.environ, 'FAKE_CLAUDE_ALLOW_OTHER_PROBE': '1'},
+                                       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(extra_allowed.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        for label in ('host_tmp', 'context'):
+            self.assertFalse(report['claude_sandbox_write_denials'][label]['cli_permission_denied'])
+            self.assertTrue(any(f'claude-sandbox-{label}-write-not-cli-blocked' in reason
+                                for reason in report['failure_reasons']))
 
     def test_claude_probe_runtime_error_records_escape_before_cleanup(self):
         co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
@@ -1463,7 +1887,7 @@ class RealCoordinatorTests(unittest.TestCase):
             import shlex
             # Extract the literal unique write commands from the generated probe.
             for line in prompt.splitlines():
-                if line.startswith('printf probe > '):
+                if line.startswith('printf probe > ') or line.startswith('touch '):
                     target = Path(shlex.split(line)[-1])
                     target.write_text('escaped')
                     created.append(target)
@@ -1490,7 +1914,7 @@ class RealCoordinatorTests(unittest.TestCase):
         def escape_then_fail(role, phase, prompt, schema, **kwargs):
             import shlex
             for line in prompt.splitlines():
-                if line.startswith('printf probe > '):
+                if line.startswith('printf probe > ') or line.startswith('touch '):
                     target = Path(shlex.split(line)[-1])
                     target.write_text('escaped')
                     created.append(target)
@@ -1523,7 +1947,7 @@ class RealCoordinatorTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
                     '--workitem', str(self.workitem), '--run-dir', str(self.root / ('probe-' + mode)),
-                    '--codex-bin', str(FAKE), '--author-vendor', 'codex'])
+                    '--codex-bin', str(self.fake_codex_cli()), '--author-vendor', 'codex'])
                 co = rc.Coordinator(args)
 
                 def simulate(role, phase, prompt, schema, **kwargs):
@@ -1537,8 +1961,8 @@ class RealCoordinatorTests(unittest.TestCase):
                                   if target_arg.startswith('$TMPDIR/') else Path(target_arg))
                         target.write_text('probe\n')
                     rows = [{'command': command,
-                             'exit_code': (0 if index < 2 else
-                                           None if mode == 'missing-exit' else 126),
+                             'exit_code': (None if mode == 'missing-exit' and index == 1 else
+                                           0 if index < 2 else 126),
                              'error': index >= 2}
                             for index, command in enumerate(commands)]
                     if mode == 'duplicate-event':
@@ -1549,7 +1973,7 @@ class RealCoordinatorTests(unittest.TestCase):
                     report = co._author_permission_probe()
                 self.assertEqual(report['status'], 'FAIL')
                 failed_outcome = ('workspace_write_allowed' if mode == 'duplicate-event'
-                                  else 'external_tmpdir_write_denied')
+                                  else 'run_tmpdir_write_allowed')
                 self.assertFalse(report['outcomes'][failed_outcome])
 
     def test_fresh_shadow_critical_is_ledgered_and_delivered_even_if_reviewer_approves(self):

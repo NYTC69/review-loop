@@ -83,9 +83,28 @@ bin/paired-session permission-probe \
 ```
 
 The probe is bound to the author binary and relevant configuration; changing
-them requires a fresh probe. The Codex author probe tests that workspace writes
-succeed, run-owned `$TMPDIR` writes succeed, and external temporary paths plus `/tmp` writes fail. Claude roles use one inline strict sandbox settings object, deny secret-like environment variables and common credential files, block network access and local network binding, and require the exact Bash allowlist. The reviewer probe verifies OS-level write denial for both host `/tmp` and the run directory, including its root. Claude's session `TMPDIR` is shared scratch per UID on macOS; paired-session keeps workflow state outside it and denies writes to the run directory. Bash sandbox results do not establish direct `Edit` or `Write` safety for a Claude author. Do not use `--skip-probe` for a
-real task; it exists for deterministic tests only.
+them requires a fresh probe. For a Codex author, the coordinator runs external
+temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
+with the same `workspace-write`, writable-root, temp-exclusion, and `TMPDIR`
+overrides used for the author. The model-driven author probe checks only that
+workspace and run-owned `$TMPDIR` writes succeed.
+
+Claude roles use one inline strict sandbox settings object, deny secret-like
+environment variables and common credential files, block network access and
+local network binding, and require the exact Bash allowlist. The reviewer
+permission probe gives exactly one unique run-directory `touch` command a narrow
+CLI allowlist entry, then requires its failure to carry OS-sandbox denial
+evidence. A CLI permission-layer denial alone does not prove the OS sandbox.
+Other probe writes remain outside that allowlist. Claude's session `TMPDIR` is
+shared scratch per UID on macOS; paired-session keeps workflow state outside it
+and denies writes to the run directory. Bash sandbox results do not establish
+direct `Edit` or `Write` safety for a Claude author.
+
+The probe records hashes for the specified Codex and Claude global files.
+Codex's new-workspace trusted-project entry and Claude plugin `lastUpdated`
+updates are attributed in the report; any other global-file change fails the
+probe. Do not use `--skip-probe` for a real task; it exists for deterministic
+tests only.
 
 If a run is held, inspect `state.json`, `open-findings.md`,
 `findings-ledger.md`, and the latest receipts under `evidence/` before resuming.
