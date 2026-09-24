@@ -9,6 +9,7 @@ import subprocess
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -586,6 +587,84 @@ sys.exit(result.returncode)
         }])
         usage_md = (self.run_dir / 'usage.md').read_text()
         self.assertIn('| cli_turn | 1 | author | PLAN | True | unknown |', usage_md)
+
+    def test_failed_timed_out_and_killed_claude_turns_keep_stream_usage(self):
+        event_rows = [
+            {'type': 'stream_event', 'event': {'type': 'message_start', 'message': {
+                'id': 'request-1', 'usage': {'input_tokens': 10, 'cache_creation_input_tokens': 5,
+                                             'cache_read_input_tokens': 20, 'output_tokens': 0}}}},
+            {'type': 'stream_event', 'event': {'type': 'message_delta',
+                                               'usage': {'output_tokens': 12}}},
+        ]
+        for mode in ('failed', 'timed-out', 'killed'):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('usage-' + mode)
+                co = self.coordinator('--author-vendor', 'claude', '--timeout', '1')
+                cli = self.root / ('usage-cli-' + mode)
+                cli.write_text(
+                    f'#!{sys.executable}\nimport json, os, signal, sys, time\n'
+                    f'rows = {event_rows!r}\n'
+                    'for row in rows:\n    print(json.dumps(row), flush=True)\n'
+                    + ('time.sleep(5)\n' if mode == 'timed-out' else
+                       'os.kill(os.getpid(), signal.SIGKILL)\n' if mode == 'killed' else
+                       'sys.exit(7)\n'))
+                cli.chmod(0o755)
+                co.args.claude_bin = str(cli)
+                with self.assertRaises(RuntimeError):
+                    co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', rc.author_schema())
+                receipt = co.state['turns'][-1]
+                self.assertEqual(receipt['usage_requests'], [{
+                    'input': 35, 'cached': 20, 'output': 12, 'source': 'stream_event'}])
+                co.write_usage()
+                usage = json.loads((self.run_dir / 'usage.json').read_text())
+                self.assertEqual(usage['turns'][0]['input'], 35)
+                self.assertEqual(usage['turns'][0]['output'], 12)
+
+    def test_archived_uncertain_turn_retains_stream_usage(self):
+        co = self.coordinator()
+        co.archive_abandoned_turn({'sequence': 8, 'role': 'author', 'phase': 'EXEC',
+            'invocation_budget_counted': True,
+            'usage_requests': [{'input': 30, 'cached': 5, 'output': 8, 'source': 'stream_event'}]})
+        co.write_usage()
+        usage = json.loads((self.run_dir / 'usage.json').read_text())
+        self.assertEqual(usage['usage_reconciliation'][0]['provider_usage'], 'reported')
+        self.assertEqual(usage['abandoned_turn_usage'], [{
+            'sequence': 8, 'role': 'author', 'phase': 'EXEC', 'provider_usage': 'reported',
+            'requests': [{'input': 30, 'cached': 5, 'output': 8, 'source': 'stream_event'}],
+            'input_tokens': 30, 'cached_tokens': 5, 'output_tokens': 8}])
+        self.assertIn('| 8 | author | EXEC | 1 | 30 | 5 | 8 |', (self.run_dir / 'usage.md').read_text())
+
+    def test_concurrent_state_saves_are_serialized(self):
+        co = self.coordinator()
+        original_write = rc.atomic_json
+        barrier = threading.Barrier(3)
+        guard = threading.Lock()
+        active_writes = 0
+        max_active_writes = 0
+
+        def slow_write(path, value):
+            nonlocal active_writes, max_active_writes
+            with guard:
+                active_writes += 1
+                max_active_writes = max(max_active_writes, active_writes)
+            time.sleep(0.03)
+            original_write(path, value)
+            with guard:
+                active_writes -= 1
+
+        def save_after_barrier():
+            barrier.wait()
+            co.save()
+
+        with patch.object(rc, 'atomic_json', side_effect=slow_write):
+            writers = [threading.Thread(target=save_after_barrier) for _ in range(2)]
+            for writer in writers:
+                writer.start()
+            barrier.wait()
+            for writer in writers:
+                writer.join(timeout=2)
+                self.assertFalse(writer.is_alive())
+        self.assertEqual(max_active_writes, 1)
 
     def test_successful_cli_turn_without_usage_detail_is_unknown(self):
         co = self.coordinator()
@@ -2121,6 +2200,37 @@ sys.exit(result.returncode)
         self.assertEqual(result.returncode, 2)
         self.assertIn('REFUSED: resume configuration differs: author_effort', result.stdout)
         self.assertNotIn('Traceback', result.stderr)
+
+    def test_resume_timeout_can_only_increase_to_documented_cap(self):
+        co = self.coordinator('--timeout', '10')
+        co.state.update(status='HOLD', hold_reason='operator pause')
+        co.save()
+
+        def resume_args(*extra):
+            args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
+                '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                '--timeout', '10', '--codex-bin', str(self.fake_codex_cli()),
+                '--claude-bin', str(self.fake_claude_cli()), *extra])
+            return args
+
+        for requested in ('9', str(rc.MAX_RESUME_TIMEOUT_SECONDS + 1)):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(ValueError, '--resume-timeout must be between'):
+                    rc.Coordinator(resume_args('--resume-timeout', requested))
+
+        resumed = rc.Coordinator(resume_args('--resume-timeout', str(rc.MAX_RESUME_TIMEOUT_SECONDS)))
+        self.assertEqual(resumed.args.timeout, rc.MAX_RESUME_TIMEOUT_SECONDS)
+        with patch.object(resumed, 'drive', return_value='HOLD'):
+            self.assertEqual(resumed.resume(), 'HOLD')
+        saved = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(saved['config']['timeout'], rc.MAX_RESUME_TIMEOUT_SECONDS)
+
+    def test_resume_timeout_override_is_rejected_for_run_action(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--resume-timeout', '20'])
+        with self.assertRaisesRegex(ValueError, '--resume-timeout is accepted only with resume'):
+            rc.Coordinator(args)
 
     def test_resume_reuses_recorded_reviewer_verdict_before_state_advances(self):
         co = self.coordinator('--stop-after-plan')

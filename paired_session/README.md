@@ -112,6 +112,17 @@ A rate-limit HOLD includes a reset hint when the provider supplies one. Resume
 with the same workspace, work item, run directory, author/reviewer settings,
 and test command:
 
+For a longer in-flight author/reviewer turn, `resume --resume-timeout N` may
+raise the saved per-turn timeout, where `N` is at least the saved timeout and
+at most 7200 seconds (two hours). The raised value becomes the saved timeout
+for later resumes; it cannot be extended past the cap. Without this option,
+resume keeps using the saved timeout.
+
+Per-request provider usage is copied into the active turn receipt as stream
+events arrive. If a provider turn fails, times out, or is killed after reporting
+usage, the known request totals remain in the usage report; an interrupted
+coordinator also retains observed usage when its uncertain turn is archived.
+
 If `state.json` has `uncertain_active`, do not re-probe or replay automatically.
 Inspect the recorded PID and receipts. A stopped probe child can be retried with
 `permission-probe --retry-uncertain` after operator approval; a product-work

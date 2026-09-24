@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from typing import Optional
@@ -34,6 +35,7 @@ DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_promp
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 PROBE_SURFACE_VERSION = 7
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
+MAX_RESUME_TIMEOUT_SECONDS = 7200
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 
@@ -866,7 +868,10 @@ class Coordinator:
     def __init__(self, args: argparse.Namespace):
         resolve_role_model_defaults(args)
         validate_role_models(args)
+        if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
+            raise ValueError('--resume-timeout is accepted only with resume')
         self.args = args
+        self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
         self.workitem = Path(args.workitem).expanduser().resolve()
         self.run_dir = Path(args.run_dir).expanduser().resolve()
@@ -1143,14 +1148,28 @@ class Coordinator:
     def _validate_resume_args(self) -> None:
         if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
             raise ValueError('resume workspace/workitem differs from state')
+        if getattr(self.args, 'resume_timeout', None) is not None and self.args.action != 'resume':
+            raise ValueError('--resume-timeout is accepted only with resume')
+        if self.args.action == 'resume':
+            original_timeout = self.state['config']['timeout']
+            requested_timeout = getattr(self.args, 'resume_timeout', None)
+            if requested_timeout is not None:
+                if requested_timeout < original_timeout or requested_timeout > MAX_RESUME_TIMEOUT_SECONDS:
+                    raise ValueError('--resume-timeout must be between the saved timeout and '
+                                     f'{MAX_RESUME_TIMEOUT_SECONDS} seconds')
+                self.args.timeout = requested_timeout
         current_config = self._config()
         for key, value in self.state['config'].items():
+            if (key == 'timeout' and self.args.action == 'resume' and
+                    getattr(self.args, 'resume_timeout', None) is not None):
+                continue
             current = current_config[key]
             if current != value:
                 raise ValueError('resume configuration differs: ' + key)
 
     def save(self) -> None:
-        atomic_json(self.state_path, self.state)
+        with self._save_lock:
+            atomic_json(self.state_path, self.state)
 
     def _head_commit(self) -> Optional[str]:
         proc = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.workspace,
@@ -1417,12 +1436,15 @@ class Coordinator:
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
             return
+        usage = receipt.get('usage_requests', [])
+        provider_usage = 'reported' if usage else 'unknown'
         row = {**receipt, 'recovered_at': time.time(), 'group_gone': True,
-               'provider_usage': 'unknown'}
+               'provider_usage': provider_usage}
+        row['model_requests'] = len(usage)
         rows.append(row)
         self.state.setdefault('usage_reconciliation', []).append({
             'sequence': sequence, 'role': receipt.get('role'), 'phase': receipt.get('phase'),
-            'source': 'abandoned_turn', 'provider_usage': 'unknown',
+            'source': 'abandoned_turn', 'provider_usage': provider_usage,
             'invocation_budget_counted': bool(receipt.get('invocation_budget_counted', True)),
         })
         if sequence is not None:
@@ -1846,6 +1868,69 @@ class Coordinator:
         requests += list(subagent.values())
         return answer, result.get('session_id'), requests, len(requests), commands, calls
 
+    @staticmethod
+    def _drain_usage_stream(path: Path, offset: int, buffered: bytes,
+                            active_request: Optional[int], receipt: dict,
+                            final: bool = False) -> tuple[int, bytes, Optional[int], bool]:
+        try:
+            with path.open('rb') as stream:
+                stream.seek(offset)
+                data = stream.read()
+        except OSError:
+            return offset, buffered, active_request, False
+        offset += len(data)
+        chunks = (buffered + data).splitlines(keepends=True)
+        buffered = b''
+        if chunks and not chunks[-1].endswith(b'\n') and not final:
+            buffered = chunks.pop()
+        changed = False
+        for raw in chunks:
+            try:
+                row = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if receipt['vendor'] == 'claude' and row.get('type') == 'stream_event':
+                event = row.get('event', {})
+                if event.get('type') == 'message_start':
+                    use = event.get('message', {}).get('usage', {})
+                    receipt.setdefault('usage_requests', []).append({
+                        'input': (use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0)
+                                  + use.get('cache_read_input_tokens', 0)),
+                        'cached': use.get('cache_read_input_tokens', 0),
+                        'output': use.get('output_tokens', 0), 'source': 'stream_event'})
+                    active_request = len(receipt['usage_requests']) - 1
+                    changed = True
+                elif event.get('type') == 'message_delta' and active_request is not None:
+                    output = event.get('usage', {}).get('output_tokens')
+                    if type(output) is int and output != receipt['usage_requests'][active_request]['output']:
+                        receipt['usage_requests'][active_request]['output'] = output
+                        changed = True
+            elif receipt['vendor'] == 'codex' and row.get('type') == 'turn.completed':
+                use = row.get('usage', {})
+                receipt.setdefault('usage_requests', []).append({
+                    'input': use.get('input_tokens', 0),
+                    'cached': use.get('cached_input_tokens', 0),
+                    'output': use.get('output_tokens', 0), 'source': 'turn.completed-stream'})
+                changed = True
+        if changed:
+            receipt['model_requests'] = len(receipt['usage_requests'])
+        return offset, buffered, active_request, changed
+
+    def _monitor_provider_usage(self, path: Path, receipt: dict,
+                                stopped: threading.Event) -> None:
+        offset, buffered, active_request = 0, b'', None
+        while True:
+            offset, buffered, active_request, changed = self._drain_usage_stream(
+                path, offset, buffered, active_request, receipt)
+            if changed:
+                self.save()
+            if stopped.wait(0.05):
+                offset, buffered, active_request, changed = self._drain_usage_stream(
+                    path, offset, buffered, active_request, receipt, final=True)
+                if changed:
+                    self.save()
+                return
+
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
@@ -1903,7 +1988,7 @@ class Coordinator:
                    'model': self._model_effort(role)[0], 'command': command, 'snapshot_before': before,
                    'context_before': context_before,
                    'start': now, 'gap': now - self.state['last_end'].get(role, now), 'fresh': fresh,
-                   'invocation_budget_counted': False}
+                   'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
         if role == 'reviewer':
             receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
         if env_overrides:
@@ -1962,6 +2047,10 @@ class Coordinator:
             })
             self.save()
             raise RuntimeError('CLI process failed to start: ' + str(exc)) from exc
+        usage_stop = threading.Event()
+        usage_monitor = threading.Thread(target=self._monitor_provider_usage,
+                                         args=(stdout_path, receipt, usage_stop), daemon=True)
+        usage_monitor.start()
         try:
             process.communicate(prompt.encode(), timeout=self.args.timeout)
         except subprocess.TimeoutExpired:
@@ -1989,6 +2078,9 @@ class Coordinator:
             except BaseException:
                 pass
             raise
+        finally:
+            usage_stop.set()
+            usage_monitor.join()
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
@@ -2922,6 +3014,7 @@ class Coordinator:
         self.state['hold_reason'] = ''
         self.state['active'] = None
         self.state['uncertain_active'] = None
+        self.state['config']['timeout'] = self.args.timeout
         self.save()
         return self.drive()
 
@@ -2973,6 +3066,18 @@ class Coordinator:
                     'provider_usage': 'unknown',
                 })
                 reconciled_sequences.add(turn.get('sequence'))
+        abandoned_usage = []
+        for turn in self.state.get('abandoned_turns', []):
+            requests = turn.get('usage_requests', [])
+            if requests:
+                abandoned_usage.append({
+                    'sequence': turn.get('sequence'), 'role': turn.get('role'),
+                    'phase': turn.get('phase'), 'provider_usage': 'reported',
+                    'requests': requests,
+                    'input_tokens': sum(use.get('input', 0) for use in requests),
+                    'cached_tokens': sum(use.get('cached', 0) for use in requests),
+                    'output_tokens': sum(use.get('output', 0) for use in requests),
+                })
         pending = self.state.get('uncertain_active') or self.state.get('active')
         represented_sequences = {row.get('sequence') for row in reconciliation_rows}
         if pending and pending.get('sequence') not in represented_sequences:
@@ -2998,6 +3103,7 @@ class Coordinator:
                   'max_invocations': self.args.max_invocations,
                   'total_cli_turns': len(self.state['turns']), 'by_role_phase': list(groups.values()),
                   'by_role': role_totals, 'overall': overall, 'turns': turn_rows,
+                  'abandoned_turn_usage': abandoned_usage,
                   'usage_reconciliation': reconciliation_rows,
                   'requests': [{'sequence': t['sequence'], 'role': t['role'], 'phase': t['phase'],
                                 'usage': t.get('usage_requests', [])} for t in self.state['turns']]}
@@ -3022,6 +3128,11 @@ class Coordinator:
                   '|---|---:|---|---|---|---|']
         for row in reconciliation_rows:
             lines.append(f"| {row['source']} | {row['sequence']} | {row['role']} | {row['phase']} | {row['invocation_budget_counted']} | {row['provider_usage']} |")
+        lines += ['', '## Abandoned turn usage', '',
+                  '| Sequence | Role | Phase | Requests | Input | Cached | Output |',
+                  '|---:|---|---|---:|---:|---:|---:|']
+        for row in abandoned_usage:
+            lines.append(f"| {row['sequence']} | {row['role']} | {row['phase']} | {len(row['requests'])} | {row['input_tokens']} | {row['cached_tokens']} | {row['output_tokens']} |")
         lines += ['', 'Invocation budget counts durable starts, including unresolved uncertain_active receipts whose provider usage remains unknown.',
                   'Explicit provider rate-limit rejections are refunded and do not count against the invocation budget.',
                   'Token rows come from per-request Claude stream usage; Codex stdout fallback is marked in usage.json.',
@@ -3062,6 +3173,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-exec-rounds', type=int, default=4)
     p.add_argument('--max-invocations', type=int, default=25)
     p.add_argument('--timeout', type=int, default=2700)
+    p.add_argument('--resume-timeout', type=int, default=None,
+                   help=f'increase the saved timeout on resume, up to {MAX_RESUME_TIMEOUT_SECONDS} seconds')
     p.add_argument('--test-command', default='npm test')
     p.add_argument('--reviewer-command', action='append', default=[],
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
