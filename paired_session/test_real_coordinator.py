@@ -1642,6 +1642,177 @@ sys.exit(result.returncode)
         self.assertIn('explicitly non-blocking', prompts[0])
         self.assertIn('style remains untidy', prompts[0])
 
+    def test_final_exec_minor_revise_advances_with_reported_advisory_and_resume_is_idempotent(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--max-exec-rounds', '1',
+                                      env={'FAKE_EXEC_MINOR_REVISE': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        verdict = next(row for row in state['review_verdicts'] if row['phase'] == 'EXEC')
+        self.assertEqual((verdict['reviewer_raw_verdict'], verdict['effective_verdict']),
+                         ('REVISE', 'APPROVE_WITH_ADVISORY'))
+        advisory = next(row for row in state['finding_ledger'] if row['severity'] == 'MINOR')
+        self.assertTrue(advisory['advisory'])
+        self.assertTrue(any(row['status'] == 'open' for row in advisory['status_history']))
+        self.assertIn('(advisory)', (self.run_dir / 'findings-ledger.md').read_text())
+        self.assertIn('advisory exec polish', (self.run_dir / 'findings-ledger.md').read_text())
+        self.assertIn('APPROVE_WITH_ADVISORY', (self.run_dir / 'review-comparison.md').read_text())
+        polish_prompt = next(path.read_text() for path in (self.run_dir / 'evidence').glob(
+            '*-polish-author.prompt.txt'))
+        self.assertIn('advisory exec polish', polish_prompt)
+        count = len(state['turns'])
+        command = self.command('--shadow', 'off', '--adversarial-gate', 'off',
+                               '--max-exec-rounds', '1', '--skip-probe')
+        command[2] = 'resume'
+        resumed = subprocess.run(command, cwd=self.root, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), count)
+
+    def test_partial_advisory_exit_replays_recorded_reviewer_without_redispatch(self):
+        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                              '--polish-round', 'off', '--max-exec-rounds', '1')
+        snapshot = rc.git_snapshot(co.workspace)[0]
+        sequence = co.state['sequence'] + 1
+        command = co.args.test_command
+        answer = {'status': 'REVISE', 'full_review': [{'severity': 'MINOR', 'file': 'tracked.txt',
+                  'summary': 'replay advisory', 'failure_scenario': 'small cleanup'}],
+                  'prior_findings': [], 'self_run_evidence': [{'command': command}],
+                  'observed_commands': [{'command': command, 'exit_code': 0, 'error': False,
+                                         'output': 'Ran 1 test successfully'}],
+                  'reviewed_snapshot': snapshot, 'verified_claims': []}
+        co.state.update({'phase': 'EXEC', 'exec_rounds': 1,
+                         'pending_reviewer_result_sequence': sequence, 'sequence': sequence})
+        co.state['turns'].append({'sequence': sequence, 'role': 'reviewer', 'phase': 'EXEC',
+            'answer': answer, 'snapshot_before': snapshot, 'open_finding_ids': []})
+        co.save()
+        original_save, calls = co.save, 0
+        def fail_final_save():
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise RuntimeError('simulated interruption before advisory state advancement')
+            original_save()
+        with patch.object(co, 'save', side_effect=fail_final_save):
+            with self.assertRaisesRegex(RuntimeError, 'simulated interruption'):
+                co.reviewer_turn()
+        interrupted = json.loads(co.state_path.read_text())
+        self.assertEqual(interrupted['pending_reviewer_result_sequence'], sequence)
+        self.assertEqual(len(interrupted['review_verdicts']), 1)
+
+        resumed = rc.Coordinator(co.args)
+        with patch.object(resumed, 'invoke') as invoke:
+            resumed.reviewer_turn()
+            invoke.assert_not_called()
+        completed = json.loads(co.state_path.read_text())
+        self.assertEqual(completed['status'], 'DONE')
+        self.assertEqual(len(completed['turns']), 1)
+        self.assertEqual(len(completed['review_verdicts']), 1)
+        self.assertEqual(completed['review_verdicts'][0]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_polish_minor_revise_at_reviewer_cap_is_advisory_done(self):
+        result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1',
+                                           'FAKE_POLISH_MINOR_REVISE': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertTrue(state['polish']['completed'])
+        self.assertEqual(state['polish']['reviewer_turns'], 1)
+        polish = next(row for row in state['review_verdicts'] if row['phase'] == 'POLISH')
+        self.assertEqual((polish['reviewer_raw_verdict'], polish['effective_verdict']),
+                         ('REVISE', 'APPROVE_WITH_ADVISORY'))
+        self.assertTrue(any(row.get('advisory') and row['status'] == 'open'
+                            for row in state['finding_ledger']))
+
+    def test_mixed_minor_major_does_not_take_advisory_exit(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off', '--max-exec-rounds', '1',
+                                      env={'FAKE_EXEC_MIXED_REVISE': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertTrue(any(row['severity'] == 'MAJOR' and row['status'] == 'open'
+                            for row in state['finding_ledger']))
+        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+        exec_verdict = next(row for row in state['review_verdicts'] if row['phase'] == 'EXEC')
+        self.assertEqual(exec_verdict['effective_verdict'], 'REVISE')
+
+    def test_nonfinal_exec_minor_revise_keeps_repair_loop(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off', '--max-exec-rounds', '2',
+                                      env={'FAKE_EXEC_MINOR_REVISE': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        authors = [row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'EXEC']
+        self.assertEqual(len(authors), 2)
+        exec_verdicts = [row['effective_verdict'] for row in state['review_verdicts']
+                         if row['phase'] == 'EXEC']
+        self.assertEqual(exec_verdicts, ['REVISE', 'APPROVE_WITH_ADVISORY'])
+
+    def test_failing_configured_test_prevents_minor_advisory_exit(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off', '--max-exec-rounds', '1',
+                                      env={'FAKE_EXEC_MINOR_REVISE': '1',
+                                           'FAKE_REVIEW_TEST_FAILURE': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+
+    def test_missing_successful_test_prevents_minor_advisory_exit(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off', '--max-exec-rounds', '1',
+                                      env={'FAKE_EXEC_MINOR_REVISE': '1',
+                                           'FAKE_REVIEW_NO_TEST_EVENT': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+
+    def test_polish_minor_revise_requires_nonempty_self_run_evidence(self):
+        result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1',
+                                           'FAKE_POLISH_MINOR_REVISE': '1',
+                                           'FAKE_POLISH_NO_EVIDENCE': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+
+    def test_last_plan_minor_revise_advances_as_approve(self):
+        result = self.run_coordinator('--max-plan-rounds', '1',
+                                      env={'FAKE_PLAN_MINOR_REVISE': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        plan = next(row for row in state['review_verdicts'] if row['phase'] == 'PLAN')
+        self.assertEqual((plan['reviewer_raw_verdict'], plan['effective_verdict']),
+                         ('REVISE', 'APPROVE_WITH_ADVISORY'))
+
+    def test_shadow_critical_prevents_minor_advisory_exit(self):
+        result = self.run_coordinator('--shadow', 'on', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off', '--max-exec-rounds', '1',
+                                      env={'FAKE_EXEC_MINOR_REVISE': '1',
+                                           'FAKE_SHADOW_CRITICAL': '1'})
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertTrue(any(row['source'] == 'fresh-shadow' and row['severity'] == 'CRITICAL'
+                            for row in state['finding_ledger']))
+        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+
+    def test_security_and_low_severities_are_not_misclassified(self):
+        for flag in ('FAKE_EXEC_SECURITY_REVISE', 'FAKE_EXEC_LOW_REVISE'):
+            with self.subTest(flag=flag):
+                self.run_dir = self.root / flag.lower()
+                result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                    '--polish-round', 'off', '--max-exec-rounds', '1', env={flag: '1'})
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                if flag == 'FAKE_EXEC_SECURITY_REVISE':
+                    self.assertEqual(result.returncode, 2)
+                    self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    low = next(row for row in state['finding_ledger'] if row['severity'] == 'LOW')
+                    self.assertTrue(low['advisory'])
+
     def test_workitem_reviewer_commands_merge_into_roles_and_probe_digest(self):
         self.workitem.write_text('# Toy\n```reviewer-commands\nnode verify-real-data.mjs\npython3 audit.py\n```\n')
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),

@@ -43,6 +43,20 @@ Explicit subscription/rate-limit rejections are held with any reported reset
 hint and do not consume the invocation budget; their failed attempts remain in
 the turn receipt.
 
+## MINOR-only review revisions
+
+A persistent reviewer REVISE containing only MINOR/LOW findings is accepted as
+`APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round, or in POLISH. Its raw
+REVISE and effective workflow verdict are recorded separately. Those findings
+remain open and are labeled advisory in the findings ledger and report until a
+later reviewer confirms they are fixed; the next phase receives them as
+non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
+loop. CRITICAL, MAJOR, SECURITY-flagged, and observed test failures are never
+downgraded; EXEC and POLISH require a successful observed configured test.
+Fresh shadow/gate blockers retain their existing blocking behavior. Review
+comparison shows each reviewer decision separately from the final coordinator
+status, which may still be HOLD after later checks.
+
 ## Local marketplace installs
 
 Installing a plugin from a local directory marketplace copies the whole directory,

@@ -29,7 +29,7 @@ def emit_codex(answer, session, command_events=None):
                                                           'output_tokens': 20}}))
 
 
-def emit_claude(answer, session):
+def emit_claude(answer, session, extra_commands=None):
     model = os.environ.get('FAKE_CLAUDE_MODEL', 'claude-opus-5-5')
     print(json.dumps({'type': 'system', 'subtype': 'init', 'model': model,
                       'session_id': session}))
@@ -40,11 +40,16 @@ def emit_claude(answer, session):
     print(json.dumps({'type': 'stream_event', 'event': {'type': 'message_delta',
           'usage': {'output_tokens': 12}}, 'session_id': session}))
     if not os.environ.get('FAKE_MISSING_OBSERVED'):
-        for index, evidence in enumerate(answer.get('self_run_evidence', [])):
+        evidence_rows = [*answer.get('self_run_evidence', []), *(extra_commands or [])]
+        for index, evidence in enumerate(evidence_rows):
             tool_id = 'fake-tool-' + str(index)
             command = evidence['command']
+            if os.environ.get('FAKE_REVIEW_NO_TEST_EVENT') and command == 'python3 -m unittest':
+                continue
             forbidden = command.startswith(('echo ', 'git checkout', 'rm ', 'git diff --output=',
                                              'git log --output=', 'git show --output=')) or ' > ' in command
+            test_failure = bool(os.environ.get('FAKE_REVIEW_TEST_FAILURE') and
+                                command == 'python3 -m unittest')
             if (os.environ.get('FAKE_SANDBOX_WRITE') and
                     ('paired-session-claude-sandbox-' in command or
                      '.paired-session-run-dir-probe-' in command or
@@ -66,9 +71,10 @@ def emit_claude(answer, session):
             print(json.dumps({'type': 'user', 'message': {'content': [{
                 'type': 'tool_result', 'tool_use_id': tool_id,
                 'content': (('line\n' * 20000) if os.environ.get('FAKE_HUGE_OUTPUT') else
+                            'FAILED fake configured test' if test_failure else
                             ('fake sandbox failure without OS marker' if sandbox_denial and os.environ.get('FAKE_SANDBOX_NO_OS_MARKER') else
                              'zsh: operation not permitted' if sandbox_denial else 'fake result')),
-                'is_error': forbidden}]},
+                'is_error': forbidden or test_failure}]},
                 'session_id': session}))
     if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'claude':
         print('{malformed model metadata')
@@ -100,6 +106,7 @@ def mutate(mode):
 def main():
     args = sys.argv[1:]
     prompt = sys.stdin.read()
+    extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
     if vendor == 'claude':
         allowed = [args[index + 1] for index, value in enumerate(args[:-1])
@@ -176,8 +183,11 @@ def main():
         answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
                   'self_run_evidence': [{'command': command} for command in [allowed, *attacks]]}
     else:
+        role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
+                'shadow' if 'Role: shadow,' in prompt else 'reviewer')
         revise = 'Exercise rule: return REVISE' in prompt and 'Role: reviewer,' in prompt
-        phase = 'EXEC' if 'Phase: EXEC' in prompt else 'PLAN'
+        phase = ('POLISH' if 'Phase: POLISH' in prompt else
+                 'EXEC' if 'Phase: EXEC' in prompt else 'PLAN')
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
                                'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0])
@@ -199,11 +209,42 @@ def main():
                       'failure_scenario': ('verification is absent from the plan' if phase == 'PLAN'
                                            else 'bool is accepted as int')}]
                     if revise else [])
+        if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MINOR_REVISE'):
+            revise = True
+            findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
+                         'summary': 'advisory exec polish', 'failure_scenario': 'style remains untidy'}]
+        if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MIXED_REVISE'):
+            revise = True
+            findings = [
+                {'severity': 'MINOR', 'file': 'sum_ints.py', 'summary': 'small cleanup',
+                 'failure_scenario': 'style remains untidy'},
+                {'severity': 'MAJOR', 'file': 'sum_ints.py', 'summary': 'major behavior issue',
+                 'failure_scenario': 'wrong result is returned'},
+            ]
+        if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_LOW_REVISE'):
+            revise = True
+            findings = [{'severity': 'LOW', 'file': 'sum_ints.py', 'summary': 'low-risk note',
+                         'failure_scenario': 'minor ergonomics issue'}]
+        if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_SECURITY_REVISE'):
+            revise = True
+            findings = [{'severity': 'MINOR', 'security': True, 'file': 'sum_ints.py',
+                         'summary': 'security-specific note', 'failure_scenario': 'unsafe input path'}]
+        if role == 'reviewer' and phase == 'POLISH' and os.environ.get('FAKE_POLISH_MINOR_REVISE'):
+            revise = True
+            findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
+                         'summary': 'advisory polish item', 'failure_scenario': 'style remains untidy'}]
         if os.environ.get('FAKE_PLAN_CODE_FINDING') and phase == 'PLAN':
             revise = True
             findings = [{'severity': 'CRITICAL', 'file': 'workspace',
                          'summary': 'implementation files are missing',
                          'failure_scenario': 'no Python source exists during plan review'}]
+        if role == 'reviewer' and phase == 'PLAN' and os.environ.get('FAKE_PLAN_MINOR_REVISE'):
+            revise = True
+            findings = [{'severity': 'MINOR', 'file': 'plan.md', 'summary': 'plan advisory',
+                         'failure_scenario': 'plan omits a small design detail'}]
+        if role == 'shadow' and os.environ.get('FAKE_SHADOW_CRITICAL'):
+            findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
+                         'summary': 'fresh shadow blocker', 'failure_scenario': 'wrong result remains'}]
         if ('include one non-blocking MINOR' in prompt or
                 (os.environ.get('FAKE_APPROVE_MINOR') and phase == 'PLAN')):
             findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
@@ -227,11 +268,19 @@ def main():
                                         if phase == 'EXEC' else [])}
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
+            if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):
+                answer['self_run_evidence'] = []
+                extra_observed_commands = [{'command': configured_test or 'python3 -m unittest'}]
+        for finding in findings:
+            finding.setdefault('security', False)
         if prior is not None:
             answer['prior_findings'] = prior
         mode = os.environ.get('FAKE_MUTATION')
         if mode and 'Role: reviewer,' in prompt:
             mutate(mode)
+        command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]
+                          if vendor == 'codex' and role == 'reviewer' and phase == 'EXEC'
+                          and configured_test and os.environ.get('FAKE_REVIEW_TEST_FAILURE') else None)
     if prompt.startswith('Role: author workspace-write permission probe'):
         encoded = prompt.split('PROBE_COMMANDS_JSON: ', 1)[1].splitlines()[0]
         commands = json.loads(encoded)
@@ -279,7 +328,10 @@ def main():
         answer['reviewed_snapshot'] = '0' * 40
     elif snapshot_mode != 'missing' and 'reviewed_snapshot' in answer:
         answer['reviewed_snapshot'] = answer['reviewed_snapshot']
-    (emit_codex if vendor == 'codex' else emit_claude)(answer, session)
+    if vendor == 'codex':
+        emit_codex(answer, session, locals().get('command_events'))
+    else:
+        emit_claude(answer, session, extra_observed_commands)
     return 0
 
 

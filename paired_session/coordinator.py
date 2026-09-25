@@ -39,6 +39,9 @@ PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters E
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
+ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
+BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
 
 
 class RunLeaseError(RuntimeError):
@@ -692,10 +695,10 @@ def verified_claims_error(answer: dict) -> str:
 
 def review_schema(statuses=('REVISE', 'APPROVE', 'HOLD'), verified=True) -> dict:
     finding = {'type': 'object', 'properties': {
-        'severity': {'type': 'string', 'enum': ['CRITICAL', 'MINOR']},
+        'severity': {'type': 'string', 'enum': sorted(ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)},
         'file': {'type': 'string'}, 'summary': {'type': 'string'},
-        'failure_scenario': {'type': 'string'},
-    }, 'required': ['severity', 'file', 'summary', 'failure_scenario'], 'additionalProperties': False}
+        'failure_scenario': {'type': 'string'}, 'security': {'type': 'boolean'},
+    }, 'required': ['severity', 'file', 'summary', 'failure_scenario', 'security'], 'additionalProperties': False}
     prior = {'type': 'object', 'properties': {
         'id': {'type': 'string'},
         'disposition': {'type': 'string', 'enum': ['fixed', 'still_open', 'withdrawn']},
@@ -962,6 +965,7 @@ class Coordinator:
                               if re.fullmatch(r'F\d+', row.get('id', ''))), default=0)
             self.state.setdefault('next_finding_id', highest_id + 1)
             self.state.setdefault('exec_comparisons', [])
+            self.state.setdefault('review_verdicts', [])
             self.state.setdefault('reviewed_reviewer_sequences', [])
             self.state.setdefault('pending_reviewer_result_sequence', None)
             self.state.setdefault('polish', {'active': False, 'completed': False,
@@ -999,6 +1003,7 @@ class Coordinator:
                 'last_end': {}, 'waiting_model_calls': 0, 'base_commit': self._head_commit(),
                 'reviews_completed': 0,
                 'finding_ledger': [], 'next_finding_id': 1, 'exec_comparisons': [],
+                'review_verdicts': [],
                 'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
@@ -1312,7 +1317,8 @@ class Coordinator:
 
     def blocking_open_findings(self) -> list[dict]:
         return [finding for finding in self.open_findings()
-                if finding['severity'] == 'CRITICAL' or
+                if finding['severity'] in BLOCKING_REVIEW_SEVERITIES or
+                finding.get('security') or
                 (finding['source'] == 'adversarial-gate' and finding['severity'] in ('CRITICAL', 'HIGH'))]
 
     @staticmethod
@@ -1355,6 +1361,7 @@ class Coordinator:
                      'source': source, 'finding_index': finding_index,
                      'severity': severity, 'file': finding.get('file', ''),
                      'summary': summary, 'status': 'open',
+                     'security': bool(finding.get('security')),
                      'failure_scenario': finding.get('failure_scenario', ''),
                      'body': finding.get('body', ''),
                      'status_history': [{'round': origin_round, 'status': 'open',
@@ -1412,14 +1419,44 @@ class Coordinator:
             history = '; '.join(f"r{x['round']} {x['status']}: {x['evidence']}"
                                 for x in finding['status_history'])
             cells = [finding['id'], str(finding['origin_round']), finding['phase'], finding['source'],
-                     finding['severity'], finding['file'], finding['summary'], finding['status'], history]
+                     finding['severity'], finding['file'], finding['summary'],
+                     finding['status'] + (' (advisory)' if finding.get('advisory') else ''), history]
             lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|').replace('\n', ' ') for cell in cells) + ' |')
         atomic_text(self.run_dir / 'findings-ledger.md', '\n'.join(lines) + '\n')
 
     def nonblocking_open_findings(self) -> list[dict]:
         return [row for row in self.open_findings()
-                if row['severity'] == 'MINOR' or
+                if row['severity'] in ADVISORY_REVIEW_SEVERITIES or
                 (row['source'] == 'adversarial-gate' and row['severity'] in ('MEDIUM', 'LOW'))]
+
+    @staticmethod
+    def findings_are_advisory(findings: list[dict]) -> bool:
+        return bool(findings) and all(str(row.get('severity', '')).upper() in
+                                      ADVISORY_REVIEW_SEVERITIES and not row.get('security')
+                                      for row in findings)
+
+    def record_review_verdict(self, sequence: int, phase: str, raw: str, effective: str) -> None:
+        records = self.state.setdefault('review_verdicts', [])
+        row = next((item for item in records if item.get('sequence') == sequence), None)
+        data = {'sequence': sequence, 'phase': phase, 'reviewer_raw_verdict': raw,
+                'effective_verdict': effective}
+        row.update(data) if row else records.append(data)
+
+    def mark_advisory_findings(self, findings: list[dict]) -> None:
+        ids = {row['id'] for row in findings if row.get('id')}
+        for row in self.state['finding_ledger']:
+            if row['id'] in ids and row['status'] == 'open':
+                row['advisory'] = True
+        self.write_ledger()
+
+    def configured_test_failed(self, answer: dict) -> bool:
+        return any(command_invokes_test(row.get('command', ''), self.args.test_command)
+                   and not observed_test_succeeded(row, self.args.test_command)
+                   for row in answer.get('observed_commands', []))
+
+    def configured_test_succeeded(self, answer: dict) -> bool:
+        return any(observed_test_succeeded(row, self.args.test_command)
+                   for row in answer.get('observed_commands', []))
 
     @staticmethod
     def advisory_rows(findings: list[dict]) -> list[dict]:
@@ -1435,13 +1472,14 @@ class Coordinator:
         rows = [row for row in self.state['finding_ledger']
                 if row['status'] == 'open' or row.get('author_disposition') == 'declined']
         lines = ['# Open findings', '',
-                 '| ID | Source | Severity | File | Summary | Author response |',
-                 '|---|---|---|---|---|---|']
+                 '| ID | Source | Severity | File | Summary | Status | Author response |',
+                 '|---|---|---|---|---|---|---|']
         for row in rows:
             response = row.get('author_disposition', '')
             if row.get('author_reason'):
                 response += (': ' if response else '') + row['author_reason']
-            cells = [row['id'], row['source'], row['severity'], row['file'], row['summary'], response]
+            status = row['status'] + (' (advisory)' if row.get('advisory') else '')
+            cells = [row['id'], row['source'], row['severity'], row['file'], row['summary'], status, response]
             lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|').replace('\n', ' ')
                                            for cell in cells) + ' |')
         if not rows:
@@ -1451,7 +1489,8 @@ class Coordinator:
     @staticmethod
     def comparison_findings(answer: dict) -> list[dict]:
         rows = answer.get('full_review', answer.get('findings', []))
-        return [{'severity': str(row.get('severity', '')).upper(), 'file': row.get('file', ''),
+        return [{'severity': str(row.get('severity', '')).upper(),
+                 'security': bool(row.get('security')), 'file': row.get('file', ''),
                  'summary': row.get('summary') or row.get('recommendation') or
                             str(row.get('body', '')).splitlines()[0]} for row in rows]
 
@@ -1479,6 +1518,14 @@ class Coordinator:
             lines.append('')
         lines += ['## Counts', '', '| Role | Findings |', '|---|---:|',
                   *(f'| {role} | {count} |' for role, count in total.items())]
+        if self.state.get('review_verdicts'):
+            lines += ['', '## Raw and effective reviewer verdicts', '',
+                      '| Phase | Sequence | Reviewer raw | Effective reviewer decision |', '|---|---:|---|---|']
+            lines.extend(f"| {row['phase']} | {row['sequence']} | {row['reviewer_raw_verdict']} | {row['effective_verdict']} |"
+                         for row in self.state['review_verdicts'])
+        lines += ['', f"Final coordinator status: **{self.state['status']}**"]
+        if self.state.get('hold_reason'):
+            lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
     def hold(self, reason: str) -> str:
@@ -1765,6 +1812,7 @@ class Coordinator:
                 f'Approved/current plan: {self.context / "plan.md"}',
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
+                REVIEW_SEVERITY_GUIDANCE,
                 self.inspection_prompt(role),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
@@ -1793,6 +1841,7 @@ class Coordinator:
                 f'Work item: {self.context / "workitem.md"}',
                 f'Plan under review: {self.context / "plan.md"}',
                 'Review only the plan for correctness, completeness, scope, and a credible verification strategy.',
+                REVIEW_SEVERITY_GUIDANCE,
                 'No implementation exists yet and none is expected in PLAN. Program delta files are empty by design.',
                 'Read existing workspace source to check the plan against current behaviour. Findings about missing source files, implementation, or tests are out of scope.',
                 self.inspection_prompt(role), self.allowed_command_prompt(), self.verified_claims_prompt(),
@@ -1806,6 +1855,7 @@ class Coordinator:
             f'Approved/current plan: {self.context / "plan.md"}',
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
             self.inspection_prompt(role),
+            REVIEW_SEVERITY_GUIDANCE,
             self.verified_claims_prompt(),
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt(),
@@ -2334,12 +2384,14 @@ class Coordinator:
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold('reviewer omitted open finding dispositions after retry: ' + ', '.join(missing))
                 return
+        reviewer_raw_verdict = answer['status']
+        reviewer_findings_advisory = self.findings_are_advisory(answer['full_review'])
         if phase == 'PLAN':
             answer['full_review'], out_of_phase = self.normalize_plan_findings(answer['full_review'])
             if (answer['status'] == 'REVISE' and answer['full_review'] and
                     out_of_phase == len(answer['full_review'])):
                 answer['status'] = 'APPROVE'
-        persistent_verdict = answer['status']
+        persistent_verdict = reviewer_raw_verdict
         answer['full_review'] = self.record_findings('persistent-reviewer', phase,
                                                      result['sequence'], answer['full_review'])
         persistent_findings = list(answer['full_review'])
@@ -2358,19 +2410,38 @@ class Coordinator:
             for row in shadow_rows:
                 row['source'] = 'fresh-shadow'
             shadow['answer']['full_review'] = shadow_rows
-            shadow_critical = [row for row in shadow_rows if row['severity'].upper() == 'CRITICAL']
-            if shadow_critical:
-                answer['full_review'].extend(shadow_critical)
+            shadow_blocking = [row for row in shadow_rows
+                               if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES
+                               or row.get('security')]
+            if shadow_blocking:
+                answer['full_review'].extend(shadow_blocking)
                 if answer['status'] == 'APPROVE':
                     answer['status'] = 'REVISE'
             self.render(shadow, 'shadow', phase)
+        limit = self.args.max_plan_rounds if phase == 'PLAN' else self.args.max_exec_rounds
+        at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
+        advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
+                         and self.findings_are_advisory(answer['full_review'])
+                         and (phase == 'POLISH' or at_phase_limit)
+                         and (phase == 'PLAN' or
+                              (self.configured_test_succeeded(result['answer'])
+                               and not self.configured_test_failed(result['answer'])
+                               and bool(answer.get('self_run_evidence'))))
+                         and (phase != 'EXEC' or
+                              answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
+                         and not self.blocking_open_findings())
+        if advisory_exit:
+            self.mark_advisory_findings(answer['full_review'])
+            answer['status'] = 'APPROVE'
+        effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
+        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict)
         if phase == 'EXEC':
             previous_comparison = next((row for row in self.state['exec_comparisons']
                                         if row.get('review_sequence') == result['sequence']), None)
             comparison = {'round': (previous_comparison['round'] if previous_comparison else
                                     self.state['exec_reviews'] + 1),
                           'review_sequence': result['sequence'],
-                          'effective_verdict': answer['status'],
+                          'effective_verdict': effective_verdict,
                           'persistent': {'verdict': persistent_verdict,
                                          'findings': self.comparison_findings(
                                              {'full_review': persistent_findings})}}
@@ -2397,7 +2468,6 @@ class Coordinator:
                       ', '.join(finding['id'] for finding in blocking))
             return
         if answer['status'] == 'REVISE':
-            limit = self.args.max_plan_rounds if phase == 'PLAN' else self.args.max_exec_rounds
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
                 self.state['pending_reviewer_result_sequence'] = None
@@ -2507,6 +2577,7 @@ class Coordinator:
                 self.hold('polish reviewer omitted open finding dispositions after retry: ' +
                           ', '.join(missing))
                 return
+        reviewer_raw_verdict = answer['status']
         answer['full_review'] = self.record_findings('persistent-reviewer', 'POLISH',
                                                      result['sequence'], answer['full_review'])
         self.render(result, 'supervisor', 'POLISH')
@@ -2515,11 +2586,21 @@ class Coordinator:
         if answer['status'] == 'HOLD':
             self.hold('polish reviewer HOLD')
             return
-        if answer['status'] == 'APPROVE' and not answer['self_run_evidence']:
-            self.hold('POLISH APPROVE rejected: empty self_run_evidence')
-            return
         blocking = self.blocking_open_findings()
+        advisory_exit = (answer['status'] == 'REVISE'
+                         and self.findings_are_advisory(answer['full_review'])
+                         and self.configured_test_succeeded(result['answer'])
+                         and not self.configured_test_failed(result['answer'])
+                         and bool(answer.get('self_run_evidence')) and not blocking)
+        if advisory_exit:
+            self.mark_advisory_findings(answer['full_review'])
+            answer['status'] = 'APPROVE'
+        self.record_review_verdict(result['sequence'], 'POLISH', reviewer_raw_verdict,
+                                   'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status'])
         if answer['status'] == 'APPROVE':
+            if not answer['self_run_evidence']:
+                self.hold('POLISH APPROVE rejected: empty self_run_evidence')
+                return
             if blocking:
                 self.hold('POLISH APPROVE rejected with open blocking findings: ' +
                           ', '.join(row['id'] for row in blocking))
