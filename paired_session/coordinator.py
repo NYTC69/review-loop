@@ -39,6 +39,12 @@ PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters E
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
+
+
+def resolve_exec_turn_timeout(value, general_timeout):
+    timeout = value if value is not None else min(max(DEFAULT_EXEC_TURN_TIMEOUT_SECONDS, general_timeout), MAX_EXEC_TURN_TIMEOUT_SECONDS)
+    if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
+    return timeout
 DEFAULT_MAX_REJECTIONS = 2
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
@@ -958,12 +964,8 @@ class Coordinator:
         self.internal = self.run_dir / 'internal'
         self.state_path = self.run_dir / 'state.json'
         if not self.state_path.exists():
-            self.args.exec_turn_timeout = (DEFAULT_EXEC_TURN_TIMEOUT_SECONDS
-                                           if self.args.exec_turn_timeout is None
-                                           else self.args.exec_turn_timeout)
-            if not 1 <= self.args.exec_turn_timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS:
-                raise ValueError(f'--exec-turn-timeout must be between 1 and '
-                                 f'{MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
+            self.args.exec_turn_timeout = resolve_exec_turn_timeout(
+                self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
             if 'reason' in self.state and 'hold_reason' not in self.state:
@@ -977,8 +979,9 @@ class Coordinator:
                         self.args.gate_prompt = str(DEFAULT_GATE_PROMPT)
                     elif hasattr(self.args, key):
                         setattr(self.args, key, value)
-                if self.args.exec_turn_timeout is None:
-                    self.args.exec_turn_timeout = DEFAULT_EXEC_TURN_TIMEOUT_SECONDS
+                self.args.exec_turn_timeout = resolve_exec_turn_timeout(
+                    self.state['config'].get('exec_turn_timeout'),
+                    self.state['config'].get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
             else:
                 self._validate_resume_args()
             self.state.setdefault('base_commit', self._head_commit())
@@ -1249,7 +1252,7 @@ class Coordinator:
             raise ValueError('resume workspace/workitem differs from state')
         if getattr(self.args, 'resume_timeout', None) is not None and self.args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
-        exec_timeout_override = getattr(self.args, 'exec_turn_timeout', None) is not None
+        exec_timeout_override = getattr(self.args, 'exec_turn_timeout_explicit', False)
         if self.args.action == 'resume':
             original_timeout = self.state['config']['timeout']
             requested_timeout = getattr(self.args, 'resume_timeout', None)
@@ -1258,22 +1261,24 @@ class Coordinator:
                     raise ValueError('--resume-timeout must be between the saved timeout and '
                                      f'{MAX_RESUME_TIMEOUT_SECONDS} seconds')
                 self.args.timeout = requested_timeout
-            saved_exec_timeout = self.state.get('config', {}).get(
-                'exec_turn_timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS)
-            requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
+            saved_config = self.state.get('config', {})
+            saved_exec_timeout = saved_config.get('exec_turn_timeout')
+            if saved_exec_timeout is None:
+                saved_exec_timeout = resolve_exec_turn_timeout(
+                    None, saved_config.get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
+            requested_exec_timeout = (getattr(self.args, 'exec_turn_timeout', None)
+                                      if exec_timeout_override else None)
             if requested_exec_timeout is None:
                 self.args.exec_turn_timeout = saved_exec_timeout
-            elif (requested_exec_timeout < saved_exec_timeout or
-                  requested_exec_timeout > MAX_EXEC_TURN_TIMEOUT_SECONDS):
-                raise ValueError('--exec-turn-timeout must be between the saved EXEC timeout and '
-                                 f'{MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
+            else:
+                requested_exec_timeout = resolve_exec_turn_timeout(
+                    requested_exec_timeout, self.args.timeout)
+                if requested_exec_timeout < saved_exec_timeout:
+                    raise ValueError(f'--exec-turn-timeout cannot lower saved value {saved_exec_timeout}')
         else:
             requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
-            self.args.exec_turn_timeout = (DEFAULT_EXEC_TURN_TIMEOUT_SECONDS
-                                           if requested_exec_timeout is None else requested_exec_timeout)
-            if not 1 <= self.args.exec_turn_timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS:
-                raise ValueError(f'--exec-turn-timeout must be between 1 and '
-                                 f'{MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
+            self.args.exec_turn_timeout = resolve_exec_turn_timeout(
+                requested_exec_timeout, self.args.timeout)
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
@@ -3498,6 +3503,12 @@ def cli_env() -> dict:
     return env
 
 
+class StoreExplicitInteger(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, self.dest + '_explicit', True)
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
@@ -3522,9 +3533,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-exec-rounds', type=int, default=4)
     p.add_argument('--max-invocations', type=int, default=25)
     p.add_argument('--timeout', type=int, default=2700)
-    p.add_argument('--exec-turn-timeout', type=int, default=None,
-                   help=f'EXEC author turn timeout (default {DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}; '
-                        f'maximum {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
+    p.set_defaults(exec_turn_timeout_explicit=False)
+    p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
+                   help=f'EXEC author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
+                        f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
     p.add_argument('--resume-timeout', type=int, default=None,
                    help=f'increase the saved timeout on resume, up to {MAX_RESUME_TIMEOUT_SECONDS} seconds')
     p.add_argument('--test-command', default='npm test')

@@ -629,6 +629,15 @@ sys.exit(result.returncode)
         self.assertNotEqual(receipt.get('error_kind'), 'rate_limited')
         self.assertEqual(state['invocations_used'], 1)
 
+    def test_exec_turn_timeout_default_tracks_general_timeout_with_cap(self):
+        for index, (general, expected) in enumerate(((31, 7200), (9000, 9000), (20000, 14400))):
+            with self.subTest(general=general):
+                self.run_dir = self.root / f'exec-default-{index}'
+                co = self.coordinator('--timeout', str(general))
+                self.assertEqual(co.args.timeout, general)
+                self.assertEqual(co.args.exec_turn_timeout, expected)
+                self.assertEqual(co.state['config']['exec_turn_timeout'], expected)
+
     def test_exec_turn_timeout_defaults_to_7200_without_changing_general_timeout(self):
         co = self.coordinator('--timeout', '31')
         self.assertEqual(co.args.timeout, 31)
@@ -637,8 +646,10 @@ sys.exit(result.returncode)
 
     def test_exec_author_uses_exec_timeout_but_plan_and_reviewer_use_general_timeout(self):
         co = self.coordinator('--timeout', '31', '--exec-turn-timeout', '45')
+        co.state['started']['gate'] = False
+        co.state['sessions']['gate'] = 'gate-session'
         for role, phase, expected in (('author', 'EXEC', 45), ('author', 'PLAN', 31),
-                                      ('reviewer', 'PLAN', 31)):
+                                      ('reviewer', 'PLAN', 31), ('gate', 'EXEC', 31)):
             with self.subTest(role=role, phase=phase):
                 co._invoke_once(role, phase, 'Role prompt.', {})
                 receipt = json.loads((co.evidence /
@@ -675,6 +686,87 @@ sys.exit(result.returncode)
             '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS + 1)])
         with self.assertRaisesRegex(ValueError, '--exec-turn-timeout must be between'):
             rc.Coordinator(args)
+
+    def test_exec_timeout_resume_rejects_lower_and_preserves_saved_value(self):
+        co = self.coordinator('--exec-turn-timeout', '9000')
+        base = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                '--run-dir', str(self.run_dir), '--timeout', '2700', '--skip-probe',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]
+        resumed = rc.Coordinator(rc.parser().parse_args(base))
+        self.assertEqual(resumed.args.exec_turn_timeout, 9000)
+        with self.assertRaisesRegex(ValueError, 'cannot lower saved value'):
+            rc.Coordinator(rc.parser().parse_args(base + ['--exec-turn-timeout', '8999']))
+
+    def test_legacy_state_timeout_fallback_and_config_default_is_not_cli_raise(self):
+        co = self.coordinator('--timeout', '20000')
+        state = json.loads(co.state_path.read_text())
+        state['config'].pop('exec_turn_timeout')
+        co.state_path.write_text(json.dumps(state))
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / 'paired-session.json').write_text(json.dumps({'exec_turn_timeout': 9000}))
+        argv = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                '--run-dir', str(self.run_dir), '--timeout', '20000', '--skip-probe',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]
+        resumed = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
+        self.assertEqual(resumed.args.exec_turn_timeout, 14400)
+        with patch.object(resumed, 'drive', return_value='HOLD'):
+            self.assertEqual(resumed.resume(), 'HOLD')
+        self.assertEqual(json.loads(resumed.state_path.read_text())['config']['exec_turn_timeout'], 14400)
+
+    def test_legacy_reject_cannot_override_exec_timeout_from_cli_or_project_config(self):
+        result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                      '--polish-round', 'off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        state['config'].pop('exec_turn_timeout')
+        state['config']['timeout'] = 9000
+        (self.run_dir / 'state.json').write_text(json.dumps(state))
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / 'paired-session.json').write_text(json.dumps({'exec_turn_timeout': 20000}))
+        rejected = self.run_operator_action('reject', '--text', 'Adjust the output.',
+                                            '--exec-turn-timeout', '99999')
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        saved = json.loads((self.run_dir / 'state.json').read_text())
+        author_execs = [row for row in saved['turns']
+                        if row.get('role') == 'author' and row.get('phase') == 'EXEC' and
+                        row.get('rejection_id') == 'R001']
+        self.assertTrue(author_execs, rejected.stdout + rejected.stderr)
+        self.assertEqual(author_execs[0]['timeout_seconds'], 9000)
+
+    def test_legacy_resume_allows_only_bounded_exec_timeout_raise(self):
+        co = self.coordinator('--timeout', '31')
+        state = json.loads(co.state_path.read_text())
+        state['config'].pop('exec_turn_timeout')
+        co.state_path.write_text(json.dumps(state))
+        argv = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                '--run-dir', str(self.run_dir), '--timeout', '31', '--skip-probe',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]
+        raised = rc.Coordinator(rc.parser().parse_args(argv + ['--exec-turn-timeout', '8000']))
+        self.assertEqual(raised.args.exec_turn_timeout, 8000)
+        with self.assertRaisesRegex(ValueError, 'cannot lower saved value'):
+            rc.Coordinator(rc.parser().parse_args(argv + ['--exec-turn-timeout', '7000']))
+
+    def test_project_exec_default_does_not_raise_saved_timeout(self):
+        co = self.coordinator()
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / 'paired-session.json').write_text(json.dumps({'exec_turn_timeout': 9000}))
+        argv = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
+                '--run-dir', str(self.run_dir), '--timeout', '2700', '--skip-probe',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]
+        resumed = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
+        self.assertEqual(resumed.args.exec_turn_timeout, 7200)
+
+    def test_exec_turn_timeout_rejects_zero_and_negative_values(self):
+        for value in ('0', '-1'):
+            with self.subTest(value=value):
+                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                    '--exec-turn-timeout', value])
+                with self.assertRaisesRegex(ValueError, 'between 1 and 14400'):
+                    rc.Coordinator(args)
 
     def test_done_requires_explicit_accept_and_accept_is_idempotent(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',

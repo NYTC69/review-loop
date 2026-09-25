@@ -133,14 +133,17 @@ A rate-limit HOLD includes a reset hint when the provider supplies one. Resume
 with the same workspace, work item, run directory, author/reviewer settings,
 and test command:
 
-`--timeout` (default 2700 seconds) continues to govern PLAN, POLISH and all
-reviewer turns. EXEC author turns use the separate `--exec-turn-timeout`
-(default 7200 seconds, maximum 14400 seconds). On resume, `--exec-turn-timeout`
-may raise the saved EXEC timeout up to that maximum, never lower it; the value
+`--timeout` (default 2700 seconds, with no upper bound) governs every
+non-EXEC-author turn, including PLAN, POLISH, persistent/fresh reviewer,
+shadow and gate turns. EXEC author turns use the separate `--exec-turn-timeout`; when omitted,
+it defaults to `max(7200, --timeout)` capped at 14400 seconds. On resume, only
+an explicit CLI `--exec-turn-timeout` may raise the saved EXEC timeout, never
+lower it; project-config defaults do not count as an explicit raise. The value
 is saved for later turns and resumes. An already-running turn keeps the timeout
-it received when it started. The existing `resume --resume-timeout N` option
-raises the general per-turn timeout up to 7200 seconds for phases that use
-`--timeout`.
+it received when it started. When resuming legacy run state without this setting, the coordinator derives it
+from `max(7200, saved --timeout)`, capped at 14400 seconds. The existing
+`resume --resume-timeout N` option raises the general per-turn timeout up to
+7200 seconds for phases that use `--timeout`.
 
 A run ending in `DONE` is awaiting explicit operator acceptance. Use `accept` to
 record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
