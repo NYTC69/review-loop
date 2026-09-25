@@ -622,6 +622,53 @@ sys.exit(result.returncode)
         self.assertNotEqual(receipt.get('error_kind'), 'rate_limited')
         self.assertEqual(state['invocations_used'], 1)
 
+    def test_exec_turn_timeout_defaults_to_7200_without_changing_general_timeout(self):
+        co = self.coordinator('--timeout', '31')
+        self.assertEqual(co.args.timeout, 31)
+        self.assertEqual(co.args.exec_turn_timeout, rc.DEFAULT_EXEC_TURN_TIMEOUT_SECONDS)
+        self.assertEqual(co.state['config']['exec_turn_timeout'], 7200)
+
+    def test_exec_author_uses_exec_timeout_but_plan_and_reviewer_use_general_timeout(self):
+        co = self.coordinator('--timeout', '31', '--exec-turn-timeout', '45')
+        for role, phase, expected in (('author', 'EXEC', 45), ('author', 'PLAN', 31),
+                                      ('reviewer', 'PLAN', 31)):
+            with self.subTest(role=role, phase=phase):
+                co._invoke_once(role, phase, 'Role prompt.', {})
+                receipt = json.loads((co.evidence /
+                    f"{co.state['sequence']:03d}-{phase.lower()}-{role}.receipt.json").read_text())
+                self.assertEqual(receipt['timeout_seconds'], expected)
+
+    def test_resume_can_raise_exec_timeout_within_cap_and_persist_it(self):
+        co = self.coordinator('--timeout', '10')
+        co._invoke_once('author', 'EXEC', 'Role prompt.', {})
+        receipt_path = co.evidence / '001-exec-author.receipt.json'
+        args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir), '--timeout', '10',
+            '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS),
+            '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())])
+        resumed = rc.Coordinator(args)
+        self.assertEqual(resumed.args.exec_turn_timeout, rc.MAX_EXEC_TURN_TIMEOUT_SECONDS)
+        with patch.object(resumed, 'drive', return_value='HOLD'):
+            self.assertEqual(resumed.resume(), 'HOLD')
+        saved = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(saved['config']['exec_turn_timeout'], rc.MAX_EXEC_TURN_TIMEOUT_SECONDS)
+        self.assertEqual(json.loads(receipt_path.read_text())['timeout_seconds'], 7200)
+
+    def test_exec_timeout_above_cap_is_rejected(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS + 1)])
+        with self.assertRaisesRegex(ValueError, 'maximum|between 1 and 14400'):
+            rc.Coordinator(args)
+
+    def test_resume_exec_timeout_above_cap_is_rejected(self):
+        self.coordinator()
+        args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS + 1)])
+        with self.assertRaisesRegex(ValueError, '--exec-turn-timeout must be between'):
+            rc.Coordinator(args)
+
     def test_failed_cli_without_usage_is_unknown_in_usage_reconciliation(self):
         co = self.coordinator()
         failing_cli = self.root / 'failed-empty-usage-cli'

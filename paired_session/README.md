@@ -133,11 +133,14 @@ A rate-limit HOLD includes a reset hint when the provider supplies one. Resume
 with the same workspace, work item, run directory, author/reviewer settings,
 and test command:
 
-For a longer in-flight author/reviewer turn, `resume --resume-timeout N` may
-raise the saved per-turn timeout, where `N` is at least the saved timeout and
-at most 7200 seconds (two hours). The raised value becomes the saved timeout
-for later resumes; it cannot be extended past the cap. Without this option,
-resume keeps using the saved timeout.
+`--timeout` (default 2700 seconds) continues to govern PLAN, POLISH and all
+reviewer turns. EXEC author turns use the separate `--exec-turn-timeout`
+(default 7200 seconds, maximum 14400 seconds). On resume, `--exec-turn-timeout`
+may raise the saved EXEC timeout up to that maximum, never lower it; the value
+is saved for later turns and resumes. An already-running turn keeps the timeout
+it received when it started. The existing `resume --resume-timeout N` option
+raises the general per-turn timeout up to 7200 seconds for phases that use
+`--timeout`.
 
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting

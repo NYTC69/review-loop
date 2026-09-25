@@ -37,6 +37,8 @@ RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheape
 PROBE_SURFACE_VERSION = 7
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
+DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
+MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -950,6 +952,13 @@ class Coordinator:
         self.context = self.run_dir / 'context'
         self.internal = self.run_dir / 'internal'
         self.state_path = self.run_dir / 'state.json'
+        if not self.state_path.exists():
+            self.args.exec_turn_timeout = (DEFAULT_EXEC_TURN_TIMEOUT_SECONDS
+                                           if self.args.exec_turn_timeout is None
+                                           else self.args.exec_turn_timeout)
+            if not 1 <= self.args.exec_turn_timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS:
+                raise ValueError(f'--exec-turn-timeout must be between 1 and '
+                                 f'{MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
             if 'reason' in self.state and 'hold_reason' not in self.state:
@@ -1061,7 +1070,7 @@ class Coordinator:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
                 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
-                'timeout', 'max_invocations', 'exercise_revisions', 'test_command',
+                'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents')
         config = {key: getattr(self.args, key) for key in keys}
@@ -1219,6 +1228,7 @@ class Coordinator:
             raise ValueError('resume workspace/workitem differs from state')
         if getattr(self.args, 'resume_timeout', None) is not None and self.args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
+        exec_timeout_override = getattr(self.args, 'exec_turn_timeout', None) is not None
         if self.args.action == 'resume':
             original_timeout = self.state['config']['timeout']
             requested_timeout = getattr(self.args, 'resume_timeout', None)
@@ -1227,10 +1237,28 @@ class Coordinator:
                     raise ValueError('--resume-timeout must be between the saved timeout and '
                                      f'{MAX_RESUME_TIMEOUT_SECONDS} seconds')
                 self.args.timeout = requested_timeout
+            saved_exec_timeout = self.state.get('config', {}).get(
+                'exec_turn_timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS)
+            requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
+            if requested_exec_timeout is None:
+                self.args.exec_turn_timeout = saved_exec_timeout
+            elif (requested_exec_timeout < saved_exec_timeout or
+                  requested_exec_timeout > MAX_EXEC_TURN_TIMEOUT_SECONDS):
+                raise ValueError('--exec-turn-timeout must be between the saved EXEC timeout and '
+                                 f'{MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
+        else:
+            requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
+            self.args.exec_turn_timeout = (DEFAULT_EXEC_TURN_TIMEOUT_SECONDS
+                                           if requested_exec_timeout is None else requested_exec_timeout)
+            if not 1 <= self.args.exec_turn_timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS:
+                raise ValueError(f'--exec-turn-timeout must be between 1 and '
+                                 f'{MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
                     getattr(self.args, 'resume_timeout', None) is not None):
+                continue
+            if key == 'exec_turn_timeout' and self.args.action == 'resume' and exec_timeout_override:
                 continue
             current = current_config[key]
             if current != value:
@@ -2089,6 +2117,8 @@ class Coordinator:
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
         if self.state['invocations_used'] >= self.args.max_invocations:
             raise RuntimeError('invocation limit reached')
+        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
+                           else self.args.timeout)
         self.state['sequence'] += 1
         seq = self.state['sequence']
         prefix = self.evidence / f'{seq:03d}-{phase.lower()}-{role}'
@@ -2104,6 +2134,7 @@ class Coordinator:
                    'model': self._model_effort(role)[0], 'command': command, 'snapshot_before': before,
                    'context_before': context_before,
                    'start': now, 'gap': now - self.state['last_end'].get(role, now), 'fresh': fresh,
+                   'timeout_seconds': timeout_seconds,
                    'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
         if role == 'reviewer':
             receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
@@ -2168,7 +2199,7 @@ class Coordinator:
                                          args=(stdout_path, receipt, usage_stop), daemon=True)
         usage_monitor.start()
         try:
-            process.communicate(prompt.encode(), timeout=self.args.timeout)
+            process.communicate(prompt.encode(), timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -3166,6 +3197,7 @@ class Coordinator:
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.state['config']['timeout'] = self.args.timeout
+        self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
         self.save()
         return self.drive()
 
@@ -3324,6 +3356,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-exec-rounds', type=int, default=4)
     p.add_argument('--max-invocations', type=int, default=25)
     p.add_argument('--timeout', type=int, default=2700)
+    p.add_argument('--exec-turn-timeout', type=int, default=None,
+                   help=f'EXEC author turn timeout (default {DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}; '
+                        f'maximum {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
     p.add_argument('--resume-timeout', type=int, default=None,
                    help=f'increase the saved timeout on resume, up to {MAX_RESUME_TIMEOUT_SECONDS} seconds')
     p.add_argument('--test-command', default='npm test')
@@ -3349,7 +3384,7 @@ CONFIGURABLE_DESTS = {
     'author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
     'reviewer_model', 'reviewer_effort', 'gate_model', 'gate_effort', 'shadow',
     'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
-    'max_exec_rounds', 'max_invocations', 'timeout', 'test_command',
+    'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
 }
 
