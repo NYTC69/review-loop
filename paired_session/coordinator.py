@@ -505,6 +505,52 @@ def read_json_lines(path: Path) -> list[dict]:
     return rows
 
 
+def reported_provider_model(vendor: str, path: Path) -> tuple[Optional[str], Optional[str]]:
+    """Read only the top-level provider model identity from a valid CLI stream."""
+    try:
+        lines = path.read_text(errors='strict').splitlines()
+        rows = [json.loads(line) for line in lines if line.strip()]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not all(isinstance(row, dict) for row in rows):
+        return None, None
+    candidates = []
+    for row in rows:
+        if vendor == 'codex':
+            if row.get('type') in ('thread.started', 'turn.started'):
+                model = row.get('model') or row.get('turn', {}).get('model')
+                if isinstance(model, str) and model:
+                    candidates.append((model, row.get('type')))
+        elif vendor == 'claude':
+            if row.get('type') == 'system' and row.get('subtype') == 'init':
+                model = row.get('model')
+                if isinstance(model, str) and model:
+                    candidates.append((model, 'session-init'))
+            elif row.get('type') == 'stream_event' and not row.get('parent_tool_use_id'):
+                event = row.get('event', {})
+                if event.get('type') == 'message_start':
+                    model = event.get('message', {}).get('model')
+                    if isinstance(model, str) and model:
+                        candidates.append((model, 'message_start'))
+            elif row.get('type') == 'assistant' and not row.get('parent_tool_use_id'):
+                model = row.get('message', {}).get('model')
+                if isinstance(model, str) and model:
+                    candidates.append((model, 'assistant'))
+    real = [(model, source) for model, source in candidates if model != '<synthetic>']
+    if not real or len({model for model, _ in real}) != 1:
+        return None, None
+    return real[0]
+
+
+def model_identity_status(requested: str, reported: Optional[str]) -> str:
+    if not requested or not reported or reported == '<synthetic>':
+        return 'UNREPORTED'
+    if (reported == requested or
+            re.fullmatch(re.escape(requested) + r'-(?:\d{8}|\d{4}-\d{2}-\d{2})', reported)):
+        return 'MATCH'
+    return 'MISMATCH'
+
+
 def unwrap_json(value: str) -> dict:
     text = value.strip()
     if text.startswith('```'):
@@ -2105,6 +2151,10 @@ class Coordinator:
                                          + reset)
                 raise ValueError(f'CLI exit {process.returncode}')
             answer, session, usage, requests, observed_commands, tool_calls = self._collect(receipt['vendor'], stdout_path)
+            reported_model, model_source = reported_provider_model(receipt['vendor'], stdout_path)
+            receipt['reported_model'] = reported_model
+            receipt['reported_model_source'] = model_source
+            receipt['model_identity'] = model_identity_status(receipt['model'], reported_model)
             if receipt['vendor'] == 'codex':
                 per_request = codex_rollout_usage(session, receipt['start'], receipt['end'])
                 if per_request:

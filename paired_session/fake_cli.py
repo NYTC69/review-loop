@@ -8,8 +8,9 @@ import uuid
 
 
 def emit_codex(answer, session, command_events=None):
-    print(json.dumps({'type': 'thread.started', 'thread_id': session}))
-    print(json.dumps({'type': 'turn.started'}))
+    model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6-luna')
+    print(json.dumps({'type': 'thread.started', 'thread_id': session, 'model': model}))
+    print(json.dumps({'type': 'turn.started', 'model': model}))
     if command_events and not os.environ.get('FAKE_MISSING_OBSERVED'):
         for index, event in enumerate(command_events):
             print(json.dumps({'type': 'item.completed', 'item': {
@@ -18,6 +19,8 @@ def emit_codex(answer, session, command_events=None):
                 'status': 'completed' if event['exit_code'] == 0 else 'failed',
                 'aggregated_output': event.get('output', 'fake permission result'),
             }}))
+    if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'codex':
+        print('{malformed model metadata')
     print(json.dumps({'type': 'item.completed', 'item': {'id': 'fake', 'type': 'agent_message',
                                                          'text': json.dumps(answer)}}))
     print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 100,
@@ -26,6 +29,9 @@ def emit_codex(answer, session, command_events=None):
 
 
 def emit_claude(answer, session):
+    model = os.environ.get('FAKE_CLAUDE_MODEL', 'claude-opus-5-5')
+    print(json.dumps({'type': 'system', 'subtype': 'init', 'model': model,
+                      'session_id': session}))
     print(json.dumps({'type': 'stream_event', 'event': {'type': 'message_start',
           'message': {'id': 'fake-message', 'usage': {'input_tokens': 10,
           'cache_creation_input_tokens': 5, 'cache_read_input_tokens': 20, 'output_tokens': 0}}},
@@ -63,6 +69,8 @@ def emit_claude(answer, session):
                              'zsh: operation not permitted' if sandbox_denial else 'fake result')),
                 'is_error': forbidden}]},
                 'session_id': session}))
+    if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'claude':
+        print('{malformed model metadata')
     sensitive = os.environ.get('FAKE_SENSITIVE_READ')
     if sensitive:
         print(json.dumps({'type': 'assistant', 'message': {'content': [{

@@ -1768,6 +1768,70 @@ sys.exit(result.returncode)
         round_text = '\n'.join(p.read_text() for p in (self.run_dir / 'rounds').glob('*.md'))
         self.assertIn('Observed Commands', round_text)
         self.assertIn('Claimed Self Run Evidence', round_text)
+        for role in ('shadow', 'gate'):
+            files = list((self.run_dir / 'evidence').glob(f'*-{role}.independence-inputs.json'))
+            self.assertTrue(files, f'missing {role} launch audit')
+            inputs = json.loads(max(files, key=lambda path: path.stat().st_mtime_ns).read_text())['inputs']
+            plan = inputs['context/plan.md']['content']
+            self.assertIn('Verification: run unittest', plan)
+            self.assertNotIn('REVISE', plan)
+            materialized = '\n'.join(row['content'] for row in inputs.values())
+            for leaked in ('F001', 'required exercise revision', 'findings-ledger.md',
+                           'Open finding ledger', 'Delivered review:',
+                           '"status":"REVISE"', '"status":"APPROVE"',
+                           'reviewer-REVISE', 'reviewer-APPROVE'):
+                self.assertNotIn(leaked, materialized, f'{role} saw {leaked}')
+        codex_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'codex']
+        claude_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'claude']
+        self.assertTrue(codex_receipts and claude_receipts)
+        self.assertTrue(all(turn['reported_model'] == 'gpt-6-luna' and
+                            turn['reported_model_source'] == 'thread.started' and
+                            turn['model_identity'] == 'MATCH' for turn in codex_receipts))
+        self.assertTrue(all(turn['reported_model'] == 'claude-opus-5-5' and
+                            turn['reported_model_source'] == 'session-init' and
+                            turn['model_identity'] == 'MATCH' for turn in claude_receipts))
+
+    def test_model_identity_status_requires_exact_id_or_explicit_date_suffix(self):
+        requested = 'claude-opus-5-5'
+        self.assertEqual(rc.model_identity_status(requested, requested), 'MATCH')
+        self.assertEqual(rc.model_identity_status(requested, requested + '-20260925'), 'MATCH')
+        for reported in ('claude-opus-5', 'claude-opus-5-50'):
+            self.assertEqual(rc.model_identity_status(requested, reported), 'MISMATCH')
+        self.assertEqual(rc.model_identity_status(requested, '<synthetic>'), 'UNREPORTED')
+        self.assertEqual(rc.model_identity_status('', requested), 'UNREPORTED')
+
+    def test_model_identity_malformed_stream_and_subagent_are_unreported_or_ignored(self):
+        malformed = self.root / 'malformed-model.jsonl'
+        malformed.write_text('{broken json\n{"type":"thread.started","model":"gpt-6-luna"}\n')
+        self.assertEqual(rc.reported_provider_model('codex', malformed), (None, None))
+        claude = self.root / 'claude-subagent-model.jsonl'
+        claude.write_text('\n'.join([
+            json.dumps({'type': 'system', 'subtype': 'init', 'model': '<synthetic>'}),
+            json.dumps({'type': 'assistant', 'parent_tool_use_id': 'tool-1',
+                        'message': {'model': 'claude-opus-5-5'}}),
+        ]) + '\n')
+        self.assertEqual(rc.reported_provider_model('claude', claude), (None, None))
+
+    def test_model_identity_mismatch_is_recorded_and_malformed_stream_is_unreported(self):
+        cases = (
+            ('mismatch', {'FAKE_CODEX_MODEL': 'gpt-6-astra'}, 'codex', 'MISMATCH',
+             'thread.started'),
+            ('malformed-claude', {'FAKE_MALFORMED_MODEL_STREAM': 'claude'},
+             'claude', 'UNREPORTED', None),
+            ('synthetic-claude', {'FAKE_CLAUDE_MODEL': '<synthetic>'},
+             'claude', 'UNREPORTED', None),
+        )
+        for name, env, vendor, expected, source in cases:
+            with self.subTest(name=name):
+                self.run_dir = self.root / ('model-' + name)
+                result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                receipts = [row for row in state['turns'] if row['vendor'] == vendor]
+                self.assertTrue(receipts)
+                self.assertTrue(all(row['model_identity'] == expected for row in receipts))
+                if source:
+                    self.assertTrue(all(row['reported_model_source'] == source for row in receipts))
 
     def test_permission_probe_runs_exact_allowed_and_checks_writes(self):
         command = self.command('--exercise-revisions')

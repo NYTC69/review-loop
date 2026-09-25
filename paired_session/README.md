@@ -8,6 +8,11 @@ paired-session command, recovery path, and migration guide have been reviewed.
 The coordinator runs one author and reviewer through PLAN/EXEC, then applies
 fresh shadow/adversarial checks and a delivery sequence. It owns isolated run
 artifacts, workspace snapshots, invocation limits, and a permission preflight.
+Reviewer receipts record the requested model beside the provider-reported
+identity and classify it as `MATCH`, `MISMATCH`, or `UNREPORTED`. A match requires
+the exact requested ID or that ID with an explicit date suffix; synthetic,
+malformed, or missing identity data is unreported, and Claude subagent models
+are ignored.
 The preflight must pass before either a fresh run or a resumed run can invoke an
 author. The Codex author permission probe uses a disposable Git workspace and
 checks that workspace and run-owned `$TMPDIR` writes succeed while external
