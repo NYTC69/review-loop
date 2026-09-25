@@ -1,4 +1,5 @@
 import importlib.util
+import errno
 import io
 import json
 import os
@@ -2630,11 +2631,72 @@ sys.exit(result.returncode)
         co = rc.Coordinator(args)
         co.state['uncertain_active'] = {'pid': 2000, 'role': 'author', 'phase': 'EXEC'}
         co.state['status'] = 'HOLD'
-        with patch('os.killpg', side_effect=PermissionError):
-            with patch.object(co, 'drive') as drive:
-                self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        now = [0.0]
+        real_retry = rc.retry_killpg_eperm
+        def retry_with_fake_clock(pid):
+            return real_retry(pid, clock=lambda: now[0], sleep=lambda duration: now.__setitem__(
+                0, now[0] + duration))
+        with patch('os.killpg', side_effect=PermissionError(errno.EPERM, 'denied')):
+            with patch.object(rc, 'retry_killpg_eperm', side_effect=retry_with_fake_clock):
+                with patch.object(co, 'drive') as drive:
+                    self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        self.assertAlmostEqual(now[0], 1.5)
         drive.assert_not_called()
         self.assertIn('cannot verify uncertain CLI process group', co.state['hold_reason'])
+
+    def test_retry_killpg_eperm_then_esrch_allows_resume(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        co.state['uncertain_active'] = {'pid': 43220, 'role': 'author', 'phase': 'EXEC',
+                                        'sequence': 1}
+        co.state['status'] = 'HOLD'
+        co.save()
+        with patch('os.killpg', side_effect=[PermissionError(errno.EPERM, 'race'),
+                                             ProcessLookupError(errno.ESRCH, 'gone')]) as killpg:
+            with patch.object(co, 'drive', return_value='DONE') as drive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'DONE')
+        self.assertEqual(killpg.call_count, 2)
+        drive.assert_called_once_with()
+        self.assertIsNone(co.state['uncertain_active'])
+
+    def test_retry_killpg_persistent_eperm_holds_at_bounded_deadline(self):
+        now = [0.0]
+        sleeps = []
+        def fake_sleep(duration):
+            sleeps.append(duration)
+            now[0] += duration
+        with patch('os.killpg', side_effect=PermissionError(errno.EPERM, 'denied')) as killpg:
+            with self.assertRaises(PermissionError):
+                rc.retry_killpg_eperm(43221, clock=lambda: now[0], sleep=fake_sleep)
+        self.assertAlmostEqual(now[0], 1.5)
+        self.assertLess(now[0], 1.51)
+        self.assertGreater(killpg.call_count, 1)
+        self.assertAlmostEqual(sum(sleeps), 1.5)
+
+    def test_retry_killpg_success_means_still_alive_after_initial_eperm(self):
+        with patch('os.killpg', side_effect=[PermissionError(errno.EPERM, 'race'), None]) as killpg:
+            self.assertIsNone(rc.retry_killpg_eperm(43222, clock=lambda: 0.0,
+                                                    sleep=lambda _duration: None))
+        self.assertEqual(killpg.call_count, 2)
+
+    def test_resume_eperm_then_live_group_holds_as_still_alive(self):
+        co = self.coordinator()
+        co.state['uncertain_active'] = {'pid': 43224, 'role': 'author', 'phase': 'EXEC',
+                                        'sequence': 1}
+        co.state['status'] = 'HOLD'
+        co.save()
+        with patch('os.killpg', side_effect=[PermissionError(errno.EPERM, 'race'), None]) as killpg:
+            with patch.object(co, 'drive') as drive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        self.assertEqual(killpg.call_count, 2)
+        drive.assert_not_called()
+        self.assertIn('still alive', co.state['hold_reason'])
+
+    def test_retry_killpg_signal_zero_success_means_still_alive(self):
+        with patch('os.killpg') as killpg:
+            self.assertIsNone(rc.retry_killpg_eperm(43223))
+        killpg.assert_called_once_with(43223, 0)
 
     def test_resume_fails_closed_for_uncertain_receipt_without_pid(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -2703,7 +2765,7 @@ sys.exit(result.returncode)
         co.state['uncertain_active'] = uncertain
         co.state['status'] = 'HOLD'
         co.save()
-        with patch('os.killpg', side_effect=PermissionError):
+        with patch('os.killpg', side_effect=PermissionError(errno.EPERM, 'denied')):
             self.assertFalse(co.permission_probe(retry_uncertain=True))
         self.assertIn('cannot verify uncertain permission-probe', co.state['hold_reason'])
         snapshot = rc.git_snapshot(self.workspace)[0]
@@ -2719,8 +2781,28 @@ sys.exit(result.returncode)
         self.assertNotIn('cannot verify', co.state['hold_reason'])
         self.assertEqual(len(co.state['abandoned_turns']), 1)
 
+    def test_permission_probe_eperm_then_esrch_clears_uncertain_probe_before_reprobe(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        active = {'pid': 43225, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE', 'sequence': 2}
+        co.state['active'] = active
+        co.save()
+        def stop_before_provider(*_args, **_kwargs):
+            self.assertIsNone(co.state['active'])
+            self.assertIsNone(co.state['uncertain_active'])
+            raise RuntimeError('stop offline before provider invocation')
+        with patch('os.killpg', side_effect=[PermissionError(errno.EPERM, 'race'),
+                                             ProcessLookupError(errno.ESRCH, 'gone')]) as killpg:
+            with patch.object(co, 'invoke', side_effect=stop_before_provider) as invoke:
+                self.assertFalse(co.permission_probe(retry_uncertain=True))
+        self.assertEqual(killpg.call_count, 2)
+        invoke.assert_called_once()
+        self.assertIsNone(co.state['uncertain_active'])
+
     def test_uncertain_permission_probe_refuses_live_or_unverifiable_process_group(self):
-        for side_effect in (None, PermissionError, OSError('operation unavailable')):
+        for side_effect in (None, PermissionError(errno.EPERM, 'denied'),
+                            OSError('operation unavailable')):
             with self.subTest(side_effect=side_effect):
                 label = ('alive' if side_effect is None else
                          'denied' if isinstance(side_effect, PermissionError) else 'unavailable')
@@ -2736,7 +2818,10 @@ sys.exit(result.returncode)
                     with patch.object(co, 'invoke') as invoke:
                         with patch.object(co, '_author_permission_probe') as probe:
                             self.assertFalse(co.permission_probe(retry_uncertain=True))
-                kill_group.assert_called_once_with(12345, 0)
+                if isinstance(side_effect, PermissionError):
+                    self.assertGreater(kill_group.call_count, 1)
+                else:
+                    kill_group.assert_called_once_with(12345, 0)
                 invoke.assert_not_called()
                 probe.assert_not_called()
                 self.assertEqual(co.state['uncertain_active'], active)

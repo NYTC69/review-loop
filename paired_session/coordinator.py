@@ -11,6 +11,7 @@ import argparse
 import copy
 from contextlib import contextmanager
 from datetime import datetime
+import errno
 import difflib
 import fcntl
 import hashlib
@@ -46,6 +47,23 @@ class RunLeaseError(RuntimeError):
 
 class RateLimitError(ValueError):
     pass
+
+
+def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
+    clock = time.monotonic if clock is None else clock
+    sleep = time.sleep if sleep is None else sleep
+    deadline = clock() + 1.5
+    while True:
+        try:
+            os.killpg(pid, 0)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EPERM:
+                raise
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise
+            sleep(min(0.05, remaining))
 
 
 def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') -> Optional[dict]:
@@ -2752,7 +2770,7 @@ class Coordinator:
                 # Provider CLIs start a new session, making the recorded leader
                 # pid the group id. This detects remaining members of that group;
                 # detached descendants are outside this check.
-                os.killpg(pid, 0)
+                retry_killpg_eperm(pid)
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError):
@@ -3050,7 +3068,7 @@ class Coordinator:
             try:
                 # Each provider CLI starts a new session, so its pid is also the
                 # process-group id. Check the group to catch surviving descendants.
-                os.killpg(pid, 0)
+                retry_killpg_eperm(pid)
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError):
