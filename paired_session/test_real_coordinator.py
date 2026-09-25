@@ -489,6 +489,13 @@ sys.exit(result.returncode)
         return subprocess.run(command, cwd=self.root, env=merged,
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    def run_operator_action(self, action, *extra):
+        command = self.command(*extra)
+        command[2] = action
+        command.append('--skip-probe')
+        return subprocess.run(command, cwd=self.root, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
     def coordinator(self, *extra):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
@@ -668,6 +675,158 @@ sys.exit(result.returncode)
             '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS + 1)])
         with self.assertRaisesRegex(ValueError, '--exec-turn-timeout must be between'):
             rc.Coordinator(args)
+
+    def test_done_requires_explicit_accept_and_accept_is_idempotent(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual(state['acceptance_state'], 'PENDING')
+        report = (self.run_dir / 'review-comparison.md').read_text()
+        self.assertIn('Acceptance state: **PENDING**', report)
+        self.assertNotIn('Acceptance state: **ACCEPTED**', report)
+        first = self.run_operator_action('accept')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        accepted = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(accepted['status'], 'ACCEPTED')
+        self.assertEqual(accepted['acceptance_state'], 'ACCEPTED')
+        accepted_at = accepted['accepted_at']
+        self.assertTrue(Path(accepted['acceptance']['evidence']).is_file())
+        second = self.run_operator_action('accept')
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['accepted_at'], accepted_at)
+        resumed = self.run_operator_action('resume', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertIn('ACCEPTED', resumed.stdout)
+
+    def test_reject_reopens_exec_through_review_and_gate_before_accept(self):
+        completed = self.run_coordinator('--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        sequence_before = before['sequence']
+        feedback = 'Please handle the in-scope edge case before acceptance.'
+        rejected = self.run_operator_action('reject', '--text', feedback, '--polish-round', 'off')
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual(state['acceptance_state'], 'PENDING')
+        self.assertEqual(len(state['rejections']), 1)
+        self.assertEqual(state['rejections'][0]['status'], 'delivered')
+        self.assertEqual(state['rejections'][0]['author'], 'operator')
+        recent = [turn for turn in state['turns'] if turn['sequence'] > sequence_before]
+        self.assertEqual([turn['role'] for turn in recent], ['author', 'reviewer', 'shadow', 'gate'])
+        author = recent[0]
+        receipt = json.loads((self.run_dir / 'evidence' /
+                              f"{author['sequence']:03d}-exec-author.receipt.json").read_text())
+        self.assertEqual(receipt['rejection_id'], state['rejections'][0]['id'])
+        self.assertEqual(receipt['rejection_sha256'], state['rejections'][0]['sha256'])
+        self.assertIn(feedback, (self.run_dir / 'evidence' /
+                     f"{author['sequence']:03d}-exec-author.prompt.txt").read_text())
+        self.assertGreater(state['exec_reviews'], before['exec_reviews'])
+        self.assertTrue(state['gate_ran'])
+        self.assertIn('gate', state['exec_comparisons'][-1])
+        accepted = self.run_operator_action('accept')
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'ACCEPTED')
+
+    def test_reject_limit_holds_and_reject_requires_done(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.update(max_rejections=1, rejections=[{'id': 'R001'}], post_done_rejections=1)
+        path.write_text(json.dumps(state))
+        rejected = self.run_operator_action('reject', '--text', 'one more change')
+        self.assertEqual(rejected.returncode, 2)
+        held = json.loads(path.read_text())
+        self.assertEqual(held['status'], 'HOLD')
+        self.assertIn('post-DONE rejection limit reached', held['hold_reason'])
+        accepted = self.run_operator_action('accept')
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertEqual(json.loads(path.read_text())['status'], 'ACCEPTED')
+        self.run_dir = self.root / 'active-non-done-run'
+        active = self.coordinator()
+        with self.assertRaisesRegex(ValueError, 'reject requires a DONE run'):
+            active.reject('not done', None)
+
+    def test_reject_uses_workspace_lease_and_test_command_preflight(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        with rc.workspace_lease(self.workspace, self.root / 'lease-holder-run'):
+            blocked = self.run_operator_action('reject', '--text', 'review this')
+        self.assertEqual(blocked.returncode, 2)
+        self.assertIn('another coordinator currently owns this workspace', blocked.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['sequence'], before['sequence'])
+        refused = self.run_operator_action('reject', '--text', 'review this',
+                                           '--test-command', 'no-such-r11-test-binary')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('configured test executable is missing', refused.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['sequence'], before['sequence'])
+
+    def test_resume_mid_reject_reopens_once_and_terminal_resume_is_noop(self):
+        completed = self.run_coordinator('--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        command = self.command('--polish-round', 'off')
+        command[2] = 'reject'
+        args = rc.parser().parse_args(command[2:])
+        co = rc.Coordinator(args)
+        self.assertEqual(co.reject('recheck the in-scope detail', None), 'ACTIVE')
+        self.assertEqual(len(co.state['rejections']), 1)
+        self.assertEqual(co.resume(), 'DONE')
+        after = json.loads(co.state_path.read_text())
+        sequence = after['sequence']
+        self.assertEqual(len(after['rejections']), 1)
+        self.assertEqual(co.resume(), 'DONE')
+        final = json.loads(co.state_path.read_text())
+        self.assertEqual(final['sequence'], sequence)
+        self.assertEqual(len(final['rejections']), 1)
+
+    def test_rejection_feedback_survives_rate_limit_and_resume(self):
+        completed = self.run_coordinator('--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        feedback = 'OPERATOR_REJECTION_RETRY_5c09'
+        reject_cmd = self.command('--text', feedback, '--polish-round', 'off')
+        reject_cmd[2] = 'reject'
+        reject_cmd.append('--skip-probe')
+        limited = subprocess.run(reject_cmd, cwd=self.root,
+            env={**os.environ, 'FAKE_RATE_LIMIT': '1'}, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(limited.returncode, 2)
+        held = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(held['status'], 'HOLD')
+        self.assertEqual(held.get('pending_rejection_id'), 'R001')
+        self.assertEqual(held['rejections'][0]['status'], 'dispatched')
+        resumed = self.run_operator_action('resume', '--retry-uncertain', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        final = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(final['status'], 'DONE')
+        self.assertEqual(final['rejections'][0]['status'], 'delivered')
+        prompts = [path.read_text() for path in
+                   (self.run_dir / 'evidence').glob('*-exec-author.prompt.txt')]
+        self.assertGreaterEqual(sum(feedback in prompt for prompt in prompts), 2)
+
+    def test_reject_runs_permission_probe_gate_before_reopening(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        argv = self.command('--text', 'in-scope feedback', '--polish-round', 'off')[2:]
+        argv[0] = 'reject'
+        args = rc.configure_parser(rc.parser(), argv).parse_args(argv)
+        with patch.object(rc.Coordinator, 'probe_passed', return_value=(False, 'probe failed')):
+            with patch('builtins.print') as output:
+                self.assertEqual(rc._execute_locked(args), 2)
+        output.assert_called_once_with('REFUSED: probe failed; run permission-probe before continuing')
+        after = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(after['status'], 'DONE')
+        self.assertEqual(after['sequence'], before['sequence'])
+        self.assertEqual(after.get('rejections', []), [])
 
     def test_failed_cli_without_usage_is_unknown_in_usage_reconciliation(self):
         co = self.coordinator()

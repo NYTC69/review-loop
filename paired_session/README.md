@@ -142,6 +142,22 @@ it received when it started. The existing `resume --resume-timeout N` option
 raises the general per-turn timeout up to 7200 seconds for phases that use
 `--timeout`.
 
+A run ending in `DONE` is awaiting explicit operator acceptance. Use `accept` to
+record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
+no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope
+feedback to one more EXEC author turn. That turn goes through the configured
+review again and forces a gate review. Rejections are saved and limited to two
+by default; exhausting the limit puts the run on `HOLD`, which can still be
+explicitly accepted without another provider run.
+
+```sh
+bin/paired-session accept --workspace /path/to/worktree \
+  --workitem /path/to/WORKITEM.md --run-dir /path/to/worktree-run-id
+bin/paired-session reject --workspace /path/to/worktree \
+  --workitem /path/to/WORKITEM.md --run-dir /path/to/worktree-run-id \
+  --text 'Please address this in-scope acceptance feedback'
+```
+
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting
 usage, the known request totals remain in the usage report; an interrupted

@@ -39,6 +39,7 @@ PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters E
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
+DEFAULT_MAX_REJECTIONS = 2
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -964,7 +965,18 @@ class Coordinator:
             if 'reason' in self.state and 'hold_reason' not in self.state:
                 self.state['hold_reason'] = self.state.pop('reason')
                 self.save()
-            self._validate_resume_args()
+            if self.args.action in ('accept', 'reject'):
+                if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
+                    raise ValueError('accept/reject workspace/workitem differs from state')
+                for key, value in self.state['config'].items():
+                    if key == 'gate_prompt' and str(value).startswith('<bundled-default>:'):
+                        self.args.gate_prompt = str(DEFAULT_GATE_PROMPT)
+                    elif hasattr(self.args, key):
+                        setattr(self.args, key, value)
+                if self.args.exec_turn_timeout is None:
+                    self.args.exec_turn_timeout = DEFAULT_EXEC_TURN_TIMEOUT_SECONDS
+            else:
+                self._validate_resume_args()
             self.state.setdefault('base_commit', self._head_commit())
             self.state.setdefault('reviews_completed', 0)
             ledger_path = self.run_dir / 'findings-ledger.json'
@@ -977,6 +989,8 @@ class Coordinator:
             self.state.setdefault('review_verdicts', [])
             self.state.setdefault('reviewed_reviewer_sequences', [])
             self.state.setdefault('pending_reviewer_result_sequence', None)
+            self.state.setdefault('acceptance_state', 'ACCEPTED' if self.state.get('status') == 'ACCEPTED' else
+                                  'PENDING' if self.state.get('status') == 'DONE' else 'IN_PROGRESS')
             self.state.setdefault('polish', {'active': False, 'completed': False,
                                              'author_turns': 0, 'reviewer_turns': 0,
                                              'fix_used': False})
@@ -985,6 +999,8 @@ class Coordinator:
                 self.state['invocation_budget_version'] = 1
                 self.save()
         else:
+            if self.args.action in ('accept', 'reject'):
+                raise ValueError(f'{self.args.action} requires an existing coordinator run')
             if not (self.workspace / '.git').exists():
                 raise ValueError('--workspace must be a git worktree')
             if not self.workitem.is_file():
@@ -1014,6 +1030,7 @@ class Coordinator:
                 'finding_ledger': [], 'next_finding_id': 1, 'exec_comparisons': [],
                 'review_verdicts': [],
                 'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
+                'acceptance_state': 'IN_PROGRESS',
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
@@ -1552,11 +1569,14 @@ class Coordinator:
             lines.extend(f"| {row['phase']} | {row['sequence']} | {row['reviewer_raw_verdict']} | {row['effective_verdict']} |"
                          for row in self.state['review_verdicts'])
         lines += ['', f"Final coordinator status: **{self.state['status']}**"]
+        lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
         if self.state.get('hold_reason'):
             lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
     def hold(self, reason: str) -> str:
+        if self.state.get('status') == 'ACCEPTED':
+            return 'ACCEPTED'
         self.set_effective_verdict('HOLD')
         if self.state.get('active'):
             self.state['uncertain_active'] = self.state['active']
@@ -1569,6 +1589,61 @@ class Coordinator:
         self.write_open_findings()
         self.write_usage()
         return 'HOLD'
+
+    def accept(self) -> str:
+        if self.state.get('status') == 'ACCEPTED':
+            return 'ACCEPTED'
+        if self.state.get('status') != 'DONE' and not (
+                self.state.get('status') == 'HOLD' and
+                self.state.get('hold_reason', '').startswith('post-DONE rejection limit reached')):
+            raise ValueError('accept requires a DONE run')
+        record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
+                  'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
+        evidence_path = self.evidence / 'acceptance.json'
+        record['evidence'] = str(evidence_path)
+        atomic_json(evidence_path, record)
+        self.state['acceptance'] = record
+        self.state['acceptance_state'] = 'ACCEPTED'
+        self.state['status'] = 'ACCEPTED'
+        self.state['accepted_at'] = record['timestamp']
+        self.save()
+        self.write_comparison()
+        return 'ACCEPTED'
+
+    def reject(self, text: Optional[str], file: Optional[str]) -> str:
+        if self.state.get('status') != 'DONE':
+            raise ValueError('reject requires a DONE run')
+        if bool(text) == bool(file):
+            raise ValueError('reject requires exactly one of --text or --file')
+        if file:
+            feedback = Path(file).expanduser().read_text()
+            source = str(Path(file).expanduser().resolve())
+        else:
+            feedback = text or ''
+            source = 'command-line text'
+        if not feedback.strip():
+            raise ValueError('rejection note must not be empty')
+        rejections = self.state.setdefault('rejections', [])
+        maximum = self.state.setdefault('max_rejections', DEFAULT_MAX_REJECTIONS)
+        if len(rejections) >= maximum:
+            return self.hold(f'post-DONE rejection limit reached ({maximum})')
+        rejection_id = f'R{len(rejections) + 1:03d}'
+        record = {'id': rejection_id, 'author': 'operator',
+                  'timestamp': datetime.now().astimezone().isoformat(), 'target_phase': 'EXEC',
+                  'sha256': hashlib.sha256(feedback.encode('utf-8')).hexdigest(),
+                  'source': source, 'text': feedback, 'status': 'pending'}
+        evidence_path = self.evidence / f'rejection-{rejection_id}.json'
+        record['evidence'] = str(evidence_path)
+        atomic_json(evidence_path, record)
+        rejections.append(record)
+        self.state['acceptance_state'] = 'REJECTED'
+        self.state['pending_rejection_id'] = rejection_id
+        self.state.update(status='ACTIVE', phase='EXEC', next='author', gate_ran=False,
+                          delivered_review='')
+        self.state['force_gate_after_reject'] = True
+        self.save()
+        self.write_comparison()
+        return 'ACTIVE'
 
     def archive_abandoned_turn(self, receipt: dict) -> None:
         sequence = receipt.get('sequence')
@@ -1598,6 +1673,7 @@ class Coordinator:
                              ', '.join(row['id'] for row in blocking))
         self.set_effective_verdict('APPROVE')
         self.state['status'] = 'DONE'
+        self.state['acceptance_state'] = 'PENDING'
         self.state['completed_at'] = time.time()
         self.save()
         self.write_ledger()
@@ -2110,6 +2186,15 @@ class Coordinator:
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
+        rejection = None
+        if role == 'author' and phase == 'EXEC':
+            rejection = next((row for row in self.state.get('rejections', [])
+                              if row.get('id') == self.state.get('pending_rejection_id') and
+                              row.get('status') != 'delivered'), None)
+            if rejection:
+                prompt += ('\n\n## Operator rejection for current EXEC scope\n'
+                           'Address this in-scope acceptance feedback; do not expand scope.\n'
+                           f"[{rejection['id']} sha256={rejection['sha256']}]\n{rejection['text']}")
         self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
         if role == 'author' and self._role_vendor(role) == 'codex':
@@ -2138,6 +2223,9 @@ class Coordinator:
                    'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
         if role == 'reviewer':
             receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
+        if rejection:
+            receipt['rejection_id'] = rejection['id']
+            receipt['rejection_sha256'] = rejection['sha256']
         if env_overrides:
             receipt['environment_overrides'] = dict(env_overrides)
         env = cli_env()
@@ -2152,6 +2240,8 @@ class Coordinator:
                 # have not consumed the budget.
                 self.state['invocations_used'] += 1
                 receipt['invocation_budget_counted'] = True
+                if rejection:
+                    rejection.update(status='dispatched', dispatched_sequence=seq)
                 self.state['active'] = receipt
                 self.save()
                 process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
@@ -2183,6 +2273,11 @@ class Coordinator:
             # A persisted active receipt without a pid after a crash remains uncertain.
             if receipt['invocation_budget_counted']:
                 self.state['invocations_used'] -= 1
+            if rejection:
+                rejection.update(status='pending')
+                rejection.pop('dispatched_sequence', None)
+                self.state['pending_rejection_id'] = rejection['id']
+                atomic_json(Path(rejection['evidence']), rejection)
             self.state['active'] = None
             failure = {**receipt, 'error': type(exc).__name__ + ': ' + str(exc),
                        'invocation_budget_counted': False, 'child_created': False,
@@ -2331,6 +2426,14 @@ class Coordinator:
         if answer['status'] == 'HOLD':
             self.hold('implementer: ' + answer['body'])
             return
+        rejection = next((row for row in self.state.get('rejections', [])
+                          if row.get('id') == self.state.get('pending_rejection_id') and
+                          row.get('status') != 'delivered'), None)
+        if rejection:
+            rejection.update(status='delivered', delivered_sequence=result['sequence'],
+                             delivered_phase=phase)
+            atomic_json(Path(rejection['evidence']), rejection)
+            self.state.pop('pending_rejection_id', None)
         key = f'{phase.lower()}_rounds'
         self.state[key] += 1
         if phase == 'PLAN':
@@ -2374,6 +2477,9 @@ class Coordinator:
         self.state['delivered_review'] = ''
         self.state['next'] = 'reviewer'
         self.save()
+
+    def exec_round_limit(self) -> int:
+        return self.args.max_exec_rounds + len(self.state.get('rejections', []))
 
     def reviewer_turn(self) -> None:
         if self.state['polish']['active']:
@@ -2449,7 +2555,7 @@ class Coordinator:
                 if answer['status'] == 'APPROVE':
                     answer['status'] = 'REVISE'
             self.render(shadow, 'shadow', phase)
-        limit = self.args.max_plan_rounds if phase == 'PLAN' else self.args.max_exec_rounds
+        limit = self.args.max_plan_rounds if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
         advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
                          and self.findings_are_advisory(answer['full_review'])
@@ -2533,7 +2639,7 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('stale EXEC approval')
             return
-        elif self.args.adversarial_gate == 'on' and not self.state['gate_ran']:
+        elif (self.args.adversarial_gate == 'on' or self.state.get('force_gate_after_reject')) and not self.state['gate_ran']:
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')
@@ -2679,12 +2785,13 @@ class Coordinator:
         self.write_ledger()
         self.render(result, 'adversarial', 'EXEC')
         self.state['gate_ran'] = True
+        self.state['force_gate_after_reject'] = False
         if self.state['exec_comparisons']:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
         if valid:
             self.set_effective_verdict('REVISE')
-            if self.state['exec_rounds'] >= self.args.max_exec_rounds:
+            if self.state['exec_rounds'] >= self.exec_round_limit():
                 self.hold('EXEC round limit reached after adversarial gate')
                 return
             advisory = [row for row in self.nonblocking_open_findings()
@@ -3152,6 +3259,8 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
+        if self.state['status'] == 'ACCEPTED':
+            return 'ACCEPTED'
         if self.state['status'] == 'DONE':
             blocking = self.blocking_open_findings()
             if blocking:
@@ -3335,7 +3444,8 @@ def cli_env() -> dict:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
-    p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe'])
+    p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
+                                      'accept', 'reject'])
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -3377,6 +3487,8 @@ def parser() -> argparse.ArgumentParser:
                    help='with resume, run only the one-time polish round on an older DONE run')
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
+    p.add_argument('--text', help='operator rejection note (reject action)')
+    p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     return p
 
 
@@ -3495,12 +3607,31 @@ def _execute_locked(args: argparse.Namespace) -> int:
         suffix = ': ' + co.state.get('hold_reason', '') if co.state.get('hold_reason') else ''
         print(('PASS' if passed else 'FAIL') + suffix)
         return 0 if passed else 2
+    if args.action == 'accept':
+        status = co.accept()
+        print(status)
+        return 0
+    if args.action == 'reject':
+        if not args.skip_probe:
+            passed, reason = co.probe_passed()
+            if not passed:
+                print('REFUSED: ' + reason + '; run permission-probe before continuing')
+                return 2
+        status = co.reject(args.text, args.file)
+        if status == 'ACTIVE':
+            status = co.drive()
+        print(status + (' (acceptance pending)' if status == 'DONE' else
+                        ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
+        return 0 if status in ('DONE', 'ACCEPTED') else 2
     if args.action in ('run', 'resume') and not args.skip_probe:
         passed, reason = co.probe_passed()
         if not passed:
             print('REFUSED: ' + reason + '; run permission-probe before continuing')
             return 2
     if args.action == 'abort':
+        if co.state.get('status') == 'ACCEPTED':
+            print('ACCEPTED')
+            return 0
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
                   if co.state.get('active') or co.state.get('uncertain_active') else '')
         co.hold('aborted by operator' + suffix)
@@ -3508,8 +3639,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 2
     status = (co.drive() if args.action == 'run' else
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
-    print(status + (': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
-    return 0 if status == 'DONE' else 2
+    print(status + (' (acceptance pending)' if status == 'DONE' else
+                    ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
+    return 0 if status in ('DONE', 'ACCEPTED') else 2
 
 
 def main(argv=None) -> int:
@@ -3542,7 +3674,7 @@ def main(argv=None) -> int:
     if run_dir == workspace or workspace in run_dir.parents:
         print('REFUSED: --run-dir must be outside --workspace')
         return 2
-    if args.action in ('run', 'resume', 'permission-probe'):
+    if args.action in ('run', 'resume', 'permission-probe', 'reject'):
         if re.search(r'[*?\[\]{}]', str(run_dir)):
             print('REFUSED: --run-dir must not contain glob metacharacters used by Claude Edit deny rules')
             return 2
@@ -3553,7 +3685,7 @@ def main(argv=None) -> int:
             return 2
     try:
         with run_lease(Path(args.run_dir)):
-            if args.action in ('run', 'resume', 'permission-probe'):
+            if args.action in ('run', 'resume', 'permission-probe', 'reject'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)
