@@ -1613,10 +1613,12 @@ class Coordinator:
             exact_commands = self.reviewer_commands()
             if role == 'probe' and self._probe_sandbox_commands:
                 exact_commands = [*exact_commands, *self._probe_sandbox_commands]
-            allowed = ['Read', 'Grep', 'Glob', *(f'Bash({command})' for command in exact_commands)]
+            allowed = ['Read,Grep,Glob', *(f'Bash({command})' for command in exact_commands)]
             cmd += ['--restricted', '--permission-mode', 'dontAsk',
-                    '--tools', 'Read,Grep,Glob,Bash', '--allowedTools', ','.join(allowed),
-                    '--disallowedTools', 'Edit,Write,NotebookEdit,Agent']
+                    '--tools', 'Read,Grep,Glob,Bash']
+            for rule in allowed:
+                cmd += ['--allowedTools', rule]
+            cmd += ['--disallowedTools', 'Edit,Write,NotebookEdit,Agent']
         if fresh:
             cmd += ['--no-session-persistence']
         elif self.state['started'][role]:

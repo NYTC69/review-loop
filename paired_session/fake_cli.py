@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import uuid
 
@@ -100,6 +101,13 @@ def main():
     args = sys.argv[1:]
     prompt = sys.stdin.read()
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
+    if vendor == 'claude':
+        allowed = [args[index + 1] for index, value in enumerate(args[:-1])
+                   if value == '--allowedTools']
+        if any(len(re.findall(r'Bash\([^)]*\)', value)) > 1 for value in allowed):
+            print('fake CLI contract: argument-bearing Bash rules require separate --allowedTools arguments',
+                  file=sys.stderr)
+            return 2
     if os.environ.get('FAKE_RATE_LIMIT'):
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1

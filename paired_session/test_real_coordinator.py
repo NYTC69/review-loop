@@ -3,6 +3,7 @@ import io
 import json
 import os
 import signal
+import shlex
 import socket
 from pathlib import Path
 import subprocess
@@ -29,6 +30,11 @@ def unique_json_object(pairs):
             raise ValueError('duplicate JSON key: ' + key)
         result[key] = value
     return result
+
+
+def allowed_tool_values(command):
+    return [command[index + 1] for index, value in enumerate(command[:-1])
+            if value == '--allowedTools']
 
 
 class RealCoordinatorTests(unittest.TestCase):
@@ -58,6 +64,46 @@ class RealCoordinatorTests(unittest.TestCase):
             json.dumps({'plugins': []}))
         self.original_home = os.environ.get('HOME')
         os.environ['HOME'] = str(self.test_home)
+        self._unpatched_popen = subprocess.Popen
+        self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')
+                                     if (path := shutil.which(name))}
+        self._provider_guard_patcher = patch('subprocess.Popen', new=self._guarded_test_popen)
+        self._provider_guard_patcher.start()
+        self.addCleanup(self._provider_guard_patcher.stop)
+
+    def _assert_no_real_provider_cli(self, command):
+        if isinstance(command, (str, bytes)):
+            argv = shlex.split(os.fsdecode(command))
+        else:
+            argv = list(command)
+        if not argv:
+            return
+        tokens = [os.fsdecode(value) for value in argv if isinstance(value, (str, bytes, os.PathLike))]
+        candidates = [tokens[0]]
+        if Path(tokens[0]).name in ('sh', 'bash', 'zsh'):
+            for index, value in enumerate(tokens[:-1]):
+                if value in ('-c', '-lc'):
+                    for segment in tokens[index + 1].replace('&&', ';').replace('||', ';').replace('|', ';').split(';'):
+                        words = shlex.split(segment)
+                        while words and '=' in words[0] and not words[0].startswith('-'):
+                            words.pop(0)
+                        if words:
+                            candidates.append(words[0])
+                    break
+        elif Path(tokens[0]).name == 'env':
+            for value in tokens[1:]:
+                if value.startswith('-') or ('=' in value and not Path(value).exists()):
+                    continue
+                candidates.append(value)
+                break
+        for executable in candidates:
+            path = Path(executable)
+            if path.name in ('claude', 'codex') or str(path.resolve()) in self._real_provider_paths:
+                raise AssertionError('test attempted to execute a real claude/codex binary: ' + executable)
+
+    def _guarded_test_popen(self, command, *args, **kwargs):
+        self._assert_no_real_provider_cli(command)
+        return self._unpatched_popen(command, *args, **kwargs)
 
     def test_global_hash_attribution_accepts_only_trust_and_last_updated_autochanges(self):
         home = self.root / 'global-state'
@@ -84,6 +130,14 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual({item['change'] for item in result['expected_changes']},
                          {'trusted-probe-workspace-entry', 'plugin-lastUpdated'})
         self.assertEqual(result['findings'], [])
+
+    def test_suite_guard_refuses_real_provider_binary_launches(self):
+        for binary in ('claude', 'codex'):
+            with self.subTest(binary=binary):
+                with self.assertRaisesRegex(AssertionError, 'real claude/codex binary'):
+                    self._guarded_test_popen([binary, '--version'])
+        with self.assertRaisesRegex(AssertionError, 'real claude/codex binary'):
+            self._guarded_test_popen(['/bin/sh', '-c', 'codex --version'])
 
     def test_global_hash_attribution_flags_any_non_allowlisted_change(self):
         cases = ('codex-config', 'claude-settings', 'plugin-version')
@@ -1036,12 +1090,15 @@ sys.exit(result.returncode)
         self.assertIn('--restricted', command)
         self.assertEqual(command[command.index('--permission-mode') + 1], 'dontAsk')
         self.assertEqual(command[command.index('--permission-prompts') + 1], 'none')
-        allowed = command[command.index('--allowedTools') + 1]
+        allowed = allowed_tool_values(command)
+        self.assertIn('Read,Grep,Glob', allowed)
         self.assertIn('Bash(npm test)', allowed)
-        self.assertNotIn(':*', allowed)
-        self.assertNotIn('Bash(git ', allowed)
-        self.assertNotIn('Bash(echo', allowed)
-        self.assertNotIn('Bash(rm', allowed)
+        self.assertNotIn(':*', ','.join(allowed))
+        self.assertFalse(any(value.startswith('Bash(git ') for value in allowed))
+        self.assertFalse(any(value.startswith('Bash(echo') for value in allowed))
+        self.assertFalse(any(value.startswith('Bash(rm') for value in allowed))
+        self.assertEqual(sum(value.startswith('Bash(') for value in allowed),
+                         len([cmd for cmd in co.reviewer_commands()]))
         self.assertIn('Edit,Write', command[command.index('--disallowedTools') + 1])
         add_dir = command[command.index('--add-dir') + 1]
         self.assertEqual(add_dir, str(co.context))
@@ -1158,9 +1215,33 @@ sys.exit(result.returncode)
         schema = self.root / 'extra-schema.json'
         rc.atomic_json(schema, rc.review_schema())
         command = co.command('reviewer', schema, False)
-        allowed = command[command.index('--allowedTools') + 1]
+        allowed = allowed_tool_values(command)
         self.assertIn('Bash(node check.js)', allowed)
-        self.assertNotIn('Bash(node check.js:*)', allowed)
+        self.assertNotIn('Bash(node check.js:*)', ','.join(allowed))
+
+    def test_fake_claude_rejects_comma_joined_argument_bearing_bash_rules(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--reviewer-command', 'node check.js'])
+        co = rc.Coordinator(args)
+        schema = self.root / 'allowed-tools-schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        command = co.command('reviewer', schema, False)
+        allowed = allowed_tool_values(command)
+        self.assertGreaterEqual(sum(value.startswith('Bash(') for value in allowed), 2)
+        args = command[1:]
+        invalid, index = [], 0
+        while index < len(args):
+            if args[index] == '--allowedTools':
+                index += 2
+            else:
+                invalid.append(args[index])
+                index += 1
+        invalid += ['--allowedTools', ','.join(allowed)]
+        result = subprocess.run([sys.executable, str(FAKE), *invalid], input='offline contract test',
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('require separate --allowedTools arguments', result.stderr)
 
     def test_all_readonly_roles_receive_extra_exact_commands_and_probe_digest_covers_them(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -1172,7 +1253,7 @@ sys.exit(result.returncode)
         for role in ('reviewer', 'shadow', 'gate'):
             command = co.command(role, schema, role != 'reviewer')
             if '--allowedTools' in command:
-                self.assertIn('Bash(node corpus.js)', command[command.index('--allowedTools') + 1])
+                self.assertIn('Bash(node corpus.js)', allowed_tool_values(command))
         self.assertIn('node corpus.js', co._review_prompt('shadow', 'snapshot'))
         self.assertIn('node corpus.js', co._gate_prompt('snapshot'))
         digest = co.reviewer_flags_digest()
@@ -1930,11 +2011,12 @@ sys.exit(result.returncode)
         self.assertEqual(report['status'], 'PASS')
         self.assertTrue(report['claude_sandbox_write_denied'])
         invocation = json.loads(invocation_log.read_text())
-        allowed = invocation[invocation.index('--allowedTools') + 1]
-        self.assertEqual(allowed.count('Bash(touch '), 1)
-        self.assertIn('.paired-session-run-dir-probe-', allowed)
-        self.assertNotIn('paired-session-claude-sandbox-', allowed)
-        self.assertNotIn('.paired-session-context-probe-', allowed)
+        allowed = allowed_tool_values(invocation)
+        bash_allowed = '\n'.join(value for value in allowed if value.startswith('Bash('))
+        self.assertEqual(bash_allowed.count('Bash(touch '), 1)
+        self.assertIn('.paired-session-run-dir-probe-', bash_allowed)
+        self.assertNotIn('paired-session-claude-sandbox-', bash_allowed)
+        self.assertNotIn('.paired-session-context-probe-', bash_allowed)
         transient = [row for row in report['observed_commands']
                      if ('paired-session-claude-sandbox-' in row.get('command', '') or
                      '.paired-session-run-dir-probe-' in row.get('command', '') or

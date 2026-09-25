@@ -104,6 +104,8 @@ Other probe writes remain outside that allowlist. Claude's session `TMPDIR` is
 shared scratch per UID on macOS; paired-session keeps workflow state outside it
 and denies writes to the run directory. Bash sandbox results do not establish
 direct `Edit` or `Write` safety for a Claude author.
+Read-only Claude roles receive the read tools as one rule and each exact
+argument-bearing Bash command as its own `--allowedTools` argument.
 
 The probe records hashes for the specified Codex and Claude global files.
 Codex's new-workspace trusted-project entry and Claude plugin `lastUpdated`
