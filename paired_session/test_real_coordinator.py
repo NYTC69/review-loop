@@ -2374,20 +2374,27 @@ sys.exit(result.returncode)
 
     def test_cli_interrupt_then_fake_cli_resume_recovers_uncertain_turn(self):
         marker = self.root / 'blocking-fake-started'
+        stopped_marker = self.root / 'blocking-fake-stopped'
         blocking_cli = self.root / 'blocking-fake-codex'
         blocking_cli.write_text(
             f'#!{sys.executable}\n'
-            'import os, sys, time\n'
+            'import os, signal, sys, time\n'
             'from pathlib import Path\n'
             'marker = Path(os.environ["FAKE_RECOVERY_MARKER"])\n'
+            'stopped = Path(os.environ["FAKE_RECOVERY_STOPPED"])\n'
+            'def stop(signum, frame):\n'
+            '    stopped.write_text(str(os.getpid()))\n'
+            '    os._exit(0)\n'
+            'signal.signal(signal.SIGTERM, stop)\n'
             'if not marker.exists():\n'
             '    marker.write_text(str(os.getpid()))\n'
-            '    time.sleep(15)\n'
+            '    time.sleep(120)\n'
             'else:\n'
             f'    os.execv({sys.executable!r}, [{sys.executable!r}, {str(FAKE)!r}, *sys.argv[1:]])\n'
         )
         blocking_cli.chmod(0o755)
-        env = {**os.environ, 'FAKE_RECOVERY_MARKER': str(marker)}
+        env = {**os.environ, 'FAKE_RECOVERY_MARKER': str(marker),
+               'FAKE_RECOVERY_STOPPED': str(stopped_marker)}
         command = self.command('--skip-probe', '--codex-bin', str(blocking_cli))
         coordinator_process = subprocess.Popen(command, cwd=self.root, env=env,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -2425,24 +2432,37 @@ sys.exit(result.returncode)
             self.assertEqual(still_live.returncode, 2)
             self.assertIn('still alive', still_live.stdout)
 
+            # This fake leader has no descendants. Wait on the same coordinator
+            # retry precondition used in production rather than polling a PGID
+            # after it may have been reaped or reused.
+            self.assertFalse(stopped_marker.exists())
             try:
                 os.killpg(child_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            except ProcessLookupError as exc:
+                self.fail('fake provider exited before the test sent SIGTERM: ' + str(exc))
             wait_dead_by = time.monotonic() + 5
-            while time.monotonic() < wait_dead_by:
-                try:
-                    os.killpg(child_pid, 0)
-                except ProcessLookupError:
+            recovered = None
+            while True:
+                recovered = subprocess.run(
+                    retry_command, cwd=self.root, env=env, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=45)
+                if recovered.returncode == 0:
                     break
+                if recovered.returncode != 2 or 'still alive' not in recovered.stdout:
+                    self.fail('coordinator could not verify the stopped process group: ' +
+                              recovered.stdout + recovered.stderr)
+                current_state = json.loads((self.run_dir / 'state.json').read_text())
+                self.assertEqual(current_state['uncertain_active']['pid'], child_pid)
+                self.assertEqual(current_state.get('abandoned_turns', []), [])
+                if time.monotonic() >= wait_dead_by:
+                    self.fail('coordinator kept reporting the fake-provider process group as alive: ' +
+                              recovered.stdout + recovered.stderr)
                 time.sleep(0.02)
-            else:
-                self.fail('interrupted fake-provider process group did not stop')
+            if recovered is None or recovered.returncode != 0:
+                self.fail('coordinator kept reporting the fake-provider process group as alive')
+            self.assertEqual(stopped_marker.read_text(), str(child_pid))
             child_pid = None
-
-            recovered = subprocess.run(retry_command, cwd=self.root, env=env, text=True,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
-            self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
             self.assertIn('DONE', recovered.stdout)
             state = json.loads((self.run_dir / 'state.json').read_text())
             self.assertEqual(state['status'], 'DONE')
