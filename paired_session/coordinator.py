@@ -797,11 +797,15 @@ def missing_rubric(body: str) -> list[str]:
     return missing
 
 
+def codex_sessions_dir() -> Path:
+    return Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'sessions'
+
+
 def codex_rollout_usage(session: Optional[str], start: float, end: float) -> list[dict]:
     """Read per-request last_token_usage records for this CLI interval."""
     if not session:
         return []
-    paths = list((Path.home() / '.codex' / 'sessions').rglob('*' + session + '*.jsonl'))
+    paths = list(codex_sessions_dir().rglob('*' + session + '*.jsonl'))
     if len(paths) != 1:
         return []
     found, seen = [], set()
@@ -838,7 +842,7 @@ def codex_rollout_attempts(session: Optional[str], start: float, end: float) -> 
     """
     if not session:
         return [], []
-    paths = list((Path.home() / '.codex' / 'sessions').rglob('*' + session + '*.jsonl'))
+    paths = list(codex_sessions_dir().rglob('*' + session + '*.jsonl'))
     if len(paths) != 1:
         return [], []
     pending, commands, calls = {}, [], []
@@ -2125,6 +2129,9 @@ class Coordinator:
                     if type(output) is int and output != receipt['usage_requests'][active_request]['output']:
                         receipt['usage_requests'][active_request]['output'] = output
                         changed = True
+            elif receipt['vendor'] == 'codex' and row.get('type') == 'thread.started':
+                receipt['provider_session_id'] = row.get('thread_id')
+                changed = True
             elif receipt['vendor'] == 'codex' and row.get('type') == 'turn.completed':
                 use = row.get('usage', {})
                 receipt.setdefault('usage_requests', []).append({
@@ -2139,16 +2146,65 @@ class Coordinator:
     def _monitor_provider_usage(self, path: Path, receipt: dict,
                                 stopped: threading.Event) -> None:
         offset, buffered, active_request = 0, b'', None
+        rollout_stream, rollout_line = None, 0
+        rollout_seen, rollout_usage, next_scan = set(), [], 0.0
+        def poll_rollout(final=False):
+            nonlocal rollout_stream, rollout_line, next_scan
+            session = receipt.get('provider_session_id')
+            if not session: return False
+            now = time.time()
+            if rollout_stream is None and now >= next_scan:
+                found = list(codex_sessions_dir().rglob('*' + session + '*.jsonl'))
+                next_scan = now + 1
+                if len(found) == 1:
+                    rollout_stream = found[0].open('rb')
+            if rollout_stream is None: return False
+            for raw in iter(rollout_stream.readline, b''):
+                if not raw.endswith(b'\n') and not final:
+                    rollout_stream.seek(rollout_stream.tell() - len(raw))
+                    break
+                rollout_line += 1
+                try:
+                    row = json.loads(raw)
+                    payload, info = row.get('payload', {}), row.get('payload', {}).get('info')
+                    if row.get('type') != 'event_msg' or payload.get('type') != 'token_count' or not isinstance(info, dict):
+                        continue
+                    stamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
+                    if not receipt['start'] - 1 <= stamp <= now + 1:
+                        continue
+                    signature = json.dumps(info.get('total_token_usage', {}), sort_keys=True)
+                    if signature in rollout_seen:
+                        continue
+                    rollout_seen.add(signature)
+                    use = info['last_token_usage']
+                    rollout_usage.append({'input': use.get('input_tokens', 0),
+                                          'cached': use.get('cached_input_tokens', 0),
+                                          'output': use.get('output_tokens', 0),
+                                          'source': str(rollout_stream.name) + ':' + str(rollout_line)})
+                except (ValueError, KeyError, TypeError):
+                    continue
+            if rollout_usage and receipt.get('usage_requests') != rollout_usage:
+                receipt['usage_requests'] = list(rollout_usage)
+                receipt['model_requests'] = len(rollout_usage)
+                return True
+            return False
+
         while True:
             offset, buffered, active_request, changed = self._drain_usage_stream(
                 path, offset, buffered, active_request, receipt)
+            if receipt['vendor'] == 'codex':
+                changed = poll_rollout() or changed
             if changed:
                 self.save()
             if stopped.wait(0.05):
                 offset, buffered, active_request, changed = self._drain_usage_stream(
                     path, offset, buffered, active_request, receipt, final=True)
+                if receipt['vendor'] == 'codex':
+                    changed = poll_rollout(final=True) or changed
                 if changed:
                     self.save()
+                if rollout_stream:
+                    rollout_stream.close()
                 return
 
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,

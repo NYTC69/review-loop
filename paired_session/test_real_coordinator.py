@@ -881,6 +881,126 @@ sys.exit(result.returncode)
                 self.assertEqual(usage['turns'][0]['input'], 35)
                 self.assertEqual(usage['turns'][0]['output'], 12)
 
+    def test_sigkill_persists_two_stream_usage_events_before_kill_for_both_vendors(self):
+        expected = {
+            'claude': [
+                {'input': 35, 'cached': 20, 'output': 12, 'source': 'stream_event'},
+                {'input': 13, 'cached': 4, 'output': 8, 'source': 'stream_event'},
+            ],
+            'codex': [
+                {'input': 31, 'cached': 7, 'output': 9, 'source': 'turn.completed-stream'},
+                {'input': 17, 'cached': 3, 'output': 5, 'source': 'turn.completed-stream'},
+            ],
+        }
+        for vendor in ('claude', 'codex'):
+            with self.subTest(vendor=vendor):
+                self.run_dir = self.root / ('sigkill-stream-usage-' + vendor)
+                co = self.coordinator('--author-vendor', vendor, '--timeout', '3',
+                                      '--exec-turn-timeout', '3')
+                streaming_cli = self.root / ('streaming-' + vendor + '-cli')
+                streaming_cli.write_text(
+                    f'#!{sys.executable}\nimport os, sys\n'
+                    f'os.execv({sys.executable!r}, [{sys.executable!r}, {str(FAKE)!r}, *sys.argv[1:]])\n')
+                streaming_cli.chmod(0o755)
+                co.args.codex_bin = co.args.claude_bin = str(streaming_cli)
+                expected_rows = expected[vendor]
+                if vendor == 'codex':
+                    rollout = (self.root / 'fake-codex-home' / 'sessions' /
+                               time.strftime('%Y/%m/%d', time.gmtime()) /
+                               'rollout-fake-codex-thread.jsonl')
+                    expected_rows = [{**row, 'source': f'{rollout}:{index}'}
+                                     for index, row in enumerate(expected[vendor], 1)]
+                errors = []
+
+                def invoke_author():
+                    try:
+                        co._invoke_once('author', 'EXEC',
+                                        'Role: persistent. Phase: EXEC.', rc.author_schema())
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                stream_env = {'FAKE_STREAM_TWO_USAGE_THEN_HANG': '1'}
+                if vendor == 'codex':
+                    stream_env['CODEX_HOME'] = str(self.root / 'fake-codex-home')
+                with patch.dict(os.environ, stream_env):
+                    worker = threading.Thread(target=invoke_author)
+                    worker.start()
+                    deadline = time.monotonic() + 2.5
+                    observed = None
+                    prekill_state = None
+                    while time.monotonic() < deadline:
+                        try:
+                            state_snapshot = json.loads(co.state_path.read_text())
+                            active = state_snapshot.get('active')
+                        except (OSError, json.JSONDecodeError):
+                            active = None
+                        if active and len(active.get('usage_requests', [])) == 2:
+                            observed = active
+                            prekill_state = state_snapshot
+                            break
+                        time.sleep(0.02)
+                    self.assertIsNotNone(observed, 'usage was not persisted while the provider process was alive: ' +
+                        (co.evidence / '001-exec-author.stdout.jsonl').read_text() +
+                        (co.evidence / '001-exec-author.stderr.log').read_text())
+                    self.assertEqual(observed['usage_requests'], expected_rows)
+                    self.assertNotIn('timed_out', observed)
+                    worker.join(6)
+                self.assertFalse(worker.is_alive(), 'coordinator did not SIGKILL/reap the timed-out CLI')
+                self.assertTrue(errors and isinstance(errors[0], RuntimeError), errors)
+                state = json.loads(co.state_path.read_text())
+                receipt = state['turns'][0]
+                self.assertTrue(receipt['timed_out'])
+                self.assertEqual(receipt['returncode'], -signal.SIGKILL)
+                self.assertEqual(receipt['usage_requests'], expected_rows)
+                receipt_path = co.evidence / '001-exec-author.receipt.json'
+                self.assertEqual(json.loads(receipt_path.read_text())['usage_requests'], expected_rows)
+
+                reload_args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+                    '--author-vendor', vendor, '--timeout', '3', '--exec-turn-timeout', '3',
+                    '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())])
+                recovered = rc.Coordinator(reload_args)
+                recovered.write_usage()
+                recovered.write_usage()
+                usage = json.loads((self.run_dir / 'usage.json').read_text())
+                self.assertEqual(usage['turns'][0]['requests'], 2)
+                self.assertEqual(usage['turns'][0]['input'], sum(row['input'] for row in expected[vendor]))
+                self.assertEqual(usage['turns'][0]['output'], sum(row['output'] for row in expected[vendor]))
+
+                recovery_dir = self.root / ('crash-recovery-' + vendor)
+                recovery_dir.mkdir()
+                for name in ('evidence', 'rounds', 'context', 'internal'):
+                    (recovery_dir / name).mkdir()
+                shutil.copy(self.run_dir / 'context' / 'workitem.md',
+                            recovery_dir / 'context' / 'workitem.md')
+                prekill_state['config']['max_invocations'] = 1
+                prekill_state['invocations_used'] = 1
+                (recovery_dir / 'state.json').write_text(json.dumps(prekill_state))
+                recovery_args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
+                    '--workitem', str(self.workitem), '--run-dir', str(recovery_dir),
+                    '--author-vendor', vendor, '--timeout', '3', '--exec-turn-timeout', '3',
+                    '--max-invocations', '1', '--codex-bin', str(self.fake_codex_cli()),
+                    '--claude-bin', str(self.fake_claude_cli())])
+                crash_recovery = rc.Coordinator(recovery_args)
+                self.assertEqual(crash_recovery.resume(retry_uncertain=True), 'HOLD')
+                self.assertEqual(crash_recovery.state['turns'], [])
+                self.assertIsNone(crash_recovery.state['active'])
+                self.assertIsNone(crash_recovery.state.get('uncertain_active'))
+                self.assertEqual(len(crash_recovery.state['abandoned_turns']), 1)
+                self.assertEqual(crash_recovery.state['abandoned_turns'][0]['usage_requests'], expected_rows)
+                crash_recovery.write_usage()
+                recovered_usage = json.loads((recovery_dir / 'usage.json').read_text())
+                self.assertEqual(len(recovered_usage['abandoned_turn_usage']), 1)
+                self.assertEqual(recovered_usage['abandoned_turn_usage'][0]['requests'], expected_rows)
+                self.assertEqual(recovered_usage['overall']['input_tokens'], 0)
+                self.assertEqual([row['source'] for row in recovered_usage['usage_reconciliation']],
+                                 ['abandoned_turn'])
+                self.assertEqual(crash_recovery.resume(retry_uncertain=True), 'HOLD')
+                self.assertEqual(len(crash_recovery.state['abandoned_turns']), 1)
+                crash_recovery.write_usage()
+                again = json.loads((recovery_dir / 'usage.json').read_text())
+                self.assertEqual(len(again['abandoned_turn_usage']), 1)
+
     def test_archived_uncertain_turn_retains_stream_usage(self):
         co = self.coordinator()
         co.archive_abandoned_turn({'sequence': 8, 'role': 'author', 'phase': 'EXEC',

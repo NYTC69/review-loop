@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from datetime import datetime, timezone
 import uuid
 
 
@@ -12,6 +13,31 @@ def emit_codex(answer, session, command_events=None):
     model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6-luna')
     print(json.dumps({'type': 'thread.started', 'thread_id': session, 'model': model}))
     print(json.dumps({'type': 'turn.started', 'model': model}))
+    if os.environ.get('FAKE_STREAM_TWO_USAGE_THEN_HANG'):
+        sys.stdout.flush()
+        codex_home = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex'))
+        rollout = codex_home / 'sessions' / datetime.now(timezone.utc).strftime('%Y/%m/%d') / (
+            'rollout-' + session + '.jsonl')
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        totals = {'input_tokens': 0, 'cached_input_tokens': 0, 'output_tokens': 0}
+        with rollout.open('a') as handle:
+            for input_tokens, cached_tokens, output_tokens in ((31, 7, 9), (17, 3, 5)):
+                last = {'input_tokens': input_tokens, 'cached_input_tokens': cached_tokens,
+                        'output_tokens': output_tokens}
+                for key, value in last.items():
+                    totals[key] += value
+                row = {'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                       'type': 'event_msg',
+                       'payload': {'type': 'token_count', 'info': {
+                           'last_token_usage': last, 'total_token_usage': dict(totals)}}}
+                handle.write(json.dumps(row) + '\n')
+                handle.flush()
+            handle.write(json.dumps({'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                'type': 'event_msg', 'payload': {'type': 'token_count', 'info': None}}) + '\n')
+            handle.write(json.dumps(row) + '\n')
+            handle.flush()
+        import time
+        time.sleep(30)
     if command_events and not os.environ.get('FAKE_MISSING_OBSERVED'):
         for index, event in enumerate(command_events):
             print(json.dumps({'type': 'item.completed', 'item': {
@@ -39,6 +65,16 @@ def emit_claude(answer, session, extra_commands=None):
           'session_id': session}))
     print(json.dumps({'type': 'stream_event', 'event': {'type': 'message_delta',
           'usage': {'output_tokens': 12}}, 'session_id': session}))
+    if os.environ.get('FAKE_STREAM_TWO_USAGE_THEN_HANG'):
+        sys.stdout.flush()
+        print(json.dumps({'type': 'stream_event', 'event': {'type': 'message_start',
+              'message': {'id': 'fake-message-2', 'usage': {'input_tokens': 7,
+              'cache_creation_input_tokens': 2, 'cache_read_input_tokens': 4,
+              'output_tokens': 0}}}, 'session_id': session}), flush=True)
+        print(json.dumps({'type': 'stream_event', 'event': {'type': 'message_delta',
+              'usage': {'output_tokens': 8}}, 'session_id': session}), flush=True)
+        import time
+        time.sleep(30)
     if not os.environ.get('FAKE_MISSING_OBSERVED'):
         evidence_rows = [*answer.get('self_run_evidence', []), *(extra_commands or [])]
         for index, evidence in enumerate(evidence_rows):
