@@ -97,6 +97,7 @@ def emit_claude(answer, session, extra_commands=None):
                 target.write_text('probe escaped sandbox\n')
                 forbidden = False
             sandbox_denial = (('paired-session-claude-sandbox-' in command or
+                               '.paired-session-os-probe-' in command or
                                '.paired-session-run-dir-probe-' in command or
                                '.paired-session-context-probe-' in command) and ' > ' in command
                               and forbidden)
@@ -110,7 +111,7 @@ def emit_claude(answer, session, extra_commands=None):
                 'content': (('line\n' * 20000) if os.environ.get('FAKE_HUGE_OUTPUT') else
                             'FAILED fake configured test' if test_failure else
                             ('fake sandbox failure without OS marker' if sandbox_denial and os.environ.get('FAKE_SANDBOX_NO_OS_MARKER') else
-                             'zsh: operation not permitted' if sandbox_denial else 'fake result')),
+                             'zsh: operation not permitted: ' + command.split()[-1] if sandbox_denial else 'fake result')),
                 'is_error': forbidden or test_failure}]},
                 'session_id': session}))
     if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'claude':

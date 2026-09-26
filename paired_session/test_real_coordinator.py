@@ -490,17 +490,20 @@ sys.exit(result.returncode)
             '                if block.get("type") != "tool_result" or not command:\n'
             '                    continue\n'
             '                is_dedicated = command.startswith("touch ") and ".paired-session-run-dir-probe-" in command\n'
+            '                is_os_only = ".paired-session-os-probe-" in command\n'
             '                is_other_probe = ("paired-session-claude-sandbox-" in command or\n'
             '                                  ".paired-session-context-probe-" in command)\n'
-            '                if is_dedicated and os.environ.get("FAKE_SANDBOX_WRITE"):\n'
+            '                if (is_dedicated or is_os_only) and os.environ.get("FAKE_SANDBOX_WRITE"):\n'
             '                    Path(shlex.split(command)[-1]).write_text("escape\\n")\n'
             '                    block["content"] = "fake sandbox escape"; block["is_error"] = False\n'
-            '                elif is_dedicated and os.environ.get("FAKE_CLAUDE_DENY_OS_PROBE"):\n'
+            '                elif (is_dedicated or is_os_only) and os.environ.get("FAKE_CLAUDE_DENY_OS_PROBE"):\n'
             '                    block["content"] = "Claude requested permissions to use Bash, but you have not granted it yet."; block["is_error"] = True\n'
-            '                elif is_dedicated and os.environ.get("FAKE_SANDBOX_NO_OS_MARKER"):\n'
+            '                elif is_dedicated and os.environ.get("FAKE_CLAUDE_DENY_RUN_DIR_ONLY"):\n'
+            '                    block["content"] = "Permission to use Bash with command " + command + " has been denied."; block["is_error"] = True\n'
+            '                elif (is_dedicated or is_os_only) and os.environ.get("FAKE_SANDBOX_NO_OS_MARKER"):\n'
             '                    block["content"] = "fake sandbox failure without an OS marker"; block["is_error"] = True\n'
-            '                elif is_dedicated:\n'
-            '                    block["content"] = "zsh: operation not permitted"; block["is_error"] = True\n'
+            '                elif is_dedicated or is_os_only:\n'
+            '                    block["content"] = "zsh: operation not permitted: " + shlex.split(command)[-1]; block["is_error"] = True\n'
             '                elif is_other_probe and os.environ.get("FAKE_CLAUDE_ALLOW_OTHER_PROBE"):\n'
             '                    block["content"] = "zsh: operation not permitted"; block["is_error"] = True\n'
             '                elif is_other_probe:\n'
@@ -3179,11 +3182,20 @@ sys.exit(result.returncode)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         self.assertEqual(report['status'], 'PASS')
         self.assertTrue(report['claude_sandbox_write_denied'])
+        self.assertEqual(report['claude_os_denial_probe']['status'], 'PASS')
+        os_target = Path(report['claude_os_denial_probe']['target'])
+        self.assertNotIn(self.run_dir, os_target.parents)
+        self.assertFalse(os_target.exists())
         invocation = json.loads(invocation_log.read_text())
+        settings = json.loads(invocation[invocation.index('--settings') + 1])
+        self.assertIn(str(os_target), settings['sandbox']['filesystem']['denyWrite'])
+        self.assertEqual(settings['permissions']['deny'],
+                         [f'Edit(//{self.run_dir.as_posix().lstrip("/")}/**)'])
         allowed = allowed_tool_values(invocation)
         bash_allowed = '\n'.join(value for value in allowed if value.startswith('Bash('))
         self.assertEqual(bash_allowed.count('Bash(touch '), 1)
         self.assertIn('.paired-session-run-dir-probe-', bash_allowed)
+        self.assertIn('.paired-session-os-probe-', bash_allowed)
         self.assertNotIn('paired-session-claude-sandbox-', bash_allowed)
         self.assertNotIn('.paired-session-context-probe-', bash_allowed)
         transient = [row for row in report['observed_commands']
@@ -3216,7 +3228,9 @@ sys.exit(result.returncode)
         self.assertEqual(escaped.returncode, 2)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         self.assertEqual(report['status'], 'FAIL')
+        self.assertEqual(report['claude_os_denial_probe']['status'], 'FAIL')
         self.assertFalse(report['claude_sandbox_write_denied'])
+
         self.assertIn('claude_sandbox_write_denials', report)
         self.assertFalse(report['claude_sandbox_write_denials']['run_dir']['failed_at_os_sandbox'])
         self.assertTrue(any(reason.startswith('claude-sandbox-') and 'write-not-denied-at-os' in reason
@@ -3234,6 +3248,20 @@ sys.exit(result.returncode)
         self.assertTrue(all(not path.exists() for path in escaped_paths),
                         'coordinator must clean only its unique transient probe files')
 
+        self.run_dir = self.root / 'sandbox-mixed-denial-run'
+        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
+        command[2] = 'permission-probe'
+        mixed = subprocess.run(command, cwd=self.root,
+                               env={**os.environ, 'FAKE_CLAUDE_DENY_RUN_DIR_ONLY': '1'},
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(mixed.returncode, 0, mixed.stdout + mixed.stderr)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'PASS')
+        self.assertTrue(report['claude_sandbox_write_denials']['run_dir']['cli_permission_denied'])
+        self.assertEqual(report['claude_os_denial_probe']['status'], 'PASS')
+        self.assertTrue(report['claude_sandbox_write_denied'])
+        self.assertEqual(report['claude_flag_semantics'], 'OS-level denial observed for the dedicated OS-only probe')
+
         self.run_dir = self.root / 'sandbox-no-os-marker-run'
         command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
         command[2] = 'permission-probe'
@@ -3243,6 +3271,7 @@ sys.exit(result.returncode)
         self.assertEqual(no_marker.returncode, 2)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         self.assertEqual(report['status'], 'FAIL')
+        self.assertEqual(report['claude_os_denial_probe']['status'], 'UNKNOWN')
         checks = report['claude_sandbox_write_denials']
         self.assertTrue(checks['run_dir']['exact_command_observed_once'] and checks['run_dir']['target_absent'])
         self.assertFalse(checks['run_dir']['failed_at_os_sandbox'])
@@ -3256,6 +3285,8 @@ sys.exit(result.returncode)
         self.assertEqual(cli_blocked.returncode, 2)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         dedicated = report['claude_sandbox_write_denials']['run_dir']
+        self.assertEqual(report['status'], 'UNKNOWN')
+        self.assertEqual(report['claude_os_denial_probe']['status'], 'UNKNOWN')
         self.assertTrue(dedicated['cli_permission_denied'])
         self.assertFalse(dedicated['failed_at_os_sandbox'])
         self.assertFalse(report['claude_sandbox_write_denied'])

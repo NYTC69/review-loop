@@ -126,8 +126,14 @@ Claude roles use one inline strict sandbox settings object, deny secret-like
 environment variables and common credential files, block network access and
 local network binding, and require the exact Bash allowlist. The reviewer
 permission probe gives exactly one unique run-directory `touch` command a narrow
-CLI allowlist entry, then requires its failure to carry OS-sandbox denial
-evidence. A CLI permission-layer denial alone does not prove the OS sandbox.
+CLI allowlist entry. That command may be denied by either the CLI permission
+layer or the OS sandbox; its result alone cannot establish the OS boundary.
+The reviewer probe also uses a dedicated target beside the run directory:
+`sandbox.filesystem.denyWrite` covers that target, while `permissions.deny`
+does not. Its exact `printf` command is allowlisted. Only an observed OS denial
+with the target absent gives this check PASS; a CLI-layer refusal is UNKNOWN,
+and a file written there is FAIL. The run directory remains denied by both
+the OS sandbox and the Claude permission rules.
 Other probe writes remain outside that allowlist. Claude's session `TMPDIR` is
 shared scratch per UID on macOS; paired-session keeps workflow state outside it
 and denies writes to the run directory. Bash sandbox results do not establish
