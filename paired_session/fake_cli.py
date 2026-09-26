@@ -11,7 +11,7 @@ import uuid
 
 
 def emit_codex(answer, session, command_events=None):
-    model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6-luna')
+    model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6-sol')
     print(json.dumps({'type': 'thread.started', 'thread_id': session, 'model': model}))
     print(json.dumps({'type': 'turn.started', 'model': model}))
     if os.environ.get('FAKE_STREAM_TWO_USAGE_THEN_HANG'):

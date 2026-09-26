@@ -100,3 +100,14 @@ entry; never edit history.
 - **Options considered**: (A) Keep the new architecture alongside the old one without changing the primary daily entry until all four replacement criteria pass; (B) after 1A–1C readiness and explicit authorization for 1D, allow paired-session to become the primary daily entry while retaining legacy as an explicit control until all four criteria pass.
 - **Decision**: Adopt (B). Criterion (1) decides WHETHER; criteria (2)–(4) decide WHEN. (1) The fresh reviewing roles must catch most seeded regressions that keep the suite green; run the same seeded diffs through the old reviewer path as control; the new path must be no worse than the old. If both miss, that is a reviewer limit, not an architecture verdict; if only the new one misses, fix its review design first. (2) Three consecutive real runs with zero coordinator defects and an overseer limited to scoping the work item and verifying at the end; measure overseer steady-state token cost and include it in per-item cost. (3) A first-class user-acceptance feedback phase exists in the coordinator. (4) Coverage includes at least one repo other than poker-tools, one large task, and one real subscription-limit HOLD followed by a successful resume. Paired-session may become the primary daily entry only after 1A–1C readiness and an explicit owner go for 1D. 1D may not switch the default route until there is an owner decision or explicit mapping on parity with legacy polish, docs, security stages, and specialist reviewer agents; until then those stages remain reachable through the explicit legacy/control path. The old implementation may be retired only after all four criteria pass. owner 2026-09-24 decision.
 - **Consequences**: After 1A–1C readiness and explicit go for 1D, the daily entry may switch to paired-session, subject to the parity decision or explicit mapping for legacy polish, docs, security stages, and specialist reviewer agents; until then those stages remain reachable through the explicit legacy/control path. This does not authorize retirement of the old implementation, which remains the explicit control until all four replacement criteria pass, or authorize starting a real task.
+
+---
+
+### ADR-7: paired-session Codex 角色模型改用 gpt-6-sol
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: ADR-5 将 Codex 侧所有 paired-session 角色固定为 `gpt-6-luna`。Yuan 在 2026-09-27 的 D5 明确决定“换成 sol”；这改变产品角色模型，不只是当前执行会话的默认值。
+- **Options considered**: (A) 维持 ADR-5 的 `gpt-6-luna` 固定值；(B) 依 D5 将 Codex 侧所有角色统一改为 `gpt-6-sol`，Claude 侧保持原值。
+- **Decision**: 采用 (B)。Claude 侧所有 paired-session 角色仍用 `claude-opus-5-5`；Codex 侧所有角色统一用 `gpt-6-sol`。Yuan 2026-09-27 D5 决定。
+- **Consequences**: 换模型前后的运行成本与评审质量不能直接比较。已安装 Codex 的 1C 权限探测必须用新模型重跑，且探测结果绑定当时的作者模型与 CLI 配置；这不授权 1D。
+- **Supersedes**: ADR-5

@@ -19,7 +19,7 @@ legacy review-loop workflow for this task.
 2. Read `<workspace>/.review-loop/paired-session.json` if present. It controls
    author/reviewer/gate models, effort, test command, and protocol limits. CLI
    options can override profile values for this run, but models must match the
-   ADR-5 vendor pins (`claude-opus-5-5` for Claude; `gpt-6-luna` for Codex).
+   ADR-7 vendor pins (`claude-opus-5-5` for Claude; `gpt-6-sol` for Codex).
    Without a profile, the coordinator selects those pins by role vendor.
    Determine the project's test command from its docs/manifests and ask only if
    it cannot be established safely.
