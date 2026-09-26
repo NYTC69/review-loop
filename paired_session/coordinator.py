@@ -34,7 +34,7 @@ from typing import Optional
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
-PROBE_SURFACE_VERSION = 8
+PROBE_SURFACE_VERSION = 9
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -1198,13 +1198,22 @@ class Coordinator:
             flags.update({
                 'ignore_execpolicy_rules': True,
                 **self._author_sandbox_overrides(),
-                'author_escape_probe': 'codex-sandbox-direct-v1',
+                'author_escape_probe': 'codex-exec-model-filesystem-v2',
+                'codex_cli_version': self._codex_cli_version(),
             })
         else:
             flags.update({'permission_mode': 'acceptEdits',
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
                           'non_bash_run_state_edit_access': 'denied by Edit/Write path rules'})
         return flags
+
+    def _codex_cli_version(self) -> str:
+        try:
+            result = subprocess.run([self.args.codex_bin, '--version'], text=True,
+                                    capture_output=True, timeout=10)
+            return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
+        except (OSError, subprocess.SubprocessError):
+            return 'UNAVAILABLE'
 
     def _author_sandbox_overrides(self) -> dict:
         return {
@@ -3171,6 +3180,8 @@ class Coordinator:
         if self.args.author_vendor != 'codex':
             return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
         codex_sandbox_checks = {'status': 'NOT-ATTEMPTED', 'checks': {}}
+        advisory = {'note': 'advisory: not proven policy-equivalent to codex exec',
+                    'checks': codex_sandbox_checks['checks']}
         model_targets, report = {}, None
         try:
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
@@ -3215,16 +3226,7 @@ class Coordinator:
                 codex_sandbox_checks['status'] = ('PASS' if all(row['status'] == 'PASS'
                                                                for row in codex_sandbox_checks['checks'].values())
                                                   else 'FAIL')
-                if codex_sandbox_checks['status'] != 'PASS':
-                    return {'status': 'FAIL',
-                            'reason': 'Codex sandbox controls did not match the author policy; model writes were not attempted',
-                            'model_probe': 'NOT-ATTEMPTED',
-                            'outcomes': {'workspace_write_allowed': 'NOT-ATTEMPTED',
-                                         'run_tmpdir_write_allowed': 'NOT-ATTEMPTED'},
-                            'commands': [], 'observed_commands': [],
-                            'workspace': str(workspace),
-                            'workspace_snapshot': git_snapshot(workspace)[0],
-                            'codex_sandbox_checks': codex_sandbox_checks}
+                advisory['checks'] = codex_sandbox_checks['checks']
 
                 commands = [
                     'printf probe > ' + shlex.quote(str(allowed_path)),
@@ -3273,9 +3275,9 @@ class Coordinator:
                     denied = len(hits) == 1 and type(hits[0].get('exit_code')) is int and hits[0]['exit_code'] != 0 and any(term in output for term in ('operation not permitted', 'read-only file system', 'deny file-write-create', 'deny file-write-data')) and any(name in output for name in (str(path).lower(), str(path.resolve()).lower()))
                     escape_rows[label] = {'target': str(path), 'command': escape_commands[label], 'status': 'FAIL' if present or any(row.get('exit_code') == 0 for row in hits) else 'PASS' if denied else 'UNKNOWN', 'observed': hits, 'target_exists_after_turn': present}
                 escape_status = 'FAIL' if any(row['status'] == 'FAIL' for row in escape_rows.values()) else 'UNKNOWN' if any(row['status'] == 'UNKNOWN' for row in escape_rows.values()) else 'PASS'
-                report = {'status': 'FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' else escape_status, 'outcomes': outcomes, 'commands': commands, 'observed_commands': evidence, 'model_probe': 'ATTEMPTED', 'workspace': str(workspace), 'workspace_snapshot': result['snapshot'], 'codex_sandbox_checks': codex_sandbox_checks, 'model_escape_checks': escape_rows}; return report
+                report = {'status': 'FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' else escape_status, 'outcomes': outcomes, 'commands': commands, 'observed_commands': evidence, 'model_probe': 'ATTEMPTED', 'workspace': str(workspace), 'workspace_snapshot': result['snapshot'], 'codex_sandbox_checks': codex_sandbox_checks, 'advisory_direct_controls': advisory, 'model_escape_checks': escape_rows}; return report
         except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
-            report = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc), 'codex_sandbox_checks': codex_sandbox_checks, **({'workspace': str(workspace)} if 'workspace' in locals() else {})}; return report
+            report = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc), 'codex_sandbox_checks': codex_sandbox_checks, 'advisory_direct_controls': advisory, **({'workspace': str(workspace)} if 'workspace' in locals() else {})}; return report
         finally:
             found, cleaned, cleanup_errors = [], [], []
             for label, path in model_targets.items():

@@ -263,7 +263,7 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertTrue(any(row['file'] == 'codex_config'
                             for row in report['global_config_changes']['findings']))
 
-    def test_permission_probe_fails_when_codex_sandbox_positive_controls_fail(self):
+    def test_permission_probe_direct_controls_are_advisory(self):
         for mode in ('readonly', 'no-writable-root', 'escape', 'no-marker'):
             with self.subTest(mode=mode):
                 self.run_dir = self.root / ('codex-sandbox-' + mode)
@@ -272,11 +272,14 @@ class RealCoordinatorTests(unittest.TestCase):
                 result = subprocess.run(command, cwd=self.root,
                                         env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': mode},
                                         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                self.assertEqual(report['status'], 'FAIL')
-                self.assertEqual(report['author_permission_probe']['model_probe'], 'NOT-ATTEMPTED')
+                self.assertEqual(report['status'], 'PASS')
+                self.assertEqual(report['author_permission_probe']['model_probe'], 'ATTEMPTED')
+                advisory = report['author_permission_probe']['advisory_direct_controls']
+                self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
                 checks = report['author_permission_probe']['codex_sandbox_checks']['checks']
+                self.assertEqual(advisory['checks'], checks)
                 if mode == 'readonly':
                     self.assertFalse(checks['workspace_write_allowed']['policy_observed'])
                     self.assertFalse(checks['run_tmpdir_write_allowed']['policy_observed'])
@@ -292,6 +295,39 @@ class RealCoordinatorTests(unittest.TestCase):
                     self.assertTrue(checks['run_tmpdir_write_allowed']['policy_observed'])
                     self.assertFalse(checks['external_tmpdir_denied']['policy_observed'])
                     self.assertFalse(checks['slash_tmp_denied']['policy_observed'])
+
+    def test_codex_direct_contract_refusal_does_not_block_model_probe(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_CONTRACT_REJECT': '1'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['status'], 'PASS', report)
+        self.assertEqual(report['model_probe'], 'ATTEMPTED')
+        self.assertTrue(all(row['status'] == 'PASS' for row in report['model_escape_checks'].values()))
+        advisory = report['advisory_direct_controls']
+        self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
+        self.assertTrue(all(row['returncode'] == 2 and row['status'] == 'FAIL'
+                            for row in advisory['checks'].values()))
+        self.assertEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
+            self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
+
+    def test_codex_direct_control_pass_cannot_override_model_escape_failure(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
+                                     'FAKE_AUTHOR_ESCAPE_WRITE': 'home'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['codex_sandbox_checks']['status'], 'PASS')
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertEqual(report['model_escape_checks']['home']['status'], 'FAIL')
+
+    def test_codex_direct_control_pass_cannot_override_model_unknown(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
+                                     'FAKE_AUTHOR_ESCAPE_SKIP': 'home'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['codex_sandbox_checks']['status'], 'PASS')
+        self.assertEqual(report['status'], 'UNKNOWN')
+        self.assertEqual(report['model_escape_checks']['home']['status'], 'UNKNOWN')
 
     def test_resume_refuses_probe_with_unattributed_global_config_change(self):
         self.run_dir = self.root / 'resume-global-change'
@@ -358,7 +394,11 @@ import json, os, subprocess, sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if args == ["--version"]:
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.157.0")); sys.exit(0)
 if args and args[0] == "sandbox":
+    if os.environ.get("FAKE_CODEX_SANDBOX_CONTRACT_REJECT"):
+        print("error: --permission-profile <NAME> required", file=sys.stderr); sys.exit(2)
     command = args[args.index("--") + 1:] if "--" in args else []
     config = {{}}
     for index, arg in enumerate(args[:-1]):
@@ -3857,7 +3897,8 @@ sys.exit(result.returncode)
 
     def test_stopped_permission_probe_requires_explicit_retry_before_new_probe(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(self.fake_codex_cli())])
         co = rc.Coordinator(args)
         active = {'pid': 987654321, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
                   'sequence': 2}
@@ -3886,7 +3927,8 @@ sys.exit(result.returncode)
 
     def test_permission_probe_clears_unverifiable_hold_after_later_group_check(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(self.fake_codex_cli())])
         co = rc.Coordinator(args)
         uncertain = {'pid': 987654322, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
                      'sequence': 2}
@@ -3911,7 +3953,8 @@ sys.exit(result.returncode)
 
     def test_permission_probe_eperm_then_esrch_clears_uncertain_probe_before_reprobe(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(self.fake_codex_cli())])
         co = rc.Coordinator(args)
         active = {'pid': 43225, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE', 'sequence': 2}
         co.state['active'] = active
@@ -4212,7 +4255,8 @@ sys.exit(result.returncode)
 
     def test_probe_retries_after_real_group_leader_exits_but_descendant_lives(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(self.fake_codex_cli())])
         co = rc.Coordinator(args)
         parent_signal, descendant_signal = socket.socketpair()
         descendant_signal.set_inheritable(True)
