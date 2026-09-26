@@ -1002,6 +1002,8 @@ class Coordinator:
                 raise ValueError('scope change is pending; finish that request')
             if self.state.get('status') == 'ABORTED' and not getattr(args, 'scope_change', False):
                 raise ValueError('run was ABORTED by scope change; start its successor')
+            if 'base_commit' not in self.state:
+                self.state['base_commit_backfilled'] = True
             self.state.setdefault('base_commit', self._head_commit())
             self.state.setdefault('reviews_completed', 0)
             ledger_path = self.run_dir / 'findings-ledger.json'
@@ -1065,7 +1067,8 @@ class Coordinator:
                 spec = json.loads((parent / 'evidence/successor-spec.json').read_text())
                 task_hash = hashlib.sha256(self.workitem.read_bytes()).hexdigest()
                 if (old.get('status') != 'ABORTED' or old.get('abort_kind') != 'scope-change' or
-                        not old.get('base_commit') or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
+                        not old.get('base_commit') or old.get('base_commit_backfilled') or
+                        old.get('scope_chain_depth', 0) >= 1 or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
                         spec['run_dir'] != str(self.run_dir) or spec['workspace'] != str(self.workspace) or
                         spec['original_hash'] != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest() or
                         old.get('successor_spec_sha256') != hashlib.sha256((parent / 'evidence/successor-spec.json').read_bytes()).hexdigest()):
@@ -1651,6 +1654,60 @@ class Coordinator:
         self.state['hold_reason'] = f'post-DONE rejection limit reached ({maximum}); accept or abort'
         self.save()
         return 'HOLD'
+
+    def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
+        intent = self.state.get('scope_change_intent')
+        target = self.run_dir.with_name(self.run_dir.name + '-successor')
+        task_path = self.evidence / 'successor-workitem.md'; config_path = self.evidence / 'successor-config.json'
+        common = ['--workspace', str(self.workspace), '--workitem', str(task_path), '--run-dir', str(target),
+                  '--config', str(config_path), '--supersedes', str(self.run_dir)]
+        entry = str(HERE.parent / 'bin/paired-session')
+        command = lambda: 'Probe: ' + shlex.join([entry, 'permission-probe', *common]) + '\nStart: ' + shlex.join([entry, 'run', *common])
+        if self.state['status'] == 'ABORTED':
+            if not intent or intent['action'] != self.args.action or intent['source'] != (str(Path(file).resolve()) if file else 'cli') or (text is not None and text != intent['text']): raise ValueError('different scope-change request')
+            return command()
+        if not intent:
+            allowed = ((self.args.action == 'note' and self.state['status'] in ('ACTIVE', 'HOLD') and
+                        self.state.get('terminal_hold_kind') != 'rejection_limit') or
+                       (self.args.action == 'reject' and (self.state['status'] == 'DONE' or
+                        self.state.get('terminal_hold_kind') == 'rejection_limit')))
+            if not allowed or self.state.get('active') or self.state.get('uncertain_active'):
+                raise ValueError('scope change requires an idle non-terminal run or pending acceptance')
+            if self.state.get('scope_chain_depth', 0) >= 1 or bool(text) == bool(file): raise ValueError('scope chain limit or note arguments invalid')
+            note = Path(file).read_text() if file else text or ''
+            if not note.strip() or '```reviewer-commands' in note: raise ValueError('empty or command-bearing scope note')
+            raw = json.loads(self.state_path.read_text())
+            if not raw.get('base_commit') or raw.get('base_commit_backfilled'): raise ValueError('parent has no trustworthy base_commit')
+            task = self.workitem.read_text() + '\n\n## Operator scope change\n' + note + '\n'
+            if target.exists():
+                raise ValueError('successor run dir already exists')
+            with tempfile.TemporaryDirectory() as tmp:
+                trial = copy.copy(self); trial.workitem = Path(tmp) / 'task.md'; trial.workitem.write_text(task)
+                trial.context = Path(tmp); trial.evidence = Path(tmp); trial.run_dir = target
+                trial.author_temp_dir = target / 'author-tmp'; trial.state = {'sequence': 0, 'finding_ledger': []}
+                try: trial.assert_fresh_prompt('shadow', 'Clean prompt')
+                except RuntimeError as exc: raise ValueError('fresh-role input scan: ' + str(exc)) from exc
+            intent = {'text': note, 'sha256': hashlib.sha256(note.encode()).hexdigest(),
+                      'action': self.args.action, 'source': str(Path(file).resolve()) if file else 'cli',
+                      'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat()}
+            self.state['scope_change_intent'] = intent; self.save()
+        elif intent['action'] != self.args.action or intent['source'] != (str(Path(file).resolve()) if file else 'cli') or (text is not None and text != intent['text']):
+            raise ValueError('different scope-change request is pending')
+        task = self.workitem.read_text() + '\n\n## Operator scope change\n' + intent['text'] + '\n'
+        atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
+        atomic_json(config_path, {k: v for k, v in self.state['config'].items() if k in CONFIGURABLE_DESTS and
+                    not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:'))})
+        spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
+                'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
+                'task_sha256': hashlib.sha256(task.encode()).hexdigest(), 'base_commit': self.state['base_commit'],
+                'task': task, 'note_sha256': intent['sha256']}
+        spec_path = self.evidence / 'successor-spec.json'; atomic_json(spec_path, spec)
+        self.state.update(status='ABORTED', abort_kind='scope-change',
+                          successor_spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest())
+        self.save(); self.write_comparison()
+        atomic_text(self.run_dir / 'scope-change-report.md', 'Superseded run; turns: ' + str(len(self.state['turns'])) +
+                    '\nOpen findings: ' + str(len(self.open_findings())) + '\nSuccessor: ' + str(spec_path) + '\n')
+        return command()
 
     def accept(self) -> str:
         if self.state.get('status') == 'ACCEPTED':

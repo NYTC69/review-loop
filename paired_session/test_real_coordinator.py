@@ -925,6 +925,32 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'effective task hash differs'):
             self.coordinator('--supersedes', str(old_dir))
 
+    def test_scope_change_method_aborts_and_preserves_successor_spec(self):
+        co = self.coordinator()
+        co.args.action = 'note'
+        co.args.scope_change = True
+        with self.assertRaisesRegex(ValueError, 'fresh-role input scan'):
+            co.scope_change('Claude reviewer said REVISE', None)
+        self.assertNotIn('scope_change_intent', co.state)
+        command = co.scope_change('Also handle negative values.', None)
+        self.assertIn('Probe: ', command)
+        self.assertIn('Start: ', command)
+        self.assertEqual(command.count('--supersedes'), 2)
+        self.assertNotIn('--skip-probe', command)
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['status'], 'ABORTED')
+        self.assertEqual(saved['abort_kind'], 'scope-change')
+        self.assertEqual(saved['scope_change_intent']['author'], 'operator')
+        spec_path = co.evidence / 'successor-spec.json'
+        spec_before = spec_path.read_bytes()
+        spec = json.loads(spec_before)
+        self.assertEqual(spec['base_commit'], saved['base_commit'])
+        self.assertIn('Also handle negative values.', spec['task'])
+        self.assertEqual(co.scope_change('Also handle negative values.', None), command)
+        self.assertEqual(spec_path.read_bytes(), spec_before)
+        self.assertEqual(co.hold('late abort'), 'ABORTED')
+        self.assertIn('Superseded run', (co.run_dir / 'scope-change-report.md').read_text())
+
     def test_reject_uses_workspace_lease_and_test_command_preflight(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                          '--polish-round', 'off')
