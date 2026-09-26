@@ -231,6 +231,19 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
     return sorted(added)
 
 
+def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path) -> bool:
+    raw = path.read_bytes()
+    entry = ('[projects.' + json.dumps(str(workspace.resolve())) + ']\ntrust_level = "trusted"\n').encode()
+    if raw.count(entry) != 1: return False
+    for leading in (b'', b'\n'):
+        for trailing in (b'', b'\n'):
+            block = leading + entry + trailing
+            if block in raw:
+                before = raw.replace(block, b'', 1)
+                if hashlib.sha256(before).hexdigest() == before_sha256 and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace]) == [str(workspace.resolve())]: return True
+    return False
+
+
 def attribute_global_config_changes(before: dict, after: dict, workspaces=()) -> dict:
     """Attribute only the known Codex trust and Claude lastUpdated side effects."""
     expected, findings = [], []
@@ -960,6 +973,7 @@ class Coordinator:
         validate_role_models(args)
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
+        if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
         self.args = args
         self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
@@ -1856,9 +1870,25 @@ class Coordinator:
         return 'ACTIVE'
 
     def archive_abandoned_turn(self, receipt: dict) -> None:
+        if receipt.get('vendor') == 'claude' and receipt.get('global_claude_before'):
+            current = global_config_snapshot(self.global_config_home, self.global_codex_home)
+            if receipt.get('global_config_home') != str(self.global_config_home): self.hold('global Claude config home changed during uncertain turn'); raise RuntimeError('global Claude config home changed during uncertain turn')
+            changed = {key: current.get(key, {}).get('sha256') for key, value in receipt['global_claude_before'].items() if current.get(key, {}).get('sha256') != value}
+            if changed:
+                pending = {'sequence': receipt['sequence'], 'after': changed}
+                if self.args.action == 'resume' and self.state.get('claude_uncertain_config_change') == pending:
+                    receipt['global_claude_ack'] = {'operator_uid': os.getuid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
+                else: self.state['claude_uncertain_config_change'] = pending; self.hold('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain'); raise RuntimeError('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain')
         if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
-            if any(current[key]['sha256'] != value for key, value in receipt['global_codex_before'].items()): self.hold('global Codex config changed during uncertain turn; cannot attribute'); raise RuntimeError('global Codex config changed during uncertain turn; cannot attribute')
+            if (receipt.get('global_codex_home') != str(self.global_codex_home) or receipt.get('global_config_home') != str(self.global_config_home) or any(current.get(key, {}).get('sha256') != value for key, value in receipt['global_codex_before'].items())):
+                allowed = (self.args.action == 'resume' and self.args.acknowledge_codex_trust == self.run_dir.name
+                           and current['codex_config']['sha256'] != receipt['global_codex_before']['codex_config']
+                           and all(current.get(key, {}).get('sha256') == value for key, value in receipt['global_codex_before'].items() if key != 'codex_config')
+                           and receipt.get('global_codex_home') == str(self.global_codex_home)
+                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace'])))
+                if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
+                self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
@@ -2540,6 +2570,7 @@ class Coordinator:
         now = time.time()
         receipt = {'sequence': seq, 'role': role, 'phase': phase, 'vendor': self._role_vendor(role),
                    'model': self._model_effort(role)[0], 'command': command, 'snapshot_before': before,
+                   'workspace': str(active_workspace), 'global_codex_home': str(self.global_codex_home), 'global_config_home': str(self.global_config_home),
                    'context_before': context_before,
                    'start': now, 'gap': now - self.state['last_end'].get(role, now), 'fresh': fresh,
                    'timeout_seconds': timeout_seconds,
@@ -2557,8 +2588,10 @@ class Coordinator:
         env = cli_env()
         if env_overrides:
             env.update(env_overrides)
-        codex_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home) if receipt['vendor'] == 'codex' else None
-        if codex_config_before is not None: receipt['global_codex_before'] = {key: value['sha256'] for key, value in codex_config_before.items() if key.startswith('codex_')}
+        if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
+        vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
+        receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
         process = None
         try:
@@ -2660,12 +2693,17 @@ class Coordinator:
         receipt['context_after'] = context_after
         atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         try:
-            if codex_config_before is not None:
-                changes = attribute_global_config_changes(codex_config_before,
+            if vendor_config_before is not None:
+                changes = attribute_global_config_changes(vendor_config_before,
                     global_config_snapshot(self.global_config_home, self.global_codex_home), [active_workspace])
+                changes['other_vendor_changes'] = [key for key in changes['before'] if not key.startswith(vendor_prefix) and changes['before'][key]['sha256'] != changes['after'][key]['sha256']]
+                changes['findings'] = [row for row in changes['findings'] if row['file'].startswith(vendor_prefix)]
+                changes['expected_changes'] = [row for row in changes['expected_changes'] if row['file'].startswith(vendor_prefix)]
+                changes['warnings'] = changes['warnings'] if receipt['vendor'] == 'codex' else []
+                changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
                 receipt['global_config_changes'] = changes
                 if changes['status'] != 'PASS':
-                    raise ValueError('Codex turn changed global config outside its own trust entry')
+                    raise ValueError(receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings']))
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -3634,6 +3672,10 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
+        if self.args.acknowledge_codex_trust:
+            if self.args.acknowledge_codex_trust != self.run_dir.name or not self.state.get('uncertain_active') or not self.state.get('hold_reason', '').startswith('global Codex config changed during uncertain turn'):
+                raise ValueError('trust acknowledgment requires the named run and a prior uncertain trust HOLD')
+            retry_uncertain = True
         if self.state['status'] == 'ABORTED':
             raise ValueError('run was ABORTED by scope change; start its successor')
         if self.state['status'] == 'ACCEPTED':
@@ -3870,6 +3912,8 @@ def parser() -> argparse.ArgumentParser:
                    help='let a Claude author spawn subagents (read-only roles never can)')
     p.add_argument('--retry-uncertain', action='store_true',
                    help='after confirming its child stopped, explicitly retry an uncertain run or permission-probe turn')
+    p.add_argument('--acknowledge-codex-trust', metavar='RUN_ID',
+                   help='after inspecting an uncertain trust-only change, acknowledge this run ID on resume')
     p.add_argument('--polish', action='store_true',
                    help='with resume, run only the one-time polish round on an older DONE run')
     p.add_argument('--skip-probe', action='store_true',
@@ -4095,7 +4139,7 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
-    except (RunLeaseError, OSError) as exc:
+    except (RunLeaseError, OSError, RuntimeError) as exc:
         print('HOLD: ' + str(exc))
         return 2
 

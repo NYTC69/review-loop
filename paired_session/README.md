@@ -153,8 +153,13 @@ Codex change fails; Claude plugin `lastUpdated` is attributed separately.
 The coordinator never edits or restores the user's global config. Do not use
 `--skip-probe` for a real task; it exists for deterministic tests only.
 Each Codex turn also records a before/after Codex-config comparison. A changed
-config during an uncertain turn HOLDs before replay; recovery rules are a
-separate readiness step.
+config during an uncertain turn HOLDs before replay. After inspecting the
+change, the operator can run `resume --acknowledge-codex-trust RUN_ID`; this
+records UID, time and before/after hashes and accepts only an exact new trusted
+entry for that turn's workspace. Other changes stay HOLD, and the coordinator
+never edits the config. Each Codex turn compares only Codex global files; each
+Claude turn compares only Claude global files. Cross-vendor changes are recorded
+in the turn receipt without HOLDing that turn.
 
 If a run is held, inspect `state.json`, `open-findings.md`,
 `findings-ledger.md`, and the latest receipts under `evidence/` before resuming.

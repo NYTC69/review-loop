@@ -544,6 +544,10 @@ if args and args[0] == "sandbox":
     print("sandbox-exec: deny file-write-create " + str(target) + ": Operation not permitted", file=sys.stderr); sys.exit(1)
 
 prompt = sys.stdin.read()
+if args and args[0] == "exec" and os.environ.get("FAKE_CODEX_TOUCH_CLAUDE_SETTINGS"):
+    settings = Path.home() / ".claude/settings.json"; root = Path(os.environ["FAKE_CODEX_TEST_ROOT"]).resolve()
+    if root not in settings.resolve().parents: sys.exit(97)
+    settings.write_text('{{"other_vendor_update":true}}\\n')
 if args and args[0] == "exec" and os.environ.get("FAKE_CODEX_AUTO_TRUST_ENTRY"):
     home_text = os.environ.get("CODEX_HOME"); root_text = os.environ.get("FAKE_CODEX_TEST_ROOT")
     if not home_text or not root_text or not Path(home_text).is_absolute() or not Path(root_text).is_absolute():
@@ -577,6 +581,12 @@ sys.exit(result.returncode)
             '        data = json.loads(path.read_text()); plugins = data.get("plugins", [])\n'
             '        if isinstance(plugins, list) and plugins:\n'
             '            plugins[0]["lastUpdated"] = "after-fake-probe"; path.write_text(json.dumps(data))\n'
+            'if os.environ.get("FAKE_CLAUDE_TOUCH_CODEX_CONFIG"):\n'
+            '    root = Path(os.environ["FAKE_CODEX_TEST_ROOT"]).resolve()\n'
+            '    config = (Path(os.environ["CODEX_HOME"]) / "config.toml").resolve()\n'
+            '    if root not in config.parents: sys.exit(97)\n'
+            '    if "[other_vendor_update]" not in config.read_text():\n'
+            '        with config.open("a") as handle: handle.write("\\n[other_vendor_update]\\nflag = true\\n")\n'
             'if os.environ.get("FAKE_CLAUDE_INVOCATION_LOG"):\n'
             '    Path(os.environ["FAKE_CLAUDE_INVOCATION_LOG"]).write_text(json.dumps(args))\n'
             'delegate_env = os.environ.copy(); delegate_env.pop("FAKE_SANDBOX_WRITE", None)\n'
@@ -1475,7 +1485,7 @@ sys.exit(result.returncode)
                 co.args.codex_bin = co.args.claude_bin = str(streaming_cli)
                 expected_rows = expected[vendor]
                 if vendor == 'codex':
-                    rollout = (self.root / 'fake-codex-home' / 'sessions' /
+                    rollout = (co.global_codex_home / 'sessions' /
                                time.strftime('%Y/%m/%d', time.gmtime()) /
                                'rollout-fake-codex-thread.jsonl')
                     expected_rows = [{**row, 'source': f'{rollout}:{index}'}
@@ -1491,7 +1501,7 @@ sys.exit(result.returncode)
 
                 stream_env = {'FAKE_STREAM_TWO_USAGE_THEN_HANG': '1'}
                 if vendor == 'codex':
-                    stream_env['CODEX_HOME'] = str(self.root / 'fake-codex-home')
+                    stream_env['CODEX_HOME'] = str(co.global_codex_home)
                 with patch.dict(os.environ, stream_env):
                     worker = threading.Thread(target=invoke_author)
                     worker.start()
@@ -4084,6 +4094,108 @@ sys.exit(result.returncode)
                 self.assertEqual(co.state['uncertain_active'], receipt)
                 self.assertEqual(co.state.get('abandoned_turns', []), [])
         config.write_bytes(original)
+
+    def test_operator_acknowledges_only_trust_only_change_after_uncertain_hold(self):
+        config = self.test_home / '.codex/config.toml'
+        original = config.read_bytes()
+        for unrelated in (False, True):
+            with self.subTest(unrelated=unrelated):
+                config.write_bytes(original)
+                self.run_dir = self.root / ('ack-trust-' + str(unrelated).lower())
+                co = self.coordinator()
+                receipt = {'sequence': 1, 'pid': 987654321, 'role': 'author', 'vendor': 'codex',
+                           'phase': 'EXEC', 'workspace': str(self.workspace),
+                           'global_codex_home': str(co.global_codex_home),
+                           'global_config_home': str(co.global_config_home),
+                           'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}}
+                co.state['uncertain_active'] = receipt; co.save()
+                entry = ('\n[projects.' + json.dumps(str(self.workspace)) + ']\ntrust_level = "trusted"\n').encode()
+                config.write_bytes(original + entry + (b'\n[other]\nflag = true\n' if unrelated else b''))
+                with patch('os.killpg', side_effect=ProcessLookupError):
+                    with self.assertRaisesRegex(RuntimeError, 'global Codex config changed'):
+                        co.resume(retry_uncertain=True)
+                self.assertIn('inspect, then resume --acknowledge-codex-trust', co.state['hold_reason'])
+                co.args.action = 'resume'; co.args.acknowledge_codex_trust = self.run_dir.name
+                with patch('os.killpg', side_effect=ProcessLookupError), patch.object(co, 'drive', return_value='ACTIVE'):
+                    if unrelated:
+                        with self.assertRaisesRegex(RuntimeError, 'global Codex config changed'): co.resume()
+                        self.assertFalse(co.state.get('codex_trust_acknowledgments'))
+                    else:
+                        self.assertEqual(co.resume(), 'ACTIVE')
+                        record = co.state['codex_trust_acknowledgments'][0]
+                        self.assertEqual((record['run_id'], record['operator_uid']), (self.run_dir.name, os.getuid()))
+                        self.assertEqual(record['workspace'], str(self.workspace))
+        config.write_bytes(original)
+
+    def test_trust_ack_rejects_table_rebinding_and_duplicate_header(self):
+        path = self.root / 'trust-boundary.toml'
+        header = '[projects.' + json.dumps(str(self.workspace)) + ']\ntrust_level = "trusted"\n'
+        before = 'model = "gpt-6-sol"\n\n[hooks]\nenabled = true\n'
+        digest = hashlib.sha256(before.encode()).hexdigest()
+        path.write_text('model = "gpt-6-sol"\n\n' + header + '\n[hooks]\nenabled = true\n')
+        self.assertTrue(rc.trust_entry_only_since_hash(path, digest, self.workspace))
+        path.write_text('model = "gpt-6-sol"\n\n[hooks]\n' + header + 'enabled = true\n')
+        self.assertFalse(rc.trust_entry_only_since_hash(path, digest, self.workspace))
+        old = before + '\n[projects.' + json.dumps(str(self.workspace)) + ']\ntrust_level = "untrusted"\n'
+        path.write_text(old + '\n' + header)
+        self.assertFalse(rc.trust_entry_only_since_hash(path, hashlib.sha256(old.encode()).hexdigest(), self.workspace))
+
+    def test_claude_uncertain_config_change_has_inspected_retry(self):
+        co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'codex')
+        settings = self.test_home / '.claude/settings.json'
+        before = settings.read_bytes()
+        receipt = {'sequence': 1, 'pid': 987654321, 'role': 'author', 'vendor': 'claude',
+                   'phase': 'EXEC', 'global_config_home': str(co.global_config_home),
+                   'global_claude_before': {'claude_settings': hashlib.sha256(before).hexdigest()}}
+        co.state['uncertain_active'] = receipt; co.save()
+        settings.write_text('{"operator_change":true}\n')
+        with patch('os.killpg', side_effect=ProcessLookupError):
+            with self.assertRaisesRegex(RuntimeError, 'inspect, then resume --retry-uncertain'):
+                co.resume(retry_uncertain=True)
+        self.assertEqual(co.state['status'], 'HOLD')
+        co.args.action = 'resume'
+        with patch('os.killpg', side_effect=ProcessLookupError), patch.object(co, 'drive', return_value='ACTIVE'):
+            self.assertEqual(co.resume(retry_uncertain=True), 'ACTIVE')
+        self.assertEqual(co.state['abandoned_turns'][0]['global_claude_ack']['operator_uid'], os.getuid())
+        self.assertNotIn('claude_uncertain_config_change', co.state)
+
+    def test_uncertain_global_config_resume_cli_holds_without_traceback(self):
+        config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
+        args = rc.parser().parse_args(self.command()[2:]); co = rc.Coordinator(args)
+        co.state['uncertain_active'] = {'sequence': 1, 'pid': 987654321, 'role': 'author',
+            'vendor': 'codex', 'phase': 'EXEC', 'workspace': str(self.workspace),
+            'global_codex_home': str(co.global_codex_home), 'global_config_home': str(co.global_config_home),
+            'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}}
+        rc.atomic_json(self.run_dir / 'permission-probe.json', {'status': 'PASS',
+            'reviewer_flags_digest': co.reviewer_flags_digest(),
+            'author_flags_digest': co.author_flags_digest(),
+            'author_permission_probe': {'status': 'PASS'},
+            'global_config_changes': {'status': 'PASS'}})
+        co.save(); config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
+        command = self.command(); command[2] = 'resume'; command.append('--retry-uncertain')
+        result = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('HOLD: global Codex config changed during uncertain turn', result.stdout)
+        self.assertNotIn('Traceback', result.stderr)
+        config.write_bytes(original)
+
+    def test_codex_turn_records_concurrent_claude_change_without_holding(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_CODEX_TOUCH_CLAUDE_SETTINGS': '1'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['status'], 'PASS', report)
+        turn = next(row for row in co.state['turns'] if row['vendor'] == 'codex')
+        self.assertEqual(turn['global_config_changes']['status'], 'PASS')
+        self.assertIn('claude_settings', turn['global_config_changes']['other_vendor_changes'])
+
+    def test_claude_turn_records_concurrent_codex_change_without_holding(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_CLAUDE_TOUCH_CODEX_CONFIG': '1'}):
+            self.assertFalse(co.permission_probe())
+        turn = next(row for row in co.state['turns'] if row['vendor'] == 'claude')
+        self.assertEqual(turn['global_config_changes']['status'], 'PASS')
+        self.assertIn('codex_config', turn['global_config_changes']['other_vendor_changes'])
+        self.assertEqual(json.loads((self.run_dir / 'permission-probe.json').read_text())['global_config_changes']['status'], 'FAIL')
 
     def test_permission_probe_clears_unverifiable_hold_after_later_group_check(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
