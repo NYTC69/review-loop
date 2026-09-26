@@ -156,15 +156,19 @@ def _global_file_snapshot(path: Path, parser=None) -> dict:
     return result
 
 
-def global_config_snapshot(home: Optional[Path] = None) -> dict:
+def global_config_snapshot(home: Optional[Path] = None, codex_home: Optional[Path] = None) -> dict:
     """Capture only the three user-global files checked by the installed probe."""
     home = (home or Path.home()).expanduser()
-    return {
-        'codex_config': _global_file_snapshot(home / '.codex' / 'config.toml'),
+    codex_home = (codex_home or home / '.codex').expanduser()
+    snapshots = {
+        'codex_config': _global_file_snapshot(codex_home / 'config.toml'),
         'claude_settings': _global_file_snapshot(home / '.claude' / 'settings.json', json.loads),
         'claude_plugins': _global_file_snapshot(
             home / '.claude' / 'plugins' / 'installed_plugins.json', json.loads),
     }
+    if codex_home.resolve() != (home / '.codex').resolve():
+        snapshots['codex_default_config'] = _global_file_snapshot(home / '.codex' / 'config.toml')
+    return snapshots
 
 
 def _without_mapping_key(value, key: str):
@@ -196,18 +200,22 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
     if after.get('raw') is None:
         return []
     inserted = []
-    before_lines = (before.get('raw') or '').splitlines()
-    after_lines = after['raw'].splitlines()
+    before_lines = (before.get('raw') or '').splitlines(keepends=True)
+    after_lines = after['raw'].splitlines(keepends=True)
     matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
     insertion_count = 0
     for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
         if tag == 'equal':
             continue
-        if tag != 'insert' or old_start != len(before_lines) or old_end != old_start:
+        if tag != 'insert' or old_start != old_end:
             return []
+        following = next((line.strip() for line in before_lines[old_start:] if line.strip()), None)
+        if following is not None and not following.startswith('['): return []
         insertion_count += 1
-        inserted.extend(line.strip() for line in after_lines[new_start:new_end] if line.strip())
-    if insertion_count != 1:
+        block = [line.strip() for line in after_lines[new_start:new_end] if line.strip()]
+        if not block or len(block) % 2: return []
+        inserted.extend(block)
+    if not insertion_count:
         return []
     if not inserted or len(inserted) % 2:
         return []
@@ -216,7 +224,8 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
         header, setting = inserted[index:index + 2]
         path = next((path for path in expected_workspaces
                      if header == '[projects.' + json.dumps(path) + ']'), None)
-        if path is None or setting != 'trust_level = "trusted"' or path in added:
+        if (path is None or setting != 'trust_level = "trusted"' or path in added
+                or any(line.strip() == header for line in before_lines)):
             return []
         added.append(path)
     return sorted(added)
@@ -226,7 +235,8 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=()) ->
     """Attribute only the known Codex trust and Claude lastUpdated side effects."""
     expected, findings = [], []
     public = {'before': {}, 'after': {}}
-    for label in ('codex_config', 'claude_settings', 'claude_plugins'):
+    for label in ('codex_config', 'claude_settings', 'claude_plugins',
+                  *(['codex_default_config'] if 'codex_default_config' in before else [])):
         old, new = before[label], after[label]
         public['before'][label] = {'path': old['path'], 'sha256': old['sha256']}
         public['after'][label] = {'path': new['path'], 'sha256': new['sha256']}
@@ -254,7 +264,7 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=()) ->
         else:
             findings.append({'file': label, 'reason': 'unexpected-content-change'})
     return {'status': 'FAIL' if findings else 'PASS', **public,
-            'expected_changes': expected, 'findings': findings}
+            'expected_changes': expected, 'findings': findings, 'warnings': ['global config mutated by codex CLI trust persistence'] if any(row['file'] == 'codex_config' for row in expected) else []}
 
 
 def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
@@ -956,6 +966,8 @@ class Coordinator:
         self.workitem = Path(args.workitem).expanduser().resolve()
         self.run_dir = Path(args.run_dir).expanduser().resolve()
         self.global_config_home = Path.home()
+        if not Path(codex_home_text := os.environ.get('CODEX_HOME') or str(Path.home() / '.codex')).expanduser().is_absolute(): raise ValueError('CODEX_HOME must be absolute so global Codex config changes can be monitored')
+        self.global_codex_home = Path(codex_home_text).expanduser().resolve()
         self.author_temp_dir = self.run_dir / 'author-tmp'
         self._probe_sandbox_commands = None
         self.rounds = self.run_dir / 'rounds'
@@ -1844,6 +1856,9 @@ class Coordinator:
         return 'ACTIVE'
 
     def archive_abandoned_turn(self, receipt: dict) -> None:
+        if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
+            current = global_config_snapshot(self.global_config_home, self.global_codex_home)
+            if any(current[key]['sha256'] != value for key, value in receipt['global_codex_before'].items()): self.hold('global Codex config changed during uncertain turn; cannot attribute'); raise RuntimeError('global Codex config changed during uncertain turn; cannot attribute')
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
@@ -2542,6 +2557,8 @@ class Coordinator:
         env = cli_env()
         if env_overrides:
             env.update(env_overrides)
+        codex_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home) if receipt['vendor'] == 'codex' else None
+        if codex_config_before is not None: receipt['global_codex_before'] = {key: value['sha256'] for key, value in codex_config_before.items() if key.startswith('codex_')}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
         process = None
         try:
@@ -2643,6 +2660,16 @@ class Coordinator:
         receipt['context_after'] = context_after
         atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         try:
+            if codex_config_before is not None:
+                changes = attribute_global_config_changes(codex_config_before,
+                    global_config_snapshot(self.global_config_home, self.global_codex_home), [active_workspace])
+                receipt['global_config_changes'] = changes
+                if changes['status'] != 'PASS':
+                    raise ValueError('Codex turn changed global config outside its own trust entry')
+                if changes['warnings']:
+                    warning = changes['warnings'][0] + ': ' + str(active_workspace)
+                    receipt['global_config_warning'] = warning
+                    print('WARNING: ' + warning)
             if process.returncode:
                 error_text = read_text_tail(stderr_path)
                 output_text = read_text_tail(stdout_path)
@@ -3347,7 +3374,7 @@ class Coordinator:
                 self.state['hold_reason'] = 'permission probe retry cleared; permission probe is pending'
             self.save()
         snapshot, _ = git_snapshot(self.workspace)
-        global_before = global_config_snapshot(self.global_config_home)
+        global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         allowed_command = self.args.test_command.strip()
         test_attack = allowed_command + ' --help > forbidden-test-help'
         attempts = ('echo x > forbidden-probe', 'git checkout -- tracked.txt', 'rm tracked.txt',
@@ -3445,7 +3472,7 @@ class Coordinator:
                                       'target_absent': target_absent_before_cleanup.get(str(sandbox_probe_paths[2]), False)},
                       } if sandbox_probe_paths else None),
                       'claude_sandbox_write_denied': False if sandbox_probe_paths else None}
-            global_after = global_config_snapshot(self.global_config_home)
+            global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
             report['global_config_changes'] = attribute_global_config_changes(
                 global_before, global_after, [self.workspace])
             if report['global_config_changes']['status'] != 'PASS':
@@ -3564,7 +3591,7 @@ class Coordinator:
                 'UNVERIFIED: dedicated run-dir OS-sandbox denial not observed')
             report['claude_sandbox_write_denied'] = os_status == 'PASS'; report['claude_flag_semantics'] = 'OS-level denial observed for the dedicated OS-only probe' if os_status == 'PASS' else 'UNVERIFIED: dedicated OS-only denial not observed'
             self._probe_sandbox_commands = None
-        global_after = global_config_snapshot(self.global_config_home)
+        global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
         expected_trust_paths = [self.workspace]
         if author_probe.get('workspace'):
             expected_trust_paths.append(Path(author_probe['workspace']))
@@ -3573,12 +3600,15 @@ class Coordinator:
         if report['global_config_changes']['status'] != 'PASS':
             report['status'] = 'FAIL'
             report['failure_reasons'].append('unexpected-global-config-change')
+        trust_warning = '; '.join(report['global_config_changes'].get('warnings', []))
+        if trust_warning:
+            trust_warning += ': ' + ', '.join(path for row in report['global_config_changes']['expected_changes'] if row['file'] == 'codex_config' for path in row['workspaces']); report['warning'] = trust_warning
         atomic_json(self.run_dir / 'permission-probe.json', report)
         if author_probe.get('model_escape_failed_targets'):
             self.hold('1C FAIL: escape write observed at ' + ', '.join(author_probe['model_escape_failed_targets'])); return False
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
                                      if report['status'] == 'PASS' else
-                                     'permission probe failed; inspect permission-probe.json')
+                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '')
         self.save()
         self.write_usage()
         return report['status'] == 'PASS'

@@ -143,11 +143,18 @@ direct `Edit` or `Write` safety for a Claude author.
 Read-only Claude roles receive the read tools as one rule and each exact
 argument-bearing Bash command as its own `--allowedTools` argument.
 
-The probe records hashes for the specified Codex and Claude global files.
-Codex's new-workspace trusted-project entry and Claude plugin `lastUpdated`
-updates are attributed in the report; any other global-file change fails the
-probe. Do not use `--skip-probe` for a real task; it exists for deterministic
-tests only.
+The probe records hashes for the effective `$CODEX_HOME/config.toml` (or
+`~/.codex/config.toml`) and the two Claude global files. Installed Codex may
+persist a trust entry for a new workspace. Only an exact insertion of
+`[projects."<this run's workspace>"] trust_level = "trusted"` at a TOML table
+boundary is attributed; the report warns `global config mutated by codex CLI
+trust persistence`. The file is **not** byte-identical in that case. Any other
+Codex change fails; Claude plugin `lastUpdated` is attributed separately.
+The coordinator never edits or restores the user's global config. Do not use
+`--skip-probe` for a real task; it exists for deterministic tests only.
+Each Codex turn also records a before/after Codex-config comparison. A changed
+config during an uncertain turn HOLDs before replay; recovery rules are a
+separate readiness step.
 
 If a run is held, inspect `state.json`, `open-findings.md`,
 `findings-ledger.md`, and the latest receipts under `evidence/` before resuming.

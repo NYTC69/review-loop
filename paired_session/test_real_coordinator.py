@@ -1,5 +1,6 @@
 import importlib.util
 import errno
+import hashlib
 import io
 import json
 import os
@@ -65,6 +66,10 @@ class RealCoordinatorTests(unittest.TestCase):
             json.dumps({'plugins': []}))
         self.original_home = os.environ.get('HOME')
         os.environ['HOME'] = str(self.test_home)
+        self._fake_codex_env = patch.dict(os.environ, {
+            'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root)})
+        self._fake_codex_env.start()
+        self.addCleanup(self._fake_codex_env.stop)
         self._unpatched_popen = subprocess.Popen
         self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')
                                      if (path := shutil.which(name))}
@@ -131,6 +136,66 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual({item['change'] for item in result['expected_changes']},
                          {'trusted-probe-workspace-entry', 'plugin-lastUpdated'})
         self.assertEqual(result['findings'], [])
+        self.assertIn('global config mutated by codex CLI trust persistence', result['warnings'])
+
+    def test_codex_trust_entry_inserted_between_tables_warns_and_other_edits_fail(self):
+        home = self.root / 'global-state-middle-trust'
+        (home / '.codex').mkdir(parents=True)
+        (home / '.claude' / 'plugins').mkdir(parents=True)
+        config = home / '.codex' / 'config.toml'
+        config.write_text('model = "gpt-6-sol"\n\n[hooks]\nenabled = true\n')
+        (home / '.claude' / 'settings.json').write_text('{}\n')
+        (home / '.claude' / 'plugins' / 'installed_plugins.json').write_text('{}\n')
+        before = rc.global_config_snapshot(home)
+        header = '[projects.' + json.dumps(str(self.workspace.resolve())) + ']\ntrust_level = "trusted"\n\n'
+        config.write_text('model = "gpt-6-sol"\n\n' + header + '[hooks]\nenabled = true\n')
+        result = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home), [self.workspace])
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertEqual(result['warnings'], ['global config mutated by codex CLI trust persistence'])
+        self.assertNotEqual(result['before']['codex_config']['sha256'], result['after']['codex_config']['sha256'])
+        config.write_text(config.read_text().replace('enabled = true', 'enabled = false'))
+        changed = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home), [self.workspace])
+        self.assertEqual(changed['status'], 'FAIL')
+        config.write_text('model = "gpt-6-sol"\n\n[hooks]\n' + header + 'enabled = true\n')
+        moved_key = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home), [self.workspace])
+        self.assertEqual(moved_key['status'], 'FAIL')
+        config.write_text('model = "gpt-6-sol"\n\n' + header.split('trust_level')[0]
+                          + '[hooks]\nenabled = true\ntrust_level = "trusted"\n')
+        split_entry = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home), [self.workspace])
+        self.assertEqual(split_entry['status'], 'FAIL')
+
+    def test_effective_codex_home_trust_warning_does_not_touch_default_home(self):
+        isolated = self.root / 'isolated-codex-home'
+        isolated.mkdir()
+        (isolated / 'config.toml').write_bytes((self.test_home / '.codex/config.toml').read_bytes())
+        default_before = (self.test_home / '.codex/config.toml').read_bytes()
+        command = self.command()
+        command[2] = 'permission-probe'
+        result = subprocess.run(command, cwd=self.root,
+            env={**os.environ, 'CODEX_HOME': str(isolated), 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['global_config_changes']['status'], 'PASS')
+        self.assertIn('global config mutated by codex CLI trust persistence',
+                      report['global_config_changes']['warnings'])
+        self.assertEqual((self.test_home / '.codex/config.toml').read_bytes(), default_before)
+        self.assertNotEqual((isolated / 'config.toml').read_bytes(), default_before)
+        before = rc.global_config_snapshot(self.test_home, isolated)
+        (self.test_home / '.codex/config.toml').write_bytes(default_before + b'\n[unexpected]\nflag = true\n')
+        default_changed = rc.attribute_global_config_changes(
+            before, rc.global_config_snapshot(self.test_home, isolated), [self.workspace])
+        self.assertEqual(default_changed['status'], 'FAIL')
+
+    def test_relative_codex_home_is_refused_before_run_state(self):
+        args = rc.parser().parse_args(self.command()[2:])
+        with patch.dict(os.environ, {'CODEX_HOME': 'relative-home'}):
+            with self.assertRaisesRegex(ValueError, 'CODEX_HOME must be absolute'):
+                rc.Coordinator(args)
+        self.assertFalse(self.run_dir.exists())
+        with patch.dict(os.environ, {'CODEX_HOME': ''}):
+            co = rc.Coordinator(args)
+        self.assertEqual(co.global_codex_home, (self.test_home / '.codex').resolve())
 
     def test_suite_guard_refuses_real_provider_binary_launches(self):
         for binary in ('claude', 'codex'):
@@ -139,6 +204,14 @@ class RealCoordinatorTests(unittest.TestCase):
                     self._guarded_test_popen([binary, '--version'])
         with self.assertRaisesRegex(AssertionError, 'real claude/codex binary'):
             self._guarded_test_popen(['/bin/sh', '-c', 'codex --version'])
+
+    def test_fake_codex_refuses_config_write_outside_test_root(self):
+        outside = self.root.parent / ('outside-' + self.root.name)
+        result = subprocess.run([str(self.fake_codex_cli()), 'exec'], input='probe',
+            env={**os.environ, 'CODEX_HOME': str(outside), 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 97)
+        self.assertFalse(outside.exists())
 
     def test_global_hash_attribution_flags_any_non_allowlisted_change(self):
         cases = ('codex-config', 'claude-settings', 'plugin-version')
@@ -232,6 +305,7 @@ class RealCoordinatorTests(unittest.TestCase):
                                      'FAKE_CLAUDE_PLUGIN_LAST_UPDATED': '1'},
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn('global config mutated by codex CLI trust persistence', result.stdout)
         report = json.loads((self.run_dir / 'permission-probe.json').read_text())
         changes = report['global_config_changes']
         self.assertEqual(changes['status'], 'PASS', changes)
@@ -240,6 +314,31 @@ class RealCoordinatorTests(unittest.TestCase):
             ('claude_plugins', 'plugin-lastUpdated'),
         })
         self.assertEqual(changes['findings'], [])
+        self.assertIn(str(Path(report['author_permission_probe']['workspace']).resolve()), result.stdout)
+
+    def test_product_codex_turn_warns_and_unrelated_global_change_holds(self):
+        for unexpected in (False, True):
+            with self.subTest(unexpected=unexpected):
+                self.run_dir = self.root / ('product-global-' + str(unexpected).lower())
+                probe_command = self.command('--exercise-revisions')
+                probe_command[2] = 'permission-probe'
+                base_env = {**os.environ, 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'}
+                probe = subprocess.run(probe_command, cwd=self.root, env=base_env,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+                run_env = {**base_env, **({'FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE': '1'} if unexpected else {})}
+                run = subprocess.run(self.command('--exercise-revisions'), cwd=self.root, env=run_env,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                if unexpected:
+                    self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+                    self.assertEqual(state['status'], 'HOLD')
+                    self.assertIn('global config', state['hold_reason'])
+                else:
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn('global config mutated by codex CLI trust persistence', run.stdout)
+                    self.assertTrue(any(str(self.workspace) in row.get('global_config_warning', '')
+                                        for row in state['turns']))
 
     def test_permission_probe_fails_on_unrelated_fake_global_change(self):
         home = self.root / 'probe-home-unexpected'
@@ -446,9 +545,16 @@ if args and args[0] == "sandbox":
 
 prompt = sys.stdin.read()
 if args and args[0] == "exec" and os.environ.get("FAKE_CODEX_AUTO_TRUST_ENTRY"):
-    config_path = Path.home() / ".codex" / "config.toml"; config_path.parent.mkdir(parents=True, exist_ok=True)
-    with config_path.open("a") as handle:
-        handle.write("\\n[projects." + json.dumps(str(Path.cwd().resolve())) + "]\\ntrust_level = \\"trusted\\"\\n")
+    home_text = os.environ.get("CODEX_HOME"); root_text = os.environ.get("FAKE_CODEX_TEST_ROOT")
+    if not home_text or not root_text or not Path(home_text).is_absolute() or not Path(root_text).is_absolute():
+        print("fake Codex requires an isolated test CODEX_HOME", file=sys.stderr); sys.exit(97)
+    root = Path(root_text).resolve(); config_path = Path(home_text).resolve() / "config.toml"
+    if root not in config_path.parents or not root.is_dir():
+        print("fake Codex config write escaped test root", file=sys.stderr); sys.exit(97)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = "[projects." + json.dumps(str(Path.cwd().resolve())) + "]\\ntrust_level = \\"trusted\\"\\n"
+    if not config_path.exists() or entry not in config_path.read_text():
+        with config_path.open("a") as handle: handle.write("\\n" + entry)
     if os.environ.get("FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE"):
         with config_path.open("a") as handle: handle.write("\\n[unrelated]\\nchange = true\\n")
 result = subprocess.run([sys.executable, {str(FAKE)!r}, *args], input=prompt, text=True)
@@ -1749,7 +1855,7 @@ sys.exit(result.returncode)
         path = sessions / 'rollout-test-session.jsonl'
         path.write_text('\n'.join(json.dumps(row) for row in rows))
         start = rc.datetime.fromisoformat('2026-09-21T00:00:00+00:00').timestamp()
-        with patch.object(Path, 'home', return_value=home):
+        with patch.object(Path, 'home', return_value=home), patch.dict(os.environ, {'CODEX_HOME': str(home / '.codex')}):
             attempts, calls = rc.codex_rollout_attempts('test-session', start, start + 2)
             self.assertEqual(len(attempts), 1)
             self.assertEqual(attempts[0]['command'], command)
@@ -3956,6 +4062,28 @@ sys.exit(result.returncode)
         self.assertEqual(saved['abandoned_turns'][0]['provider_usage'], 'unknown')
         reloaded = rc.Coordinator(args)
         self.assertEqual(len(reloaded.state['abandoned_turns']), 1)
+
+    def test_uncertain_codex_turn_refuses_global_config_change_before_replay(self):
+        config = self.test_home / '.codex/config.toml'
+        original = config.read_bytes()
+        for action in ('resume', 'permission-probe'):
+            with self.subTest(action=action):
+                config.write_bytes(original)
+                self.run_dir = self.root / ('uncertain-global-' + action)
+                co = self.coordinator()
+                receipt = {'sequence': 1, 'pid': 43212, 'role': 'author', 'vendor': 'codex',
+                           'phase': 'AUTHOR_PERMISSION_PROBE' if action == 'permission-probe' else 'EXEC',
+                           'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}}
+                co.state['uncertain_active'] = receipt
+                co.save()
+                config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
+                with patch('os.killpg', side_effect=ProcessLookupError):
+                    with self.assertRaisesRegex(RuntimeError, 'global Codex config changed during uncertain turn'):
+                        (co.permission_probe if action == 'permission-probe' else co.resume)(retry_uncertain=True)
+                self.assertEqual(co.state['status'], 'HOLD')
+                self.assertEqual(co.state['uncertain_active'], receipt)
+                self.assertEqual(co.state.get('abandoned_turns', []), [])
+        config.write_bytes(original)
 
     def test_permission_probe_clears_unverifiable_hold_after_later_group_check(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
