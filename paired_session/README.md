@@ -174,10 +174,17 @@ An idle `HOLD` run waiting for its next author turn accepts an in-scope
 clarification with `note --text '...'` or `note --file /path/to/note`. It reaches
 that author turn on `resume`; a newer note replaces a pending one. Notes are
 refused while waiting for a reviewer/gate, after the rejection cap, and on a
-DONE run (use `reject`). The note cannot authorize new scope. The separate
-scope-change CLI is not available yet; abort and start a new run for changed
-scope. Author-produced plan/code remains visible to reviewers, while the
-operator note itself is not forwarded to their prompts.
+DONE run (use `reject`). The note cannot authorize new scope. For a scope
+change, use `note --scope-change --text/--file` on an idle active or ordinary
+HOLD run, or `reject --scope-change` before accepting a DONE run (also allowed
+after the rejection limit). The old run ends as `ABORTED(scope-change)` and
+prints exact `Probe:` and `Start:` commands for one successor. Run both commands
+in order. The successor starts a fresh PLAN, review, and configured gate, with
+the old workspace edits still present for the PLAN author to keep or revert.
+The old run cannot resume or be accepted; a second chained scope change is
+refused. A scope-change note requires the named existing run. Author-produced
+plan/code remains visible to reviewers, while the operator note itself is not
+forwarded to their prompts.
 
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting

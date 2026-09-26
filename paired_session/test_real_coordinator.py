@@ -893,12 +893,15 @@ sys.exit(result.returncode)
         parent_base = parent.state['base_commit']
         task_file = parent.evidence / 'successor-workitem.md'
         task_file.write_text(self.workitem.read_text() + '\nNew scope.\n')
+        config_path = parent.evidence / 'successor-config.json'
+        rc.atomic_json(config_path, {'test_command': 'python3 -m unittest'})
         child_dir = self.root / 'successor-run'
         spec = {'run_dir': str(child_dir), 'workspace': str(self.workspace.resolve()),
                 'original_workitem': str(self.workitem.resolve()),
                 'original_hash': rc.hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
                 'task_sha256': rc.hashlib.sha256(task_file.read_bytes()).hexdigest(),
-                'base_commit': parent_base}
+                'base_commit': parent_base,
+                'config_sha256': rc.hashlib.sha256(config_path.read_bytes()).hexdigest()}
         spec_path = parent.evidence / 'successor-spec.json'
         rc.atomic_json(spec_path, spec)
         parent.state.update(status='ABORTED', abort_kind='scope-change',
@@ -1085,6 +1088,90 @@ sys.exit(result.returncode)
         self.assertEqual(state['status'], 'DONE')
         self.assertGreaterEqual(state['plan_reviews'], 1)
         self.assertTrue(list((self.run_dir / 'evidence').glob('*-gate.receipt.json')))
+
+    def test_exec_scope_change_printed_fake_successor_reaches_done(self):
+        old = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
+        self.assertEqual(old.returncode, 2, old.stdout + old.stderr)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(before['phase'], 'EXEC')
+        (self.workspace / 'legacy-change.txt').write_text('old EXEC edit\n')
+        subprocess.run(['git', 'add', 'legacy-change.txt'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'old run edit'], cwd=self.workspace, check=True)
+        result = self.run_operator_action('note', '--scope-change', '--text', 'Also handle negatives.')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        commands = dict(line.split(': ', 1) for line in result.stdout.strip().splitlines())
+        for label in ('Probe', 'Start'):
+            self.assertIn('--supersedes', commands[label])
+            self.assertNotIn('--skip-probe', commands[label])
+        aborted = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((aborted['status'], aborted['abort_kind']), ('ABORTED', 'scope-change'))
+        for action in ('resume', 'accept', 'abort'):
+            refused = self.run_operator_action(action)
+            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertEqual(self.run_operator_action('resume', '--scope-change').returncode, 2)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'ABORTED')
+        old_fresh = list((self.run_dir / 'evidence').glob('*-*.independence-inputs.json'))
+        self.assertTrue(all('Also handle negatives.' not in path.read_text() for path in old_fresh))
+        probe = subprocess.run(shlex.split(commands['Probe']), cwd=self.root, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+        started = subprocess.run(shlex.split(commands['Start']), cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        successor_dir = self.run_dir.with_name(self.run_dir.name + '-successor')
+        successor = json.loads((successor_dir / 'state.json').read_text())
+        self.assertEqual(successor['status'], 'DONE')
+        self.assertGreaterEqual(successor['plan_reviews'], 1)
+        self.assertGreaterEqual(successor['exec_reviews'], 1)
+        self.assertEqual(successor['supersedes'], str(self.run_dir.resolve()))
+        self.assertIn('legacy-change.txt', (successor_dir / 'context/delta.patch').read_text())
+        old_dir = self.run_dir
+        self.run_dir = successor_dir
+        self.workitem = old_dir / 'evidence/successor-workitem.md'
+        second = self.run_operator_action('reject', '--scope-change', '--text', 'One more change.',
+                                           '--supersedes', str(old_dir))
+        self.assertEqual(second.returncode, 2)
+        self.assertEqual(json.loads((successor_dir / 'state.json').read_text())['status'], 'DONE')
+
+    def test_scope_change_requires_named_existing_run_and_rejects_flag_on_other_actions(self):
+        missing = self.run_operator_action('note', '--scope-change', '--text', 'New scope')
+        self.assertEqual(missing.returncode, 2)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+        self.assertIn('existing coordinator run', missing.stdout)
+        invalid = self.run_operator_action('resume', '--scope-change')
+        self.assertEqual(invalid.returncode, 2)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+        self.assertIn('--scope-change requires note or reject', invalid.stdout)
+
+    def test_done_scope_reject_after_rejection_limit_and_chain_limit(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        state_path = self.run_dir / 'state.json'
+        state = json.loads(state_path.read_text())
+        state.update(max_rejections=1, rejections=[{'id': 'R001'}])
+        state_path.write_text(json.dumps(state))
+        limited = self.run_operator_action('reject', '--text', 'one more change')
+        self.assertEqual(limited.returncode, 2)
+        self.assertEqual(json.loads(state_path.read_text())['terminal_hold_kind'], 'rejection_limit')
+        scoped = self.run_operator_action('reject', '--scope-change', '--text', 'Handle negative values.')
+        self.assertEqual(scoped.returncode, 0, scoped.stdout + scoped.stderr)
+        self.assertEqual(json.loads(state_path.read_text())['status'], 'ABORTED')
+        child = self.run_dir.with_name(self.run_dir.name + '-successor')
+        spec = json.loads((self.run_dir / 'evidence/successor-spec.json').read_text())
+        self.assertEqual(spec['run_dir'], str(child))
+
+    def test_done_scope_reject_keeps_note_out_of_old_fresh_inputs(self):
+        completed = self.run_coordinator('--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        fresh = list((self.run_dir / 'evidence').glob('*-*.independence-inputs.json'))
+        self.assertTrue(fresh)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        changed = self.run_operator_action('reject', '--scope-change', '--text', 'Add a negative-value case.')
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        after = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(after['status'], 'ABORTED')
+        self.assertEqual(after['sequence'], before['sequence'])
+        self.assertTrue(all('Add a negative-value case.' not in path.read_text() for path in fresh))
 
     def test_reject_uses_workspace_lease_and_test_command_preflight(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
