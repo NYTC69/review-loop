@@ -215,6 +215,9 @@
       "path": "docs/protocol/planning.md",
       "sections": [
         "#### Reviewer dispatch {{claude_code|codex}}"
+      ],
+      "requires": [
+        "reviewer-runtime"
       ]
     },
     "plan-schema": {
@@ -330,7 +333,8 @@
         "question-policy",
         "stop-flags",
         "caps",
-        "quality-agent-guard"
+        "quality-agent-guard",
+        "reviewer-runtime"
       ]
     },
     "docs": {
@@ -368,7 +372,8 @@
         "question-policy",
         "stop-flags",
         "caps",
-        "quality-agent-guard"
+        "quality-agent-guard",
+        "delivery-controls"
       ]
     },
     "delivery": {
@@ -387,7 +392,8 @@
         "evidence",
         "question-policy",
         "stop-flags",
-        "caps"
+        "caps",
+        "delivery-controls"
       ]
     },
     "context-persist": {
@@ -413,8 +419,7 @@
     "codex-reviewer": {
       "path": "docs/protocol/runtime-codex.md",
       "sections": [
-        "### Default Reviewer Path",
-        "### Optional Local Reviewer Path",
+        "## Reviewer dispatch",
         "## Codex Hallucination Guard"
       ],
       "requires": [
@@ -493,6 +498,30 @@
       "sections": [
         "## Quality-agent tool-use guard"
       ]
+    },
+    "reviewer-runtime": {
+      "path": "docs/protocol/reviewer-runtime.md"
+    },
+    "delivery-object": {
+      "path": "docs/protocol/delivery-scope.md",
+      "requires": [
+        "delivery-binding"
+      ],
+      "sections": [
+        "## Lifecycle and CLI"
+      ]
+    },
+    "usage-accounting": {
+      "path": "docs/protocol/usage-accounting.md"
+    },
+    "delivery-binding": {
+      "path": "docs/protocol/session-file.md",
+      "sections": [
+        "## Delivery object binding"
+      ]
+    },
+    "delivery-controls": {
+      "path": "docs/protocol/delivery-controls.md"
     }
   },
   "stages": {
@@ -643,7 +672,8 @@
         "plan-review",
         "review-schema",
         "triage",
-        "reviewer-dispatch"
+        "reviewer-dispatch",
+        "reviewer-runtime"
       ],
       "codex": [
         "exit-guards",
@@ -653,7 +683,8 @@
         "review-schema",
         "triage",
         "reviewer-dispatch",
-        "codex-reviewer"
+        "codex-reviewer",
+        "reviewer-runtime"
       ]
     },
     "execution": {
@@ -665,7 +696,8 @@
         "exec-schema",
         "executor-dispatch",
         "evidence",
-        "caps"
+        "caps",
+        "delivery-object"
       ],
       "codex": [
         "exit-guards",
@@ -676,7 +708,8 @@
         "executor-dispatch",
         "evidence",
         "caps",
-        "codex-agents"
+        "codex-agents",
+        "delivery-object"
       ]
     },
     "execution-review": {
@@ -688,7 +721,9 @@
         "review-schema",
         "triage",
         "reviewer-dispatch",
-        "review-common"
+        "review-common",
+        "reviewer-runtime",
+        "delivery-object"
       ],
       "codex": [
         "exit-guards",
@@ -699,7 +734,9 @@
         "triage",
         "reviewer-dispatch",
         "review-common",
-        "codex-reviewer"
+        "codex-reviewer",
+        "reviewer-runtime",
+        "delivery-object"
       ]
     },
     "gate": {
@@ -712,7 +749,8 @@
         "triage",
         "review-schema",
         "reviewer-dispatch",
-        "executor-dispatch"
+        "executor-dispatch",
+        "reviewer-runtime"
       ],
       "codex": [
         "codex-config",
@@ -724,7 +762,8 @@
         "review-schema",
         "reviewer-dispatch",
         "executor-dispatch",
-        "codex-reviewer"
+        "codex-reviewer",
+        "reviewer-runtime"
       ]
     },
     "polish": {
@@ -737,7 +776,8 @@
         "triage",
         "review-schema",
         "reviewer-dispatch",
-        "executor-dispatch"
+        "executor-dispatch",
+        "reviewer-runtime"
       ],
       "codex": [
         "codex-config",
@@ -749,7 +789,8 @@
         "review-schema",
         "reviewer-dispatch",
         "executor-dispatch",
-        "codex-reviewer"
+        "codex-reviewer",
+        "reviewer-runtime"
       ]
     },
     "docs": {
@@ -762,7 +803,8 @@
         "triage",
         "review-schema",
         "reviewer-dispatch",
-        "executor-dispatch"
+        "executor-dispatch",
+        "reviewer-runtime"
       ],
       "codex": [
         "codex-config",
@@ -774,7 +816,8 @@
         "review-schema",
         "reviewer-dispatch",
         "executor-dispatch",
-        "codex-reviewer"
+        "codex-reviewer",
+        "reviewer-runtime"
       ]
     },
     "security": {
@@ -787,7 +830,8 @@
         "triage",
         "review-schema",
         "reviewer-dispatch",
-        "executor-dispatch"
+        "executor-dispatch",
+        "reviewer-runtime"
       ],
       "codex": [
         "codex-config",
@@ -799,7 +843,8 @@
         "review-schema",
         "reviewer-dispatch",
         "executor-dispatch",
-        "codex-reviewer"
+        "codex-reviewer",
+        "reviewer-runtime"
       ]
     },
     "delivery": {
@@ -810,7 +855,8 @@
         "delivery",
         "evidence",
         "resume",
-        "caps"
+        "caps",
+        "delivery-object"
       ],
       "codex": [
         "exit-guards",
@@ -819,7 +865,8 @@
         "delivery",
         "evidence",
         "resume",
-        "caps"
+        "caps",
+        "delivery-object"
       ]
     },
     "stop": {
@@ -844,7 +891,8 @@
         "model-tiers",
         "parallel-review",
         "review-schema",
-        "triage"
+        "triage",
+        "reviewer-runtime"
       ]
     },
     "context-persist": {

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -170,7 +171,7 @@ def _protocol_command(command: str):
             if not re.fullmatch(r"[a-z0-9_-]+@[a-f0-9]{64}", value):
                 raise ValueError("invalid loaded fingerprint")
             loaded.append(value)
-        elif option in ("--runtime", "--stage", "--root") and option not in options:
+        elif option in ("--runtime", "--stage", "--root", "--output") and option not in options:
             options[option] = value
         else:
             raise ValueError("unknown or repeated loader argument")
@@ -178,7 +179,12 @@ def _protocol_command(command: str):
         raise ValueError("loader runtime/stage missing or invalid")
     if "--root" in options and (root / options["--root"]).resolve() != root:
         raise ValueError("loader source root differs from capture repository")
-    return options["--runtime"], options["--stage"], set(loaded)
+    output = options.get("--output")
+    if output is not None:
+        output_path = Path(output)
+        if output_path.is_absolute() or output_path.parts[:2] != (".review-loop", "tmp"):
+            raise ValueError("loader output is outside .review-loop/tmp")
+    return options["--runtime"], options["--stage"], set(loaded), output
 
 
 def _protocol_units(runtime, stage):
@@ -192,7 +198,7 @@ def _fingerprint(unit):
 
 
 def _verified_protocol_load(call, block, available):
-    runtime, stage, loaded = call["command"]
+    runtime, stage, loaded, output = call["command"]
     if block.get("is_error", False) is not False:
         raise ValueError("loader tool_result failed")
     content = block.get("content")
@@ -211,8 +217,22 @@ def _verified_protocol_load(call, block, available):
         f"<!-- {_fingerprint(unit)}; source: {unit['path']} -->\n{unit['body']}"
         for unit in emitted
     )
-    if content != expected:
-        raise ValueError("loader result differs from complete source bodies/fingerprints")
+    if output is None:
+        if content != expected:
+            raise ValueError("loader result differs from complete source bodies/fingerprints")
+    else:
+        try:
+            receipt = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError("loader output receipt is not JSON") from exc
+        expected_receipt = {
+            "protocol_output": output,
+            "sha256": hashlib.sha256(expected.encode("utf-8")).hexdigest(),
+            "bytes": len(expected.encode("utf-8")),
+            "lines": len(expected.splitlines()),
+        }
+        if receipt != expected_receipt:
+            raise ValueError("loader output receipt differs from resolved bundle")
     fingerprints = [_fingerprint(unit) for unit in units]
     return {"tool": "ProtocolLoad", "tool_use_id": call["id"],
             "runtime": runtime, "stage": stage, "context": call["context"],
@@ -220,7 +240,7 @@ def _verified_protocol_load(call, block, available):
             "emitted": [_fingerprint(unit) for unit in emitted],
             "reused": [fp for fp in fingerprints if fp in loaded],
             "instruction_bytes": sum(unit["bytes"] for unit in emitted),
-            "output_bytes": len(content.encode("utf-8"))}
+            "output_bytes": len(expected.encode("utf-8"))}
 
 
 def protocol_stages_loaded(payload, assertion):

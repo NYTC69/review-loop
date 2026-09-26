@@ -87,7 +87,7 @@ def test_codex_only_parallel_transport_is_not_available_to_claude():
 @pytest.mark.parametrize("stage", ["polish", "docs", "security"])
 def test_downstream_agents_cannot_pass_with_zero_tools(runtime, stage):
     text = "\n".join(u["body"] for u in resolve(ROOT, runtime, stage))
-    assert "returning `tool_uses: 0`, discard its result and retry once" in text
+    assert "whose launcher summary reports `tool_uses: 0`, discard its result and retry once" in text
     assert "skipped by this guard is not a successful check" in " ".join(text.split())
 
 

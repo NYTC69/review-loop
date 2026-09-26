@@ -9,13 +9,17 @@ Read the entry skill and this contract, then load `entry-plan`, `entry-execute`
 or `entry-review-loop` before interpreting flags or touching session state:
 
 ```bash
-python3 <support-root>/scripts/read_protocol.py --runtime <claude|codex> --stage <stage>
+python3 <support-root>/scripts/read_protocol.py --runtime <claude|codex> --stage <stage> \
+  --output .review-loop/tmp/protocol-<runtime>-<stage>.md
 ```
 
-Read the complete emitted bundle before its action. Missing source, ambiguous
-section, cyclic prerequisites or truncated output blocks that action; do not
-guess a rule. Follow scoped section references when a claim needs further
-detail. Cross-reference/audit links are not instructions to preload every file.
+On exit 0, determine the output file's line count and read it completely in
+bounded chunks before its action. The loader writes atomically and emits only a
+compact hash/size receipt to stdout, avoiding host tool-output truncation. Missing
+source, ambiguous section, cyclic prerequisites, missing output, or an
+incompletely read file blocks that action; do not guess a rule. Follow scoped
+section references when a claim needs further detail. Cross-reference/audit
+links are not instructions to preload every file.
 
 | Next action | Load before acting |
 |---|---|

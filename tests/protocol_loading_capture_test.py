@@ -19,10 +19,13 @@ from scripts.read_protocol import resolve  # noqa: E402 -- repository-local impo
 from scripts.run_skill_smoke_lib import parse_stream_json_capture, protocol_stages_loaded  # noqa: E402
 
 
-def loader_pair(stage="entry-plan", runtime="claude", loaded=(), context="root", tool_id="load-1"):
+def loader_pair(stage="entry-plan", runtime="claude", loaded=(), context="root",
+                tool_id="load-1", output=None):
     args = ["scripts/read_protocol.py", "--runtime", runtime, "--stage", stage]
     for fingerprint in loaded:
         args += ["--loaded", fingerprint]
+    if output is not None:
+        args += ["--output", output]
     run = subprocess.run([sys.executable, *args], cwd=ROOT, text=True, capture_output=True, check=True)
     scope = {} if context == "root" else {"parent_tool_use_id": context}
     return [
@@ -78,6 +81,18 @@ class ProtocolLoadingCaptureTest(unittest.TestCase):
                 self.assertEqual(event["instruction_bytes"], sum(u["bytes"] for u in units))
                 self.assertEqual(event["context"], "root")
                 self.assertEqual(event["role"], "assistant")
+
+    def test_atomic_output_receipt_counts_as_complete_materialization(self):
+        relative = ".review-loop/tmp/protocol-capture-test.md"
+        target = ROOT / relative
+        try:
+            payload = capture(loader_pair(output=relative))
+            self.assert_loaded(payload)
+            event = payload["events"][0]
+            self.assertEqual(event["output_bytes"], target.stat().st_size)
+            self.assertTrue(target.read_text().startswith("<!-- "))
+        finally:
+            target.unlink(missing_ok=True)
 
     def test_no_result_does_not_count_tool_intent(self):
         payload = capture(loader_pair()[:1])

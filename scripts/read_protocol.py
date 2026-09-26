@@ -11,9 +11,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -90,6 +92,36 @@ def resolve(root, runtime, stage):
     return resolved
 
 
+def write_bundle(path, content):
+    """Atomically write a bundle only inside the task's ignored tmp area."""
+    workspace = Path.cwd().resolve()
+    requested = Path(path)
+    if requested.is_absolute():
+        target = requested.resolve()
+    else:
+        if requested.parts[:2] != (".review-loop", "tmp"):
+            raise ValueError("--output must be inside .review-loop/tmp")
+        target = (workspace / requested).resolve()
+    allowed = (workspace / ".review-loop" / "tmp").resolve()
+    target.relative_to(allowed)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=".protocol-", suffix=".tmp",
+            dir=target.parent, delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT, help="support repository, not task workspace")
@@ -98,6 +130,8 @@ def main(argv=None):
     parser.add_argument("--loaded", action="append", default=[], metavar="UNIT@SHA256",
                         help="only units still available in THIS live context; repeatable")
     parser.add_argument("--inventory", action="store_true", help="metadata only; does not count as reading instructions")
+    parser.add_argument("--output", type=Path,
+                        help="atomically write output under task workspace .review-loop/tmp")
     args = parser.parse_args(argv)
     try:
         units = resolve(args.root, args.runtime, args.stage)
@@ -106,14 +140,27 @@ def main(argv=None):
             if not re.fullmatch(r"[a-z0-9_-]+@[a-f0-9]{64}", item):
                 raise ValueError("invalid --loaded fingerprint")
         if args.inventory:
-            print(json.dumps([{k: v for k, v in unit.items() if k != "body"} for unit in units], indent=2))
+            rendered = json.dumps(
+                [{k: v for k, v in unit.items() if k != "body"} for unit in units],
+                indent=2,
+            ) + "\n"
         else:
             chunks = []
             for unit in units:
                 fingerprint = unit["unit"] + "@" + unit["sha256"]
                 if fingerprint not in seen:
                     chunks.append(f"<!-- {fingerprint}; source: {unit['path']} -->\n{unit['body']}")
-            print("\n".join(chunks), end="")
+            rendered = "\n".join(chunks)
+        if args.output:
+            write_bundle(args.output, rendered)
+            print(json.dumps({
+                "protocol_output": str(args.output),
+                "sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+                "bytes": len(rendered.encode("utf-8")),
+                "lines": len(rendered.splitlines()),
+            }, sort_keys=True))
+        else:
+            print(rendered, end="")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"read_protocol: {exc}", file=sys.stderr)
         return 2
