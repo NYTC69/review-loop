@@ -968,10 +968,24 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
+            if (self.state.get('supersedes') != (str(Path(args.supersedes).resolve()) if args.supersedes else None) or
+                    (self.state.get('effective_task_sha256') and
+                     self.state['effective_task_sha256'] != hashlib.sha256(self.workitem.read_bytes()).hexdigest())):
+                raise ValueError('saved supersedes or effective task hash differs')
+            if self.state.get('supersedes'):
+                parent = Path(self.state['supersedes'])
+                old = json.loads((parent / 'state.json').read_text())
+                spec_path = parent / 'evidence/successor-spec.json'
+                spec = json.loads(spec_path.read_text())
+                if (old.get('status') != 'ABORTED' or spec.get('run_dir') != str(self.run_dir) or
+                        spec.get('task_sha256') != self.state['effective_task_sha256'] or
+                        old.get('successor_spec_sha256') != hashlib.sha256(spec_path.read_bytes()).hexdigest() or
+                        spec.get('original_hash') != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest()):
+                    raise ValueError('saved successor link differs')
             if 'reason' in self.state and 'hold_reason' not in self.state:
                 self.state['hold_reason'] = self.state.pop('reason')
                 self.save()
-            if self.args.action in ('accept', 'reject'):
+            if self.args.action in ('accept', 'reject', 'note'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
                 for key, value in self.state['config'].items():
@@ -984,6 +998,10 @@ class Coordinator:
                     self.state['config'].get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
             else:
                 self._validate_resume_args()
+            if self.state.get('scope_change_intent') and not getattr(args, 'scope_change', False):
+                raise ValueError('scope change is pending; finish that request')
+            if self.state.get('status') == 'ABORTED' and not getattr(args, 'scope_change', False):
+                raise ValueError('run was ABORTED by scope change; start its successor')
             self.state.setdefault('base_commit', self._head_commit())
             self.state.setdefault('reviews_completed', 0)
             ledger_path = self.run_dir / 'findings-ledger.json'
@@ -1041,6 +1059,29 @@ class Coordinator:
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
+            if args.supersedes:
+                parent = Path(args.supersedes).resolve()
+                old = json.loads((parent / 'state.json').read_text())
+                spec = json.loads((parent / 'evidence/successor-spec.json').read_text())
+                task_hash = hashlib.sha256(self.workitem.read_bytes()).hexdigest()
+                if (old.get('status') != 'ABORTED' or old.get('abort_kind') != 'scope-change' or
+                        not old.get('base_commit') or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
+                        spec['run_dir'] != str(self.run_dir) or spec['workspace'] != str(self.workspace) or
+                        spec['original_hash'] != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest() or
+                        old.get('successor_spec_sha256') != hashlib.sha256((parent / 'evidence/successor-spec.json').read_bytes()).hexdigest()):
+                    raise ValueError('successor spec or parent state differs')
+                if subprocess.run(['git', 'merge-base', '--is-ancestor', old['base_commit'], 'HEAD'],
+                                  cwd=self.workspace).returncode:
+                    raise ValueError('parent base_commit is not an ancestor of HEAD')
+                with run_lease(parent):
+                    claim = parent / 'evidence/successor-claim.json'
+                    if claim.exists() and json.loads(claim.read_text())['run_dir'] != str(self.run_dir):
+                        raise ValueError('parent already has a successor')
+                    if not claim.exists():
+                        atomic_json(claim, {'run_dir': str(self.run_dir)})
+                self.state.update(base_commit=old['base_commit'], supersedes=str(parent),
+                                  scope_chain_depth=old.get('scope_chain_depth', 0) + 1,
+                                  effective_task_sha256=task_hash)
             self.save()
 
     def _migrate_invocation_budget(self) -> int:
@@ -1584,8 +1625,8 @@ class Coordinator:
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
-        if self.state.get('status') == 'ACCEPTED':
-            return 'ACCEPTED'
+        if self.state.get('status') in ('ACCEPTED', 'ABORTED'):
+            return self.state['status']
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
@@ -3574,6 +3615,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
+    p.add_argument('--supersedes', help='resolved parent run dir for a scope-change successor')
     p.add_argument('--config', help='JSON profile; defaults to <workspace>/.review-loop/paired-session.json')
     p.add_argument('--author-vendor', choices=['codex', 'claude'], default='codex')
     p.add_argument('--author-model', help='defaults to the vendor-pinned ADR-5 model')

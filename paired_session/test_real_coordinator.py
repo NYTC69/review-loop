@@ -886,6 +886,45 @@ sys.exit(result.returncode)
             self.assertEqual(co.resume(), 'ACTIVE')
             drive.assert_called_once_with()
 
+    def test_successor_probe_binds_parent_base_task_and_single_child(self):
+        old_dir = self.root / 'superseded-run'
+        self.run_dir = old_dir
+        parent = self.coordinator()
+        parent_base = parent.state['base_commit']
+        task_file = parent.evidence / 'successor-workitem.md'
+        task_file.write_text(self.workitem.read_text() + '\nNew scope.\n')
+        child_dir = self.root / 'successor-run'
+        spec = {'run_dir': str(child_dir), 'workspace': str(self.workspace.resolve()),
+                'original_workitem': str(self.workitem.resolve()),
+                'original_hash': rc.hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
+                'task_sha256': rc.hashlib.sha256(task_file.read_bytes()).hexdigest(),
+                'base_commit': parent_base}
+        spec_path = parent.evidence / 'successor-spec.json'
+        rc.atomic_json(spec_path, spec)
+        parent.state.update(status='ABORTED', abort_kind='scope-change',
+                            successor_spec_sha256=rc.hashlib.sha256(spec_path.read_bytes()).hexdigest())
+        parent.save()
+        self.assertEqual(parent.hold('late abort'), 'ABORTED')
+        self.assertEqual(parent.state['status'], 'ABORTED')
+        self.run_dir, self.workitem = child_dir, task_file
+        saved = json.loads(parent.state_path.read_text())
+        saved.pop('base_commit')
+        parent.state_path.write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, 'successor spec or parent state differs'):
+            self.coordinator('--supersedes', str(old_dir))
+        saved['base_commit'] = parent_base
+        parent.state_path.write_text(json.dumps(saved))
+        child = self.coordinator('--supersedes', str(old_dir))
+        self.assertEqual(child.state['base_commit'], parent_base)
+        self.assertEqual(child.state['scope_chain_depth'], 1)
+        self.assertEqual(child.state['supersedes'], str(old_dir))
+        self.assertEqual(json.loads((parent.evidence / 'successor-claim.json').read_text())['run_dir'], str(child_dir))
+        with self.assertRaisesRegex(ValueError, 'saved supersedes'):
+            self.coordinator()
+        task_file.write_text(task_file.read_text() + 'tampered')
+        with self.assertRaisesRegex(ValueError, 'effective task hash differs'):
+            self.coordinator('--supersedes', str(old_dir))
+
     def test_reject_uses_workspace_lease_and_test_command_preflight(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                          '--polish-round', 'off')
