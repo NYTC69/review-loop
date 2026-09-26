@@ -15,12 +15,12 @@
     "planning_round_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Planner"
+      "needle": "### Round 1 \u2014 Planner"
     },
     "execution_round_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Executor"
+      "needle": "### Round 1 \u2014 Executor"
     },
     "execution_round_recorded_numbered": {
       "kind": "artifact_contains",
@@ -30,7 +30,7 @@
     "execution_round_recorded_appended_form": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Execution"
+      "needle": "### Round 1 \u2014 Execution"
     },
     "execution_round_recorded_exec_review_only_form": {
       "kind": "artifact_contains",
@@ -45,12 +45,12 @@
     "reviewer_round_1_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Reviewer"
+      "needle": "### Round 1 \u2014 Reviewer"
     },
     "reviewer_round_1_recorded_review_only_form": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Execution (review-only)"
+      "needle": "### Round 1 \u2014 Execution (review-only)"
     },
     "reviewer_round_1_recorded_execution_round_review_only_form": {
       "kind": "artifact_contains",
@@ -84,7 +84,7 @@
     "reviewer_prompt_user_supplied_provenance_marker_advisory_phrase": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "(plan_source: user-supplied — plan conformance is advisory/MINOR)"
+      "needle": "(plan_source: user-supplied \u2014 plan conformance is advisory/MINOR)"
     },
     "reviewer_prompt_user_supplied_provenance_marker_plan_source_key": {
       "kind": "artifact_contains",
@@ -324,7 +324,7 @@
     "review_only_sentinel_present": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "(none — review-only mode)"
+      "needle": "(none \u2014 review-only mode)"
     },
     "review_target_section_present": {
       "kind": "artifact_contains",
@@ -419,7 +419,7 @@
     "review_only_sentinel_line_1": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "(none — review-only mode)"
+      "needle": "(none \u2014 review-only mode)"
     },
     "review_only_sentinel_line_2": {
       "kind": "artifact_contains",
@@ -1049,7 +1049,7 @@
       },
       {
         "path": "docs/protocol/reviewer-output.md",
-        "needle": "- [CRITICAL] <description> — must be resolved before proceeding"
+        "needle": "- [CRITICAL] <description> \u2014 must be resolved before proceeding"
       },
       {
         "path": ".codex/agents/review-loop-reviewer.toml",
@@ -1057,7 +1057,7 @@
       },
       {
         "path": "docs/protocol/reviewer-output.md",
-        "needle": "- [MINOR] <description> — recommended improvement"
+        "needle": "- [MINOR] <description> \u2014 recommended improvement"
       },
       {
         "path": ".codex/agents/review-loop-reviewer.toml",
@@ -1199,13 +1199,13 @@
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "unless the user explicitly opts into the local Codex reviewer."
+        "needle": "`codex_reviewer_backend: codex` explicitly selects"
       }
     ],
     "codex_claude_reviewer_outside_sandbox": [
       {
         "path": "docs/protocol/planning.md",
-        "needle": "Run **outside** the Codex sandbox."
+        "needle": "Run the wrapper outside the parent Codex"
       },
       {
         "path": "README.md",
@@ -1213,7 +1213,7 @@
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "Run the Claude call outside the sandbox."
+        "needle": "run outside the parent Codex sandbox."
       }
     ],
     "codex_stage1_cheap_model_noop": [
@@ -1269,7 +1269,7 @@
       },
       {
         "path": ".agents/skills/review-loop/SKILL.md",
-        "needle": "after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone."
+        "needle": "after approval continue execution \u2192 execution-review \u2192 gate \u2192 polish \u2192 docs \u2192 security \u2192 delivery. Do not stop after exec alone."
       },
       {
         "path": "skills/guide/SKILL.md",
@@ -1277,7 +1277,7 @@
       },
       {
         "path": "skills/review-loop/SKILL.md",
-        "needle": "after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone."
+        "needle": "after approval continue execution \u2192 execution-review \u2192 gate \u2192 polish \u2192 docs \u2192 security \u2192 delivery. Do not stop after exec alone."
       }
     ],
     "codex_stage1_downstream_stop_points": [
@@ -1301,7 +1301,7 @@
     "codex_stage1_full_delivery_gate": [
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`."
+        "needle": "Codex Stage 1: `{exec, polish, docs, security} \u2286 completed_stages`."
       },
       {
         "path": "docs/protocol/session-file.md",
@@ -1309,7 +1309,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`."
+        "needle": "Codex Stage 1: `{exec, polish, docs, security} \u2286 completed_stages`."
       }
     ],
     "codex_stage1_quality_focus_real": [
@@ -1677,27 +1677,27 @@
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       }
     ],
     "gate_rubric_revalidation": [
@@ -1805,7 +1805,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        "needle": "Run `python3 scripts/evidence_ledger.py --session {uuid} route --path\n   <each path the change will touch>...`"
       },
       {
         "path": "docs/protocol/planning.md",
@@ -1817,7 +1817,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        "needle": "Run `python3 scripts/evidence_ledger.py --session {uuid} route --path\n   <each path the change will touch>...`"
       },
       {
         "path": "docs/protocol/planning.md",
@@ -1875,11 +1875,11 @@
     "adversarial_gate_adapter_verdicts": [
       {
         "path": "docs/protocol/execution.md",
-        "needle": "| `0` | APPROVE — mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies."
+        "needle": "| `0` | APPROVE \u2014 mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies."
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "| `1` | REQUEST_CHANGES — do not mint `exec`;"
+        "needle": "| `1` | REQUEST_CHANGES \u2014 do not mint `exec`;"
       }
     ],
     "route_facts_before_author_dispatch": [
@@ -1889,7 +1889,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        "needle": "Run `python3 scripts/evidence_ledger.py --session {uuid} route --path\n   <each path the change will touch>...`"
       },
       {
         "path": "docs/protocol/execution.md",

@@ -24,8 +24,8 @@ Ledger`, `## Session Metadata`). `## Current Phase: planning`
 state. `plan_source` is written only after the planning loop APPROVEs
 or Step 1.5 routes directly into Approved Plan / review-only; omitted
 during planning draft rounds. Store snap/0 of the current verified
-worktree with `python3 scripts/evidence_ledger.py snapshot --session
-{uuid}` — the mandatory entry point for every `## Evidence Ledger`
+worktree with `python3 scripts/evidence_ledger.py --session {uuid}
+snapshot` — the mandatory entry point for every `## Evidence Ledger`
 write (`snapshot` / `record` / `check` / `classify` / `delta`); never
 hash content or mint stages in prose.
 

@@ -141,7 +141,7 @@ None  /  [explain if any]
 
 ### Attributable Delta
 {the `### Attributable Delta` table from
- `python3 scripts/evidence_ledger.py delta --session {uuid} --pre {pre} --post {post}`}
+ `python3 scripts/evidence_ledger.py --session {uuid} delta --pre {pre} --post {post}`}
 ```
 
 ### Rules

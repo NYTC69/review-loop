@@ -15,11 +15,13 @@ description: >
 Read `docs/protocol/loading.md`, then run:
 
 ```bash
-python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-review-loop
+python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-review-loop --output .review-loop/tmp/protocol-entry-review-loop.md
 ```
 
 Resolve <support-root> to this plugin/repository, not the task workspace.
-Keep cwd in the user's workspace. Read the complete emitted text before acting.
+Keep cwd in the user's workspace. After exit 0, read the complete output file
+in bounded chunks before acting; stdout contains only a compact hash/size receipt,
+not the instruction body. A missing, unreadable, or incompletely read file blocks the action.
 `docs/protocol/loading.json` is the action/prerequisite map for both runtimes.
 
 Detect fresh / plan-exists / code-exists / explicit-resume via the entry procedures. For fresh work run planning → planning-review; after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone.

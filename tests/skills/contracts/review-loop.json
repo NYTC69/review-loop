@@ -5,38 +5,38 @@
     {
       "id": "codex_reviewer_wrapper_runtime_dispatch",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 600"
     },
     {
       "id": "codex_reviewer_wrapper_planning_dispatch",
       "kind": "contains",
       "path": "docs/protocol/planning.md",
-      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py"
     },
     {
       "id": "codex_reviewer_wrapper_no_raw_log_polling",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": "Never stream or poll the raw logs into the\n  orchestrator context"
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Poll only bounded heartbeat/status output."
     },
     {
       "id": "codex_plan_reviewer_wrapper_dispatch",
       "kind": "contains",
       "path": ".agents/skills/plan/SKILL.md",
-      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}"
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model}"
     },
     {
       "id": "codex_execute_reviewer_wrapper_dispatch",
       "kind": "contains",
       "path": ".agents/skills/execute/SKILL.md",
-      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}"
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model}"
     },
     {
       "id": "codex_umbrella_reviewer_wrapper_dispatch",
       "kind": "contains",
       "path": ".agents/skills/review-loop/SKILL.md",
-      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}"
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model}"
     },
     {
       "id": "codex_reviewer_wrapper_project_notes",
@@ -139,8 +139,8 @@
     {
       "id": "codex_plan_claude_reviewer_command_declared",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Claude supports\nRead/Grep/Glob only"
     },
     {
       "id": "codex_plan_completed_agent_cleanup_before_spawn_declared",
@@ -193,8 +193,8 @@
     {
       "id": "codex_execute_claude_reviewer_command_declared",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Claude supports\nRead/Grep/Glob only"
     },
     {
       "id": "codex_execute_completed_agent_cleanup_before_spawn_declared",
@@ -274,8 +274,8 @@
     {
       "id": "codex_reviewer_prompt_path_declared",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": ".review-loop/tmp/{session_id}-reviewer-prompt.txt"
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": ".review-loop/tmp/{invocation_slot}-reviewer-prompt.txt"
     },
     {
       "id": "codex_executor_reference_declared",
@@ -299,19 +299,19 @@
       "id": "codex_reviewer_schema_heading_declared",
       "kind": "contains",
       "path": "docs/protocol/reviewer-output.md",
-      "needle": "# Protocol — Reviewer Output Schema"
+      "needle": "# Protocol \u2014 Reviewer Output Schema"
     },
     {
       "id": "codex_executor_schema_heading_declared",
       "kind": "contains",
       "path": "docs/protocol/executor-output.md",
-      "needle": "# Protocol — Executor Output Schema"
+      "needle": "# Protocol \u2014 Executor Output Schema"
     },
     {
       "id": "codex_claude_reviewer_command_declared",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": "claude -p --no-session-persistence --output-format stream-json --include-partial-messages"
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Claude supports\nRead/Grep/Glob only"
     },
     {
       "id": "planning_reviewer_prompt_self_contained",
@@ -346,14 +346,14 @@
     {
       "id": "codex_claude_reviewer_prompt_inlines_reviewer_body",
       "kind": "contains",
-      "path": "docs/protocol/runtime-codex.md",
-      "needle": "The rendered prompt must begin with the self-contained paragraph from the\n  applicable review content template, before the full `agents/reviewer.md` body"
+      "path": "docs/protocol/planning.md",
+      "needle": "paragraph to the FIRST paragraph, before the full `agents/reviewer.md` body"
     },
     {
       "id": "codex_planning_dispatch_inlines_reviewer_body",
       "kind": "contains",
       "path": "docs/protocol/planning.md",
-      "needle": "Before writing `.review-loop/tmp/{session_id}-reviewer-prompt.txt`, prepend\nthe full `agents/reviewer.md` body"
+      "needle": "paragraph to the FIRST paragraph, before the full `agents/reviewer.md` body"
     },
     {
       "id": "executor_planning_response_section",
@@ -383,7 +383,7 @@
       "id": "reviewer_dispatch_self_contained_first",
       "kind": "contains",
       "path": "docs/protocol/planning.md",
-      "needle": "self-contained paragraph to the FIRST paragraph, before the\n`agents/reviewer.md` body."
+      "needle": "paragraph to the FIRST paragraph, before the full `agents/reviewer.md` body"
     },
     {
       "id": "codex_umbrella_provenance_aware_plan_conformance_bullet",
@@ -400,7 +400,7 @@
       "id": "codex_exec_soft_limit_behavior_declared",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`soft_limit_exec` (default 3). On cap with CRITICALs remaining → ask the user; handsfree → auto hard-stop."
+      "needle": "`soft_limit_exec` (default 3). On cap with CRITICALs remaining \u2192 ask the user; handsfree \u2192 auto hard-stop."
     },
     {
       "id": "claude_umbrella_adversarial_gate_before_polish",
@@ -790,19 +790,19 @@
       "id": "codex_parallel_reviewer_perjob_prompt_path_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
+      "needle": "The scheduler creates a unique job directory"
     },
     {
       "id": "codex_parallel_reviewer_perjob_prompt_path_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
+      "needle": "The scheduler creates a unique job directory"
     },
     {
       "id": "codex_parallel_reviewer_perjob_prompt_path_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "{session_id}-reviewer-prompt.{job_id}.txt"
+      "needle": "The scheduler creates a unique job directory"
     },
     {
       "id": "plugin_version_pinned_plugin_json",
@@ -880,205 +880,205 @@
       "id": "codex_parallel_runtime_codex_label_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
+      "needle": "(`runtime: codex`)"
     },
     {
       "id": "codex_parallel_runtime_codex_label_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
+      "needle": "(`runtime: codex`)"
     },
     {
       "id": "codex_parallel_runtime_codex_label_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`runtime: \"codex\"` jobs (the Codex Stage 1"
+      "needle": "(`runtime: codex`)"
     },
     {
       "id": "codex_parallel_runtime_claude_code_label_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
+      "needle": "(`runtime: claude_code`)"
     },
     {
       "id": "codex_parallel_runtime_claude_code_label_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
+      "needle": "(`runtime: claude_code`)"
     },
     {
       "id": "codex_parallel_runtime_claude_code_label_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`runtime: \"claude_code\"` jobs (the Claude-Code orchestrator's"
+      "needle": "(`runtime: claude_code`)"
     },
     {
       "id": "codex_parallel_reviewer_output_template_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
+      "needle": "Only after a clean invocation, read `result_file`"
     },
     {
       "id": "codex_parallel_reviewer_output_template_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
+      "needle": "Only after a clean invocation, read `result_file`"
     },
     {
       "id": "codex_parallel_reviewer_output_template_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "per-job stdout is written to\n`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`."
+      "needle": "Only after a clean invocation, read `result_file`"
     },
     {
       "id": "codex_parallel_edit_c_trigger_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
+      "needle": "If `error` is non-null, `timed_out` is true, `returncode` is nonzero"
     },
     {
       "id": "codex_parallel_edit_c_trigger_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
+      "needle": "If `error` is non-null, `timed_out` is true, `returncode` is nonzero"
     },
     {
       "id": "codex_parallel_edit_c_trigger_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "`error` field is non-null, or `timed_out` is true, or\n  `returncode` is non-zero"
+      "needle": "If `error` is non-null, `timed_out` is true, `returncode` is nonzero"
     },
     {
       "id": "codex_parallel_edit_c_classification_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "classify as a **command-execution failure**"
+      "needle": "record the actual failure and do not accept a verdict."
     },
     {
       "id": "codex_parallel_edit_c_classification_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "classify as a **command-execution failure**"
+      "needle": "record the actual failure and do not accept a verdict."
     },
     {
       "id": "codex_parallel_edit_c_classification_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "classify as a **command-execution failure**"
+      "needle": "record the actual failure and do not accept a verdict."
     },
     {
       "id": "codex_parallel_edit_c_precedence_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "diagnostic fields take precedence over stream-json parse outcome."
+      "needle": "record the actual failure and do not accept a verdict."
     },
     {
       "id": "codex_parallel_edit_c_precedence_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "diagnostic fields take precedence over stream-json parse outcome."
+      "needle": "record the actual failure and do not accept a verdict."
     },
     {
       "id": "codex_parallel_edit_c_precedence_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "diagnostic fields take precedence over stream-json parse outcome."
+      "needle": "record the actual failure and do not accept a verdict."
     },
     {
       "id": "codex_parallel_edit_c_skip_parse_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "Do not attempt to parse `stdout` for that entry"
+      "needle": "`stdout` is a bounded wrapper-status tail, never the raw"
     },
     {
       "id": "codex_parallel_edit_c_skip_parse_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "Do not attempt to parse `stdout` for that entry"
+      "needle": "`stdout` is a bounded wrapper-status tail, never the raw"
     },
     {
       "id": "codex_parallel_edit_c_skip_parse_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "Do not attempt to parse `stdout` for that entry"
+      "needle": "`stdout` is a bounded wrapper-status tail, never the raw"
     },
     {
       "id": "codex_parallel_edit_d_enoent_scheduler_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
+      "needle": "scheduler retains them in a unique job directory"
     },
     {
       "id": "codex_parallel_edit_d_enoent_scheduler_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
+      "needle": "scheduler retains them in a unique job directory"
     },
     {
       "id": "codex_parallel_edit_d_enoent_scheduler_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "Per-job prompt files are scheduler-owned and may already be unlinked"
+      "needle": "scheduler retains them in a unique job directory"
     },
     {
       "id": "codex_parallel_edit_d_orchestrator_warning_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "non-ENOENT failure to delete them"
+      "needle": "for offline verification"
     },
     {
       "id": "codex_parallel_edit_d_orchestrator_warning_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "non-ENOENT failure to delete them"
+      "needle": "for offline verification"
     },
     {
       "id": "codex_parallel_edit_d_orchestrator_warning_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "non-ENOENT failure to delete them"
+      "needle": "for offline verification"
     },
     {
       "id": "codex_parallel_edit_d_policy_clauses_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
+      "needle": "another invocation's files or any unrelated session artifact"
     },
     {
       "id": "codex_parallel_edit_d_policy_clauses_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
+      "needle": "another invocation's files or any unrelated session artifact"
     },
     {
       "id": "codex_parallel_edit_d_policy_clauses_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "should be logged as a warning in `## Review History` but must not block\nthe round verdict."
+      "needle": "another invocation's files or any unrelated session artifact"
     },
     {
       "id": "codex_scheduler_best_effort_caveat_source",
       "kind": "contains",
-      "path": "scripts/review_verification.py",
-      "needle": "Stream-json parsing here is intentionally a *best-effort* duplicate of"
+      "path": "docs/protocol/parallel-review.md",
+      "needle": "not a replacement\nfor the orchestrator's schema/rubric gate."
     },
     {
       "id": "codex_parallel_best_effort_caveat_review_loop",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
+      "needle": "not a replacement\nfor the orchestrator's schema/rubric gate."
     },
     {
       "id": "codex_parallel_best_effort_caveat_plan",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
+      "needle": "not a replacement\nfor the orchestrator's schema/rubric gate."
     },
     {
       "id": "codex_parallel_best_effort_caveat_execute",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "parsed_verdict` / `parsed_issues` are best-effort metadata only"
+      "needle": "not a replacement\nfor the orchestrator's schema/rubric gate."
     },
     {
       "id": "f_load_jobs_field_session_id",
@@ -1144,7 +1144,7 @@
       "id": "protocol_planning_parallel_fanout_forward_pointer",
       "kind": "contains",
       "path": "docs/protocol/planning.md",
-      "needle": "Parallel Reviewer Fan-Out (N>1)` subsection in each"
+      "needle": "For N>1 load `parallel-review`; it uses the same"
     },
     {
       "id": "codex_umbrella_startup_banner_section_declared",
@@ -1180,7 +1180,7 @@
       "id": "claude_umbrella_startup_banner_section_header_declared",
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
-      "needle": "── review-loop: Starting ──"
+      "needle": "\u2500\u2500 review-loop: Starting \u2500\u2500"
     },
     {
       "id": "claude_umbrella_startup_banner_reviewer_label_declared",
@@ -1198,7 +1198,7 @@
       "id": "codex_umbrella_startup_banner_top_border_declared",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "── review-loop: Starting ──"
+      "needle": "\u2500\u2500 review-loop: Starting \u2500\u2500"
     },
     {
       "id": "codex_umbrella_startup_banner_work_item_label_declared",
@@ -1228,13 +1228,13 @@
       "id": "claude_execute_delivery_summary_zhcn_rule_declared",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "**Language: render the Delivery Summary in 中文 (Simplified\n   Chinese)** — section headings, prose, and prose-style field values use\n   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form."
+      "needle": "**Language: render the Delivery Summary in \u4e2d\u6587 (Simplified\n   Chinese)** \u2014 section headings, prose, and prose-style field values use\n   \u4e2d\u6587; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form."
     },
     {
       "id": "codex_execute_delivery_summary_zhcn_rule_declared",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "**Language: render the Delivery Summary in 中文 (Simplified\n   Chinese)** — section headings, prose, and prose-style field values use\n   中文; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form."
+      "needle": "**Language: render the Delivery Summary in \u4e2d\u6587 (Simplified\n   Chinese)** \u2014 section headings, prose, and prose-style field values use\n   \u4e2d\u6587; ASCII tokens (file paths, identifiers, SHAs, CLI flags, model\n   names, status enums such as `APPROVE` / `CRITICAL`) stay in their\n   original form."
     },
     {
       "id": "claude_reviewer_command_flags_present"
@@ -1344,13 +1344,13 @@
       "id": "codex_plan_lock_release_present",
       "kind": "contains",
       "path": "skills/plan/references/entry.md",
-      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      "needle": "release the single-writer lock per docs/protocol/session-file.md \u00a7Lock file lifecycle before exiting"
     },
     {
       "id": "codex_execute_lock_release_present",
       "kind": "contains",
       "path": "skills/plan/references/entry.md",
-      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      "needle": "release the single-writer lock per docs/protocol/session-file.md \u00a7Lock file lifecycle before exiting"
     },
     {
       "id": "codex_execute_git_diff_failure_present",
@@ -1408,13 +1408,13 @@
       "id": "claude_plan_lock_release_present",
       "kind": "contains",
       "path": "skills/plan/references/entry.md",
-      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      "needle": "release the single-writer lock per docs/protocol/session-file.md \u00a7Lock file lifecycle before exiting"
     },
     {
       "id": "claude_execute_lock_release_present",
       "kind": "contains",
       "path": "skills/plan/references/entry.md",
-      "needle": "release the single-writer lock per docs/protocol/session-file.md §Lock file lifecycle before exiting"
+      "needle": "release the single-writer lock per docs/protocol/session-file.md \u00a7Lock file lifecycle before exiting"
     },
     {
       "id": "claude_execute_git_diff_failure_present",
@@ -1436,7 +1436,7 @@
       "id": "adversarial_gate_claude_step_heading",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+      "needle": "## Step 3.4 \u2014 Terminal Adversarial Gate"
     },
     {
       "id": "adversarial_gate_claude_invocation",
@@ -1453,7 +1453,7 @@
       "id": "adversarial_gate_claude_adapter_exit2_blocks",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
+      "needle": "| `2` | Malformed payload \u2014 REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_claude_adapter_exit2_not_skip",
@@ -1501,7 +1501,7 @@
       "id": "adversarial_gate_codex_step_heading",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+      "needle": "## Step 3.4 \u2014 Terminal Adversarial Gate"
     },
     {
       "id": "adversarial_gate_codex_invocation",
@@ -1518,7 +1518,7 @@
       "id": "adversarial_gate_codex_adapter_exit2_blocks",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
+      "needle": "| `2` | Malformed payload \u2014 REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_codex_adapter_exit2_not_skip",
@@ -1566,7 +1566,7 @@
       "id": "adversarial_gate_protocol_step_heading",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "## Step 3.4 — Terminal Adversarial Gate"
+      "needle": "## Step 3.4 \u2014 Terminal Adversarial Gate"
     },
     {
       "id": "adversarial_gate_protocol_loop_control_interposes_gate",
@@ -1602,7 +1602,7 @@
       "id": "adversarial_gate_protocol_adapter_exit2_blocks",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
+      "needle": "| `2` | Malformed payload \u2014 REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_protocol_adapter_exit2_not_skip",
@@ -1614,7 +1614,7 @@
       "id": "adversarial_gate_invoker_adapter_exit2_blocks",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| `2` | Malformed payload — REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
+      "needle": "| `2` | Malformed payload \u2014 REQUEST_CHANGES; do not mint `exec`. Produced-but-malformed adversarial output is a blocking gate failure, not SKIP."
     },
     {
       "id": "adversarial_gate_invoker_adapter_exit2_no_skip",
@@ -1887,7 +1887,7 @@
       "id": "session_file_canonical_sections_twelve",
       "kind": "contains",
       "path": "docs/protocol/session-file.md",
-      "needle": "12. `## Session Metadata` — always last"
+      "needle": "12. `## Session Metadata` \u2014 always last"
     },
     {
       "id": "session_file_active_record_rule_declared",
@@ -1977,7 +1977,7 @@
       "id": "codex_reviewer_toml_delta_command",
       "kind": "contains",
       "path": ".codex/agents/review-loop-reviewer.toml",
-      "needle": "python3 scripts/evidence_ledger.py delta --session <uuid> --pre <n> --post <m>"
+      "needle": "python3 scripts/evidence_ledger.py --session <uuid> delta --pre <n> --post <m>"
     },
     {
       "id": "evidence_ledger_consistent",
@@ -2131,7 +2131,7 @@
       "id": "claude_umbrella_author_route_rule",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` §Author route selection"
+      "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` \u00a7Author route selection"
     },
     {
       "id": "claude_umbrella_direct_route_produces_dir",
@@ -2143,7 +2143,7 @@
       "id": "codex_umbrella_author_route_rule",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` §Author route selection"
+      "needle": "Never plan yourself; implement directly only under\n  `docs/protocol/execution.md` \u00a7Author route selection"
     },
     {
       "id": "claude_execute_route_facts_before_executor",
@@ -2189,7 +2189,7 @@
       "id": "protocol_execution_route_facts_packet_only",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) \u2014 a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "protocol_execution_route_facts_absent_reason",
@@ -2201,25 +2201,25 @@
       "id": "claude_umbrella_route_facts_packet_only",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) \u2014 a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "claude_execute_route_facts_packet_only",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) \u2014 a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "codex_umbrella_route_facts_packet_only",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) \u2014 a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "codex_execute_route_facts_packet_only",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) — a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
+      "needle": "`### Route Facts` block **only** from `## Current Review Packet` (the\n   section between that heading and the next `## ` heading; fenced code\n   inside the packet is ignored) \u2014 a block anywhere else in the session\n   file (`## Review History`, an earlier DIR)\n   is never consulted"
     },
     {
       "id": "route_facts_source_consistent",
@@ -2390,19 +2390,19 @@
       "id": "protocol_execution_retry_table_claude_row",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
+      "needle": "| Claude native CLI Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "protocol_execution_retry_table_codex_row",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| Codex Stage 1 Claude-CLI Reviewer | none — `planning.md` \"do not retry Claude for that round\" applies unchanged |"
+      "needle": "| Codex Stage 1 Claude-CLI Reviewer schema/transport failure | none \u2014 `planning.md` \"do not retry Claude for that round\" applies to these failures |"
     },
     {
       "id": "protocol_execution_retry_table_gate_row",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| Step 3.4 gate (adapter REQUEST_CHANGES, invoker exit 1) | none — the gate stays single-pass; the producer is **not** re-run |"
+      "needle": "| Step 3.4 gate (adapter REQUEST_CHANGES, invoker exit 1) | none \u2014 the gate stays single-pass; the producer is **not** re-run |"
     },
     {
       "id": "protocol_execution_never_implement_failed_triage",
@@ -2438,7 +2438,7 @@
       "id": "protocol_execution_revalidation_executor_less",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
+      "needle": "no complete gate finding \u2192 round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "protocol_execution_gate_never_rerun",
@@ -2491,7 +2491,7 @@
       "id": "protocol_planning_codex_reviewer_triage",
       "kind": "contains",
       "path": "docs/protocol/planning.md",
-      "needle": "then run\n`python3 scripts/finding_triage.py check --input <result file>`"
+      "needle": "python3 <support-root>/scripts/finding_triage.py check --input <result file>"
     },
     {
       "id": "protocol_session_file_triage_key",
@@ -2623,7 +2623,7 @@
       "id": "claude_umbrella_revalidation_executor_less",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
+      "needle": "no complete gate finding \u2192 round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "claude_umbrella_gate_never_rerun",
@@ -2641,7 +2641,7 @@
       "id": "claude_execute_revalidation_executor_less",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
+      "needle": "no complete gate finding \u2192 round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "claude_execute_gate_never_rerun",
@@ -2659,7 +2659,7 @@
       "id": "codex_umbrella_revalidation_executor_less",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
+      "needle": "no complete gate finding \u2192 round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "codex_umbrella_gate_never_rerun",
@@ -2677,7 +2677,7 @@
       "id": "codex_execute_revalidation_executor_less",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "no complete gate finding → round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
+      "needle": "no complete gate finding \u2192 round step 2 is skipped:\n     `loop_state.revalidation_round = true`"
     },
     {
       "id": "codex_execute_gate_never_rerun",
@@ -2699,91 +2699,91 @@
       "id": "codex_umbrella_triage_after_schema_validation",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
+      "needle": "validate the shared schema, then the mandatory six-field rubric with\n`scripts/finding_triage.py check`"
     },
     {
       "id": "codex_umbrella_triage_no_claude_retry",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
+      "needle": "A Claude invocation/schema failure gets no Claude retry for that round"
     },
     {
       "id": "codex_umbrella_triage_fanout",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "on every validated `result` (mandatory rubric gate)"
+      "needle": "validate the shared schema\nand run `python3 scripts/finding_triage.py check --input <result file>`."
     },
     {
       "id": "codex_umbrella_triage_local_reviewer",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
+      "needle": "Follow [reviewer-runtime.md](reviewer-runtime.md) for both CLI paths."
     },
     {
       "id": "codex_plan_triage_after_schema_validation",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
+      "needle": "validate the shared schema, then the mandatory six-field rubric with\n`scripts/finding_triage.py check`"
     },
     {
       "id": "codex_plan_triage_no_claude_retry",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
+      "needle": "A Claude invocation/schema failure gets no Claude retry for that round"
     },
     {
       "id": "codex_plan_triage_fanout",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "on every validated `result` (mandatory rubric gate)"
+      "needle": "validate the shared schema\nand run `python3 scripts/finding_triage.py check --input <result file>`."
     },
     {
       "id": "codex_plan_triage_local_reviewer",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
+      "needle": "Follow [reviewer-runtime.md](reviewer-runtime.md) for both CLI paths."
     },
     {
       "id": "codex_execute_triage_after_schema_validation",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "- Then run `python3 scripts/finding_triage.py check --input <result file>`"
+      "needle": "validate the shared schema, then the mandatory six-field rubric with\n`scripts/finding_triage.py check`"
     },
     {
       "id": "codex_execute_triage_no_claude_retry",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "do not retry Claude for that round, and never implement a CRITICAL that\n  failed triage."
+      "needle": "A Claude invocation/schema failure gets no Claude retry for that round"
     },
     {
       "id": "codex_execute_triage_fanout",
       "kind": "contains",
       "path": "docs/protocol/parallel-review.md",
-      "needle": "on every validated `result` (mandatory rubric gate)"
+      "needle": "validate the shared schema\nand run `python3 scripts/finding_triage.py check --input <result file>`."
     },
     {
       "id": "codex_execute_triage_local_reviewer",
       "kind": "contains",
       "path": "docs/protocol/runtime-codex.md",
-      "needle": "The local reviewer output also goes through `python3\n  scripts/finding_triage.py check`"
+      "needle": "Follow [reviewer-runtime.md](reviewer-runtime.md) for both CLI paths."
     },
     {
       "id": "claude_umbrella_triage_one_retry",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
+      "needle": "| Claude native CLI Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "claude_execute_triage_one_retry",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
+      "needle": "| Claude native CLI Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "claude_plan_triage_one_retry",
       "kind": "contains",
       "path": "docs/protocol/execution.md",
-      "needle": "| Claude plugin subagent Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
+      "needle": "| Claude native CLI Reviewer (normal Step 3 / planning) | one re-dispatch of the same Reviewer with the original packet plus the missing-field list"
     },
     {
       "id": "rubric_gate_consistent",

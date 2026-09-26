@@ -306,104 +306,50 @@ instructions above.
 
 #### Reviewer dispatch {{claude_code|codex}}
 
-For every rendered reviewer prompt, move the content template's
-self-contained paragraph to the FIRST paragraph, before the
-`agents/reviewer.md` body. Render exactly: self-contained paragraph,
-full reviewer body below frontmatter, then the remaining content template
-(without duplicating its opening paragraph). This order applies to the
-Claude-to-Codex heredoc, Codex-to-Claude prompt file, and in-process prompts.
+For every rendered reviewer prompt, move the content template's self-contained
+paragraph to the FIRST paragraph, before the full `agents/reviewer.md` body
+below frontmatter. Append the remaining content template without repeating that
+paragraph. Include the current packet, exact target, attributable patch artifact
+and caller verification evidence. This applies to both runtimes.
 
-> Forward pointer: for parallel multi-job dispatch (Codex Stage 1 only),
-> the orchestrator shells out to `scripts/review_verification.py`. Wiring
-> prose lives at the `Parallel Reviewer Fan-Out (N>1)` subsection in each
-> of `.agents/skills/review-loop/SKILL.md`,
-> `.agents/skills/plan/SKILL.md`, and `.agents/skills/execute/SKILL.md`.
-> Claude/plugin-side reviewer dispatch is in-process Agent-tool dispatch
-> and is not externally wrappable.
+Use [reviewer-runtime.md](reviewer-runtime.md) for the enforced read-only native
+launcher, model resolution, bounded timeout, immutable artifacts and usage.
+Never dispatch a report-only Reviewer as `subagent_type: general-purpose` or
+allow inherited tools to widen the reviewer's permissions.
 
 {{claude_code}}
 
-Two modes, controlled by `reviewer:` in `.review-loop/config.md`.
-
-- **Mode `codex`** — invoke the Codex CLI in non-interactive, read-only
-  mode. Prepend the full `agents/reviewer.md` body (everything below the
-  frontmatter) to the remaining review content, after the FIRST
-  self-contained paragraph specified above, because Codex does not load
-  Claude Code agent definitions. Use single-quoted heredoc
-  (`<<'REVIEW_PROMPT'`) so zsh does not expand `$variables` inside the
-  prompt. Run **synchronously** (never with `run_in_background: true`) using
-  exactly one of these command templates (the final `-` reads that heredoc
-  from stdin):
-
-  - configured model: `codex exec -s read-only -m {reviewer_model} -o .review-loop/tmp/{session_id}-reviewer-output.round-{round}.txt -`
-  - no configured model: `codex exec -s read-only -o .review-loop/tmp/{session_id}-reviewer-output.round-{round}.txt -`
-
-  Do not add `--full-auto` or other write-enabling flags. Read the
-  round-scoped output file after the command returns.
-  If `codex exec` fails non-zero, fall back to subagent mode **for this
-  round only**; do not ask the user and do not stop the loop. Never fall
-  back to `subagent_type: review-loop:reviewer` — the protocol spawns
-  agents only through `general-purpose` with the body inlined.
-- **Mode `subagent`** — use the Agent tool with
-  `subagent_type: general-purpose`. Inline the `agents/reviewer.md` body at
-  the top of the `prompt` after its FIRST self-contained paragraph, then
-  append the remaining review content template. Plugin
-  agent types are not used by the protocol. Include an explicit
-  "Report only, do not modify any files" instruction at the end of the
-  prompt.
-
-Both modes are stateless per round; the Orchestrator compensates by
-including Review History in the prompt.
+- **Mode `codex`**: invoke `python3 <support-root>/scripts/run_codex_reviewer.py
+  --session-id {session_id} --model {reviewer_model} --stage {phase}`;
+  omit `--model` when not configured. Run synchronously and consume only an
+  exit-0 result; never use `--full-auto` or another permission-widening flag.
+- **Mode `subagent`**: the compatibility name selects the isolated
+  `run_claude_reviewer.py` launcher with the existing Claude model resolution.
+  It no longer dispatches an unrestricted general-purpose Agent.
+- If the Codex reviewer fails, use the existing Claude fallback for this round
+  through its isolated launcher. Do not treat a failed invocation as approval.
 
 {{codex}}
 
-Before writing `.review-loop/tmp/{session_id}-reviewer-prompt.txt`, prepend
-the full `agents/reviewer.md` body (everything below its frontmatter) to the
-remaining review content template, after the FIRST self-contained paragraph
-specified above. This supplies the output schema and complete
-six-field `[CRITICAL]` blocking rubric to the external Claude process.
+- Default reviewer: `python3 <support-root>/scripts/run_claude_reviewer.py
+  --session-id {session_id} --model {reviewer_model if set; else judgment_model
+  if set; else claude-sonnet-4-6} --stage {phase}`.
+- Keep cwd in the task workspace. Run the wrapper outside the parent Codex
+  sandbox so the native CLI can authenticate; the child capabilities remain
+  restricted by the launcher. This is not permission to give it writer tools.
+- `codex_reviewer_backend: codex` selects `run_codex_reviewer.py` with
+  `codex_reviewer_model` instead of the Claude path. Do not spawn the legacy
+  fixed-model `review_loop_reviewer` role as an isolation substitute.
+- A Claude-path invocation or validation failure is not retried for this round
+  and never triggers an unconfigured Codex fallback. Surface the actual failure.
 
-Default reviewer path: invoke
-`python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}`
-with the script path resolved against the support repository and cwd kept in
-the task workspace. Run **outside** the Codex sandbox.
-This applies to both the wrapper and its child. The wrapper feeds
-`.review-loop/tmp/{session_id}-reviewer-prompt.txt` to the
-`claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}`
-command. Poll only the wrapper's bounded heartbeat/status output; never stream
-or poll raw reviewer logs into the orchestrator context. Retain the full stream
-and stderr audit files described in `runtime-codex.md`. On wrapper exit `0`
-only, read `.review-loop/tmp/{session_id}-reviewer-result.txt`; exit `1` means
-command execution failure, `2` no valid result with invalid stream lines,
-and `3` missing `result` with no invalid stream lines. Invalid lines do not
-reject a valid result from a successful child; the final status counts them.
-Validate the extracted `result` against the shared reviewer schema, then run
-`python3 scripts/finding_triage.py check --input <result file>`; an
-`incomplete` result is a schema-validation failure for this round (no
-Claude retry).
-
-This outside-sandbox requirement is not cosmetic. A sandboxed rehearsal of
-the same `claude -p` command is **not** equivalent for diagnosis and may fail
-with transport-level connection errors even when the outside-sandbox command
-works. If a Claude reviewer command was tested inside the Codex sandbox,
-rerun that same command outside the sandbox before concluding the Claude
-reviewer path is broken or before falling back.
-
-If Claude invocation fails or validation fails, **do not retry Claude** for
-that round. Record a short failure-reason summary in `## Review History`
-(execution, JSON parsing, missing `result`, or schema validation).
-
-If `codex_reviewer_backend: codex` is set in config, skip the Claude path
-entirely and use `review_loop_reviewer` directly.
-
-If `codex_reviewer_backend: codex` is **not** set, do not auto-fall back to
-`review_loop_reviewer`. Surface the Claude-path failure to the user instead;
-the default Codex Stage 1 reviewer separation policy keeps review on the
-outside-sandbox Claude path unless the user explicitly opts into the local
-Codex reviewer.
-
-Delete `.review-loop/tmp/{session_id}-reviewer-prompt.txt` immediately after
-the Claude command returns (success or failure).
+Both runtimes validate the returned review schema and then run
+`python3 <support-root>/scripts/finding_triage.py check --input <result file>`.
+An incomplete rubric is a schema failure, never a reason to implement an
+unvalidated finding. Existing backend-specific correction limits still apply.
+Delete the mutable prompt slot after return; retain the invocation's immutable
+raw artifacts and usage record. For N>1 load `parallel-review`; it uses the same
+permission-constrained launchers. No worker may start another review-loop.
 
 ---
 

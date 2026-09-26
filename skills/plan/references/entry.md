@@ -36,7 +36,7 @@ Read selected sections through `scripts/read_protocol.py`; shared protocol rules
    `docs/protocol/session-file.md` §Session Metadata schema).
 4. Acquire the single-writer lock per
    `docs/protocol/session-file.md` §Lock file lifecycle.
-5. Run `python3 scripts/evidence_ledger.py snapshot --session {uuid}`
+5. Run `python3 scripts/evidence_ledger.py --session {uuid} snapshot`
    to store snap/0 (the only way `## Evidence Ledger` is ever written).
 6. Tell the user the session path so they can inspect it.
 

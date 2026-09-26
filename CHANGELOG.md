@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### 第一批自查（W01/W06/W07/W12/W13）与第二批交付控制（W02/W04/W05）：交付身份、只读审查、调用边界、用量账本、原生回归与交付门禁
+
+- 新增只读 `delivery_scope.py`，分别绑定任务前后的 HEAD、index 和工作区内容，显式区分既有用户改动、任务范围、范围外变化及同文件所有权歧义。
+- report-only Reviewer 和质量检查角色统一通过受限原生 Claude/Codex launcher：Claude 仅开放 Read/Grep/Glob，Codex 使用干净配置上下文与 read-only sandbox；写入型 Executor/Simplifier 保持原路径。
+- 两个 launcher 具备总超时、取消、限额/格式/传输分类、不可覆盖的原始工件，以及跨独立进程组的有界后代清理；并行调度器复用同一边界。
+- 新增逐调用用量账本，记录角色、阶段、请求/实际模型、缓存/非缓存输入、cache write、输出、耗时、状态及运行时上报费用；恢复与不完整调用不重复累计，也不伪造未知值。
+- 新增 disposable repo 原生生命周期回归，覆盖 plan、execute、review-only、stop/resume 和非法参数失败；候选工作流仅作为被测对象，不负责批准自身改动，两个运行时均限制在 workspace sandbox。
+- 根据独立对抗审计，补齐原生 tool-use 计数、Claude 默认模型省略、session job 用量归属和非正容量拒绝；审计报告保存在本地忽略结果目录。
+- 第二批新增 W02/W04/W05 delivery consumers：安全扫描覆盖 manifest 中的 tracked/staged/nonignored-untracked 内容并只报规则/路径/行号；auto-commit 只提交 W01 明确归属的路径；W05 在提交前重新核验 manifest、完整安全扫描和 evidence-ledger stages。
+- 协议 loader 可将大 bundle 原子写入忽略目录并输出短 receipt，再分块读取，避免宿主截断；同时修复证据账本全局参数与子命令的错误顺序。
+
 ## 2026-09-25
 
 ### v2.8.8 按 claude-opus-5-5 清理过时的 prompt 写法

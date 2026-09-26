@@ -91,6 +91,25 @@ Codex.
 
 Full step-by-step + verification: [`docs/install-codex.md`](docs/install-codex.md).
 
+## Reviewer isolation and invocation evidence
+
+Report-only reviewers use bounded native CLI launchers. Claude reviewers expose
+only Read/Grep/Glob; Codex reviewers use a clean configuration context and a
+read-only sandbox. The `reviewer: subagent` config name remains accepted but
+selects the isolated Claude launcher. Verification commands run in the caller
+and their evidence is supplied to the reviewer. See the
+[reviewer runtime contract](docs/protocol/reviewer-runtime.md).
+
+Each native reviewer call retains immutable diagnostics and normalized usage,
+including partial/unknown usage on failure. The
+[usage contract](docs/protocol/usage-accounting.md) explains cache and resume
+accounting. The [delivery manifest](docs/protocol/delivery-scope.md) identifies
+HEAD/index/worktree and pre-existing user changes without staging or committing.
+The W02/W04/W05 consumers are documented in
+[delivery-controls.md](docs/protocol/delivery-controls.md): manifest-bound
+security scanning, ownership-limited auto-commit, and a machine-checked final
+delivery gate.
+
 ## Skill Tests
 
 The repository includes a first-version skill testing framework for
@@ -104,6 +123,21 @@ Test output uses `PASS`, `FAIL`, and `SKIP`.
 
 - Aggregate results: `tests/skills/.last-run.json`
 - Per-case artifacts: `tests/skills/.artifacts/`
+
+Native lifecycle regressions run only with an explicit opt-in, in disposable
+fixture repositories with frozen support copies and independent file/index
+assertions. They never use the candidate workflow to approve its own changes:
+
+```bash
+python3 scripts/run_runtime_regression.py --live --runtime codex --output .compass/results/native-regression-run
+python3 scripts/run_runtime_regression.py --live --runtime claude --output .compass/results/native-regression-run
+```
+
+Choose a fresh output directory for a rerun. Cases cover plan-only, execution,
+review-only, stop/resume and invalid-flag rejection. Missing CLIs, authentication
+failures and timeouts are reported as unavailable/failure, not passing tests.
+Unit tests run with `python3 -m pytest tests`; explicitly naming `tests` avoids
+recursively collecting the plugin's repository symlink.
 
 ## Claude Plugin Surface
 

@@ -2,11 +2,12 @@
 
 ## Orchestrator rules
 
-- **Agent spawning**: every Executor / Reviewer / quality agent
-  invocation MUST use `subagent_type: general-purpose` with the agent's
-  full `.md` body inlined in the `prompt` parameter. Never use
-  `subagent_type: review-loop:<name>`. See `CLAUDE.md` §"Plugin agent
-  `tools:` frontmatter" for background.
+- **Author spawning**: Executor and other writer agents use
+  `subagent_type: general-purpose` with their full body inlined.
+- **Report-only reviewers**: use the isolated native launchers in
+  [reviewer-runtime.md](reviewer-runtime.md); a writable general-purpose Agent
+  is not an acceptable substitute. The config name `reviewer: subagent` is
+  retained as a compatibility alias for the isolated Claude reviewer.
 - Only the Orchestrator writes to the session file. Sub-agents read.
 - Live Reports after each round are not optional.
 

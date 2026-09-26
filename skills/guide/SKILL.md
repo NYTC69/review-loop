@@ -214,7 +214,7 @@ review_focus: |
 - **Plan Conformance** — flags unauthorized Executor deviations as CRITICAL
 - **Context file** — persistent session for traceability and fast agent startup
 - **Soft limits + stuck detection** — no hard cap, smart stopping
-- **Subagent mode** — no Codex needed; uses a Claude Code sub-agent as Reviewer
+- **Subagent mode** — no Codex needed; `reviewer: subagent` runs an isolated read-only Claude CLI reviewer
 - **Project-specific config** — tailor review priorities per project
 
 ## More info

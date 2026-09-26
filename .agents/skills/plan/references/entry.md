@@ -41,7 +41,7 @@ Read selected sections through `scripts/read_protocol.py`; shared protocol rules
 4. Under the lock, write the initial `## Session Metadata` block.
    `entry_point: plan`. `plan_source` is omitted during planning draft
    rounds — it is written on APPROVE only.
-5. Run `python3 scripts/evidence_ledger.py snapshot --session {uuid}`
+5. Run `python3 scripts/evidence_ledger.py --session {uuid} snapshot`
    outside the Codex sandbox to store snap/0 (the only way
    `## Evidence Ledger` is ever written).
 6. Tell the user the session path so they can inspect it.

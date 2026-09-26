@@ -8,10 +8,14 @@ argument-hint: "[max-rounds]"
 
 Automated code review cycle: review -> fix -> re-review until clean. Focuses on code-level quality (correctness, style, error handling, tests).
 
+At entry, read [the reviewer runtime contract](../../docs/protocol/reviewer-runtime.md).
+All report-only roles below use its isolated native CLI boundary. Fix actions,
+the simplifier, and test-consolidation authors remain writers.
+
 ## Overview
 
 ```
-Pre-loop:  language-specific agents -> fix (once per detected language)
+Pre-loop:  caller static analysis -> language-specific review -> fix (once per detected language)
 Loop R1:   code-reviewer + silent-failure-hunter + comment-analyzer + type-design-analyzer -> triage -> fix
 Loop R2+:  code-reviewer + silent-failure-hunter -> triage -> fix -> repeat
 Finalize:  reorganize (if applicable) -> code-simplifier agent -> build -> test consolidation -> pr-test-analyzer
@@ -68,26 +72,73 @@ REVIEW LOOP
   Max rounds:  {max_rounds}
 ```
 
+## Report-only launch contract
+
+For each report-only dispatch below, inline the role body into its existing raw
+report prompt and save that prompt to
+`.review-loop/tmp/{invocation_slot}-reviewer-prompt.txt`. Include the absolute
+target repository path and caller-provided evidence. Use a unique slot for each
+role, round, and retry. Resolve the launcher against the support repository and
+keep cwd in the task workspace:
+
+```sh
+python3 <support-root>/scripts/run_claude_reviewer.py --session-id <invocation_slot> --parent-session-id <session_id> --model <resolved-model> --stage polish --role <agent-name> --timeout-seconds 600
+```
+
+Preserve the judgment/cheap model tiers and dispatch anchors below. Inventory
+`else omit` means no judgment-tier override; omit `--model` and use the Claude
+CLI runtime default. Record the actual model only when the CLI reports it. Reuse each
+raw report format without a planning-review schema wrapper.
+
+Reviewers only read/search. The caller runs commands and supplies artifact
+paths, commands, exit statuses, and relevant output. This runtime boundary
+takes precedence over role-body instructions to use Bash, install tools, or
+modify files. Missing verification is a request for caller action, never a
+reason to grant the reviewer write or execution tools.
+
+**Completion and inspection evidence**: Require launcher exit 0 and returned
+`status: ok`, then read `result_file` and validate the role's report. Retain
+`invocation_id`, `tool_uses`, `stream_file`, `stderr_file`, and `usage_file`. Use the
+launcher’s `tool_uses` count; do not read the raw stream into context. A missing
+or null count is unverified and fails closed. With zero tool uses, discard the report
+and retry once using a new slot. If still zero, skip the role for this phase
+and explicitly report the failure; missing/malformed captures are failed
+reviews. Do not count a skipped/failed reviewer as a clean result or reuse an
+earlier result as fresh. Follow the shared runtime contract for all other
+launcher failures and usage accounting.
+
 ## Pre-loop: Language-Specific Static Analysis
 
-For each agent in `language_agents`, launch a sub-agent via the Agent tool. These are deterministic static analysis tools -- fix all issues now so the loop starts with clean, compilable code.
+For each role in `language_agents`, the authorized caller reads that role's
+analysis instructions, checks tool availability, and runs the named static
+analysis commands on the changed files. Capture each command, cwd, exit status,
+and stdout/stderr in an artifact; report unavailable tools without installing
+them. Then launch the report-only language reviewer through the native launcher
+above to inspect the source and those artifacts. Fix findings in the caller so
+the loop starts with clean, compilable code.
 
-Run each applicable language agent:
+Use this raw prompt for each applicable language reviewer:
 
 ```
-Agent tool parameters:
-  subagent_type: general-purpose
+Native reviewer prompt:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
-    Run shell commands with Claude Code's native Bash tool rather than MCP
-    server tools such as run_bash_command; the orchestrator's `tool_uses`
-    check relies on native tool calls.
+    The reviewer runtime boundary overrides command-execution
+    instructions in the role body. Use read/search tools only. Commands have
+    been run by the caller; inspect their artifacts and request missing checks.
+
+    ## Target Repository
+    {absolute task repository path}
 
     ## Changed Files
     {list of changed files for this language, from git diff --name-only --diff-filter=d HEAD}
 
-    Run static analysis on the changed files listed above.
+    ## Caller Static Analysis Evidence
+    {artifact paths, commands, cwd, exit statuses, relevant output, unavailable tools}
+
+    Review the static analysis results and the changed files listed above.
+    Report findings and proposed fixes; do not modify files or execute commands.
 
     {if quality_focus is set:}
     ## Quality Focus
@@ -98,7 +149,7 @@ Agent tool parameters:
     {review_style}
 ```
 
-Agent name mapping (all use `subagent_type: general-purpose` with agent body inlined in prompt):
+Role mapping (inline each role body into the native launcher prompt):
 - `go-reviewer` -> inline `agents/go-reviewer.md` body
 - `rust-reviewer` -> inline `agents/rust-reviewer.md` body
 - `python-reviewer` -> inline `agents/python-reviewer.md` body
@@ -112,7 +163,8 @@ Concrete dispatch inventory:
 
 If multiple language agents apply, launch them sequentially (each may find issues that require fixes before the next can run cleanly).
 
-**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report: `STATIC ANALYSIS: {AGENT-NAME} — SKIPPED (agent failed to use tools)`.
+Apply the completion/inspection guard above. If the retry still has no confirmed
+inspection calls, report: `STATIC ANALYSIS: {AGENT-NAME} — SKIPPED (reviewer inspection unverified)`.
 
 **Output per language agent:**
 
@@ -132,16 +184,22 @@ Increment `round` each iteration.
 
 ### Phase 1: REVIEW
 
-Launch review agents via the Agent tool. Each agent runs with read-only access.
+Launch each report-only reviewer through the isolated native launcher defined
+above. A writable general-purpose Agent does not satisfy this boundary.
 
 - **Round 1**: Run all four agents -- `code-reviewer`, `silent-failure-hunter`, `comment-analyzer`, `type-design-analyzer` -- full scan across all dimensions.
 - **Round 2+**: Run only `code-reviewer` and `silent-failure-hunter` -- fixes are code-only changes, no need to re-check comments/types.
 
 `pr-test-analyzer` and `code-simplifier` are always skipped in the loop -- both have dedicated steps in Finalize.
 
-**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, discard the result and retry once. If the retry also has `tool_uses: 0`, skip that agent for this round and note it in the output.
+Apply the shared completion/inspection guard to each report and retry; note any
+skipped or failed reviewer in this round's output.
 
-Agent invocations:
+Native reviewer prompts (include the target repository and caller verification
+artifact paths, commands, exit statuses, and relevant output in every prompt).
+Prepend the runtime instruction to every prompt: use read/search tools only,
+inspect the caller's evidence, and request missing checks without running
+commands or modifying files.
 
 ```
 
@@ -150,8 +208,7 @@ Concrete dispatch inventory:
 - `code_quality_silent_failure_hunter_dispatch` -> `silent-failure-hunter`; tier: `judgment`; `model: {judgment_model if set; else omit}`
 - `code_quality_comment_analyzer_dispatch` -> `comment-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
 - `code_quality_type_design_analyzer_dispatch` -> `type-design-analyzer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
-Agent tool parameters (code-reviewer):
-  subagent_type: general-purpose
+Native reviewer prompt (code-reviewer):
   prompt: |
     {contents of agents/code-reviewer.md body}
 
@@ -179,8 +236,7 @@ Agent tool parameters (code-reviewer):
 ```
 
 ```
-Agent tool parameters (silent-failure-hunter):
-  subagent_type: general-purpose
+Native reviewer prompt (silent-failure-hunter):
   prompt: |
     {contents of agents/silent-failure-hunter.md body}
 
@@ -208,8 +264,7 @@ Agent tool parameters (silent-failure-hunter):
 ```
 
 ```
-Agent tool parameters (comment-analyzer -- Round 1 only):
-  subagent_type: general-purpose
+Native reviewer prompt (comment-analyzer -- Round 1 only):
   prompt: |
     {contents of agents/comment-analyzer.md body}
 
@@ -237,8 +292,7 @@ Agent tool parameters (comment-analyzer -- Round 1 only):
 ```
 
 ```
-Agent tool parameters (type-design-analyzer -- Round 1 only):
-  subagent_type: general-purpose
+Native reviewer prompt (type-design-analyzer -- Round 1 only):
   prompt: |
     {contents of agents/type-design-analyzer.md body}
 
@@ -377,8 +431,9 @@ Run `/review-loop:reorganize diff` to restructure changed files. The reorganize 
 Launch the `code-simplifier` agent for final code polish (auto-fix).
 
 **CRITICAL — single spawning path**: Do NOT use `subagent_type: review-loop:code-simplifier`.
-The protocol spawns every agent through `general-purpose` (see `CLAUDE.md`, plugin agent `tools:` frontmatter).
-Always use `subagent_type: general-purpose` with the agent body inlined in the prompt:
+This simplifier is a writer and uses `general-purpose`; report-only roles use
+the native launcher above. Use `subagent_type: general-purpose` with the agent
+body inlined in the prompt:
 
 ```
 Agent tool parameters:
@@ -440,15 +495,26 @@ Max 3 fix cycles. If still failing after 3 attempts, report remaining failures t
 
 ### Step 4: Test quality gate
 
-Launch the `pr-test-analyzer` agent to verify test quality (coverage gaps, missing edge cases):
+Launch `pr-test-analyzer` through the report-only native launcher to verify
+test quality (coverage gaps, missing edge cases). Supply the test command,
+exit status, and output artifacts from Step 3; apply the same completion and
+inspection guard as every other report-only role.
 
 ```
-Agent tool parameters:
-  subagent_type: general-purpose
+Native reviewer prompt:
   prompt: |
     {contents of agents/pr-test-analyzer.md body}
 
     Analyze test coverage for the changed files.
+
+    ## Target Repository
+    {absolute task repository path}
+
+    ## Caller Test Evidence
+    {artifact paths, test commands, exit statuses, and relevant output from Step 3}
+
+    Use read/search tools only. Request missing verification from the caller;
+    do not execute tests, install tools, or modify files yourself.
 
     ## Changed Files
     {list of changed file paths from git diff --name-only --diff-filter=d}

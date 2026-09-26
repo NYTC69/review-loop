@@ -589,6 +589,25 @@ may have been weeks ago and the tree may have moved arbitrarily since.
 
 ---
 
+## Delivery object binding
+
+Before the first implementation write, capture the pre-task delivery baseline
+with `scripts/delivery_scope.py capture`, using the agreed literal task scope.
+Store it in the existing ignored session artifact directory. Keep that baseline
+immutable across rounds and resume; the scope must not be silently widened.
+After a write and before a review, materialize a new candidate with `manifest`
+and put its artifact path and fingerprint in `## Current Review Packet`.
+A resumed invocation checks the stored candidate before relying on its identity.
+See `delivery-scope.md` for exact commands, schema, freshness and overlap rules.
+
+For a review-only entry, an opening baseline describes already-existing changes;
+it does not claim this session authored them. Reviewers inspect the declared
+content paths and the caller-materialized patch, including untracked files.
+Same-file overlap with baseline user work is explicitly ambiguous. A fresh
+candidate is an identity check, not evidence that staging or committing all
+its paths is authorized. Scan/commit enforcement remains in the delivery stages.
+
+
 ## Evidence Ledger
 
 `## Evidence Ledger` holds one fenced ` ```json ` block:
@@ -660,7 +679,7 @@ the helper exits 3 and writes nothing: no record may be appended, every
 claim stays `uncertain`, the direct author route is refused, and the
 reviewer prompt states `delta: unattributable — reviewing worktree diff
 against the last stored snapshot`. Refs are kept for audit;
-`evidence_ledger.py prune --session <uuid>` deletes them only when the user
+`evidence_ledger.py --session <uuid> prune` deletes them only when the user
 asks. `prune` stamps `pruned_at` on the ledger and on every snapshot entry
 it has not stamped yet — driven by the ledger, not by the refs it found, so
 a re-run after a failed session write still stamps (`refs_missing: true`)
@@ -857,6 +876,7 @@ Required fields — never truncated and never moved to history:
 |---|---|
 | Intent and acceptance criteria | full text |
 | Binding decisions and authorization | full text of every user ruling still in force |
+| Delivery candidate | Immutable baseline path and current manifest path in exact order as `baseline=`<path>`; manifest=`<path>`; baseline_fingerprint=`sha256:...`; candidate_fingerprint=`sha256:...`; scope=<declared scope>`; this row carries the baseline fingerprint, candidate fingerprint, and declared scope, followed by every ownership ambiguity reported by `delivery_scope.py` |
 | Exact delta | `git diff --stat` (navigation only) **plus** `### Attributable Delta` |
 | `### Attributable Delta` | table `snapshot pre \| snapshot post \| path \| pre_blob \| post_blob`; `pre` is the snapshot the previous packet was reviewed at (snap/0 for a first round), **never** `HEAD`; unrelated dirty paths never appear |
 | Touched contracts / invariants | list |
@@ -870,8 +890,8 @@ Required fields — never truncated and never moved to history:
 Boundedness is semantic, not a line cap: only *supporting* detail
 (prior-round transcripts, superseded findings, resolved discussions) is
 referenced into `## Review History` by entry id. The Attributable Delta is
-materialized deterministically by `scripts/evidence_ledger.py delta
---session <uuid> --pre <n> --post <m>`, which runs `git diff` between the
+materialized deterministically by `scripts/evidence_ledger.py --session <uuid>
+delta --pre <n> --post <m>`, which runs `git diff` between the
 two stored snapshot commits restricted to the scope paths and verifies each
 hunk's pre/post blob against the table; hashes verify the patch, they are
 not the patch. Findings are anchored to that materialized patch. For a
@@ -894,8 +914,8 @@ planning round the delta is the plan-text diff between rounds.
 | `Unchanged` | review-scope paths whose pre and post snapshot blobs are identical (presented but absent from the Attributable Delta) |
 | `Tests` | `rerun` or `reused` with `inputs_changed: true\|false` |
 | `Pause` | `none` or the pause kind (`product \| risk \| scope \| authorization \| other`) |
-| `Model`, `Tokens` | from Agent / reviewer metadata (`loop_state.token_usage`) when present, else `N/A` |
-| `Cost` | USD from the same metadata (`total_cost_usd` of a `claude -p --output-format json` envelope, or an Agent-tool cost field) when present, else `N/A` |
+| `Model`, `Tokens` | requested/actual model and normalized counters from the invocation usage record; missing metadata remains `N/A` |
+| `Cost` | runtime-reported USD from the invocation usage record; otherwise `N/A`; no inferred subscription billing |
 
 On the first write under this header every existing four-column row is
 rewritten with `N/A` in each new column; the table is always rectangular.
@@ -904,3 +924,12 @@ per-step overhead subset of the evaluation field set; per-case fields that
 need seeded ground truth (`defects_found`, `defects_missed`,
 `theoretical_complexity_added`, `blocking_rejected_or_downgraded`,
 `stale_evidence_reused`) have no production column.
+
+Every native reviewer invocation records usage automatically, including failed
+attempts. Link its immutable `usage_file` from the timing row. For author,
+quality-writer and orchestrator/overseer roles, record available native events
+through `reviewer_usage.py` with the actual role/stage; when host metadata is
+unavailable, record unknown usage explicitly. Do not exclude those roles from
+reported workflow totals or double count child usage already covered by a
+Claude whole-tree snapshot. `usage-accounting.md` defines cache/resume/partial
+semantics; only complete scopes may be described as complete totals.
