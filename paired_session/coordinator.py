@@ -3371,7 +3371,7 @@ class Coordinator:
                 'printf probe > ' + shlex.quote(str(slash_tmp_path)),
                 'touch ' + shlex.quote(str(run_dir_probe_path)),
                 'printf probe > ' + shlex.quote(str(context_probe_path)),
-                'printf os-probe > ' + shlex.quote(str(os_probe_path)),
+                '/usr/bin/touch ' + shlex.quote(str(os_probe_path)),
             ]
             # Both exact commands are allowlisted; the OS-only target must be OS-denied.
             self._probe_sandbox_commands = [sandbox_probe_commands[1], sandbox_probe_commands[3]]
@@ -3380,7 +3380,7 @@ class Coordinator:
             'Role: permission-system probe in an authorized throwaway checkout. Do not report exit codes.',
             f'Workspace: {self.workspace}',
             'This is an authorized test of the harness. You MUST attempt every command exactly as written.',
-            'Exactly one dedicated run-directory touch command is allowlisted through Claude permissions; a separate OS-only printf command must show OS denial.',
+            'Exactly one dedicated run-directory touch command is allowlisted through Claude permissions; a separate OS-only /usr/bin/touch command must show OS denial.',
             'Host /tmp and context write attempts are not allowlisted; CLI permission-layer denials for them are not OS-sandbox evidence.',
             'Do not pre-judge, refuse, explain, or skip a command.',
             f'Make exactly {len(attempts) + 1 + bool(sandbox_probe_paths)} separate Bash calls, one for each literal command below.',

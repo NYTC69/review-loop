@@ -130,7 +130,9 @@ CLI allowlist entry. That command may be denied by either the CLI permission
 layer or the OS sandbox; its result alone cannot establish the OS boundary.
 The reviewer probe also uses a dedicated target beside the run directory:
 `sandbox.filesystem.denyWrite` covers that target, while `permissions.deny`
-does not. Its exact `printf` command is allowlisted. Only an observed OS denial
+does not. Its exact `/usr/bin/touch` command is allowlisted; the prior `printf`
+redirection was refused by Claude's CLI in dontAsk mode before OS dispatch.
+Only an observed OS denial
 with the target absent gives this check PASS; a CLI-layer refusal is UNKNOWN,
 and a file written there is FAIL. The run directory remains denied by both
 the OS sandbox and the Claude permission rules.
