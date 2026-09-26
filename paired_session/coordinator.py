@@ -1623,6 +1623,8 @@ class Coordinator:
                          for row in self.state['review_verdicts'])
         lines += ['', f"Final coordinator status: **{self.state['status']}**"]
         lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
+        if self.state.get('pending_operator_note_id'):
+            lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
         if self.state.get('hold_reason'):
             lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
@@ -1708,6 +1710,46 @@ class Coordinator:
         atomic_text(self.run_dir / 'scope-change-report.md', 'Superseded run; turns: ' + str(len(self.state['turns'])) +
                     '\nOpen findings: ' + str(len(self.open_findings())) + '\nSuccessor: ' + str(spec_path) + '\n')
         return command()
+
+    def note(self, text: Optional[str], file: Optional[str]) -> str:
+        if self.state['status'] != 'HOLD':
+            raise ValueError('note requires a HOLD run; DONE uses reject')
+        if self.state.get('terminal_hold_kind') == 'rejection_limit':
+            raise ValueError('rejection limit: accept, abort or use --scope-change')
+        if self.state.get('next') != 'author':
+            raise ValueError(f"run is waiting for {self.state.get('next')}; resume first, or use --scope-change (not yet available; abort + new run)")
+        phase = self.state['phase']
+        if (phase not in ('PLAN', 'EXEC') or self.state['polish']['active'] or self.state.get('active') or
+                self.state.get('uncertain_active') or self.state['invocations_used'] >= self.args.max_invocations or
+                (phase == 'PLAN' and self.state['plan_rounds'] >= self.args.max_plan_rounds) or
+                (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit())):
+            raise ValueError('next author turn is unavailable; note remains undelivered')
+        if bool(text) == bool(file):
+            raise ValueError('note requires exactly one of --text or --file')
+        if file:
+            source = Path(file).expanduser().resolve()
+            if source == self.workspace or self.workspace in source.parents or source == self.run_dir or self.run_dir in source.parents:
+                raise ValueError('note source must be outside workspace and run dir')
+            raw = source.read_bytes()
+        else:
+            raw = (text or '').encode('utf-8')
+        try: decoded = raw.decode('utf-8')
+        except UnicodeDecodeError as exc: raise ValueError('note must be UTF-8') from exc
+        if not raw or len(raw) > 16384 or not decoded.strip():
+            raise ValueError('note must be nonempty UTF-8 and at most 16384 bytes')
+        notes = self.state.setdefault('operator_notes', [])
+        note_id = f'N{len(notes) + 1:03d}'
+        previous = next((row for row in notes if row['id'] == self.state.get('pending_operator_note_id')), None)
+        path = self.evidence / f'operator-note-{note_id}.txt'; atomic_text(path, decoded)
+        if previous:
+            previous.update(status='replaced', replaced_by=note_id)
+        row = {'id': note_id, 'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
+               'target_phase': phase, 'sha256': hashlib.sha256(raw).hexdigest(), 'evidence': str(path),
+               'status': 'pending', 'replaces_id': previous['id'] if previous else None,
+               'replaces_sha256': previous['sha256'] if previous else None}
+        notes.append(row); self.state['pending_operator_note_id'] = note_id
+        self.save(); self.write_comparison()
+        return note_id
 
     def accept(self) -> str:
         if self.state.get('status') == 'ACCEPTED':

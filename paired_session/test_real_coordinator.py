@@ -951,6 +951,38 @@ sys.exit(result.returncode)
         self.assertEqual(co.hold('late abort'), 'ABORTED')
         self.assertIn('Superseded run', (co.run_dir / 'scope-change-report.md').read_text())
 
+    def test_hold_note_storage_replaces_pending_and_refuses_other_roles(self):
+        co = self.coordinator()
+        co.hold('operator pause')
+        with patch.object(co, 'invoke') as invoke:
+            first = co.note('First clarification.', None)
+            second = co.note('New clarification.', None)
+            invoke.assert_not_called()
+        self.assertEqual((first, second), ('N001', 'N002'))
+        notes = co.state['operator_notes']
+        self.assertEqual(notes[0]['status'], 'replaced')
+        self.assertEqual(notes[0]['replaced_by'], second)
+        self.assertEqual(notes[1]['replaces_sha256'], notes[0]['sha256'])
+        self.assertEqual(co.state['pending_operator_note_id'], second)
+        self.assertNotIn('New clarification.', co.state_path.read_text())
+        self.assertEqual(Path(notes[1]['evidence']).read_text(), 'New clarification.')
+        co.state['next'] = 'reviewer'
+        with self.assertRaisesRegex(ValueError, 'waiting for reviewer'):
+            co.note('not now', None)
+        co.state['next'] = 'author'
+        co.state['terminal_hold_kind'] = 'rejection_limit'
+        with self.assertRaisesRegex(ValueError, 'rejection limit'):
+            co.note('not now', None)
+        co.state.pop('terminal_hold_kind')
+        with self.assertRaisesRegex(ValueError, 'outside workspace'):
+            co.note(None, str(self.workspace / 'tracked.txt'))
+        source = self.root / 'operator-note-source.txt'
+        source.write_text('Read external note.')
+        third = co.note(None, str(source))
+        self.assertEqual(Path(co.state['operator_notes'][-1]['evidence']).read_text(), source.read_text())
+        self.assertNotIn(str(source), co.state_path.read_text())
+        self.assertEqual(third, 'N003')
+
     def test_reject_uses_workspace_lease_and_test_command_preflight(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                          '--polish-round', 'off')
