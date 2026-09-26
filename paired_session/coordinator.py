@@ -1583,14 +1583,20 @@ class Coordinator:
             lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
-    def hold(self, reason: str) -> str:
+    def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
         if self.state.get('status') == 'ACCEPTED':
             return 'ACCEPTED'
+        keep_rejection_limit = (self.state.get('status') == 'HOLD' and
+                                self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
         if self.state.get('active'):
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
+        if terminal_kind:
+            self.state['terminal_hold_kind'] = terminal_kind
+        elif not keep_rejection_limit:
+            self.state.pop('terminal_hold_kind', None)
         self.state['active'] = None
         self.save()
         self.write_ledger()
@@ -1599,12 +1605,18 @@ class Coordinator:
         self.write_usage()
         return 'HOLD'
 
+    def rejection_limit_hold(self) -> str:
+        maximum = self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
+        self.state['hold_reason'] = f'post-DONE rejection limit reached ({maximum}); accept or abort'
+        self.save()
+        return 'HOLD'
+
     def accept(self) -> str:
         if self.state.get('status') == 'ACCEPTED':
             return 'ACCEPTED'
         if self.state.get('status') != 'DONE' and not (
                 self.state.get('status') == 'HOLD' and
-                self.state.get('hold_reason', '').startswith('post-DONE rejection limit reached')):
+                self.state.get('terminal_hold_kind') == 'rejection_limit'):
             raise ValueError('accept requires a DONE run')
         record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
                   'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
@@ -1614,6 +1626,7 @@ class Coordinator:
         self.state['acceptance'] = record
         self.state['acceptance_state'] = 'ACCEPTED'
         self.state['status'] = 'ACCEPTED'
+        self.state.pop('terminal_hold_kind', None)
         self.state['accepted_at'] = record['timestamp']
         self.save()
         self.write_comparison()
@@ -1635,7 +1648,8 @@ class Coordinator:
         rejections = self.state.setdefault('rejections', [])
         maximum = self.state.setdefault('max_rejections', DEFAULT_MAX_REJECTIONS)
         if len(rejections) >= maximum:
-            return self.hold(f'post-DONE rejection limit reached ({maximum})')
+            return self.hold(f'post-DONE rejection limit reached ({maximum}); accept or abort',
+                             terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
         record = {'id': rejection_id, 'author': 'operator',
                   'timestamp': datetime.now().astimezone().isoformat(), 'target_phase': 'EXEC',
@@ -1733,6 +1747,8 @@ class Coordinator:
         self.write_ledger()
 
     def resume_polish(self) -> str:
+        if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
+            return self.rejection_limit_hold()
         if self.state.get('active'):
             return self.hold('uncertain in-flight CLI turn; inspect evidence before resume --polish')
         if self.state['status'] != 'DONE':
@@ -3362,6 +3378,8 @@ class Coordinator:
     def resume(self, retry_uncertain=False) -> str:
         if self.state['status'] == 'ACCEPTED':
             return 'ACCEPTED'
+        if self.state['status'] == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
+            return self.rejection_limit_hold()
         if self.state['status'] == 'DONE':
             blocking = self.blocking_open_findings()
             if blocking:

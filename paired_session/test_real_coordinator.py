@@ -836,6 +836,35 @@ sys.exit(result.returncode)
         held = json.loads(path.read_text())
         self.assertEqual(held['status'], 'HOLD')
         self.assertIn('post-DONE rejection limit reached', held['hold_reason'])
+        self.assertEqual(held['terminal_hold_kind'], 'rejection_limit')
+        self.assertIn('accept or abort', held['hold_reason'])
+        args = rc.parser().parse_args(['accept', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
+        co = rc.Coordinator(args)
+        with patch.object(co, 'invoke') as invoke, patch.object(co, 'drive') as drive:
+            self.assertEqual(co.resume(), 'HOLD')
+            invoke.assert_not_called()
+            drive.assert_not_called()
+        resumed = self.run_operator_action('resume', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('accept or abort', resumed.stdout)
+        self.assertEqual(json.loads(path.read_text())['sequence'], held['sequence'])
+        aborted = self.run_operator_action('abort')
+        self.assertEqual(aborted.returncode, 2)
+        self.assertEqual(json.loads(path.read_text())['terminal_hold_kind'], 'rejection_limit')
+        paused = json.loads(path.read_text())
+        paused['hold_reason'] = 'permission probe passed; run resume to continue'
+        path.write_text(json.dumps(paused))
+        resumed = self.run_operator_action('resume', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('accept or abort', resumed.stdout)
+        self.assertEqual(json.loads(path.read_text())['sequence'], held['sequence'])
+        polished = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                            '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(polished.returncode, 2)
+        self.assertIn('accept or abort', polished.stdout)
         accepted = self.run_operator_action('accept')
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertEqual(json.loads(path.read_text())['status'], 'ACCEPTED')
@@ -843,6 +872,19 @@ sys.exit(result.returncode)
         active = self.coordinator()
         with self.assertRaisesRegex(ValueError, 'reject requires a DONE run'):
             active.reject('not done', None)
+
+    def test_only_rejection_limit_hold_blocks_resume(self):
+        co = self.coordinator()
+        co.hold('ordinary operator pause')
+        self.assertNotIn('terminal_hold_kind', co.state)
+        with patch.object(co, 'drive', return_value='ACTIVE') as drive:
+            self.assertEqual(co.resume(), 'ACTIVE')
+            drive.assert_called_once_with()
+        co.hold('post-DONE rejection limit reached (2)')
+        self.assertNotIn('terminal_hold_kind', co.state)
+        with patch.object(co, 'drive', return_value='ACTIVE') as drive:
+            self.assertEqual(co.resume(), 'ACTIVE')
+            drive.assert_called_once_with()
 
     def test_reject_uses_workspace_lease_and_test_command_preflight(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
