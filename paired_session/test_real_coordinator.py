@@ -2024,21 +2024,84 @@ sys.exit(result.returncode)
         self.assertIn('context/workitem.md', audit['inputs'])
         self.assertEqual(audit['inputs']['prompt']['content'], co._review_prompt('shadow', 'snapshot'))
 
-    def test_fresh_path_names_pass_fake_cli_but_prose_history_is_rejected(self):
+    def test_fresh_scan_masks_exact_coordinator_paths_only(self):
+        workspace = self.root / 'claude-501' / '.codex' / 'workspace'
+        workspace.parent.mkdir(parents=True)
+        subprocess.run(['git', 'clone', '-q', str(self.workspace), str(workspace)], check=True)
+        run_dir = self.root / 'claude-501' / '.codex' / 'run'
+        args = rc.parser().parse_args(['run', '--workspace', str(workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(run_dir)])
+        co = rc.Coordinator(args)
+        for path in (co.workspace, co.run_dir, co.evidence, co.context, co.author_temp_dir):
+            self.assertIn(str(path), co._fresh_scan_run_paths())
+            (co.context / 'plan.md').write_text(f'Path: {path}/child')
+            co.assert_fresh_prompt('shadow', 'Clean prompt')
+        disposable_home = co.run_dir / 'disposable-codex-home'
+        with patch.dict(os.environ, {'TMPDIR': '/tmp/claude-501-tmp',
+                                    'CODEX_HOME': str(disposable_home)}):
+            spellings = co._fresh_scan_run_paths()
+        self.assertIn(str(disposable_home), spellings)
+        self.assertIn(str(disposable_home.resolve()), spellings)
+        self.assertNotIn('/tmp/claude-501-tmp', spellings)
+        with patch.dict(os.environ, {'CODEX_HOME': str(Path.home() / '.codex')}):
+            self.assertNotIn(str(Path.home() / '.codex'), co._fresh_scan_run_paths())
+        with patch.object(co, 'author_temp_dir', Path('/tmp/claude-501/author-tmp')):
+            spellings = co._fresh_scan_run_paths()
+        self.assertIn('/tmp/claude-501/author-tmp', spellings)
+        self.assertIn('/private/tmp/claude-501/author-tmp', spellings)
+        outside_home = self.root / 'external-codex-home'
+        with patch.dict(os.environ, {'TMPDIR': '/tmp/claude-501-tmp',
+                                    'CODEX_HOME': str(outside_home)}):
+            spellings = co._fresh_scan_run_paths()
+        self.assertNotIn(str(outside_home), spellings)
+        self.assertNotIn('/tmp/claude-501-tmp', spellings)
+        with patch.dict(os.environ, {'TMPDIR': '/tmp/claude-501-tmp',
+                                    'CODEX_HOME': str(outside_home)}):
+            (co.context / 'plan.md').write_text(str(outside_home / 'claude-session.json'))
+            with self.assertRaisesRegex(RuntimeError, r'(?i)history in context/plan\.md: (?:codex|claude)'):
+                co.assert_fresh_prompt('shadow', 'Clean prompt')
+        for text in ('Claude/Sonnet signed off.', 'Codex/GPT approved.',
+                     str(co.workspace) + '/x Claude said this is fine.',
+                     str(co.workspace) + 'Claude said this is fine.',
+                     'Claude said this is fine ' + str(co.workspace),
+                     'prefix' + str(co.workspace),
+                     '/unknown/claude-501/run/report.md'):
+            (co.context / 'plan.md').write_text(text)
+            expected = 'Codex' if text.startswith('Codex/GPT') else 'Claude'
+            if text.startswith('/unknown/'):
+                expected = 'claude'
+            with self.assertRaisesRegex(RuntimeError,
+                    rf'(?i)independence check rejected history in context/plan\.md: {expected}'):
+                co.assert_fresh_prompt('shadow', 'Clean prompt')
+        (co.context / 'plan.md').write_text('Clean approved plan.')
+        for token, expected in (('F002', r'history in context/delta\.patch: F002'),
+                                ('prior finding', r'history in context/delta\.patch: prior'),
+                                (str(co.run_dir / 'F007'), r'history in context/delta\.patch: F007'),
+                                (str(co.run_dir / 'APPROVE'), r'history in context/delta\.patch: APPROVE')):
+            (co.context / 'delta.patch').write_text(token)
+            with self.assertRaisesRegex(RuntimeError, expected):
+                co.assert_fresh_prompt('shadow', 'Clean prompt')
+
+    def test_fresh_scan_does_not_mask_vendor_text_glued_to_known_path_tail(self):
+        run_dir = self.root / 'run-C'
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(run_dir)])
+        co = rc.Coordinator(args)
+        (co.context / 'plan.md').write_text(str(co.run_dir) + 'laude approved this.')
+        with self.assertRaisesRegex(RuntimeError,
+                r'independence check rejected history in context/plan\.md: Claude'):
+            co.assert_fresh_prompt('shadow', 'Clean prompt')
+
+    def test_fresh_roles_reject_unrecognized_vendor_paths_in_diffs(self):
         result = self.run_coordinator('--exercise-revisions', env={'FAKE_DOC_DELTA': '1'})
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['status'], 'DONE')
-        fresh = list((self.run_dir / 'evidence').glob('*-shadow.independence-inputs.json'))
-        self.assertTrue(fresh)
-        self.assertTrue(any('CLAUDE.md' in p.read_text() for p in fresh))
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertIn('independence check rejected history in context/delta-since-last-review.patch: CLAUDE',
+                      state['hold_reason'])
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'prose-check')])
         co = rc.Coordinator(args)
-        for text in ('Restore the entry in CLAUDE.md.', 'Read `docs/Codex.md`.',
-                     'See "tools/Astra.js"; inspect /tmp/Claude.txt:7.'):
-            (co.context / 'plan.md').write_text(text)
-            co.assert_fresh_prompt('shadow', 'Clean prompt')
         for text in ('Codex approved this.', 'Claude requested the change.',
                      'Read CLAUDE.md. Prior verdict: APPROVE',
                      'See tools/Codex.js:7. Response to reviewer: fixed.'):

@@ -1994,6 +1994,26 @@ class Coordinator:
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\nNever edit, commit, push, or load skills.')
 
+    def _fresh_scan_run_paths(self) -> list[str]:
+        paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
+        codex_home = os.environ.get('CODEX_HOME')
+        if codex_home:
+            configured = Path(codex_home).expanduser()
+            resolved = Path(os.path.realpath(configured))
+            if resolved != (Path.home() / '.codex').resolve() and self.run_dir in resolved.parents:
+                paths.append(configured)
+        spellings = set()
+        for path in paths:
+            if not path.is_absolute():
+                continue
+            for spelling in (str(path), os.path.realpath(path)):
+                spellings.add(spelling)
+                if spelling.startswith('/private/tmp/'):
+                    spellings.add(spelling.replace('/private/tmp/', '/tmp/', 1))
+                elif spelling.startswith('/tmp/'):
+                    spellings.add(spelling.replace('/tmp/', '/private/tmp/', 1))
+        return sorted(spellings, key=len, reverse=True)
+
     def assert_fresh_prompt(self, role: str, prompt: str) -> None:
         if role not in ('shadow', 'gate'):
             return
@@ -2026,14 +2046,16 @@ class Coordinator:
             r'|response[ -]to[ -](?:reviewer|review|F\d+)'
             r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
             r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
+        known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
+                               for path in self._fresh_scan_run_paths()]
         checked = {}
         for name, content in sources.items():
             # Role/rubric instructions in prompts/templates are not prior verdicts.
             matches = history.findall(content)
-            # A filename/path is not a reviewer attribution. Mask only lexical
-            # path tokens for the name scan; history/ledger checks remain intact.
-            prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
-                           '<path>', content)
+            # Mask only coordinator-owned absolute paths; require a token boundary after each path.
+            prose = content
+            for known_path in known_path_patterns:
+                prose = known_path.sub('<run-path>', prose)
             matches += re.findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
             if name not in ('prompt', 'gate-template'):
                 matches += re.findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
