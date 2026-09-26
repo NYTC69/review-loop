@@ -983,6 +983,109 @@ sys.exit(result.returncode)
         self.assertNotIn(str(source), co.state_path.read_text())
         self.assertEqual(third, 'N003')
 
+    def test_hold_note_cli_delivers_once_and_excludes_fresh_roles(self):
+        stopped = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
+        self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
+        held = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((held['status'], held['phase'], held['next']), ('HOLD', 'EXEC', 'author'))
+        first = self.run_operator_action('note', '--text', 'Use a wider negative input.')
+        second = self.run_operator_action('note', '--text', 'Use the negative input case.')
+        self.assertEqual((first.returncode, second.returncode), (0, 0), first.stdout + second.stdout)
+        probe = self.run_operator_action('permission-probe', '--polish-round', 'off')
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['pending_operator_note_id'], 'N002')
+        resumed = self.run_operator_action('resume', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertNotIn('pending_operator_note_id', state)
+        self.assertEqual([row['status'] for row in state['operator_notes']], ['replaced', 'delivered'])
+        prompts = [p.read_text() for p in (self.run_dir / 'evidence').glob('*-exec-author.prompt.txt')]
+        self.assertEqual(sum('Use the negative input case.' in prompt for prompt in prompts), 1)
+        self.assertTrue(all('Use a wider negative input.' not in prompt for prompt in prompts))
+        receipts = [json.loads(p.read_text()) for p in (self.run_dir / 'evidence').glob('*-exec-author.receipt.json')]
+        self.assertEqual(sum(row.get('operator_note_id') == 'N002' for row in receipts), 1)
+        fresh = list((self.run_dir / 'evidence').glob('*-*.independence-inputs.json'))
+        self.assertTrue(fresh)
+        for secret in ('Use the negative input case.', 'Operator in-scope clarification',
+                       'N002', state['operator_notes'][1]['sha256'], 'operator-note-'):
+            self.assertTrue(all(secret not in p.read_text() for p in fresh), secret)
+        sequence = state['sequence']
+        again = self.run_operator_action('resume', '--polish-round', 'off')
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['sequence'], sequence)
+
+    def test_hold_note_cli_refuses_missing_run_and_wrong_next_role(self):
+        missing = self.run_operator_action('note', '--text', 'clarify')
+        self.assertEqual(missing.returncode, 2)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+        self.assertIn('existing coordinator run', missing.stdout)
+        co = self.coordinator()
+        active = self.run_operator_action('note', '--text', 'clarify')
+        self.assertEqual(active.returncode, 2)
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'ACTIVE')
+        co.hold('waiting for reviewer')
+        co.state['next'] = 'reviewer'; co.save()
+        refused = self.run_operator_action('note', '--text', 'clarify')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('waiting for reviewer', refused.stdout)
+        self.assertNotIn('operator_notes', json.loads(co.state_path.read_text()))
+
+    def test_hold_note_failed_author_turn_remains_pending(self):
+        stopped = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
+        self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
+        added = self.run_operator_action('note', '--text', 'Check signed boundary.')
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}):
+            failed = self.run_operator_action('resume', '--polish-round', 'off')
+        self.assertEqual(failed.returncode, 2)
+        pending = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(pending['pending_operator_note_id'], 'N001')
+        self.assertEqual(pending['operator_notes'][0]['status'], 'pending')
+        resumed = self.run_operator_action('resume', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        delivered = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(delivered['operator_notes'][0]['status'], 'delivered')
+
+    def test_hold_note_ready_receipt_replays_without_second_author_call(self):
+        stopped = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
+        self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
+        added = self.run_operator_action('note', '--text', 'Check the signed edge.')
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        argv = self.command('--polish-round', 'off')[2:]
+        argv[0] = 'resume'
+        co = rc.Coordinator(rc.parser().parse_args(argv))
+        with patch.object(co, 'render', side_effect=RuntimeError('crash after READY')):
+            self.assertEqual(co.resume(), 'HOLD')
+        state = json.loads(co.state_path.read_text())
+        self.assertEqual(state['operator_notes'][0]['status'], 'delivered')
+        self.assertIsNotNone(state['pending_author_result_sequence'])
+        refused = self.run_operator_action('note', '--text', 'A later note.')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('READY receipt pending', refused.stdout)
+        self.assertEqual(len(json.loads(co.state_path.read_text())['operator_notes']), 1)
+        before = list((self.run_dir / 'evidence').glob('*-exec-author.receipt.json'))
+        resumed = self.run_operator_action('resume', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        after = list((self.run_dir / 'evidence').glob('*-exec-author.receipt.json'))
+        self.assertEqual(len(after), len(before))
+        self.assertNotIn('pending_author_result_sequence', json.loads(co.state_path.read_text()))
+
+    def test_plan_hold_note_forces_exec_gate_even_when_optional_gate_off(self):
+        co = rc.Coordinator(rc.parser().parse_args(self.command('--shadow', 'off',
+                           '--adversarial-gate', 'off', '--polish-round', 'off')[2:]))
+        co.hold('operator clarification requested')
+        added = self.run_operator_action('note', '--text', 'Clarify signed bounds.',
+                                         '--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        resumed = self.run_operator_action('resume', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'DONE')
+        self.assertGreaterEqual(state['plan_reviews'], 1)
+        self.assertTrue(list((self.run_dir / 'evidence').glob('*-gate.receipt.json')))
+
     def test_reject_uses_workspace_lease_and_test_command_preflight(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                          '--polish-round', 'off')

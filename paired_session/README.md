@@ -161,6 +161,15 @@ bin/paired-session reject --workspace /path/to/worktree \
   --text 'Please address this in-scope acceptance feedback'
 ```
 
+An idle `HOLD` run waiting for its next author turn accepts an in-scope
+clarification with `note --text '...'` or `note --file /path/to/note`. It reaches
+that author turn on `resume`; a newer note replaces a pending one. Notes are
+refused while waiting for a reviewer/gate, after the rejection cap, and on a
+DONE run (use `reject`). The note cannot authorize new scope. The separate
+scope-change CLI is not available yet; abort and start a new run for changed
+scope. Author-produced plan/code remains visible to reviewers, while the
+operator note itself is not forwarded to their prompts.
+
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting
 usage, the known request totals remain in the usage report; an interrupted

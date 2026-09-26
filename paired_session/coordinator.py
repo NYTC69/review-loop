@@ -1026,7 +1026,7 @@ class Coordinator:
                 self.state['invocation_budget_version'] = 1
                 self.save()
         else:
-            if self.args.action in ('accept', 'reject'):
+            if self.args.action in ('accept', 'reject', 'note'):
                 raise ValueError(f'{self.args.action} requires an existing coordinator run')
             if not (self.workspace / '.git').exists():
                 raise ValueError('--workspace must be a git worktree')
@@ -1718,6 +1718,8 @@ class Coordinator:
             raise ValueError('rejection limit: accept, abort or use --scope-change')
         if self.state.get('next') != 'author':
             raise ValueError(f"run is waiting for {self.state.get('next')}; resume first, or use --scope-change (not yet available; abort + new run)")
+        if self.state.get('pending_author_result_sequence') is not None:
+            raise ValueError('author READY receipt pending; resume first')
         phase = self.state['phase']
         if (phase not in ('PLAN', 'EXEC') or self.state['polish']['active'] or self.state.get('active') or
                 self.state.get('uncertain_active') or self.state['invocations_used'] >= self.args.max_invocations or
@@ -1730,7 +1732,11 @@ class Coordinator:
             source = Path(file).expanduser().resolve()
             if source == self.workspace or self.workspace in source.parents or source == self.run_dir or self.run_dir in source.parents:
                 raise ValueError('note source must be outside workspace and run dir')
-            raw = source.read_bytes()
+            try:
+                with source.open('rb') as stream:
+                    raw = stream.read(16385)
+            except OSError as exc:
+                raise ValueError('cannot read note source') from exc
         else:
             raw = (text or '').encode('utf-8')
         try: decoded = raw.decode('utf-8')
@@ -2444,6 +2450,9 @@ class Coordinator:
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
         rejection = None
+        operator_note = next((row for row in self.state.get('operator_notes', [])
+                              if role == 'author' and phase in ('PLAN', 'EXEC') and not fresh and
+                              row['id'] == self.state.get('pending_operator_note_id')), None)
         if role == 'author' and phase == 'EXEC':
             rejection = next((row for row in self.state.get('rejections', [])
                               if row.get('id') == self.state.get('pending_rejection_id') and
@@ -2452,6 +2461,19 @@ class Coordinator:
                 prompt += ('\n\n## Operator rejection for current EXEC scope\n'
                            'Address this in-scope acceptance feedback; do not expand scope.\n'
                            f"[{rejection['id']} sha256={rejection['sha256']}]\n{rejection['text']}")
+        if operator_note:
+            if operator_note['target_phase'] != phase:
+                raise RuntimeError('undelivered operator note targets another phase')
+            try: note_bytes = Path(operator_note['evidence']).read_bytes()
+            except OSError as exc: raise RuntimeError('operator note evidence is missing') from exc
+            if hashlib.sha256(note_bytes).hexdigest() != operator_note['sha256']:
+                raise RuntimeError('operator note evidence hash differs')
+            repeat = 'Repeat: ' if operator_note.get('attempts') else ''
+            prompt += (f"\n\n## {repeat}Operator in-scope clarification [{operator_note['id']}]"
+                       + (f" supersedes {operator_note['replaces_id']}" if operator_note.get('replaces_id') else '')
+                       + ('\nDo not expand the work item.\n' if phase == 'PLAN' else '\nDo not expand the approved plan.\n')
+                       + note_bytes.decode('utf-8'))
+            operator_note['attempts'] = operator_note.get('attempts', 0) + 1
         self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
         if role == 'author' and self._role_vendor(role) == 'codex':
@@ -2483,6 +2505,9 @@ class Coordinator:
         if rejection:
             receipt['rejection_id'] = rejection['id']
             receipt['rejection_sha256'] = rejection['sha256']
+        if operator_note:
+            receipt['operator_note_id'] = operator_note['id']
+            receipt['operator_note_sha256'] = operator_note['sha256']
         if env_overrides:
             receipt['environment_overrides'] = dict(env_overrides)
         env = cli_env()
@@ -2661,6 +2686,12 @@ class Coordinator:
         self.state['active'] = None
         if role == 'reviewer' and phase in ('PLAN', 'EXEC'):
             self.state['pending_reviewer_result_sequence'] = seq
+        if operator_note and answer.get('status') == 'READY':
+            operator_note.update(status='delivered', delivered_sequence=seq)
+            self.state.pop('pending_operator_note_id', None)
+            self.state['pending_author_result_sequence'] = seq
+            self.state['gate_ran'] = False
+            self.state['force_gate_after_reject'] = True
         self.save()
         return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role,
                 'open_finding_ids': receipt.get('open_finding_ids', [])}
@@ -2677,7 +2708,11 @@ class Coordinator:
             self.polish_author_turn()
             return
         phase = self.state['phase']
-        result = self.invoke('author', phase, self._author_prompt(), author_schema())
+        pending = self.state.get('pending_author_result_sequence')
+        receipt = next((row for row in self.state['turns'] if row['sequence'] == pending), None)
+        result = ({'answer': receipt['answer'], 'snapshot': receipt['snapshot_after'],
+                   'sequence': pending, 'role': 'author'} if receipt else
+                  self.invoke('author', phase, self._author_prompt(), author_schema()))
         self.render(result, 'implementer', phase)
         answer = result['answer']
         if answer['status'] == 'HOLD':
@@ -2699,6 +2734,7 @@ class Coordinator:
             atomic_text(self.context / 'plan.md', answer['body'].rstrip() + '\n')
         self.state['delivered_review'] = ''
         self.state['next'] = 'reviewer'
+        self.state.pop('pending_author_result_sequence', None)
         self.save()
 
     def polish_author_turn(self) -> None:
@@ -3710,7 +3746,7 @@ class StoreExplicitInteger(argparse.Action):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject'])
+                                      'accept', 'reject', 'note'])
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -3865,6 +3901,9 @@ def normalize_cli_paths(args: argparse.Namespace) -> argparse.Namespace:
 
 def _execute_locked(args: argparse.Namespace) -> int:
     co = Coordinator(args)
+    if args.action == 'note':
+        print('NOTE: ' + co.note(args.text, args.file))
+        return 0
     if args.action == 'permission-probe':
         try:
             passed = co.permission_probe(retry_uncertain=args.retry_uncertain)
@@ -3941,7 +3980,10 @@ def main(argv=None) -> int:
     if run_dir == workspace or workspace in run_dir.parents:
         print('REFUSED: --run-dir must be outside --workspace')
         return 2
-    if args.action in ('run', 'resume', 'permission-probe', 'reject'):
+    if args.action == 'note' and not (run_dir / 'state.json').is_file():
+        print('REFUSED: note requires an existing coordinator run')
+        return 2
+    if args.action in ('run', 'resume', 'permission-probe', 'reject', 'note'):
         if re.search(r'[*?\[\]{}]', str(run_dir)):
             print('REFUSED: --run-dir must not contain glob metacharacters used by Claude Edit deny rules')
             return 2
@@ -3952,7 +3994,7 @@ def main(argv=None) -> int:
             return 2
     try:
         with run_lease(Path(args.run_dir)):
-            if args.action in ('run', 'resume', 'permission-probe', 'reject'):
+            if args.action in ('run', 'resume', 'permission-probe', 'reject', 'note'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)
