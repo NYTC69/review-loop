@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 import uuid
@@ -324,14 +325,30 @@ def main():
         output_commands = []
         for index, command in enumerate(commands):
             exit_code = 0 if index < 2 else 126
+            label = next((name for name in ('external_tmpdir', 'slash_tmp', 'private_tmp', 'home', 'workspace_parent')
+                          if 'paired-session-escape-' + name + '-' in command), None)
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_SKIP') == label:
+                continue
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_MALFORMED') == label:
+                exit_code = None
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE') == label:
+                Path(shlex.split(command)[-1]).write_text('fake escaped\n')
+                exit_code = 0
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE') == label:
+                target = Path(shlex.split(command)[-1]); target.write_text('fake escaped\n'); target.unlink()
+                exit_code = 0
             if index < 2:
-                import shlex
                 parts = shlex.split(command)
                 target_arg = parts[parts.index('>') + 1]
                 target = (Path(os.environ['TMPDIR']) / target_arg[len('$TMPDIR/'):]
                           if target_arg.startswith('$TMPDIR/') else Path(target_arg))
                 target.write_text('probe\n')
-            events.append({'command': command, 'exit_code': exit_code})
+            events.append({'command': command, 'exit_code': exit_code,
+                           'output': ('generic failure' if label and label == os.environ.get('FAKE_AUTHOR_ESCAPE_NO_OS') else
+                                      'zsh: operation not permitted: ' + shlex.split(command)[-1]
+                                      if label and exit_code == 126 else 'fake permission result')})
+            if label and label == os.environ.get('FAKE_AUTHOR_ESCAPE_DUPLICATE'):
+                events.append(dict(events[-1]))
             output_commands.append({'command': command})
         answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
                   'self_run_evidence': output_commands}

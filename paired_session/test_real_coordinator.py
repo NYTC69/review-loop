@@ -2860,6 +2860,13 @@ sys.exit(result.returncode)
         self.assertEqual(report['author_permission_probe']['status'], 'PASS')
         self.assertTrue(all(report['author_permission_probe']['outcomes'].values()))
         self.assertTrue(report['author_permission_probe']['outcomes']['run_tmpdir_write_allowed'])
+        model_checks = report['author_permission_probe']['model_escape_checks']
+        expected_model_checks = {'external_tmpdir', 'slash_tmp', 'home', 'workspace_parent'}
+        if sys.platform == 'darwin':
+            expected_model_checks.add('private_tmp')
+        self.assertEqual(set(model_checks), expected_model_checks)
+        self.assertTrue(all(row['status'] == 'PASS' and not row['target_exists_after_turn']
+                            for row in model_checks.values()))
         sandbox_checks = report['author_permission_probe']['codex_sandbox_checks']
         self.assertEqual(sandbox_checks['status'], 'PASS')
         self.assertEqual(set(sandbox_checks['checks']), {
@@ -2929,6 +2936,86 @@ sys.exit(result.returncode)
         usage = json.loads((self.run_dir / 'usage.json').read_text())
         self.assertIn('probe', usage['by_role'])
         self.assertEqual(usage['by_role']['probe']['cli_turns'], 1)
+
+    def test_author_model_escape_core_statuses_and_cleanup(self):
+        cases = (
+            ('write-home', 'FAKE_AUTHOR_ESCAPE_WRITE', 'home', 'FAIL', True),
+            ('write-parent', 'FAKE_AUTHOR_ESCAPE_WRITE', 'workspace_parent', 'FAIL', True),
+            ('write-external', 'FAKE_AUTHOR_ESCAPE_WRITE', 'external_tmpdir', 'FAIL', True),
+            ('write-delete', 'FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE', 'home', 'FAIL', False),
+            ('skip', 'FAKE_AUTHOR_ESCAPE_SKIP', 'home', 'UNKNOWN', False),
+            ('malformed', 'FAKE_AUTHOR_ESCAPE_MALFORMED', 'home', 'UNKNOWN', False),
+            ('no-os-marker', 'FAKE_AUTHOR_ESCAPE_NO_OS', 'home', 'UNKNOWN', False),
+        )
+        for name, setting, label, expected, found_expected in cases:
+            with self.subTest(name=name):
+                self.run_dir = self.root / ('escape-core-' + name)
+                co = self.coordinator()
+                with patch.dict(os.environ, {setting: label, 'FAKE_CODEX_SANDBOX_MODE': 'deny'}):
+                    result = co._author_permission_probe()
+                self.assertEqual(result['status'], expected, result)
+                self.assertEqual(result['model_escape_checks'][label]['status'], expected)
+                found = result['model_escape_targets_found']
+                self.assertEqual(bool(found), found_expected)
+                self.assertEqual(found, result['model_escape_targets_cleaned'])
+                self.assertTrue(all(not Path(path).exists() for path in found))
+
+    def test_author_model_escape_probe_fail_unknown_and_cleanup(self):
+        for mode, setting, expected in (
+                ('write', 'FAKE_AUTHOR_ESCAPE_WRITE', 'FAIL'),
+                ('skip', 'FAKE_AUTHOR_ESCAPE_SKIP', 'UNKNOWN'),
+                ('malformed', 'FAKE_AUTHOR_ESCAPE_MALFORMED', 'UNKNOWN')):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('escape-' + mode)
+                command = self.command()
+                command[2] = 'permission-probe'
+                result = subprocess.run(command, cwd=self.root,
+                    env={**os.environ, setting: 'home', 'FAKE_CODEX_SANDBOX_MODE': 'deny'},
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+                author = report['author_permission_probe']
+                self.assertEqual(author['status'], expected)
+                self.assertEqual(author['model_escape_checks']['home']['status'], expected)
+                self.assertEqual(report['status'], expected)
+                if mode == 'write':
+                    found = author['model_escape_targets_found']
+                    self.assertEqual(len(found), 1)
+                    self.assertEqual(found, author['model_escape_targets_cleaned'])
+                    self.assertFalse(Path(found[0]).exists())
+                    state = json.loads((self.run_dir / 'state.json').read_text())
+                    self.assertEqual(state['status'], 'HOLD')
+                    self.assertIn(found[0], state['hold_reason'])
+                else:
+                    self.assertEqual(author['model_escape_targets_found'], [])
+
+    def test_author_model_escape_duplicate_success_and_reviewer_fail_precedence(self):
+        cases = (
+            ('duplicate-success', {'FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE': 'home',
+                                   'FAKE_AUTHOR_ESCAPE_DUPLICATE': 'home'}, 'FAIL'),
+            ('reviewer-fail', {'FAKE_AUTHOR_ESCAPE_SKIP': 'home',
+                               'FAKE_REVIEW_NO_TEST_EVENT': '1'}, 'FAIL'),
+            ('no-os-marker', {'FAKE_AUTHOR_ESCAPE_NO_OS': 'home'}, 'UNKNOWN'),
+            ('clarify', {'FAKE_AUTHOR_ESCAPE_SKIP': 'home',
+                         'PAIRED_SESSION_PROBE_CLARIFY': '1'}, 'UNKNOWN'),
+        )
+        for name, settings, expected in cases:
+            with self.subTest(name=name):
+                self.run_dir = self.root / ('escape-extra-' + name)
+                command = self.command(); command[2] = 'permission-probe'
+                result = subprocess.run(command, cwd=self.root,
+                    env={**os.environ, **settings, 'FAKE_CODEX_SANDBOX_MODE': 'deny'},
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+                self.assertEqual(report['status'], expected)
+                if name == 'duplicate-success':
+                    self.assertEqual(report['author_permission_probe']['model_escape_checks']['home']['status'], 'FAIL')
+                    self.assertEqual(report['author_permission_probe']['model_escape_targets_found'], [])
+                    self.assertIn('1C FAIL', json.loads((self.run_dir / 'state.json').read_text())['hold_reason'])
+                if name == 'clarify':
+                    prompt = next((self.run_dir / 'evidence').glob('*-author_permission_probe-author.prompt.txt'))
+                    self.assertIn('Clarification:', prompt.read_text())
 
     def test_claude_permission_probe_requires_observed_os_sandbox_denial_and_cleans_escape(self):
         command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')

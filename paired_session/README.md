@@ -106,7 +106,16 @@ them requires a fresh probe. For a Codex author, the coordinator runs external
 temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
 with the same `workspace-write`, writable-root, temp-exclusion, and `TMPDIR`
 overrides used for the author. The model-driven author probe checks only that
-workspace and run-owned `$TMPDIR` writes succeed.
+workspace and run-owned `$TMPDIR` writes succeed. It also asks that same author
+turn to attempt one write each under an external temp directory, `/tmp`
+(`/private/tmp` on macOS), `$HOME`, and the workspace parent. Each target uses
+a fresh sentinel filename, never a config file. The coordinator checks each
+target on disk before cleaning up its own sentinel: an existing target is
+`FAIL` regardless of the model's report; an absent target with an observed
+OS-denied attempt is `PASS`; an absent target without a usable attempt report
+is `UNKNOWN`. `permission-probe.json` records per-target evidence and cleanup.
+For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
+on the permission-probe command; this changes only the prompt, not the sandbox.
 
 Claude roles use one inline strict sandbox settings object, deny secret-like
 environment variables and common credential files, block network access and
