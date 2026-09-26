@@ -1,29 +1,18 @@
 #!/usr/bin/env python3
 """Conflict-aware parallel CR (code-review) scheduler for review-loop.
 
-Fans out N independent reviewer-round invocations against the current
-stream-json reviewer protocol so an orchestrator that wants to run
-multiple reviewer rounds in parallel does not pay serial wall-clock
-cost.
+Fans out independent reviewer rounds through the bounded, isolated reviewer
+wrappers. Native streams and usage evidence stay in per-invocation files;
+only capped wrapper status output is retained in scheduler results.
 
 POSIX-only: relies on `start_new_session=True` + `os.killpg` for clean
 process-group teardown on per-job timeout. macOS / Linux only.
 
-Stream-json parsing here is intentionally a *best-effort* duplicate of
-the orchestrator-side parser — it pulls the `result` field out of the
-heartbeat-tolerant event stream for metadata reporting only. It is
-NOT contract-equivalent to the orchestrator's per-round verdict
-parser; the orchestrator remains the single authority for verdict
-extraction and schema validation.
-
-This scheduler is **Codex-Stage-1-only fan-out** — the two `runtime`
-values (`"codex"`, `"claude_code"`) refer to which CLI shell-out path
-the scheduler invokes (Codex Stage 1 → `claude -p`, Claude Code →
-`codex exec`). The Claude-side runtime cannot be wrapped externally
-because its reviewer dispatch is in-process Agent-tool dispatch, not a
-shell-out. Orchestrator-side wrapper integration into the three
-Codex-Stage-1 dispatch sites (`.agents/skills/{review-loop,plan,
-execute}/SKILL.md`) is NOT shipped here — see follow-up backlog item.
+Only successful wrapper artifacts enter the shared reviewer-output schema
+validator. The orchestrator remains responsible for the full review rubric.
+Runtime labels retain their established orchestrator meaning: `codex` selects
+the Claude CLI wrapper and `claude_code` selects the Codex CLI wrapper. In-process
+Agent-tool dispatch is outside this CLI scheduler.
 
 Stdlib-only.
 """
@@ -36,12 +25,19 @@ import concurrent.futures
 import json
 import math
 import os
+from pathlib import Path
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+
+try:
+    from process_tree import terminate_process_tree, wait_with_process_tree
+except ModuleNotFoundError:  # imported as scripts.review_verification
+    from scripts.process_tree import terminate_process_tree, wait_with_process_tree
 from dataclasses import dataclass, field
 
 
@@ -49,6 +45,8 @@ from dataclasses import dataclass, field
 # bullet body, e.g. `[CRITICAL]`, `[MINOR]`, `[MAJOR]`, `[HIGH]`, `[WARNING]`.
 # Used to detect unsupported severities that the schema rejects.
 _BRACKETED_SEVERITY_RE = re.compile(r"^\[([A-Z]+)\]")
+WRAPPER_CLEANUP_GRACE_SECONDS = 10.0
+STATUS_CAPTURE_BYTES = 65536
 
 
 class SchedulerInvariantError(Exception):
@@ -92,6 +90,8 @@ class ReviewJob:
     capacity_keys: frozenset = field(default_factory=frozenset)
     extra_argv: tuple = ()
     worktree: "str | None" = None
+    stage: str = "review"
+    role: str = "reviewer"
 
 
 @dataclass
@@ -112,6 +112,11 @@ class JobResult:
     parsed_verdict: "str | None"
     parsed_issues: "list | None"
     error: "str | None"
+    status: "str | None" = None
+    result_file: "str | None" = None
+    usage_file: "str | None" = None
+    invocation_id: "str | None" = None
+    tool_uses: "int | None" = None
 
 
 # --------------------------------------------------------------------------
@@ -177,47 +182,70 @@ def _resolve_reviewer_model(
     return "claude-sonnet-4-6"
 
 
-def _build_argv(job: ReviewJob, scheduler: "Scheduler") -> list:
-    """Build the subprocess argv for one job.
+def _job_session_id(job: ReviewJob) -> str:
+    for value in (job.session_id, job.job_id):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", value):
+            raise ValueError("session_id and job_id must be safe filename components of at most 80 characters")
+    return f"{job.session_id}.{job.job_id}"
 
-    `runtime == "codex"` (Codex Stage 1 reviewer fan-out) maps to
-    `claude -p --no-session-persistence --output-format stream-json
-    --include-partial-messages --verbose --model <reviewer_model>`. Stdin is
-    delivered separately by `_run_one` via FD handoff.
 
-    `runtime == "claude_code"` maps to `codex exec -s read-only
-    [-m <reviewer_model>] -o <output-file>`. Output file lives under the
-    scheduler's tmp dir. Unlike the Claude CLI path, an empty model stays
-    unset so the Claude-model fallback cannot leak into `codex -m`.
+def _build_argv(job: ReviewJob, scheduler: "Scheduler", *, tmp_dir=None) -> list:
+    """Select a permission-constrained wrapper; arbitrary native flags are forbidden."""
+    if job.extra_argv:
+        raise ValueError("extra_argv is unsupported; use explicit reviewer configuration fields")
+    wrappers = {"codex": "run_claude_reviewer.py", "claude_code": "run_codex_reviewer.py"}
+    if job.runtime not in wrappers:
+        raise ValueError(f"unknown runtime: {job.runtime!r}")
+    timeout = job.timeout_secs or scheduler.default_timeout
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    argv = [sys.executable, str(Path(__file__).resolve().with_name(wrappers[job.runtime])),
+            "--session-id", _job_session_id(job), "--parent-session-id", job.session_id,
+            "--tmp-dir", tmp_dir or scheduler.tmp_dir,
+            "--timeout-seconds", str(timeout), "--stage", job.stage, "--role", job.role,
+            "--ledger-dir", os.path.join(scheduler.tmp_dir, "usage")]
+    model = _resolve_reviewer_model(job) if job.runtime == "codex" else job.reviewer_model
+    if model:
+        argv.extend(["--model", model])
+    return argv
 
-    Unknown runtime raises `ValueError`.
-    """
-    if job.runtime == "codex":
-        argv = [
-            "claude",
-            "-p",
-            "--no-session-persistence",
-            "--output-format",
-            "stream-json",
-            "--include-partial-messages",
-            "--verbose",
-            "--model",
-            _resolve_reviewer_model(job),
-        ]
-        argv.extend(job.extra_argv)
-        return argv
-    if job.runtime == "claude_code":
-        out_path = os.path.join(
-            scheduler.tmp_dir,
-            f"{job.session_id}-reviewer-output.{job.job_id}.txt",
+
+def _wrapper_summary(stdout_bytes):
+    for line in reversed(stdout_bytes.splitlines()):
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if isinstance(event, dict) and isinstance(event.get("status"), str):
+            return event
+    return None
+
+
+def _descendants(pid):
+    """Compatibility diagnostic used by older scheduler tests and callers."""
+    try:
+        listing = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid="], timeout=1,
+            stderr=subprocess.DEVNULL,
         )
-        argv = ["codex", "exec", "-s", "read-only"]
-        if job.reviewer_model:
-            argv.extend(["-m", job.reviewer_model])
-        argv.extend(["-o", out_path])
-        argv.extend(job.extra_argv)
-        return argv
-    raise ValueError(f"unknown runtime: {job.runtime!r}")
+        pairs = [tuple(map(int, line.split())) for line in listing.splitlines()
+                 if len(line.split()) == 2]
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return set()
+    found, frontier = set(), {pid}
+    while frontier:
+        frontier = {child for child, parent in pairs
+                    if parent in frontier and child not in found}
+        found.update(frontier)
+    return found
+
+
+def _stop_wrapper(process, known_pids=()):
+    """Allow cancellation evidence, then clean nested sessions fail-closed."""
+    returncode, cleanup_ok, _observed = terminate_process_tree(
+        process, known_pids=known_pids,
+    )
+    return returncode if cleanup_ok else None
 
 
 # --------------------------------------------------------------------------
@@ -461,8 +489,8 @@ class Scheduler:
        `capacity_limits` are unbounded.
 
     `tmp_dir` defaults to `.review-loop/tmp` and houses per-job prompt
-    files (`{session_id}-reviewer-prompt.{job_id}.txt`) and per-job
-    Claude-Code output files (`{session_id}-reviewer-output.{job_id}.txt`).
+    files under a unique `{session_id}.{job_id}.*` directory, including the
+    retained prompt, wrapper status, raw stream, result, and usage evidence.
     """
 
     def __init__(
@@ -472,15 +500,39 @@ class Scheduler:
         capacity_limits: "dict | None" = None,
         tmp_dir: "str | os.PathLike" = ".review-loop/tmp",
     ) -> None:
+        if not isinstance(max_parallel, int) or isinstance(max_parallel, bool) or max_parallel <= 0:
+            raise ValueError("max_parallel must be a positive integer")
+        if not math.isfinite(default_timeout) or default_timeout <= 0:
+            raise ValueError("default_timeout must be finite and positive")
         self.max_parallel = max_parallel
         self.default_timeout = default_timeout
         self.capacity_limits = dict(capacity_limits) if capacity_limits else {}
-        self.tmp_dir = os.fspath(tmp_dir)
+        if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0
+               for value in self.capacity_limits.values()):
+            raise ValueError("capacity limits must be positive integers")
+        self.tmp_dir = os.path.abspath(os.fspath(tmp_dir))
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._held_binary_keys: set = set()
         self._capacity_in_use: dict = collections.defaultdict(int)
         self._results: dict = {}
+        self._processes: dict = {}
+        self._cancelled = threading.Event()
+        self._cleanup_threads: list = []
+        self._stopping_pids: set = set()
+
+    def cancel(self) -> None:
+        """Stop active wrappers and prevent queued jobs from launching a CLI."""
+        self._cancelled.set()
+        with self._lock:
+            for process in self._processes.values():
+                if process.pid in self._stopping_pids:
+                    continue
+                self._stopping_pids.add(process.pid)
+                # Cleanup is independent per job; do not serialize grace periods.
+                thread = threading.Thread(target=_stop_wrapper, args=(process,), daemon=True)
+                self._cleanup_threads.append(thread)
+                thread.start()
 
     # ---- key accounting ----------------------------------------------------
 
@@ -632,176 +684,150 @@ class Scheduler:
                     # the worker-exception path needs the extra finalize.
                     self._finalize_if_unrecorded(job.job_id, result)
                     self._release(job)
+            with self._lock:
+                cleanup_threads = list(self._cleanup_threads)
+            for thread in cleanup_threads:
+                thread.join(timeout=6.0)
             return dict(self._results)
 
     # ---- per-job worker ----------------------------------------------------
 
     def _run_one(self, job: ReviewJob) -> JobResult:
-        """Run one reviewer invocation end-to-end.
-
-        Uses **Approach A — file-FD handoff** for stdin delivery:
-        write the prompt to a per-job temp file, then `open(path,
-        "rb")` and pass that file object as `stdin=` to `Popen`. The
-        OS dup's the FD into the child, so there is no parent-side
-        write loop and no large-prompt deadlock risk. `stdin=PIPE`
-        is intentionally NOT used.
-
-        Cleanup ALWAYS runs in `finally:` — closes the prompt FD and
-        unlinks the prompt file, regardless of natural exit, timeout,
-        or exception.
-        """
+        """Run a wrapper, keeping its native evidence out of scheduler memory."""
+        if self._cancelled.is_set():
+            result = JobResult(job.job_id, None, b"", b"", False, None, None,
+                               "reviewer_cancelled", status="cancelled")
+            self._record_result(job.job_id, result)
+            return result
+        # Validate before creating artifacts. A unique directory also separates
+        # session/job pairs whose dotted display names happen to be identical.
+        _build_argv(job, self)
         os.makedirs(self.tmp_dir, exist_ok=True)
-        prompt_path = os.path.join(
-            self.tmp_dir,
-            f"{job.session_id}-reviewer-prompt.{job.job_id}.txt",
-        )
-        argv = _build_argv(job, self)
+        job_tmp = tempfile.mkdtemp(prefix=_job_session_id(job) + ".", dir=self.tmp_dir)
+        prompt_path = os.path.join(job_tmp, _job_session_id(job) + "-reviewer-prompt.txt")
+        argv = _build_argv(job, self, tmp_dir=job_tmp)
+        with open(prompt_path, "wb") as prompt:
+            prompt.write(job.prompt_text.encode("utf-8"))
 
-        # Write the prompt to disk first (binary). File fully closed
-        # before subprocess spawn.
-        with open(prompt_path, "wb") as fh:
-            fh.write(job.prompt_text.encode("utf-8"))
-
-        result = None
-        prompt_fp = None
         proc = None
-        stdout_buf: collections.deque = collections.deque()
-        stderr_buf: collections.deque = collections.deque()
-        wait_after_kill_timed_out = False
+        # Wrappers emit bounded status/heartbeats. Retain only the last 64 KiB
+        # even if a broken wrapper violates that contract.
+        stdout_buf = collections.deque(maxlen=STATUS_CAPTURE_BYTES // 4096)
+        stderr_buf = collections.deque(maxlen=STATUS_CAPTURE_BYTES // 4096)
 
-        def _drain(stream, buf):
+        def drain(stream, buf):
             try:
                 for chunk in iter(lambda: stream.read(4096), b""):
                     buf.append(chunk)
-            except Exception as e:  # noqa: BLE001
-                # Reader threads must not propagate exceptions, but
-                # surface a sentinel so pipe errors are not silently
-                # lost from the JobResult snapshot.
+            except Exception as error:  # Reader failures cannot escape the worker.
+                buf.append(("[reader_error:" + type(error).__name__ + "]\n").encode())
+            finally:
                 try:
-                    buf.append(
-                        f"[reader_error: {type(e).__name__}: {e}]\n".encode(
-                            "utf-8", errors="replace"
-                        )
-                    )
-                except Exception:  # noqa: BLE001
+                    stream.close()
+                except OSError:
                     pass
 
         try:
-            prompt_fp = open(prompt_path, "rb")
-            proc = subprocess.Popen(  # noqa: S603 — argv built from typed fields
-                argv,
-                stdin=prompt_fp,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-            stdout_thread = threading.Thread(
-                target=_drain, args=(proc.stdout, stdout_buf), daemon=True
-            )
-            stderr_thread = threading.Thread(
-                target=_drain, args=(proc.stderr, stderr_buf), daemon=True
-            )
-            stdout_thread.start()
-            stderr_thread.start()
-
-            timed_out = False
-            timeout = job.timeout_secs or self.default_timeout
-            try:
-                returncode = proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                # Drain on timeout: terminate the process group, give
-                # it a 2s grace period, then SIGKILL. Use os.getpgid()
-                # to be robust if a future maintainer disables
-                # start_new_session=True.
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-                grace_deadline = time.monotonic() + 2.0
-                while time.monotonic() < grace_deadline:
-                    if proc.poll() is not None:
-                        break
-                    time.sleep(0.05)
-                if proc.poll() is None:
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-                # `proc.wait()` after SIGKILL is unbounded if the child
-                # is in uninterruptible D-state. Cap it.
-                try:
-                    returncode = proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    wait_after_kill_timed_out = True
-                    returncode = None
-
-            # Final reader-drain pass. `Thread.join` blocks until the
-            # streams hit EOF (which Popen guarantees once the child
-            # exits and the OS closes the pipe write ends).
-            stdout_thread.join(timeout=2.0)
-            stderr_thread.join(timeout=2.0)
-
-            # Snapshot ONCE — any bytes that arrive after this point
-            # stay in the local deque and never enter the JobResult.
-            stdout_bytes = b"".join(stdout_buf)
-            stderr_bytes = b"".join(stderr_buf)
-
-            verdict = None
-            issues = None
-            parse_error = None
-            if job.runtime == "codex":
-                verdict, issues, parse_error = _parse_stream_json_result(stdout_bytes)
-            elif job.runtime == "claude_code":
-                # Claude Code path writes to an output file via `-o`.
-                out_path = os.path.join(
-                    self.tmp_dir,
-                    f"{job.session_id}-reviewer-output.{job.job_id}.txt",
+            with open(prompt_path, "rb") as prompt:
+                proc = subprocess.Popen(
+                    argv, stdin=prompt, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    start_new_session=True, cwd=job.worktree,
                 )
+                with self._lock:
+                    self._processes[job.job_id] = proc
+                stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_buf), daemon=True)
+                stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_buf), daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                timed_out = False
+                cleanup_failed = False
+                known_pids = ()
+                tree_inspectable = True
                 try:
-                    with open(out_path, "rb") as ofh:
-                        out_bytes = ofh.read()
-                    # Reuse the stream-json parser when the output file
-                    # contains stream-json; otherwise leave verdict
-                    # None and let the orchestrator parse.
-                    verdict, issues, parse_error = _parse_stream_json_result(out_bytes)
-                except FileNotFoundError:
-                    parse_error = "output_file_missing"
-                except OSError as exc:
-                    parse_error = f"output_file_unreadable: {exc!r}"
-
-            if wait_after_kill_timed_out and not parse_error:
-                parse_error = "wait_after_kill_timeout"
-
-            result = JobResult(
-                job_id=job.job_id,
-                returncode=returncode,
-                stdout_bytes=stdout_bytes,
-                stderr_bytes=stderr_bytes,
-                timed_out=timed_out,
-                parsed_verdict=verdict,
-                parsed_issues=issues,
-                error=parse_error,
-            )
+                    if self._cancelled.is_set():
+                        returncode = _stop_wrapper(proc)
+                    else:
+                        # The wrapper's own deadline leaves time to clean up and
+                        # publish usage before this emergency outer deadline.
+                        timeout = (job.timeout_secs or self.default_timeout) + WRAPPER_CLEANUP_GRACE_SECONDS
+                        returncode, timed_out, known_pids, tree_inspectable = wait_with_process_tree(
+                            proc, timeout,
+                        )
+                        if timed_out:
+                            returncode = _stop_wrapper(proc, known_pids)
+                        else:
+                            final_code, cleanup_ok, _observed = terminate_process_tree(
+                                proc, known_pids=known_pids,
+                            )
+                            if returncode is None:
+                                returncode = final_code
+                            if not cleanup_ok or not tree_inspectable:
+                                # Classified separately from a deadline expiry.
+                                cleanup_failed = True
+                except BaseException:
+                    _stop_wrapper(proc, known_pids)
+                    raise
+                stdout_thread.join(timeout=2.0)
+                stderr_thread.join(timeout=2.0)
+                # Snapshot once; late reader bytes cannot alter finalized jobs.
+                stdout_bytes = b"".join(stdout_buf)
+                stderr_bytes = b"".join(stderr_buf)
+                summary = _wrapper_summary(stdout_bytes)
+                verdict = issues = None
+                result_file = usage_file = invocation_id = None
+                status = summary.get("status") if summary else None
+                if summary:
+                    usage_file = summary.get("usage_file")
+                    invocation_id = summary.get("invocation_id")
+                timed_out = timed_out or status == "timeout"
+                if self._cancelled.is_set():
+                    status, error = "cancelled", "reviewer_cancelled"
+                elif timed_out:
+                    error = "reviewer_timeout"
+                elif cleanup_failed:
+                    error = "reviewer_cleanup_failed"
+                elif returncode != 0:
+                    error = "reviewer_" + (status if status and status != "ok" else "command_execution")
+                elif summary is None:
+                    error = "wrapper_status_missing"
+                elif status != "ok":
+                    error = "reviewer_" + status
+                elif (not isinstance(summary.get("tool_uses"), int)
+                      or isinstance(summary.get("tool_uses"), bool)):
+                    error = "reviewer_tool_uses_missing"
+                elif summary["tool_uses"] <= 0:
+                    error = "reviewer_tool_uses_zero"
+                else:
+                    candidate = summary.get("result_file")
+                    if not isinstance(candidate, str) or not candidate:
+                        error = "output_file_missing"
+                    else:
+                        try:
+                            with open(candidate, "r", encoding="utf-8") as output:
+                                verdict, issues, error = _validate_reviewer_output_schema(output.read())
+                            if job.role != "reviewer":
+                                # Specialists return raw reports; the parsed
+                                # verdict stays best-effort metadata only.
+                                error = None
+                            result_file = candidate
+                        except FileNotFoundError:
+                            error = "output_file_missing"
+                        except (OSError, UnicodeError) as exc:
+                            error = "output_file_unreadable:" + type(exc).__name__
+                result = JobResult(
+                    job_id=job.job_id, returncode=returncode, stdout_bytes=stdout_bytes,
+                    stderr_bytes=stderr_bytes, timed_out=timed_out,
+                    parsed_verdict=verdict, parsed_issues=issues, error=error,
+                    status=status, result_file=result_file, usage_file=usage_file,
+                    invocation_id=invocation_id,
+                    tool_uses=summary.get("tool_uses") if summary else None,
+                )
         finally:
-            if prompt_fp is not None and not prompt_fp.closed:
-                try:
-                    prompt_fp.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                os.unlink(prompt_path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-
-        # Finalize OUTSIDE the finally block so cleanup always runs
-        # first; record_result raises on duplicate which the dispatcher
-        # tolerates. If `result` was never built (Popen raised), skip
-        # recording — dispatcher's worker_exception arm handles it.
-        if result is not None:
-            self._record_result(job.job_id, result)
+            with self._lock:
+                self._processes.pop(job.job_id, None)
+            # Prompts, native streams, result and ledger evidence remain under
+            # the unique job directory/common ledger for offline verification.
+        self._record_result(job.job_id, result)
         return result
 
 
@@ -817,7 +843,14 @@ def _parse_capacity(values) -> dict:
         if "=" not in entry:
             raise ValueError(f"--capacity expects key=N, got: {entry!r}")
         key, raw = entry.split("=", 1)
-        out[key.strip()] = int(raw.strip())
+        key = key.strip()
+        try:
+            value = int(raw.strip())
+        except ValueError as exc:
+            raise ValueError(f"--capacity expects a positive integer, got: {entry!r}") from exc
+        if not key or value <= 0:
+            raise ValueError(f"--capacity expects a positive integer, got: {entry!r}")
+        out[key] = value
     return out
 
 
@@ -854,6 +887,8 @@ def _load_jobs(path: str) -> list:
                 capacity_keys=capacity_keys,
                 extra_argv=tuple(entry.get("extra_argv") or ()),
                 worktree=worktree,
+                stage=entry.get("stage", "review"),
+                role=entry.get("role", "reviewer"),
             )
         )
     return out
@@ -869,6 +904,11 @@ def _result_to_dict(r: JobResult) -> dict:
         "parsed_verdict": r.parsed_verdict,
         "parsed_issues": r.parsed_issues,
         "error": r.error,
+        "status": r.status,
+        "result_file": r.result_file,
+        "usage_file": r.usage_file,
+        "invocation_id": r.invocation_id,
+        "tool_uses": r.tool_uses,
     }
 
 
@@ -916,18 +956,33 @@ def main(argv=None) -> int:
         sys.stderr.write(f"review_verification: failed to load jobs: {exc}\n")
         return 2
 
-    scheduler = Scheduler(
-        max_parallel=args.max_parallel,
-        default_timeout=args.default_timeout,
-        capacity_limits=capacity_limits,
-        tmp_dir=args.tmp_dir,
-    )
+    try:
+        scheduler = Scheduler(
+            max_parallel=args.max_parallel,
+            default_timeout=args.default_timeout,
+            capacity_limits=capacity_limits,
+            tmp_dir=args.tmp_dir,
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"review_verification: {exc}\n")
+        return 2
 
+    old_handlers = {}
+    if threading.current_thread() is threading.main_thread():
+        def interrupted(signum, frame):
+            # Do not acquire the dispatcher's lock inside a Python signal handler.
+            scheduler._cancelled.set()
+            threading.Thread(target=scheduler.cancel, daemon=True).start()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            old_handlers[sig] = signal.signal(sig, interrupted)
     try:
         results = scheduler.submit(jobs)
     except SchedulerInvariantError as exc:
         sys.stderr.write(f"review_verification: scheduler invariant violation: {exc}\n")
         return 3
+    finally:
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
 
     payload = {jid: _result_to_dict(r) for jid, r in results.items()}
 
@@ -945,9 +1000,11 @@ def main(argv=None) -> int:
     else:
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
+    if scheduler._cancelled.is_set():
+        return 130
     if args.fail_on_any:
         for r in payload.values():
-            if r["returncode"] != 0 or r["timed_out"]:
+            if r["returncode"] != 0 or r["timed_out"] or r["error"]:
                 return 1
     return 0
 

@@ -7,7 +7,7 @@ description: >
   analyzes but never modifies files. Returns a structured verdict.
 model: inherit
 tier: judgment
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob
 ---
 
 # Reviewer Agent

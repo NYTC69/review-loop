@@ -1,8 +1,7 @@
 """Unit tests for scripts/review_verification.py.
 
-All subprocess interactions mocked via
-`unittest.mock.patch.object(subprocess, "Popen", FakePopen)`. Tests
-run offline.
+Scheduler unit tests mock subprocesses; integration tests execute both wrappers
+against standalone fake native CLIs. All tests run offline.
 
 Test classes:
   - PerJobTimeoutTest (and negative)
@@ -30,8 +29,10 @@ Stdlib unittest. Mirrors `tests/replay_sessions_test.py` style.
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -138,6 +139,12 @@ def _killpg_noop(pid, sig):  # noqa: ARG001
     return None
 
 
+def _terminate_fake(process, **kwargs):
+    """Unit-test cleanup; real nested-session cleanup has process tests."""
+    process.returncode = FakePopen.returncode_value
+    return process.returncode, True, ()
+
+
 def _make_job(
     job_id: str = "j1",
     session_id: str = "sess",
@@ -168,13 +175,19 @@ def _make_job(
 
 
 class PerJobTimeoutTest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(rv, "terminate_process_tree", side_effect=_terminate_fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_timeout_marks_job_timed_out(self):
         with tempfile.TemporaryDirectory() as tmp:
             reset_fakepopen(returncode_value=-9, raise_timeout=True)
             sched = rv.Scheduler(max_parallel=1, tmp_dir=tmp)
             job = _make_job(timeout_secs=0.01)
             with patch.object(subprocess, "Popen", FakePopen), \
-                 patch.object(rv.os, "killpg", _killpg_noop):
+                 patch.object(rv.os, "killpg", _killpg_noop), \
+                 patch.object(rv, "wait_with_process_tree", return_value=(None, True, (), True)):
                 results = sched.submit([job])
             self.assertTrue(results["j1"].timed_out)
 
@@ -242,6 +255,11 @@ class ReturncodePropagationTest(unittest.TestCase):
 
 
 class DrainOnTimeoutTest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(rv, "terminate_process_tree", side_effect=_terminate_fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_drain_on_timeout_captures_partial_stdout(self):
         with tempfile.TemporaryDirectory() as tmp:
             reset_fakepopen(
@@ -251,7 +269,8 @@ class DrainOnTimeoutTest(unittest.TestCase):
             )
             sched = rv.Scheduler(max_parallel=1, tmp_dir=tmp)
             with patch.object(subprocess, "Popen", FakePopen), \
-                 patch.object(rv.os, "killpg", _killpg_noop):
+                 patch.object(rv.os, "killpg", _killpg_noop), \
+                 patch.object(rv, "wait_with_process_tree", return_value=(None, True, (), True)):
                 results = sched.submit([_make_job(timeout_secs=0.01)])
             self.assertTrue(results["j1"].timed_out)
             self.assertIn(b"partial-output-before-kill", results["j1"].stdout_bytes)
@@ -685,13 +704,10 @@ class BuildArgvTest(unittest.TestCase):
             sched = rv.Scheduler(tmp_dir=tmp)
             job = _make_job(runtime="codex", reviewer_model="gpt-5.5")
             argv = rv._build_argv(job, sched)
-        self.assertEqual(argv[0], "claude")
-        self.assertIn("-p", argv)
-        self.assertIn("--no-session-persistence", argv)
-        self.assertIn("--output-format", argv)
-        self.assertIn("stream-json", argv)
-        self.assertIn("--include-partial-messages", argv)
-        self.assertEqual(argv[argv.index("--include-partial-messages") + 1], "--verbose")
+        self.assertEqual(argv[0], sys.executable)
+        self.assertTrue(argv[1].endswith("run_claude_reviewer.py"))
+        self.assertEqual(argv[argv.index("--session-id") + 1], "sess.j1")
+        self.assertEqual(argv[argv.index("--timeout-seconds") + 1], "30.0")
         self.assertIn("--model", argv)
         self.assertIn("gpt-5.5", argv)
 
@@ -707,19 +723,18 @@ class BuildArgvTest(unittest.TestCase):
             sched = rv.Scheduler(tmp_dir=tmp)
             job = _make_job(runtime="claude_code", reviewer_model="gpt-5.6-sol")
             argv = rv._build_argv(job, sched)
-        self.assertEqual(argv[0], "codex")
-        self.assertEqual(argv[1], "exec")
+        self.assertEqual(argv[0], sys.executable)
+        self.assertTrue(argv[1].endswith("run_codex_reviewer.py"))
         self.assertNotIn("--full-auto", argv)
-        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
-        self.assertEqual(argv[argv.index("-m") + 1], "gpt-5.6-sol")
-        self.assertIn("-o", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.6-sol")
+        self.assertIn("--ledger-dir", argv)
 
     def test_claude_code_runtime_omits_model_when_unconfigured(self):
         with tempfile.TemporaryDirectory() as tmp:
             sched = rv.Scheduler(tmp_dir=tmp)
             job = _make_job(runtime="claude_code", reviewer_model="")
             argv = rv._build_argv(job, sched)
-        self.assertNotIn("-m", argv)
+        self.assertNotIn("--model", argv)
         self.assertNotIn("claude-sonnet-4-6", argv)
 
     def test_unknown_runtime_raises_value_error(self):
@@ -728,6 +743,15 @@ class BuildArgvTest(unittest.TestCase):
             job = _make_job(runtime="bogus")
             with self.assertRaises(ValueError):
                 rv._build_argv(job, sched)
+
+    def test_native_override_flags_and_unsafe_ids_are_rejected_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = rv.Scheduler(tmp_dir=tmp)
+            for changes in ({"extra_argv": ("--dangerously-skip-permissions",)},
+                            {"extra_argv": ("--full-auto",)}, {"session_id": "../escape"},
+                            {"job_id": "nested/path"}, {"timeout_secs": float("nan")}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    rv._build_argv(replace(_make_job(), **changes), scheduler)
 
     def test_resolve_reviewer_model_precedence(self):
         # job.reviewer_model > judgment_model > default backstop.
@@ -785,12 +809,13 @@ class StdinDeliveryTest(unittest.TestCase):
             # (b) basename matches per-job temp path
             self.assertEqual(
                 os.path.basename(stdin.name),
-                "sess1-reviewer-prompt.jX.txt",
+                "sess1.jX-reviewer-prompt.txt",
             )
             # (e) NOT subprocess.PIPE
             self.assertIsNot(stdin, subprocess.PIPE)
-            # (d) after worker exits, prompt file is gone.
-            self.assertFalse(os.path.exists(stdin.name))
+            # Keep immutable per-job evidence after the wrapper exits.
+            self.assertTrue(os.path.exists(stdin.name))
+            self.assertTrue(stdin.closed)
 
     def test_claude_code_stdin_is_file_fd_not_pipe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -800,7 +825,7 @@ class StdinDeliveryTest(unittest.TestCase):
             self.assertTrue(hasattr(stdin, "name"))
             self.assertEqual(
                 os.path.basename(stdin.name),
-                "sess1-reviewer-prompt.jX.txt",
+                "sess1.jX-reviewer-prompt.txt",
             )
             self.assertIsNot(stdin, subprocess.PIPE)
 
@@ -1170,9 +1195,14 @@ class SchemaValidationTest(unittest.TestCase):
 # --------------------------------------------------------------------------
 
 
-class TempPromptCleanupTest(unittest.TestCase):
+class PromptEvidenceRetentionTest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(rv, "terminate_process_tree", side_effect=_terminate_fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _list_prompt_files(self, tmp: str):
-        return [n for n in os.listdir(tmp) if "reviewer-prompt" in n]
+        return list(Path(tmp).rglob("*-reviewer-prompt.txt"))
 
     def test_cleanup_on_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1180,16 +1210,17 @@ class TempPromptCleanupTest(unittest.TestCase):
             sched = rv.Scheduler(max_parallel=1, tmp_dir=tmp)
             with patch.object(subprocess, "Popen", FakePopen):
                 sched.submit([_make_job()])
-            self.assertEqual(self._list_prompt_files(tmp), [])
+            self.assertEqual(len(self._list_prompt_files(tmp)), 1)
 
     def test_cleanup_on_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
             reset_fakepopen(returncode_value=-9, raise_timeout=True)
             sched = rv.Scheduler(max_parallel=1, tmp_dir=tmp)
             with patch.object(subprocess, "Popen", FakePopen), \
-                 patch.object(rv.os, "killpg", _killpg_noop):
+                 patch.object(rv.os, "killpg", _killpg_noop), \
+                 patch.object(rv, "wait_with_process_tree", return_value=(None, True, (), True)):
                 sched.submit([_make_job(timeout_secs=0.01)])
-            self.assertEqual(self._list_prompt_files(tmp), [])
+            self.assertEqual(len(self._list_prompt_files(tmp)), 1)
 
     def test_cleanup_silent_on_filenotfounderror(self):
         # If the prompt file vanishes mid-run (e.g. external sweep),
@@ -1227,6 +1258,14 @@ class CliShapeTest(unittest.TestCase):
     def test_capacity_flag_rejects_malformed(self):
         with self.assertRaises(ValueError):
             rv._parse_capacity(["bogus-no-equals"])
+        for value in ("cli_rate:claude=0", "cli_rate:claude=-1", "=2", "key=nope"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                rv._parse_capacity([value])
+
+    def test_scheduler_rejects_nonpositive_api_capacity(self):
+        for value in (0, -1, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                rv.Scheduler(capacity_limits={"cli_rate:claude": value})
 
     def test_main_returns_2_on_missing_jobs_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1316,7 +1355,8 @@ class ClaudeCodeOutputFileTest(unittest.TestCase):
 
     def test_runtime_claude_code_missing_output_file_records_error(self):
         with tempfile.TemporaryDirectory() as tmp:
-            reset_fakepopen(returncode_value=0)
+            reset_fakepopen(returncode_value=0, stdout_payload=json.dumps({
+                "status": "ok", "tool_uses": 1, "result_file": str(Path(tmp) / "missing.txt")}).encode())
             sched = rv.Scheduler(max_parallel=1, tmp_dir=tmp)
             job = _make_job(
                 runtime="claude_code",
@@ -1344,6 +1384,8 @@ class ClaudeCodeOutputFileTest(unittest.TestCase):
             )
             with open(out_path, "wb") as fh:
                 fh.write(b"")
+            reset_fakepopen(returncode_value=0, stdout_payload=json.dumps({
+                "status": "ok", "tool_uses": 1, "result_file": out_path}).encode())
 
             real_open = open
 
@@ -1463,6 +1505,231 @@ class WorkerExceptionPropagationTest(unittest.TestCase):
                 jb_err.startswith("worker_exception:"),
                 f"job-b should not be a worker_exception, got {jb_err!r}",
             )
+
+
+class WrapperStatusContractTest(unittest.TestCase):
+    def test_verdict_requires_both_success_exit_and_success_wrapper_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result_file = Path(tmp) / "result.txt"
+            result_file.write_text("### VERDICT: APPROVE\n### Strengths\n- Good.\n### Issues\n- None.\n")
+            for runtime in ("codex", "claude_code"):
+                for returncode, status in ((0, "ok"), (7, "ok"), (0, "command_execution"), (4, "timeout")):
+                    with self.subTest(runtime=runtime, returncode=returncode, status=status):
+                        payload = json.dumps({"status": status, "result_file": str(result_file),
+                                              "usage_file": "usage.json", "invocation_id": "invocation",
+                                              "tool_uses": 1}).encode()
+                        reset_fakepopen(returncode_value=returncode, stdout_payload=payload)
+                        scheduler = rv.Scheduler(tmp_dir=tmp)
+                        with patch.object(subprocess, "Popen", FakePopen):
+                            result = scheduler.submit([_make_job(runtime=runtime)])["j1"]
+                        self.assertEqual(result.parsed_verdict, "APPROVE" if returncode == 0 and status == "ok" else None)
+                        self.assertEqual(result.usage_file, "usage.json")
+                        self.assertEqual(result.invocation_id, "invocation")
+                        self.assertEqual(result.timed_out, status == "timeout")
+
+    def test_cleanup_failure_is_classified_separately_from_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result_file = Path(tmp) / "result.txt"
+            result_file.write_text("### VERDICT: APPROVE\n### Strengths\n- Good.\n### Issues\n- None.\n")
+            payload = json.dumps({"status": "ok", "result_file": str(result_file),
+                                  "usage_file": "usage.json", "invocation_id": "invocation",
+                                  "tool_uses": 1}).encode()
+            for cleanup_ok, inspectable in ((False, True), (True, False)):
+                with self.subTest(cleanup_ok=cleanup_ok, inspectable=inspectable):
+                    reset_fakepopen(returncode_value=0, stdout_payload=payload)
+                    scheduler = rv.Scheduler(tmp_dir=tmp)
+                    with patch.object(subprocess, "Popen", FakePopen), \
+                         patch.object(rv, "wait_with_process_tree", return_value=(0, False, (), inspectable)), \
+                         patch.object(rv, "terminate_process_tree", return_value=(0, cleanup_ok, ())):
+                        result = scheduler.submit([_make_job()])["j1"]
+                    self.assertEqual(result.error, "reviewer_cleanup_failed")
+                    self.assertFalse(result.timed_out)
+                    self.assertIsNone(result.parsed_verdict)
+
+    def test_specialist_raw_report_is_not_a_reviewer_schema_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result_file = Path(tmp) / "result.txt"
+            result_file.write_text("## Critical Issues\n- none\n## Suggestions\n- rename x\n")
+            payload = json.dumps({"status": "ok", "result_file": str(result_file),
+                                  "usage_file": "usage.json", "invocation_id": "invocation",
+                                  "tool_uses": 2}).encode()
+            for role, expect_error in (("code-reviewer", False), ("reviewer", True)):
+                with self.subTest(role=role):
+                    reset_fakepopen(returncode_value=0, stdout_payload=payload)
+                    scheduler = rv.Scheduler(tmp_dir=tmp)
+                    with patch.object(subprocess, "Popen", FakePopen):
+                        result = scheduler.submit([replace(_make_job(), role=role)])["j1"]
+                    self.assertEqual(result.error is not None, expect_error)
+                    self.assertEqual(result.result_file, str(result_file))
+
+    def test_only_capped_status_tail_is_retained_and_outer_deadline_has_cleanup_grace(self):
+        timeouts = []
+
+        def observed_wait(process, timeout):
+            timeouts.append(timeout)
+            process.returncode = 0
+            return 0, False, (), True
+
+        payload = b"heartbeat\n" * 100000 + b'{"status":"missing_result"}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            reset_fakepopen(stdout_payload=payload, stderr_payload=b"diagnostic" * 100000)
+            scheduler = rv.Scheduler(tmp_dir=tmp)
+            with patch.object(subprocess, "Popen", FakePopen), \
+                 patch.object(rv, "wait_with_process_tree", side_effect=observed_wait), \
+                 patch.object(rv, "terminate_process_tree", side_effect=_terminate_fake):
+                result = scheduler.submit([_make_job(timeout_secs=2)])["j1"]
+        self.assertEqual(timeouts, [2 + rv.WRAPPER_CLEANUP_GRACE_SECONDS])
+        self.assertLessEqual(len(result.stdout_bytes), rv.STATUS_CAPTURE_BYTES)
+        self.assertLessEqual(len(result.stderr_bytes), rv.STATUS_CAPTURE_BYTES)
+        self.assertEqual(result.status, "missing_result")
+
+    def test_cancelled_queue_does_not_launch_a_native_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = rv.Scheduler(tmp_dir=tmp)
+            scheduler.cancel()
+            with patch.object(subprocess, "Popen") as popen:
+                result = scheduler.submit([_make_job()])["j1"]
+            popen.assert_not_called()
+            self.assertEqual(result.status, "cancelled")
+            self.assertIsNone(result.parsed_verdict)
+
+
+FAKE_NATIVE = r'''
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+kind = Path(sys.argv[0]).name
+if '--help' in sys.argv:
+    print('--safe-mode --restricted --setting-sources --settings --tools --allowedTools --permission-mode --disable-slash-commands --strict-mcp-config --mcp-config')
+    raise SystemExit(0)
+text = sys.stdin.read()
+capture = Path(os.environ['NATIVE_CAPTURE'])
+capture.mkdir(exist_ok=True)
+info = {'argv': sys.argv[1:], 'cwd': os.getcwd(), 'pid': os.getpid()}
+result = '### VERDICT: APPROVE\n### Strengths\n- PRIVATE_REVIEW\n### Issues\n- None.\n'
+if 'HANG' in text:
+    child = subprocess.Popen([sys.executable, '-c', 'import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'])
+    info['child_pid'] = child.pid
+    (capture / (kind + '.json')).write_text(json.dumps(info))
+    print(json.dumps({'type':'assistant','message':{'id':'partial','model':'claude-sonnet-4-6','usage':{'input_tokens':2,'cache_read_input_tokens':0,'cache_creation_input_tokens':0,'output_tokens':1}}}),flush=True)
+    time.sleep(60)
+(capture / (kind + '.json')).write_text(json.dumps(info))
+for i in range(800):
+    print(json.dumps({'type':'stream_event','delta':'PRIVATE_PARTIAL' * 30}),flush=True)
+if kind == 'claude':
+    print(json.dumps({'type':'system','subtype':'init','model':'claude-sonnet-4-6','session_id':'native-session'}),flush=True)
+    print(json.dumps({'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_use','id':'tool-1','name':'Read','input':{}}}}),flush=True)
+    print(json.dumps({'type':'result','subtype':'success','result':result,'session_id':'native-session','usage':{'input_tokens':2,'cache_read_input_tokens':0,'cache_creation_input_tokens':0,'output_tokens':3},'modelUsage':{'claude-sonnet-4-6':{'inputTokens':2,'cacheReadInputTokens':0,'cacheCreationInputTokens':0,'outputTokens':3,'costUSD':0.01}},'total_cost_usd':0.01}),flush=True)
+else:
+    Path(sys.argv[sys.argv.index('-o') + 1]).write_text(result)
+    print(json.dumps({'type':'thread.started','thread_id':'native-thread'}),flush=True)
+    print(json.dumps({'type':'item.started','item':{'id':'tool-1','type':'command_execution'}}),flush=True)
+    print(json.dumps({'type':'turn.completed','usage':{'input_tokens':2,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':3}}),flush=True)
+raise SystemExit(7 if 'FAIL' in text else 0)
+'''
+
+
+class NativeWrapperIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.capture = self.root / "capture"
+        self.capture.mkdir()
+        for name in ("claude", "codex"):
+            binary = self.bin / name
+            binary.write_text("#!" + sys.executable + "\n" + FAKE_NATIVE)
+            binary.chmod(0o755)
+        env = {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
+               "NATIVE_CAPTURE": str(self.capture)}
+        patcher = patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _assert_dead(self, pid):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            process = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], text=True, capture_output=True)
+            if process.returncode or not process.stdout.strip() or process.stdout.strip().startswith("Z"):
+                return
+            time.sleep(0.03)
+        self.fail(f"process {pid} survived reviewer cleanup")
+
+    def test_both_backends_use_isolated_wrappers_keep_native_logs_and_usage(self):
+        scheduler = rv.Scheduler(max_parallel=2, tmp_dir=self.root / "jobs")
+        jobs = [replace(_make_job(job_id="claude-job", runtime="codex", reviewer_model="sonnet"), role="specialist"),
+                _make_job(job_id="codex-job", runtime="claude_code", reviewer_model="gpt-5.6-sol")]
+        results = scheduler.submit(jobs)
+        for result in results.values():
+            self.assertEqual((result.returncode, result.status, result.parsed_verdict, result.error),
+                             (0, "ok", "APPROVE", None))
+            self.assertNotIn(b"PRIVATE", result.stdout_bytes + result.stderr_bytes)
+            record = json.loads(Path(result.usage_file).read_text())
+            self.assertEqual(record["role"], "specialist" if result.job_id == "claude-job" else "reviewer")
+            self.assertEqual(record["invocation_id"], result.invocation_id)
+            self.assertEqual(record["usage"]["tokens"]["input_tokens"], 2)
+            self.assertEqual(record["usage"]["accounting_status"], "complete")
+            raw_streams = [Path(item["path"]) for item in record["raw_artifacts"] if item["path"].endswith(".jsonl")]
+            self.assertTrue(any("PRIVATE_PARTIAL" in path.read_text() for path in raw_streams))
+            self.assertIn("PRIVATE_REVIEW", Path(result.result_file).read_text())
+        claude = json.loads((self.capture / "claude.json").read_text())
+        codex = json.loads((self.capture / "codex.json").read_text())
+        self.assertEqual(claude["argv"][claude["argv"].index("--tools") + 1], "Read,Grep,Glob")
+        self.assertIn("--safe-mode", claude["argv"])
+        self.assertEqual(codex["argv"][codex["argv"].index("-s") + 1], "read-only")
+        self.assertIn("--ignore-user-config", codex["argv"])
+        self.assertNotEqual(codex["cwd"], str(Path.cwd()))
+        self.assertEqual(len(list((self.root / "jobs" / "usage").glob("*.json"))), 2)
+
+    def test_unsuccessful_native_exit_cannot_supply_verdict_even_with_result_and_usage(self):
+        scheduler = rv.Scheduler(max_parallel=2, tmp_dir=self.root / "failures")
+        results = scheduler.submit([_make_job(job_id=runtime, runtime=runtime, prompt_text="FAIL")
+                                    for runtime in ("codex", "claude_code")])
+        for result in results.values():
+            self.assertEqual(result.status, "command_execution")
+            self.assertIsNone(result.parsed_verdict)
+            self.assertIsNone(result.result_file)
+            record = json.loads(Path(result.usage_file).read_text())
+            self.assertEqual(record["usage"]["accounting_status"], "partial")
+            self.assertEqual(record["usage"]["tokens"]["input_tokens"], 2)
+
+    def test_inner_timeout_writes_usage_before_outer_deadline_and_kills_descendants(self):
+        scheduler = rv.Scheduler(max_parallel=2, tmp_dir=self.root / "timeouts")
+        results = scheduler.submit([_make_job(job_id=runtime, runtime=runtime, prompt_text="HANG", timeout_secs=1.5)
+                                    for runtime in ("codex", "claude_code")])
+        for result in results.values():
+            self.assertTrue(result.timed_out)
+            self.assertEqual(result.status, "timeout")
+            self.assertIsNone(result.parsed_verdict)
+            self.assertEqual(json.loads(Path(result.usage_file).read_text())["status"], "timeout")
+        for kind in ("claude", "codex"):
+            info = json.loads((self.capture / (kind + ".json")).read_text())
+            self._assert_dead(info["pid"])
+            self._assert_dead(info["child_pid"])
+
+    def test_scheduler_cli_signal_cancels_wrapper_and_preserves_failure_record(self):
+        jobs = self.root / "jobs.json"
+        jobs.write_text(json.dumps([{"job_id": "cancel", "session_id": "session", "runtime": "claude_code",
+                                    "prompt_text": "HANG", "timeout_secs": 30}]))
+        process = subprocess.Popen([sys.executable, str(SCRIPT), "--jobs", str(jobs),
+                                    "--tmp-dir", str(self.root / "cancelled")],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        deadline = time.monotonic() + 5
+        while not (self.capture / "codex.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.03)
+        self.assertTrue((self.capture / "codex.json").exists())
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=8)
+        self.assertEqual(process.returncode, 130, stderr.decode())
+        result = json.loads(stdout)["cancel"]
+        self.assertEqual(result["status"], "cancelled")
+        self.assertIsNone(result["parsed_verdict"])
+        self.assertEqual(json.loads(Path(result["usage_file"]).read_text())["status"], "cancelled")
+        info = json.loads((self.capture / "codex.json").read_text())
+        self._assert_dead(info["pid"])
+        self._assert_dead(info["child_pid"])
 
 
 if __name__ == "__main__":
