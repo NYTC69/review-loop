@@ -2092,16 +2092,21 @@ sys.exit(result.returncode)
                 r'independence check rejected history in context/plan\.md: Claude'):
             co.assert_fresh_prompt('shadow', 'Clean prompt')
 
-    def test_fresh_roles_reject_unrecognized_vendor_paths_in_diffs(self):
+    def test_fresh_path_names_pass_fake_cli_but_prose_history_is_rejected(self):
         result = self.run_coordinator('--exercise-revisions', env={'FAKE_DOC_DELTA': '1'})
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['status'], 'HOLD')
-        self.assertIn('independence check rejected history in context/delta-since-last-review.patch: CLAUDE',
-                      state['hold_reason'])
+        self.assertEqual(state['status'], 'DONE')
+        fresh = list((self.run_dir / 'evidence').glob('*-shadow.independence-inputs.json'))
+        self.assertTrue(fresh)
+        self.assertTrue(any('CLAUDE.md' in p.read_text() for p in fresh))
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'prose-check')])
         co = rc.Coordinator(args)
+        for text in ('Restore the entry in CLAUDE.md.', 'Read `docs/Codex.md`.',
+                     'See "tools/Astra.js"; inspect /tmp/Claude.txt:7.'):
+            (co.context / 'plan.md').write_text(text)
+            co.assert_fresh_prompt('shadow', 'Clean prompt')
         for text in ('Codex approved this.', 'Claude requested the change.',
                      'Read CLAUDE.md. Prior verdict: APPROVE',
                      'See tools/Codex.js:7. Response to reviewer: fixed.'):
@@ -2110,6 +2115,38 @@ sys.exit(result.returncode)
                 with self.assertRaisesRegex(RuntimeError, 'independence check rejected'):
                     co.invoke('shadow', 'EXEC', 'Clean prompt', rc.fresh_review_schema(), fresh=True)
                 popen.assert_not_called()
+
+    def test_fresh_scan_with_vendor_named_support_root_and_diff_headers(self):
+        root = self.root / 'claude-501' / '.codex'
+        workspace = root / 'workspace'
+        workspace.parent.mkdir(parents=True)
+        subprocess.run(['git', 'clone', '-q', str(self.workspace), str(workspace)], check=True)
+        args = rc.parser().parse_args(['run', '--workspace', str(workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(root / 'run')])
+        with patch.object(rc, 'HERE', root / 'support' / 'paired_session'), \
+             patch.object(rc, 'DEFAULT_GATE_PROMPT', root / 'support' / 'scripts' / 'gate.txt'):
+            co = rc.Coordinator(args)
+            self.assertIn(str(root / 'support'), co._fresh_scan_run_paths())
+            (co.context / 'delta-since-last-review.patch').write_text(
+                f'diff --git a{co.run_dir}/internal/current-review/CLAUDE.md '
+                f'b{co.run_dir}/internal/current-review/CLAUDE.md\n'
+                f'+++ b{root}/support/docs/CLAUDE.md\n'
+                f'diff --git a{co.run_dir}/internal/current-review/Makefile '
+                f'b{co.run_dir}/internal/current-review/Makefile\n'
+                f'+++ b{root}/support/paired_session/Makefile\n'
+                ' context from CLAUDE.md if available\n')
+            co.assert_fresh_prompt('shadow', 'Clean prompt')
+            co.assert_fresh_prompt('shadow', f'Read {root}/support/scripts before review.')
+            (co.context / 'plan.md').write_text('Per CLAUDE.md, keep tests.')
+            co.assert_fresh_prompt('shadow', 'Clean prompt')
+            (co.context / 'plan.md').write_text(f'Read {root}/support/paired_session/Makefile')
+            with self.assertRaisesRegex(RuntimeError, 'history in context/plan.md: claude'):
+                co.assert_fresh_prompt('shadow', 'Clean prompt')
+            for text in ('Claude said this is fine.', 'Claude.ai approved the plan.',
+                         'Codex.app signed off.', 'Per Claude.Then fix it.'):
+                (co.context / 'plan.md').write_text(text)
+                with self.assertRaisesRegex(RuntimeError, 'history in context/plan.md: (?:Claude|Codex)'):
+                    co.assert_fresh_prompt('shadow', 'Clean prompt')
 
     def test_approve_with_minor_is_advisory_in_next_author_prompt(self):
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',

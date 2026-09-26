@@ -1994,8 +1994,10 @@ class Coordinator:
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\nNever edit, commit, push, or load skills.')
 
-    def _fresh_scan_run_paths(self) -> list[str]:
+    def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
+        if include_support:
+            paths.extend((HERE.parent, DEFAULT_GATE_PROMPT.parent))
         codex_home = os.environ.get('CODEX_HOME')
         if codex_home:
             configured = Path(codex_home).expanduser()
@@ -2012,6 +2014,8 @@ class Coordinator:
                     spellings.add(spelling.replace('/private/tmp/', '/tmp/', 1))
                 elif spelling.startswith('/tmp/'):
                     spellings.add(spelling.replace('/tmp/', '/private/tmp/', 1))
+        # git diff --no-index prefixes absolute paths with a/ and b/ in headers.
+        spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
     def assert_fresh_prompt(self, role: str, prompt: str) -> None:
@@ -2046,16 +2050,30 @@ class Coordinator:
             r'|response[ -]to[ -](?:reviewer|review|F\d+)'
             r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
             r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
-        known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
-                               for path in self._fresh_scan_run_paths()]
         checked = {}
         for name, content in sources.items():
             # Role/rubric instructions in prompts/templates are not prior verdicts.
             matches = history.findall(content)
             # Mask only coordinator-owned absolute paths; require a token boundary after each path.
             prose = content
+            # Support paths occur in generated prompts and diff headers, not user plan prose.
+            include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
+            known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
+                                   for path in self._fresh_scan_run_paths(include_support)]
             for known_path in known_path_patterns:
                 prose = known_path.sub('<run-path>', prose)
+            # Unknown vendor-named directory paths remain subject to the scan.
+            matches += re.findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
+            matches += re.findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
+                                  prose, re.I)
+            # Keep attribution prose visible when a vendor-dot token resembles a filename.
+            matches += re.findall(
+                r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
+                r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
+            matches += re.findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
+                                  r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
+            prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
+                           '<path>', prose)
             matches += re.findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
             if name not in ('prompt', 'gate-template'):
                 matches += re.findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
