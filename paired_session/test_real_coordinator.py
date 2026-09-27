@@ -5484,6 +5484,33 @@ sys.exit(result.returncode)
         self.assertEqual(gates[-1]['answer']['verdict'], 'approve')
         self.assertNotEqual(gates[0]['snapshot_before'], gates[1]['snapshot_before'])
 
+    def test_specialist_blocker_can_only_be_disposed_by_its_owner(self):
+        co = self.coordinator()
+        finding = {'severity': 'MAJOR', 'file': 'tracked.txt',
+                   'summary': 'specialist blocker', 'failure_scenario': 'unsafe behavior'}
+        row = co.record_findings('specialist:python-reviewer', 'POLISH-Q', 1, [finding])[0]
+        ledger = next(item for item in co.state['finding_ledger'] if item['id'] == row['id'])
+        self.assertEqual(ledger['owner_role'], 'specialist:python-reviewer')
+        with self.assertRaisesRegex(RuntimeError, 'owning role'):
+            co.record_findings('specialist: python-reviewer', 'POLISH-Q', 1, [finding])
+        self.assertIn(ledger, co.blocking_open_findings())
+        keep_open = [{'id': row['id'], 'disposition': 'still_open', 'evidence': 'reviewed'}]
+        co.apply_dispositions(keep_open, 2, owner_role='persistent-reviewer')
+        self.assertEqual(ledger['status'], 'open')
+        co.state.update(phase='EXEC', next='reviewer', exec_rounds=1)
+        co.save()
+        co.reviewer_turn()
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertIn('owning specialist', co.state['hold_reason'])
+        self.assertEqual(co.state['turns'][-1]['answer']['prior_findings'][0]['disposition'], 'fixed')
+        self.assertEqual(ledger['status'], 'open')
+        disposition = [{'id': row['id'], 'disposition': 'fixed', 'evidence': 'owner verified'}]
+        with self.assertRaisesRegex(RuntimeError, 'owning specialist'):
+            co.apply_dispositions(disposition, 2, owner_role='specialist:go-reviewer')
+        self.assertEqual(ledger['status'], 'open')
+        co.apply_dispositions(disposition, 3, owner_role='specialist:python-reviewer')
+        self.assertEqual(ledger['status'], 'fixed')
+
     def test_malformed_gate_blocker_is_recorded_but_not_delivered(self):
         result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_MALFORMED': '1'})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)

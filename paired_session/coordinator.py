@@ -1674,6 +1674,9 @@ class Coordinator:
     def record_findings(self, source: str, phase: str, origin_round: int,
                         findings: list[dict],
                         finding_indexes: Optional[list[int]] = None) -> list[dict]:
+        specialist_owner = source.split(':', 1)[1] if source.startswith('specialist:') else ''
+        if source.startswith('specialist:') and not re.fullmatch(r'[A-Za-z0-9_.-]+', specialist_owner):
+            raise RuntimeError('specialist finding has no owning role')
         recorded = []
         existing = {row['finding_index']: row for row in self.state['finding_ledger']
                     if row.get('source') == source and row.get('phase') == phase and
@@ -1699,6 +1702,8 @@ class Coordinator:
                      'body': finding.get('body', ''),
                      'status_history': [{'round': origin_round, 'status': 'open',
                                         'evidence': 'program assigned identity'}]}
+            if source.startswith('specialist:'):
+                entry['owner_role'] = 'specialist:' + specialist_owner
             self.state['finding_ledger'].append(entry)
             recorded.append({'id': finding_id, **finding})
             changed = True
@@ -1707,7 +1712,8 @@ class Coordinator:
         return recorded
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
-                           expected_ids: Optional[list[str]] = None) -> list[str]:
+                           expected_ids: Optional[list[str]] = None,
+                           owner_role: Optional[str] = None) -> list[str]:
         open_by_id = {finding['id']: finding for finding in self.open_findings()}
         all_by_id = {finding['id']: finding for finding in self.state['finding_ledger']}
         supplied = [row.get('id') for row in dispositions]
@@ -1721,6 +1727,9 @@ class Coordinator:
             finding = all_by_id.get(row['id'])
             if finding is None or row['id'] not in expected:
                 raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
+            if ('owner_role' in finding and finding['owner_role'] != owner_role and
+                    row['disposition'] in ('fixed', 'withdrawn')):
+                raise RuntimeError('finding disposition requires its owning specialist')
             if finding['id'] not in open_by_id and not any(
                     item.get('round') == origin_round and item.get('status') == row['disposition']
                     and item.get('evidence') == row['evidence']
@@ -3084,7 +3093,7 @@ class Coordinator:
         answer = result['answer']
         try:
             missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                               result.get('open_finding_ids'))
+                                               result.get('open_finding_ids'), 'persistent-reviewer')
         except RuntimeError as exc:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('reviewer invalid finding dispositions: ' + str(exc))
@@ -3098,7 +3107,7 @@ class Coordinator:
             answer = result['answer']
             try:
                 missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                                  result.get('open_finding_ids'))
+                                                  result.get('open_finding_ids'), 'persistent-reviewer')
             except RuntimeError as exc:
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold('reviewer invalid finding dispositions after retry: ' + str(exc))
@@ -3288,14 +3297,14 @@ class Coordinator:
         result = self.invoke('reviewer', 'POLISH', prompt, review_schema())
         answer = result['answer']
         missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                           result.get('open_finding_ids'))
+                                           result.get('open_finding_ids'), 'persistent-reviewer')
         if missing:
             retry = prompt + ('\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
                               '. This is the one allowed protocol retry; include every open id.')
             result = self.invoke('reviewer', 'POLISH', retry, review_schema())
             answer = result['answer']
             missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                               result.get('open_finding_ids'))
+                                               result.get('open_finding_ids'), 'persistent-reviewer')
             if missing:
                 self.hold('polish reviewer omitted open finding dispositions after retry: ' +
                           ', '.join(missing))
