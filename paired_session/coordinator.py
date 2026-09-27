@@ -1168,6 +1168,7 @@ class Coordinator:
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
+            self._freeze_role_dispatch()
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
                 old = json.loads((parent / 'state.json').read_text())
@@ -1274,6 +1275,61 @@ class Coordinator:
                                            [*self.args.docs_allowlist, *([self.args.docs_file] if self.args.docs_file else [])]})
         config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text())
         return config
+
+    def _author_tmp_isolated(self) -> bool:
+        state_root = self.run_dir.resolve()
+        temporary = self.author_temp_dir.resolve()
+        try:
+            return (state_root not in temporary.parents and temporary != state_root and
+                    os.stat(temporary.parent).st_dev != os.stat(state_root).st_dev)
+        except OSError:
+            return False
+
+    def _role_dispatch_manifest(self) -> dict:
+        config = self.args
+        author_vendor, reviewer_vendor = config.author_vendor, config.reviewer_vendor
+        author = {'vendor': author_vendor, 'model': config.author_model,
+                  'effort': config.author_effort,
+                  'binary': config.claude_bin if author_vendor == 'claude' else config.codex_bin,
+                  'sandbox': (self._author_sandbox_overrides() if author_vendor == 'codex'
+                              else self._claude_sandbox_settings('author')),
+                  'subagents': config.author_subagents,
+                  'tmp_isolated': self._author_tmp_isolated()}
+        reviewer = self.reviewer_flags()
+        flags = {'author': author, 'reviewer': reviewer, 'shadow': copy.deepcopy(reviewer)}
+        bodies = {'author': 'executor.md', 'reviewer': 'reviewer.md',
+                  'shadow': 'reviewer.md'}
+        prompt = Path(self.args.gate_prompt).expanduser()
+        if str(self.state.get('config', {}).get('gate_prompt', '')).startswith('<bundled-default>:'):
+            prompt = DEFAULT_GATE_PROMPT
+        return frozen_role_manifest(self.state['config'], flags, HERE.parent / 'agents',
+                                    prompt, bodies)
+
+    def _freeze_role_dispatch(self) -> None:
+        try:
+            manifest = self._role_dispatch_manifest()
+        except (OSError, ValueError):
+            if self.state['config'].get('lifecycle_mode') == 'on':
+                raise
+            self.state['role_dispatch_unverified'] = True
+            return
+        self.state['role_dispatch_manifest'] = manifest
+        self.state['role_dispatch_manifest_version'] = 1
+        self.state['role_dispatch_manifest_sha256'] = hashlib.sha256(json.dumps(
+            manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    def _verify_frozen_role_dispatch(self) -> None:
+        if self.state.get('role_dispatch_unverified'):
+            raise RuntimeError('role dispatch manifest is unverified; lifecycle is unavailable')
+        current = self._role_dispatch_manifest()
+        digest = hashlib.sha256(json.dumps(current, sort_keys=True,
+                                           separators=(',', ':')).encode()).hexdigest()
+        if (current != self.state.get('role_dispatch_manifest') or
+                digest != self.state.get('role_dispatch_manifest_sha256') or
+                self.state.get('role_dispatch_manifest_version') != 1):
+            raise RuntimeError('frozen role dispatch changed; abort or start a new run')
+        if not current['role_flags']['author']['tmp_isolated']:
+            raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
     def reviewer_commands(self) -> list[str]:
         current = workitem_reviewer_commands(self.workitem.read_text())
@@ -2663,6 +2719,8 @@ class Coordinator:
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
+        if self.state.get('config', {}).get('lifecycle_mode') == 'on':
+            self._verify_frozen_role_dispatch()
         rejection = None
         operator_note = next((row for row in self.state.get('operator_notes', [])
                               if role == 'author' and phase in ('PLAN', 'EXEC') and not fresh and
@@ -2713,6 +2771,7 @@ class Coordinator:
                    'workspace': str(active_workspace), 'global_codex_home': str(self.global_codex_home), 'global_config_home': str(self.global_config_home),
                    'context_before': context_before,
                    'start': now, 'gap': now - self.state['last_end'].get(role, now), 'fresh': fresh,
+                   'role_identity_sha256': self.state.get('role_dispatch_manifest_sha256'),
                    'timeout_seconds': timeout_seconds,
                    'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
         if role == 'reviewer':

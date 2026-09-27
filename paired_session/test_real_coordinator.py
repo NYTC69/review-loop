@@ -165,6 +165,29 @@ class RealCoordinatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'symlink'):
             rc.frozen_role_manifest({}, flags, agents, gate_link, {'reviewer': 'reviewer.md'})
 
+    def test_new_run_freezes_role_manifest_and_turn_receipt(self):
+        co = self.coordinator()
+        manifest = co.state['role_dispatch_manifest']
+        digest = co.state['role_dispatch_manifest_sha256']
+        self.assertEqual(manifest['role_flags']['author']['model'], co.args.author_model)
+        self.assertFalse(manifest['role_flags']['author']['tmp_isolated'])
+        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', rc.author_schema())
+        self.assertEqual(co.state['turns'][-1]['role_identity_sha256'], digest)
+
+    def test_lifecycle_role_manifest_drift_and_shared_tmp_fail_closed(self):
+        co = self.coordinator()
+        co.state['role_dispatch_manifest']['role_flags']['author']['model'] = 'gpt-6-sol'
+        with self.assertRaisesRegex(RuntimeError, 'frozen role dispatch changed'):
+            co._verify_frozen_role_dispatch()
+        co = self.coordinator()
+        co.state['config']['lifecycle_mode'] = 'on'
+        co.state['role_dispatch_manifest'] = co._role_dispatch_manifest()
+        co.state['role_dispatch_manifest_sha256'] = hashlib.sha256(
+            json.dumps(co.state['role_dispatch_manifest'], sort_keys=True,
+                       separators=(',', ':')).encode()).hexdigest()
+        with self.assertRaisesRegex(RuntimeError, 'author TMP is not isolated'):
+            co._verify_frozen_role_dispatch()
+
     def test_global_hash_attribution_accepts_only_trust_and_last_updated_autochanges(self):
         home = self.root / 'global-state'
         (home / '.codex').mkdir(parents=True)
