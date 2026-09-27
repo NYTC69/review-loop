@@ -21,6 +21,8 @@ class CandidateError(ValueError):
 
 @dataclass(frozen=True)
 class CandidateBaseline:
+    workspace: Path
+    run_dir: Path
     root: Path
     git_dir: Path
     index: Path
@@ -30,12 +32,14 @@ class CandidateBaseline:
     live_index_sha256: str
     authorized_prefixes: tuple[str, ...]
     separate_filesystems: bool
+    root_identity: tuple[int, int]
 
 
 def _git_env(**overrides):
     env = {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
-               GIT_OPTIONAL_LOCKS='0', HOME=os.devnull, XDG_CONFIG_HOME=os.devnull,
+               GIT_OPTIONAL_LOCKS='0', GIT_LITERAL_PATHSPECS='1',
+               HOME=os.devnull, XDG_CONFIG_HOME=os.devnull,
                **overrides)
     return env
 
@@ -43,7 +47,8 @@ def _git_env(**overrides):
 def _git(args, *, cwd=None, env=None):
     command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
                '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
-               '-c', 'core.attributesFile=/dev/null', *args]
+               '-c', 'core.attributesFile=/dev/null', '-c', 'core.ignorecase=false',
+               '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=true', *args]
     result = subprocess.run(command, cwd=cwd, env=env or _git_env(),
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
@@ -51,14 +56,46 @@ def _git(args, *, cwd=None, env=None):
     return result.stdout.strip()
 
 
-def _git_bytes(args, *, env):
+def _git_bytes(args, *, env, input_bytes=None):
     command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
                '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
-               '-c', 'core.attributesFile=/dev/null', *args]
-    result = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+               '-c', 'core.attributesFile=/dev/null', '-c', 'core.ignorecase=false',
+               '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=true', *args]
+    result = subprocess.run(command, env=env, input=input_bytes,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         raise CandidateError('git candidate object read failed: ' + result.stderr.decode(errors='replace'))
     return result.stdout
+
+
+def _indexed_blobs(env, entries):
+    oids = list(dict.fromkeys(oid for _, oid, _ in entries))
+    output = _git_bytes(['cat-file', '--batch'], env=env,
+                        input_bytes=b''.join(oid.encode() + b'\n' for oid in oids))
+    found, offset = {}, 0
+    for oid in oids:
+        end = output.find(b'\n', offset)
+        header = output[offset:end].split()
+        if end < 0 or len(header) != 3 or header[0].decode() != oid or header[1] != b'blob':
+            raise CandidateError('candidate blob batch is malformed')
+        size = int(header[2]); start = end + 1
+        found[oid] = output[start:start + size]
+        offset = start + size + 1
+    if offset != len(output): raise CandidateError('candidate blob batch has trailing data')
+    return found
+
+
+def _check_attributes(env, entries):
+    names = b''.join(os.fsencode(path) + b'\0' for _, _, path in entries)
+    attrs = ('text', 'crlf', 'eol', 'ident', 'filter', 'working-tree-encoding')
+    output = _git_bytes(['check-attr', '--cached', '--stdin', '-z', *attrs], env=env,
+                        input_bytes=names).split(b'\0')
+    if output[-1:] == [b'']: output.pop()
+    if len(output) != len(entries) * len(attrs) * 3:
+        raise CandidateError('candidate attribute batch is incomplete')
+    for offset in range(0, len(output), 3):
+        if output[offset + 1].decode() not in attrs or output[offset + 2] not in (b'unspecified', b'unset'):
+            raise CandidateError('candidate has transforming Git attributes')
 
 
 def _outside(path: Path, root: Path) -> bool:
@@ -90,16 +127,22 @@ def _prefixes(values) -> tuple[str, ...]:
 
 def _index_entries(env):
     entries = []
-    seen = set()
+    seen = {}
+    leaves = set()
     for record in _git_bytes(['ls-files', '--stage', '-z'], env=env).split(b'\0'):
         if not record: continue
         metadata, path_bytes = record.split(b'\t', 1)
         mode, oid, stage = metadata.decode().split()
         path = os.fsdecode(path_bytes)
-        folded = unicodedata.normalize('NFC', path).casefold()
-        if stage != '0' or folded in seen or any(part.rstrip(' .').casefold() == '.git' for part in path.split('/')):
+        parts = path.split('/')
+        folded = [unicodedata.normalize('NFC', unicodedata.normalize('NFC', part).casefold())
+                  for part in parts]
+        parents = [(tuple(folded[:index]), tuple(parts[:index])) for index in range(1, len(folded) + 1)]
+        if (stage != '0' or path in leaves or
+                any(key in seen and seen[key] != original for key, original in parents) or
+                any(part.rstrip(' .').casefold() == '.git' for part in parts)):
             raise CandidateError('candidate index has unmerged or ambiguous Git path')
-        seen.add(folded)
+        seen.update(parents); leaves.add(path)
         if mode == '160000': raise CandidateError('candidate contains gitlink')
         entries.append((mode, oid, path))
     return entries
@@ -174,24 +217,21 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
         root.mkdir()
         _git(['init', '--bare', '-q', str(git_dir)], env=env)
         _git(['--git-dir', str(git_dir), 'fetch', '--no-tags', '--quiet', str(workspace), head], env=env)
+        _git(['--git-dir', str(git_dir), 'update-ref', 'refs/paired-session/parent', head], env=env)
         scratch_env = _git_env(GIT_DIR=str(git_dir), GIT_INDEX_FILE=str(index),
                                GIT_WORK_TREE=str(root), GIT_CEILING_DIRECTORIES=str(candidate_base.parent))
         _git(['read-tree', head], env=scratch_env)
         entries = _index_entries(scratch_env)
-        for mode, oid, path in entries:
-            attributes = _git(['check-attr', '--cached', 'text', 'eol', 'ident', 'filter',
-                               'working-tree-encoding', '--', path], env=scratch_env)
-            if any(line.rsplit(': ', 1)[-1] not in ('unspecified', 'unset')
-                   for line in attributes.splitlines()):
-                raise CandidateError('candidate has transforming Git attributes')
+        _check_attributes(scratch_env, entries)
         _git(['checkout-index', '--all', '--prefix=' + str(root) + os.sep], env=scratch_env)
         if _git(['write-tree'], env=scratch_env) != tree:
             raise CandidateError('isolated index differs from frozen parent tree')
         _validate_checkout(root)
+        blobs = _indexed_blobs(scratch_env, entries)
         for mode, oid, path in entries:
             target = root / path
             actual = os.fsencode(os.readlink(target)) if mode == '120000' else target.read_bytes()
-            if actual != _git_bytes(['cat-file', 'blob', oid], env=scratch_env):
+            if actual != blobs[oid]:
                 raise CandidateError('candidate checkout bytes differ from indexed blob: ' + path)
             if mode in ('100644', '100755') and bool(target.stat().st_mode & 0o111) != (mode == '100755'):
                 raise CandidateError('candidate checkout mode differs from indexed blob: ' + path)
@@ -201,8 +241,9 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
             raise CandidateError('live HEAD/index/worktree changed during materialization')
         separate = root.stat().st_dev not in {git_dir.stat().st_dev, index.stat().st_dev,
             workspace.stat().st_dev, (run_dir if run_dir.exists() else run_dir.parent).stat().st_dev}
-        return CandidateBaseline(root, git_dir, index, head, ref, tree, index_hash,
-                                 tuple(authorized_prefixes), separate)
+        identity = (root.stat().st_dev, root.stat().st_ino)
+        return CandidateBaseline(workspace, run_dir, root, git_dir, index, head, ref,
+                                 tree, index_hash, tuple(authorized_prefixes), separate, identity)
     except BaseException:
         for path in (candidate_base, metadata_base):
             if path is not None:

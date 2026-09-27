@@ -99,6 +99,10 @@ The baseline now rejects hidden/sparse live index state, linked worktree or
 common-Git scratch paths, ambiguous prefixes and transforming Git attributes.
 Each checkout file is compared byte-for-byte to its indexed blob; this check
 must pass before writer-delta ingest is added.
+The offline baseline now batches blob and attribute checks, including legacy
+`crlf`, and checks NFC/casefold aliases at each directory component. Scratch
+Git uses fixed case/symlink settings and pins the source commit under a private
+scratch ref. Writer-delta ingestion and post-write OID checks are still pending.
 
 ```sh
 bin/paired-session run \

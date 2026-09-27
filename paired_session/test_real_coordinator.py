@@ -2497,6 +2497,11 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ct.CandidateError, 'transforming Git attributes'):
             ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
         self.assertEqual(set(scratch.iterdir()), before)
+        (self.workspace / '.gitattributes').write_text('*.txt crlf=input\n')
+        subprocess.run(['git', 'add', '.gitattributes'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'legacy crlf attribute'], cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(ct.CandidateError, 'transforming Git attributes'):
+            ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
 
     def test_candidate_baseline_rejects_hidden_index_and_sparse_checkout(self):
         scratch = self.root / 'scratch'; scratch.mkdir()
@@ -2522,6 +2527,24 @@ sys.exit(result.returncode)
         with patch.object(ct, '_git_bytes', return_value=duplicate):
             with self.assertRaisesRegex(ct.CandidateError, 'ambiguous Git path'):
                 ct._index_entries({})
+        directory_alias = (b'100644 ' + b'a' * 40 + b' 0\tDocs/a\0'
+                           b'100644 ' + b'b' * 40 + b' 0\tdocs/b\0')
+        with patch.object(ct, '_git_bytes', return_value=directory_alias):
+            with self.assertRaisesRegex(ct.CandidateError, 'ambiguous Git path'):
+                ct._index_entries({})
+
+    def test_candidate_baseline_byte_proof_rejects_corrupt_checkout(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        blobs = ct._indexed_blobs
+        def corrupt(env, entries):
+            result = blobs(env, entries)
+            oid = next(oid for _, oid, path in entries if path == 'tracked.txt')
+            result[oid] = b'not the indexed blob\n'
+            return result
+        with patch.object(ct, '_indexed_blobs', side_effect=corrupt):
+            with self.assertRaisesRegex(ct.CandidateError, 'checkout bytes differ'):
+                ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        self.assertEqual(list(scratch.iterdir()), [])
 
     def test_candidate_baseline_rejects_other_linked_worktree_scratch(self):
         linked = self.root / 'linked'
