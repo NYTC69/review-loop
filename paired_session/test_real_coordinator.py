@@ -5462,6 +5462,28 @@ sys.exit(result.returncode)
         prompts = [p.read_text() for p in (self.run_dir / 'evidence').glob('*-author.prompt.txt')]
         self.assertTrue(any('adversarial-gate' in p for p in prompts))
 
+    def test_lifecycle_gate_blocker_starts_new_gate_convergence(self):
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off')
+        co.state.update(phase='EXEC', next='gate', exec_rounds=1)
+        co.state['config']['lifecycle_mode'] = 'on'
+        marker = self.root / 'gate-blocked-once'
+        with patch.object(co, '_author_tmp_isolated', return_value=True):
+            co._freeze_role_dispatch()
+            with patch.dict(os.environ, {'FAKE_GATE_BLOCK_ONCE': str(marker)}):
+                co.gate_turn()
+                self.assertEqual(co.state['next'], 'author')
+                self.assertFalse(co.state['gate_ran'])
+                co.author_turn()
+                co.reviewer_turn()
+                self.assertEqual(co.state['next'], 'gate')
+                co.gate_turn()
+        self.assertTrue(co.state['gate_ran'])
+        self.assertEqual(sum(turn['role'] == 'gate' for turn in co.state['turns']), 2)
+        self.assertEqual(co.state['status'], 'DONE')
+        gates = [turn for turn in co.state['turns'] if turn['role'] == 'gate']
+        self.assertEqual(gates[-1]['answer']['verdict'], 'approve')
+        self.assertNotEqual(gates[0]['snapshot_before'], gates[1]['snapshot_before'])
+
     def test_malformed_gate_blocker_is_recorded_but_not_delivered(self):
         result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_MALFORMED': '1'})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)

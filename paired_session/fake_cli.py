@@ -200,6 +200,14 @@ def main():
         configured_test = prompt.split(
             'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
         blocking = os.environ.get('FAKE_GATE_BLOCK')
+        block_once = os.environ.get('FAKE_GATE_BLOCK_ONCE')
+        if block_once:
+            marker = Path(block_once)
+            if marker.exists():
+                blocking = None
+            else:
+                marker.write_text('blocked\n')
+                blocking = '1'
         malformed = os.environ.get('FAKE_GATE_MALFORMED')
         findings = []
         if blocking or malformed:

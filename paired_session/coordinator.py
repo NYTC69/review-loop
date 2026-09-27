@@ -3376,6 +3376,8 @@ class Coordinator:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
         if valid:
+            if self.state['config'].get('lifecycle_mode') == 'on':
+                self.state['gate_ran'] = False
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
                 self.hold('EXEC round limit reached after adversarial gate')
