@@ -2483,6 +2483,56 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ct.CandidateError, 'symlink escapes'):
             ct._validate_checkout(bad)
 
+    def test_candidate_baseline_rejects_transforming_attrs_and_ignores_user_attrs(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        global_attrs = self.test_home / '.config/git/attributes'
+        global_attrs.parent.mkdir(parents=True)
+        global_attrs.write_text('*.txt text eol=crlf\n')
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        self.assertEqual((baseline.root / 'tracked.txt').read_bytes(), b'base\n')
+        (self.workspace / '.gitattributes').write_text('*.txt text eol=crlf\n')
+        subprocess.run(['git', 'add', '.gitattributes'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'attributes'], cwd=self.workspace, check=True)
+        before = set(scratch.iterdir())
+        with self.assertRaisesRegex(ct.CandidateError, 'transforming Git attributes'):
+            ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        self.assertEqual(set(scratch.iterdir()), before)
+
+    def test_candidate_baseline_rejects_hidden_index_and_sparse_checkout(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        for flag, clear in (('--assume-unchanged', '--no-assume-unchanged'),
+                            ('--skip-worktree', '--no-skip-worktree')):
+            with self.subTest(flag=flag):
+                subprocess.run(['git', 'update-index', flag, 'tracked.txt'], cwd=self.workspace, check=True)
+                with self.assertRaisesRegex(ct.CandidateError, 'hidden index'):
+                    ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+                subprocess.run(['git', 'update-index', clear, 'tracked.txt'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'config', 'core.sparseCheckout', 'true'], cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(ct.CandidateError, 'sparse'):
+            ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+
+    def test_candidate_baseline_normalizes_prefixes_and_index_paths(self):
+        for bad in ('.', './', '.GIT', '.git ', 'src/../x', '/absolute', 'src/{wide}', 'src\\name'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ct.CandidateError): ct._prefixes((bad,))
+        with self.assertRaises(ct.CandidateError): ct._prefixes('src')
+        self.assertEqual(ct._prefixes(('b', 'a', 'b')), ('a', 'b'))
+        duplicate = (b'100644 ' + b'a' * 40 + b' 0\tFoo\0'
+                     b'100644 ' + b'b' * 40 + b' 0\tfoo\0')
+        with patch.object(ct, '_git_bytes', return_value=duplicate):
+            with self.assertRaisesRegex(ct.CandidateError, 'ambiguous Git path'):
+                ct._index_entries({})
+
+    def test_candidate_baseline_rejects_other_linked_worktree_scratch(self):
+        linked = self.root / 'linked'
+        subprocess.run(['git', 'worktree', 'add', '-q', '-b', 'linked-test', str(linked), 'HEAD'],
+                       cwd=self.workspace, check=True)
+        scratch = linked / 'scratch'; scratch.mkdir()
+        meta = self.root / 'meta'; meta.mkdir()
+        with self.assertRaisesRegex(ct.CandidateError, 'outside workspace/worktrees'):
+            ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, meta, ('tracked.txt',))
+        self.assertEqual(list(scratch.iterdir()), [])
+
     def test_project_json_config_rejects_noninteger_numeric_values(self):
         config_dir = self.workspace / '.review-loop'
         config_dir.mkdir()

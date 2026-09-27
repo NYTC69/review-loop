@@ -95,6 +95,10 @@ the candidate is on a different filesystem from the other roots. Same-device
 materialization is useful for offline tests but cannot activate lifecycle.
 Writer-delta ingestion, immutable review/test checkouts and OS enforcement are
 separate implementation steps; this module is not called by the live route.
+The baseline now rejects hidden/sparse live index state, linked worktree or
+common-Git scratch paths, ambiguous prefixes and transforming Git attributes.
+Each checkout file is compared byte-for-byte to its indexed blob; this check
+must pass before writer-delta ingest is added.
 
 ```sh
 bin/paired-session run \
