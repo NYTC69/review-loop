@@ -328,7 +328,7 @@ def main():
             exit_code = 0 if index < 2 else 126
             label = next((name for name in ('external_tmpdir', 'slash_tmp', 'private_tmp', 'home', 'workspace_parent')
                           if 'paired-session-escape-' + name + '-' in command), None)
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_SKIP') == label:
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_SKIP') in (label, 'all'):
                 continue
             if label and os.environ.get('FAKE_AUTHOR_ESCAPE_MALFORMED') == label:
                 exit_code = None
@@ -342,7 +342,9 @@ def main():
                 target = Path(shlex.split(command)[-1]); target.write_text('fake escaped\n'); target.unlink()
             if label and os.environ.get('FAKE_AUTHOR_ESCAPE_FOREIGN') == label:
                 (Path(shlex.split(command)[-1]).parent / 'foreign-file').write_text('not a coordinator sentinel\n')
-            if index < 2:
+            if index < 2 and os.environ.get('FAKE_AUTHOR_POSITIVE_FAIL') == ('workspace' if index == 0 else 'tmpdir'):
+                exit_code = 1
+            if index < 2 and exit_code == 0:
                 parts = shlex.split(command)
                 target_arg = parts[parts.index('>') + 1]
                 target = (Path(os.environ['TMPDIR']) / target_arg[len('$TMPDIR/'):]

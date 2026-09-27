@@ -141,11 +141,19 @@ them requires a fresh probe. For a Codex author, the coordinator runs external
 temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
 as advisory controls. Their argv, return codes and observations appear under
 `advisory_direct_controls`; this separate CLI's policy is not proven equivalent
-to the real `codex exec` author policy, and its results do not decide the gate.
+to the real `codex exec` author policy. Under Yuan D1(b), its full-parameter
+positive controls and OS-denied checks of every escape target may qualify an
+otherwise UNKNOWN model result as `PASS_RESIDUAL_RISK` only when every dedicated
+directory is unchanged in mtime/ctime/link count/listing, no sentinel exists
+and model positive writes succeeded. A refused synthetic argv stays UNKNOWN;
+a written target or failed positive check FAILs. The report states
+"equivalence to real codex exec UNVERIFIED; re-check at M6". Reviewer OS-only
+UNKNOWN still blocks the overall probe.
 For installed Codex 0.157, the direct control requires a named `-P` profile
 derived from the author's sandbox overrides. It byte-copies only the active
 `config.toml` into a disposable `CODEX_HOME` under the run directory, verifies
-the copy and deletes it after each check; credentials are never copied.
+the copy and deletes it after each check; no auth or credential files are
+copied. Any secret embedded in `config.toml` remains inside the run-owned copy.
 The probe binds the installed `codex --version` to the author flags. The real
 model-driven author probe checks that workspace and run-owned `$TMPDIR` writes
 succeed. It also asks that same author
@@ -155,15 +163,15 @@ a fresh sentinel filename, never a config file. The coordinator checks each
 target on disk before cleaning up its own sentinel: an existing target is
 `FAIL` regardless of the model's report; an absent target with an observed
 OS-denied attempt is `PASS`; an absent target without a usable attempt report
-is `UNKNOWN`. A missing or malformed attempt stays `UNKNOWN` and blocks run
-start; direct-control success cannot promote it. `permission-probe.json`
+is `UNKNOWN`. A missing or malformed attempt stays `UNKNOWN` for that target;
+only the D1(b) filesystem and synthetic conditions above can qualify residual
+risk. `permission-probe.json`
 records per-target evidence and cleanup.
 Escape sentinels live in coordinator-created dedicated directories. The probe
 records each directory's before/after mtime, ctime, link count and sorted
 listing. A new entry FAILs; a changed directory with no entry stays UNKNOWN.
 Dedicated-directory cleanup removes only known sentinels and its own empty
-directories; foreign entries there are retained and reported. D1(b) synthetic
-promotion is a separate batch.
+directories; foreign entries there are retained and reported.
 For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
 on the permission-probe command; this changes only the prompt, not the sandbox.
 

@@ -1270,6 +1270,7 @@ class Coordinator:
                 **self._author_sandbox_overrides(),
                 'author_escape_probe': 'codex-exec-model-filesystem-v2',
                 'codex_cli_version': self._codex_cli_version(),
+                'codex_config_sha256': self._codex_policy_digest(),
             })
         else:
             flags.update({'permission_mode': 'acceptEdits',
@@ -1284,6 +1285,13 @@ class Coordinator:
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
             return 'UNAVAILABLE'
+
+    def _codex_policy_digest(self) -> Optional[str]:
+        path = self.global_codex_home / 'config.toml'
+        if not path.is_file(): return None
+        roots = re.escape(str(self.workspace)) + '|' + re.escape(str(self.run_dir)) + r'/paired-session-author-probe-[^"]+/workspace'
+        raw = re.sub(r'(?m)^\[projects\."(?:' + roots + r')"\]\ntrust_level = "trusted"\n', '', path.read_text())
+        return hashlib.sha256('\n'.join(line for line in raw.splitlines() if line.strip()).encode()).hexdigest()
 
     def _author_sandbox_overrides(self) -> dict:
         return {
@@ -1381,15 +1389,15 @@ class Coordinator:
             report = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             return False, 'permission-probe.json is unreadable'
-        if report.get('status') != 'PASS':
+        if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'):
             return False, 'permission probe status is not PASS'
         if report.get('reviewer_flags_digest') != self.reviewer_flags_digest():
             return False, 'permission probe reviewer flags do not match this run'
         if report.get('author_flags_digest') != self.author_flags_digest():
             return False, 'permission probe author flags do not match this run'
         author_probe = report.get('author_permission_probe', {})
-        expected_author_status = 'PASS' if self.args.author_vendor == 'codex' else 'NOT-APPLICABLE'
-        if author_probe.get('status') != expected_author_status:
+        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'NOT-APPLICABLE'
+        if author_probe.get('status') != expected_author_status or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
             return False, 'permission probe author permission status is not current'
         if report.get('global_config_changes', {}).get('status') != 'PASS':
             return False, 'permission probe global config changes were not fully attributed'
@@ -1727,6 +1735,7 @@ class Coordinator:
                          for row in self.state['review_verdicts'])
         lines += ['', f"Final coordinator status: **{self.state['status']}**"]
         lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
+        if self.state.get('residual_risk'): lines.append('Residual risk: ' + self.state['residual_risk'])
         if self.state.get('pending_operator_note_id'):
             lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
         if self.state.get('hold_reason'):
@@ -3394,6 +3403,16 @@ class Coordinator:
                     target = root / ('paired-session-escape-' + label + '-' + uuid.uuid4().hex)
                     if target.exists() or target.is_symlink(): raise RuntimeError('probe target collision')
                     model_targets[label] = target
+                target_controls = {label: self._codex_sandbox_escape_check(workspace, label, path)
+                                   for label, path in model_targets.items()}
+                advisory['model_target_checks'] = target_controls
+                controls = (*codex_sandbox_checks['checks'].values(), *target_controls.values())
+                d1b_written = any(row.get('expected') == 'denied' and row.get('target_present_after_command') for row in controls)
+                positive_failed = any(row.get('expected') == 'allowed' and row.get('status') == 'FAIL' and row.get('returncode') not in (None, 2) for row in controls)
+                source_hashes = {row.get('source_config_sha256') for row in controls}
+                source_config = (self.global_codex_home / 'config.toml').read_bytes()
+                d1b = ('FAIL' if d1b_written or positive_failed else 'PASS' if all(row.get('status') == 'PASS' for row in controls)
+                       and source_hashes == {hashlib.sha256(source_config).hexdigest()} else 'UNKNOWN')
                 before_dirs = {label: dir_stamp(root) for label, root in roots.items()}
                 escape_commands = {label: 'printf probe > ' + shlex.quote(str(path)) for label, path in model_targets.items()}; commands.extend(escape_commands.values())
                 prompt = '\n'.join([
@@ -3410,6 +3429,16 @@ class Coordinator:
                                      review_schema(verified=False), fresh=True,
                                      workspace_override=workspace,
                                      env_overrides={'TMPDIR': str(self.author_temp_dir)})
+                pid = self.state['turns'][-1].get('pid') if self.state['turns'] else None
+                if type(pid) is not int or pid <= 1: raise RuntimeError('author probe process group is unverifiable')
+                try: retry_killpg_eperm(pid)
+                except ProcessLookupError: pass
+                except OSError as exc: raise RuntimeError('author probe process group cannot be verified stopped') from exc
+                else: raise RuntimeError('author probe process group is still alive after the turn')
+                current_config = (self.global_codex_home / 'config.toml').read_bytes()
+                if current_config != source_config and _only_codex_workspace_trust_append(
+                        {'raw': source_config.decode()}, {'raw': current_config.decode()}, [workspace, self.workspace]) == []:
+                    d1b = 'UNKNOWN'
                 after_dirs = {label: dir_stamp(root) for label, root in roots.items()}
                 evidence = result['answer'].get('observed_commands', [])
 
@@ -3439,7 +3468,11 @@ class Coordinator:
                 escape_status = 'FAIL' if any(row['status'] == 'FAIL' for row in escape_rows.values()) else 'UNKNOWN' if any(row['status'] == 'UNKNOWN' for row in escape_rows.values()) else 'PASS'
                 gained = any(set(after_dirs[label]['listing']) - set(before_dirs[label]['listing']) for label in roots)
                 unchanged = all(before_dirs[label] == after_dirs[label] for label in roots)
-                report = {'status': 'FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' or gained else 'UNKNOWN' if not unchanged else escape_status,
+                status = ('FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' or gained or d1b == 'FAIL' else
+                          'UNKNOWN' if not unchanged else 'PASS' if escape_status == 'PASS' else
+                          'PASS_RESIDUAL_RISK' if d1b == 'PASS' else 'UNKNOWN')
+                report = {'status': status, 'd1a_model_verdict': escape_status, 'd1b_synthetic_verdict': d1b,
+                          'residual_risk': 'equivalence to real codex exec UNVERIFIED; re-check at M6' if status == 'PASS_RESIDUAL_RISK' else None,
                           'outcomes': outcomes, 'commands': commands, 'observed_commands': evidence, 'model_probe': 'ATTEMPTED',
                           'workspace': str(workspace), 'workspace_snapshot': result['snapshot'], 'codex_sandbox_checks': codex_sandbox_checks,
                           'advisory_direct_controls': advisory, 'model_escape_checks': escape_rows}; return report
@@ -3681,6 +3714,8 @@ class Coordinator:
         if author_probe['status'] == 'FAIL':
             report['status'] = 'FAIL'
             report['failure_reasons'].append('author-permission-probe-failed')
+        elif author_probe['status'] == 'PASS_RESIDUAL_RISK' and report['status'] == 'PASS':
+            report['status'] = 'PASS_RESIDUAL_RISK'; report['residual_risk'] = author_probe['residual_risk']
         elif author_probe['status'] == 'UNKNOWN' and report['status'] == 'PASS': report['status'] = 'UNKNOWN'; report['failure_reasons'].append('author-model-escape-unknown')
         if author_probe.get('model_escape_failed_targets'): report['failure_reasons'].append('author-escape-write-observed: ' + ', '.join(author_probe['model_escape_failed_targets']))
         if not report['snapshot_unchanged']:
@@ -3720,7 +3755,7 @@ class Coordinator:
             os_matches = [row for row in evidence if row.get('command', '').strip() == sandbox_probe_commands[3]]; os_output = '\n'.join(str(row.get('output', '')).lower() for row in os_matches)
             os_present = os_probe_path.exists() or os_probe_path.is_symlink(); os_marker = any(x in os_output for x in ('operation not permitted', 'read-only file system', 'deny file-write-create', 'deny file-write-data')); cli_marker = any(x in os_output for x in ('permission to use bash', 'permissions to use bash', 'permission denied by the cli', "haven't granted it yet")); os_denied = len(os_matches) == 1 and os_matches[0].get('error') is True and type(os_matches[0].get('exit_code')) is int and os_matches[0]['exit_code'] != 0 and str(os_probe_path).lower() in os_output and os_marker and not cli_marker
             os_status = 'FAIL' if os_present else 'PASS' if os_denied else 'UNKNOWN'; report['claude_os_denial_probe'] = {'status': os_status, 'target': str(os_probe_path), 'command': sandbox_probe_commands[3], 'target_absent': not os_present, 'os_denial_observed': os_denied}
-            if os_status != 'PASS': report['failure_reasons'].append('claude-os-denial-probe-' + os_status.lower()); report['status'] = os_status if os_status == 'FAIL' or report['status'] == 'PASS' else report['status']
+            if os_status != 'PASS': report['failure_reasons'].append('claude-os-denial-probe-' + os_status.lower()); report['status'] = os_status if os_status == 'FAIL' or report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else report['status']
             report['claude_sandbox_os_write_denial'] = checks['run_dir']
             report['claude_sandbox_write_denied'] = all(
                 checks['run_dir'][key] for key in
@@ -3752,18 +3787,20 @@ class Coordinator:
         if report['global_config_changes']['status'] != 'PASS':
             report['status'] = 'FAIL'
             report['failure_reasons'].append('unexpected-global-config-change')
+        if report['status'] != 'PASS_RESIDUAL_RISK': report.pop('residual_risk', None)
         trust_warning = '; '.join(report['global_config_changes'].get('warnings', []))
         if trust_warning:
             trust_warning += ': ' + ', '.join(path for row in report['global_config_changes']['expected_changes'] if row['file'] == 'codex_config' for path in row['workspaces']); report['warning'] = trust_warning
         atomic_json(self.run_dir / 'permission-probe.json', report)
         if author_probe.get('model_escape_failed_targets'):
             self.hold('1C FAIL: escape write observed at ' + ', '.join(author_probe['model_escape_failed_targets'])); return False
+        self.state['residual_risk'] = report.get('residual_risk')
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
-                                     if report['status'] == 'PASS' else
-                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '')
+                                     if report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else
+                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '') + ('; ' + report['residual_risk'] if report.get('residual_risk') else '')
         self.save()
         self.write_usage()
-        return report['status'] == 'PASS'
+        return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
         if self.state.get('uncertain_active'):
@@ -3833,6 +3870,7 @@ class Coordinator:
                 return self.hold('uncertain CLI process group is still alive; refusing concurrent replay')
         if uncertain:
             self.archive_abandoned_turn(uncertain)
+            if self.args.acknowledge_codex_trust and (self.run_dir / 'permission-probe.json').exists() and not self.probe_passed()[0]: return self.hold('permission probe stale after Codex trust acknowledgment; run permission-probe before continuing')
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
@@ -4190,7 +4228,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         print(status + (' (acceptance pending)' if status == 'DONE' else
                         ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
         return 0 if status in ('DONE', 'ACCEPTED') else 2
-    if args.action in ('run', 'resume') and not args.skip_probe:
+    if args.action in ('run', 'resume') and not args.skip_probe and not (args.action == 'resume' and args.retry_uncertain and (co.run_dir / 'permission-probe.json').exists() and (pending := co.state.get('uncertain_active')) and pending.get('vendor') == 'codex' and pending.get('global_codex_before', {}).get('codex_config') and global_config_snapshot(co.global_config_home, co.global_codex_home).get('codex_config', {}).get('sha256') != pending['global_codex_before']['codex_config']):
         passed, reason = co.probe_passed()
         if not passed:
             print('REFUSED: ' + reason + '; run permission-probe before continuing')

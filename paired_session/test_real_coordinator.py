@@ -372,9 +372,10 @@ class RealCoordinatorTests(unittest.TestCase):
                 result = subprocess.run(command, cwd=self.root,
                                         env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': mode},
                                         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0 if mode == 'no-marker' else 2,
+                                 result.stdout + result.stderr)
                 report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                self.assertEqual(report['status'], 'PASS')
+                self.assertEqual(report['status'], 'PASS' if mode == 'no-marker' else 'FAIL')
                 self.assertEqual(report['author_permission_probe']['model_probe'], 'ATTEMPTED')
                 advisory = report['author_permission_probe']['advisory_direct_controls']
                 self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
@@ -420,14 +421,93 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(report['status'], 'FAIL')
         self.assertEqual(report['model_escape_checks']['home']['status'], 'FAIL')
 
-    def test_codex_direct_control_pass_cannot_override_model_unknown(self):
+    def test_codex_direct_control_pass_qualifies_untouched_model_unknown(self):
         co = self.coordinator()
         with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
                                      'FAKE_AUTHOR_ESCAPE_SKIP': 'home'}):
             report = co._author_permission_probe()
         self.assertEqual(report['codex_sandbox_checks']['status'], 'PASS')
-        self.assertEqual(report['status'], 'UNKNOWN')
+        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
         self.assertEqual(report['model_escape_checks']['home']['status'], 'UNKNOWN')
+
+    def test_d1b_untouched_directories_support_residual_risk(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'all'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['d1a_model_verdict'], 'UNKNOWN')
+        self.assertEqual(report['d1b_synthetic_verdict'], 'PASS')
+        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
+        self.assertIn('UNVERIFIED; re-check at M6', report['residual_risk'])
+        self.assertTrue(all(row['directory_before'] == row['directory_after']
+                            for row in report['model_escape_checks'].values()))
+        self.assertEqual(len(report['advisory_direct_controls']['model_target_checks']),
+                         5 if sys.platform == 'darwin' else 4)
+
+    def test_d1b_refused_and_synthetic_write_have_distinct_verdicts(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'all',
+                                     'FAKE_CODEX_SANDBOX_CONTRACT_REJECT': '1'}):
+            refused = co._author_permission_probe()
+        self.assertEqual((refused['d1b_synthetic_verdict'], refused['status']), ('UNKNOWN', 'UNKNOWN'))
+        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'all', 'FAKE_CODEX_SANDBOX_MODE': 'escape'}):
+            written = co._author_permission_probe()
+        self.assertEqual((written['d1b_synthetic_verdict'], written['status']), ('FAIL', 'FAIL'))
+
+    def test_d1b_positive_write_failure_fails(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_POSITIVE_FAIL': 'workspace'}):
+            report = co._author_permission_probe()
+        self.assertFalse(report['outcomes']['workspace_write_allowed'])
+        self.assertEqual(report['status'], 'FAIL')
+
+    def test_author_probe_refuses_live_process_group_before_directory_snapshot(self):
+        co = self.coordinator()
+        with patch.object(rc, 'retry_killpg_eperm', return_value=None):
+            report = co._author_permission_probe()
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertIn('process group is still alive', report['reason'])
+        self.assertTrue(all(not Path(path).exists() for path in report['escape_directory_cleanup']['removed']))
+
+    def test_reviewer_os_unknown_blocks_residual_author_probe(self):
+        command = self.command(); command[2] = 'permission-probe'
+        result = subprocess.run(command, cwd=self.root,
+            env={**os.environ, 'FAKE_AUTHOR_ESCAPE_SKIP': 'all', 'FAKE_CLAUDE_DENY_OS_PROBE': '1'},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['author_permission_probe']['status'], 'PASS_RESIDUAL_RISK')
+        self.assertEqual(report['claude_os_denial_probe']['status'], 'UNKNOWN')
+        self.assertEqual(report['status'], 'UNKNOWN')
+
+    def test_d1b_residual_probe_allows_run_and_reports_risk(self):
+        command = self.command('--exercise-revisions'); command[2] = 'permission-probe'
+        env = {**os.environ, 'FAKE_AUTHOR_ESCAPE_SKIP': 'all', 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'}
+        probe = subprocess.run(command, cwd=self.root, env=env, text=True, capture_output=True)
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
+        self.assertEqual(report['author_permission_probe']['d1b_synthetic_verdict'], 'PASS')
+        run = subprocess.run(self.command('--exercise-revisions'), cwd=self.root, env=env,
+                             text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['residual_risk'], 'equivalence to real codex exec UNVERIFIED; re-check at M6')
+        self.assertIn('Residual risk: equivalence to real codex exec UNVERIFIED',
+                      (self.run_dir / 'review-comparison.md').read_text())
+
+    def test_author_policy_digest_ignores_only_known_trust_entries(self):
+        co = self.coordinator()
+        config = self.test_home / '.codex/config.toml'
+        original = config.read_text()
+        before = co.author_flags()['codex_config_sha256']
+        for path in (self.run_dir / 'paired-session-author-probe-abc' / 'workspace', self.workspace):
+            with config.open('a') as handle:
+                handle.write('\n[projects.' + json.dumps(str(path)) + ']\ntrust_level = "trusted"\n')
+        self.assertEqual(co.author_flags()['codex_config_sha256'], before)
+        with config.open('a') as handle:
+            handle.write('\n[projects."/tmp/unrelated"]\ntrust_level = "trusted"\n')
+        self.assertNotEqual(co.author_flags()['codex_config_sha256'], before)
+        config.write_text(original)
 
     def test_resume_refuses_probe_with_unattributed_global_config_change(self):
         self.run_dir = self.root / 'resume-global-change'
@@ -468,6 +548,7 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(denied['source_config_sha256'], denied['copy_config_sha256'])
         self.assertEqual(Path(invocation['codex_home']).parent, self.run_dir)
         self.assertFalse(Path(invocation['codex_home']).exists())
+        self.assertEqual(invocation['codex_home_entries'], ['config.toml'])
         self.assertIn('--log-denials', invocation['args'])
         self.assertEqual(invocation['tmpdir'], str(co.author_temp_dir))
         config_values = [invocation['args'][i + 1] for i, arg in
@@ -496,6 +577,21 @@ class RealCoordinatorTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
             unknown = co._codex_sandbox_escape_check(self.workspace, 'unknown-version', self.root / 'target')
         self.assertEqual(unknown['status'], 'CONTRACT-FAIL')
+        self.assertFalse((self.root / 'target').exists())
+
+    def test_synthetic_profile_rejects_extra_writable_root_and_credentials(self):
+        co = self.coordinator('--author-vendor', 'codex')
+        co.author_temp_dir.mkdir(parents=True, exist_ok=True)
+        (self.test_home / '.codex' / 'auth.json').write_text('{"private":"do not copy"}')
+        profile = co._codex_sandbox_profile_args()
+        changed = list(profile)
+        position = next(i for i, arg in enumerate(changed) if arg.startswith('permissions.paired_session_author.filesystem='))
+        changed[position] = changed[position][:-1] + ', "/tmp"="write"}'
+        with patch.object(co, '_codex_sandbox_profile_args', return_value=changed):
+            refused = co._codex_sandbox_escape_check(self.workspace, 'extra-root', self.root / 'target')
+        self.assertEqual(refused['returncode'], 2)
+        self.assertEqual(refused['status'], 'FAIL')
+        self.assertEqual(refused['copied_policy_files'], ['config.toml'])
         self.assertFalse((self.root / 'target').exists())
 
     def tearDown(self):
@@ -530,9 +626,12 @@ if args and args[0] == "sandbox":
     fs = config.get("permissions." + profile + ".filesystem", "")
     home = Path(os.environ.get("CODEX_HOME", "/nonexistent")).resolve()
     test_root = Path(os.environ.get("FAKE_CODEX_TEST_ROOT", "/nonexistent")).resolve()
-    if (not isinstance(fs, str) or '\":root\"=\"read\"' not in fs or
-            '\":tmpdir\"=\"write\"' not in fs or
-            '\":workspace_roots\"={{\".\"=\"write\"' not in fs or
+    expected_fs = {{':root': 'read', ':tmpdir': 'write',
+                   **{{str(Path(root).resolve()): 'write' for root in config.get('sandbox_workspace_write.writable_roots', [])}},
+                   ':workspace_roots': {{'.': 'write', '.git': 'read', '.agents': 'read', '.codex': 'read', '.aws': 'read'}}}}
+    try: actual_fs = json.loads(fs.replace('"=', '":'))
+    except (ValueError, AttributeError): actual_fs = None
+    if (actual_fs != expected_fs or
             config.get("permissions." + profile + ".network.enabled") is not False or
             config.get("sandbox_workspace_write.network_access") is not False or
             config.get("sandbox_workspace_write.exclude_slash_tmp") is not True or
@@ -559,9 +658,9 @@ if args and args[0] == "sandbox":
         allowed = True
     record = {{"args": args, "command": command, "config": config,
               "tmpdir": os.environ.get("TMPDIR"), "cwd": os.getcwd(),
-              "codex_home": str(home)}}
+              "codex_home": str(home), "codex_home_entries": sorted(os.listdir(home))}}
     log_path = os.environ.get("FAKE_CODEX_SANDBOX_LOG")
-    if log_path:
+    if log_path and not (target and target.name.startswith("paired-session-escape-")):
         log = Path(log_path); log.parent.mkdir(parents=True, exist_ok=True)
         with log.open("a") as handle: handle.write(json.dumps(record) + "\\n")
     mode = os.environ.get("FAKE_CODEX_SANDBOX_MODE", "deny")
@@ -3729,7 +3828,7 @@ sys.exit(result.returncode)
                 co = self.coordinator()
                 with patch.dict(os.environ, {setting: label, 'FAKE_CODEX_SANDBOX_MODE': 'deny'}):
                     result = co._author_permission_probe()
-                self.assertEqual(result['status'], expected, result)
+                self.assertEqual(result['status'], 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected, result)
                 self.assertEqual(result['model_escape_checks'][label]['status'], expected)
                 found = result['model_escape_targets_found']
                 self.assertEqual(bool(found), found_expected)
@@ -3740,7 +3839,7 @@ sys.exit(result.returncode)
         co = self.coordinator()
         with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'home'}):
             report = co._author_permission_probe()
-        self.assertEqual(report['status'], 'UNKNOWN')
+        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
         for row in report['model_escape_checks'].values():
             before, after = row['directory_before'], row['directory_after']
             self.assertEqual(before, after)
@@ -3783,12 +3882,13 @@ sys.exit(result.returncode)
                 result = subprocess.run(command, cwd=self.root,
                     env={**os.environ, setting: 'home', 'FAKE_CODEX_SANDBOX_MODE': 'deny'},
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0 if expected == 'UNKNOWN' else 2,
+                                 result.stdout + result.stderr)
                 report = json.loads((self.run_dir / 'permission-probe.json').read_text())
                 author = report['author_permission_probe']
-                self.assertEqual(author['status'], expected)
+                self.assertEqual(author['status'], 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected)
                 self.assertEqual(author['model_escape_checks']['home']['status'], expected)
-                self.assertEqual(report['status'], expected)
+                self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected)
                 if mode == 'write':
                     found = author['model_escape_targets_found']
                     self.assertEqual(len(found), 1)
@@ -3817,9 +3917,11 @@ sys.exit(result.returncode)
                 result = subprocess.run(command, cwd=self.root,
                     env={**os.environ, **settings, 'FAKE_CODEX_SANDBOX_MODE': 'deny'},
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                overall = 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected
+                self.assertEqual(result.returncode, 0 if overall == 'PASS_RESIDUAL_RISK' else 2,
+                                 result.stdout + result.stderr)
                 report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                self.assertEqual(report['status'], expected)
+                self.assertEqual(report['status'], overall)
                 if name == 'duplicate-success':
                     self.assertEqual(report['author_permission_probe']['model_escape_checks']['home']['status'], 'FAIL')
                     self.assertEqual(report['author_permission_probe']['model_escape_targets_found'], [])
@@ -4051,10 +4153,12 @@ sys.exit(result.returncode)
                             for index, command in enumerate(commands)]
                     if mode == 'duplicate-event':
                         rows.append(dict(rows[0]))
+                    co.state['turns'].append({'pid': 987654321})
                     return {'answer': {'observed_commands': rows}, 'snapshot': 'scratch-snapshot'}
 
                 with patch.object(co, 'invoke', side_effect=simulate):
-                    report = co._author_permission_probe()
+                    with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+                        report = co._author_permission_probe()
                 self.assertEqual(report['status'], 'FAIL')
                 failed_outcome = ('workspace_write_allowed' if mode == 'duplicate-event'
                                   else 'run_tmpdir_write_allowed')
