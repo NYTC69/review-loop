@@ -4037,12 +4037,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--supersedes', help='resolved parent run dir for a scope-change successor')
     p.add_argument('--config', help='JSON profile; defaults to <workspace>/.review-loop/paired-session.json')
     p.add_argument('--author-vendor', choices=['codex', 'claude'], default='codex')
-    p.add_argument('--author-model', help='defaults to the vendor-pinned ADR-7 model')
+    p.add_argument('--author-model', help='defaults to the vendor-pinned ADR-8 model')
     p.add_argument('--author-effort', default='medium')
     p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
-    p.add_argument('--reviewer-model', help='defaults to the vendor-pinned ADR-7 model')
+    p.add_argument('--reviewer-model', help='defaults to the vendor-pinned ADR-8 model')
     p.add_argument('--reviewer-effort', default='medium')
-    p.add_argument('--gate-model', help='defaults to the vendor-pinned ADR-7 model')
+    p.add_argument('--gate-model', help='defaults to the vendor-pinned ADR-8 model')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
@@ -4099,7 +4099,7 @@ CONFIGURABLE_DESTS = {
 
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-sol'}
+    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
     role_vendors = {
         'author_model': args.author_vendor,
         'reviewer_model': args.reviewer_vendor,
@@ -4113,7 +4113,7 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 def validate_role_models(args: argparse.Namespace) -> None:
     """Enforce the currently accepted ADR-5 vendor/model pairing before a run."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-sol'}
+    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
     role_vendors = {
         'author_model': args.author_vendor,
         'reviewer_model': args.reviewer_vendor,
@@ -4123,7 +4123,7 @@ def validate_role_models(args: argparse.Namespace) -> None:
         expected = model_for_vendor[vendor]
         actual = getattr(args, key)
         if actual != expected:
-            raise ValueError(f'{key} must be {expected} for the {vendor} role under ADR-7; got {actual}')
+            raise ValueError(f'{key} must be {expected} for the {vendor} role under ADR-8; got {actual}')
 
 
 def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.ArgumentParser:

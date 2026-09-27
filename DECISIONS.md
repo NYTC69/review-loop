@@ -111,3 +111,14 @@ entry; never edit history.
 - **Decision**: 采用 (B)。Claude 侧所有 paired-session 角色仍用 `claude-opus-5-5`；Codex 侧所有角色统一用 `gpt-6-sol`。Yuan 2026-09-27 D5 决定。
 - **Consequences**: 换模型前后的运行成本与评审质量不能直接比较。已安装 Codex 的 1C 权限探测必须用新模型重跑，且探测结果绑定当时的作者模型与 CLI 配置；这不授权 1D。
 - **Supersedes**: ADR-5
+
+---
+
+### ADR-8: paired-session Codex 角色模型切回 gpt-6-luna
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: Yuan 在 2026-09-27 的 D9 决定“都切回 luna 吧. 不然我怕做不完, token 就没了.” 当日的成本记录显示 ADR-7 所选模型每 token 约为 gpt-6-luna 的 7 倍。
+- **Options considered**: (A) 继续使用 ADR-7 的 Codex 模型 pin；(B) 按 D9 将所有 paired-session Codex 角色恢复为 gpt-6-luna，Claude 角色保持不变。
+- **Decision**: 采用 (B)。Codex author、reviewer、shadow、gate 的默认值与 enforcement 均固定为 gpt-6-luna；Claude 角色仍固定为 claude-opus-5-5。Yuan 2026-09-27 D9 决定。
+- **Consequences**: ADR-7 (sol) 期间记录的运行与 ADR-8 期间的运行不可直接比较；M6 复查使用 ADR-8 模型。R21-1 的 D1(b) 合成权限证据与模型无关，继续有效。旧 DONE 且未 accept 的 run 通过 reject 重新派发时仍会使用冻结模型；该已知路径记录在 BACKLOG.md，修复前不能声称历史 run 的每条再派发路径均已切到 ADR-8。
+- **Supersedes**: ADR-7

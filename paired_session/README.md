@@ -77,8 +77,8 @@ For per-project settings, copy `paired-session-config.example.json` to
 `.review-loop/paired-session.json` in the workspace. The CLI loads that profile
 for run, probe, and resume; explicit CLI options override profile values. On
 resume, the effective settings must still match the saved run configuration.
-Models follow ADR-7 vendor pins (Claude: `claude-opus-5-5`; Codex:
-`gpt-6-sol`). Changing a role's vendor without updating incompatible model
+Models follow ADR-8 vendor pins (Claude: `claude-opus-5-5`; Codex:
+`gpt-6-luna`). Changing a role's vendor without updating incompatible model
 values is rejected before run state is created.
 `lifecycle_mode` defaults to `off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;

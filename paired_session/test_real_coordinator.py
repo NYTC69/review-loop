@@ -2142,7 +2142,7 @@ sys.exit(result.returncode)
     def test_codex_readonly_roles_do_not_inherit_execpolicy_bypass_grants(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-sol'])
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
         co = rc.Coordinator(args)
         schema = self.root / 'schema.json'
         for role in ('reviewer', 'shadow', 'gate', 'probe'):
@@ -2284,7 +2284,7 @@ sys.exit(result.returncode)
     def test_claude_author_routes_gate_to_fresh_readonly_codex(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-sol'])
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
         co = rc.Coordinator(args)
         schema = self.root / 'gate-schema.json'
         rc.atomic_json(schema, rc.gate_schema())
@@ -2431,27 +2431,27 @@ sys.exit(result.returncode)
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         rc.Coordinator(args)
         self.assertEqual((args.author_model, args.reviewer_model, args.gate_model),
-                         ('gpt-6-sol', 'claude-opus-5-5', 'claude-opus-5-5'))
+                         ('gpt-6-luna', 'claude-opus-5-5', 'claude-opus-5-5'))
         swapped = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'swapped-model-run'),
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex'])
         rc.Coordinator(swapped)
         self.assertEqual((swapped.author_model, swapped.reviewer_model, swapped.gate_model),
-                         ('claude-opus-5-5', 'gpt-6-sol', 'gpt-6-sol'))
+                         ('claude-opus-5-5', 'gpt-6-luna', 'gpt-6-luna'))
 
-    def test_adr7_refuses_explicit_legacy_codex_author_model(self):
+    def test_adr8_refuses_explicit_legacy_codex_author_model(self):
         with patch('sys.stdout', new=io.StringIO()) as output:
             result = rc.main(['run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--author-model', 'gpt-6-luna'])
+                '--author-model', 'gpt-6-sol'])
         self.assertEqual(result, 2)
-        self.assertIn('author_model must be gpt-6-sol', output.getvalue())
-        self.assertIn('ADR-7', output.getvalue())
+        self.assertIn('author_model must be gpt-6-luna', output.getvalue())
+        self.assertIn('ADR-8', output.getvalue())
         self.assertFalse((self.run_dir / 'state.json').exists())
 
-    def test_example_config_uses_adr7_pins(self):
+    def test_example_config_uses_adr8_pins(self):
         example = json.loads(Path(__file__).with_name('paired-session-config.example.json').read_text())
-        self.assertEqual(example['author_model'], 'gpt-6-sol')
+        self.assertEqual(example['author_model'], 'gpt-6-luna')
         self.assertEqual(example['reviewer_model'], 'claude-opus-5-5')
         self.assertEqual(example['gate_model'], 'claude-opus-5-5')
         rc.validate_role_models(rc.configure_parser(rc.parser(), [
@@ -3010,7 +3010,7 @@ sys.exit(result.returncode)
     def test_codex_plan_receives_full_inputs_without_requiring_shell_reads(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-sol'])
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
         co = rc.Coordinator(args)
         (co.context / 'plan.md').write_text('Unique plan body with verification.')
         prompt = co._review_prompt('reviewer', 'snapshot')
@@ -3672,7 +3672,7 @@ sys.exit(result.returncode)
         codex_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'codex']
         claude_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'claude']
         self.assertTrue(codex_receipts and claude_receipts)
-        self.assertTrue(all(turn['reported_model'] == 'gpt-6-sol' and
+        self.assertTrue(all(turn['reported_model'] == 'gpt-6-luna' and
                             turn['reported_model_source'] == 'thread.started' and
                             turn['model_identity'] == 'MATCH' for turn in codex_receipts))
         self.assertTrue(all(turn['reported_model'] == 'claude-opus-5-5' and

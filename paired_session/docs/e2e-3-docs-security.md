@@ -14,7 +14,7 @@ Design only; lifecycle disabled. Inputs: [doc 1](e2e-1-stages-and-roles.md), [2a
 
 For every quality/DOCS/SECURITY agent, coordinator checks provider-observed nonzero tool use **including a read of candidate diff or manifest**, current OID, frozen model/body hash and tool trace. Self-report is insufficient. Zero/missing evidence discards the result, allows one budgeted fresh retry, then records skip/failure and HOLD; it never passes (legacy tool-use guard). Legal actions: bounded extension, repair/retry or abort.
 
-M4 must provide frozen `agents/*.md` bodies for docs-consistency inspector, docs writer/reviewer, independent final reviewer, security reviewer and fixer before lifecycle activation; a missing body HOLDs before dispatch. Writers use the configured author vendor; read-only reviewers/inspector use the opposite ADR-7 vendor/model, in separate sessions. The final reviewer owns its own findings and must inspect the full candidate diff; role ownership follows doc 2b-ii.
+M4 must provide frozen `agents/*.md` bodies for docs-consistency inspector, docs writer/reviewer, independent final reviewer, security reviewer and fixer before lifecycle activation; a missing body HOLDs before dispatch. Writers use the configured author vendor; read-only reviewers/inspector use the opposite ADR-8 vendor/model, in separate sessions. The final reviewer owns its own findings and must inspect the full candidate diff; role ownership follows doc 2b-ii.
 
 ## SECURITY: whole-repo preflight, fresh review and repair
 

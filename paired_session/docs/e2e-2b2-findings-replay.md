@@ -4,7 +4,7 @@ Design only; lifecycle disabled. Consume [doc 1](e2e-1-stages-and-roles.md), [do
 
 ## Owner identity and ledger
 
-Only coordinator writes ledger, receipt status and severity. Each finding stores immutable ID/text/severity/security flag, source receipt/OID/epoch and owner `(role kind, frozen vendor, exact model, agent-body/rubric hash)`. ADR-7 pins Codex `gpt-6-sol`, Claude `claude-opus-5-5`; dispatch uses frozen `codex exec` or `claude -p`, never the development executor model. Model/body changes need recorded remapping and fresh review.
+Only coordinator writes ledger, receipt status and severity. Each finding stores immutable ID/text/severity/security flag, source receipt/OID/epoch and owner `(role kind, frozen vendor, exact model, agent-body/rubric hash)`. ADR-8 pins Codex `gpt-6-luna`, Claude `claude-opus-5-5`; dispatch uses frozen `codex exec` or `claude -p`, never the development executor model. Model/body changes need recorded remapping and fresh review.
 
 | Source | Who may dispose | Evidence required |
 |---|---|---|
