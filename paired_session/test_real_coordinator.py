@@ -2295,6 +2295,49 @@ sys.exit(result.returncode)
         self.assertIn('sandbox_mode="read-only"', gate)
         self.assertNotIn('resume', gate)
 
+    def test_workitem_reviewer_allowlist_change_holds_without_widening(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(FAKE), '--claude-bin', str(self.fake_claude_cli())])
+        co = rc.Coordinator(args)
+        frozen = list(co.state['config']['workitem_reviewer_commands'])
+        old_report = {'status': 'PASS', 'reviewer_flags_digest': co.reviewer_flags_digest(),
+                      'author_flags_digest': co.author_flags_digest(),
+                      'author_permission_probe': {'status': 'PASS'},
+                      'global_config_changes': {'status': 'PASS'}}
+        (co.run_dir / 'permission-probe.json').write_text(json.dumps(old_report))
+        with patch.dict(os.environ, {'FAKE_APPEND_REVIEWER_COMMAND': 'node injected-reviewer.js',
+                                     'FAKE_APPEND_REVIEWER_COMMAND_FILE': str(self.workitem)}):
+            co._invoke_once('author', 'EXEC', 'Role: persistent codex implementer. Phase: EXEC.\n', rc.author_schema())
+        self.assertEqual(rc.workitem_reviewer_commands(self.workitem.read_text()), ['node injected-reviewer.js'])
+        before = (co.state['invocations_used'], len(co.state['turns']))
+        with self.assertRaisesRegex(RuntimeError, 'allowlist changed; run permission-probe'):
+            co._invoke_once('reviewer', 'EXEC', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
+        self.assertEqual((co.state['invocations_used'], len(co.state['turns'])), before)
+        self.assertEqual(co.state['config']['workitem_reviewer_commands'], frozen)
+        self.assertEqual(co.state['status'], 'HOLD')
+        probe_args = rc.parser().parse_args(['permission-probe', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', co.state['config']['codex_bin'], '--claude-bin', co.state['config']['claude_bin']])
+        refreshed = rc.Coordinator(probe_args)
+        self.assertEqual(refreshed.state['config']['workitem_reviewer_commands'],
+                         ['node injected-reviewer.js'])
+        self.assertFalse(refreshed.probe_passed()[0], 'refresh invalidates the prior probe digest')
+
+    def test_legacy_run_without_frozen_reviewer_allowlist_holds_until_probe(self):
+        co = self.coordinator()
+        co.state['config'].pop('workitem_reviewer_commands')
+        co.save()
+        with self.workitem.open('a') as output:
+            output.write('\n```reviewer-commands\nnode legacy-command.js\n```\n')
+        co.args.action = 'resume'
+        with self.assertRaisesRegex(RuntimeError, 'allowlist is not frozen; run permission-probe'):
+            co.reviewer_commands()
+        self.assertEqual(co.state['status'], 'HOLD')
+        co.args.action = 'permission-probe'
+        self.assertIn('node legacy-command.js', co.reviewer_commands())
+        self.assertIn('workitem_reviewer_commands', co.state['config'])
+
     def test_optional_reviewer_command_is_an_exact_rule(self):
         run_dir = self.root / 'extra-command-run'
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),

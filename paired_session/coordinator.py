@@ -1229,9 +1229,21 @@ class Coordinator:
         return config
 
     def reviewer_commands(self) -> list[str]:
+        current = workitem_reviewer_commands(self.workitem.read_text())
+        frozen = self.state.get('config', {}).get('workitem_reviewer_commands')
+        if frozen is None:
+            if self.args.action != 'permission-probe':
+                reason = 'reviewer allowlist is not frozen; run permission-probe before continuing'
+                self.hold(reason)
+                raise RuntimeError(reason)
+            self.state['config']['workitem_reviewer_commands'] = frozen = current
+            self.save()
+        if current != frozen:
+            reason = 'work-item reviewer allowlist changed; run permission-probe before continuing'
+            self.hold(reason)
+            raise RuntimeError(reason)
         result = []
-        for command in [self.args.test_command, *self.args.reviewer_command,
-                        *workitem_reviewer_commands(self.workitem.read_text())]:
+        for command in [self.args.test_command, *self.args.reviewer_command, *frozen]:
             if command not in result:
                 result.append(command)
         return result
@@ -1443,6 +1455,14 @@ class Coordinator:
             if key == 'exec_turn_timeout' and self.args.action == 'resume' and exec_timeout_override:
                 continue
             current = current_config[key]
+            if key == 'workitem_reviewer_commands' and current != value:
+                if self.args.action == 'permission-probe':
+                    self.state['config'][key] = current
+                    self.save()
+                    continue
+                reason = 'work-item reviewer allowlist changed; run permission-probe before continuing'
+                self.hold(reason)
+                raise RuntimeError(reason)
             if current != value:
                 raise ValueError('resume configuration differs: ' + key)
 

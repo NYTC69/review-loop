@@ -144,6 +144,10 @@ def mutate(mode):
 def main():
     args = sys.argv[1:]
     prompt = sys.stdin.read()
+    append_commands = os.environ.get('FAKE_APPEND_REVIEWER_COMMAND')
+    if append_commands and 'implementer. Phase: EXEC.' in prompt:
+        with Path(os.environ['FAKE_APPEND_REVIEWER_COMMAND_FILE']).open('a') as target:
+            target.write('\n```reviewer-commands\n' + append_commands + '\n```\n')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
     if vendor == 'claude':
