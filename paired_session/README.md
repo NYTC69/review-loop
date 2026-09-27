@@ -107,6 +107,10 @@ temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
 as advisory controls. Their argv, return codes and observations appear under
 `advisory_direct_controls`; this separate CLI's policy is not proven equivalent
 to the real `codex exec` author policy, and its results do not decide the gate.
+For installed Codex 0.157, the direct control requires a named `-P` profile
+derived from the author's sandbox overrides. It byte-copies only the active
+`config.toml` into a disposable `CODEX_HOME` under the run directory, verifies
+the copy and deletes it after each check; credentials are never copied.
 The probe binds the installed `codex --version` to the author flags. The real
 model-driven author probe checks that workspace and run-owned `$TMPDIR` writes
 succeed. It also asks that same author

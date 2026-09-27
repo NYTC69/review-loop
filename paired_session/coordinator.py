@@ -1247,6 +1247,7 @@ class Coordinator:
             'sandbox_workspace_write.writable_roots': [str(self.author_temp_dir)],
             'sandbox_workspace_write.exclude_tmpdir_env_var': False,
             'sandbox_workspace_write.exclude_slash_tmp': True,
+            'sandbox_workspace_write.network_access': False,
             'TMPDIR': str(self.author_temp_dir),
         }
 
@@ -1262,6 +1263,22 @@ class Coordinator:
 
     def _author_environment(self) -> dict:
         return {**os.environ, 'TMPDIR': str(self.author_temp_dir)}
+
+    def _codex_sandbox_profile_args(self) -> list[str]:
+        if self._codex_cli_version() != 'codex-cli 0.157.0':
+            raise ValueError('unsupported codex sandbox contract; expected codex-cli 0.157.0')
+        policy = self._author_sandbox_overrides()
+        if (policy['sandbox'] != 'workspace-write' or policy['sandbox_workspace_write.network_access'] is not False
+                or policy['sandbox_workspace_write.exclude_tmpdir_env_var'] is not False
+                or policy['sandbox_workspace_write.exclude_slash_tmp'] is not True):
+            raise ValueError('author sandbox parameters cannot be represented by the synthetic profile')
+        roots = {'.': 'write', '.git': 'read', '.agents': 'read', '.codex': 'read', '.aws': 'read'}
+        filesystem = {':root': 'read', ':tmpdir': 'write',
+                      **{str(Path(root).resolve()): 'write' for root in policy['sandbox_workspace_write.writable_roots']},
+                      ':workspace_roots': roots}
+        inline = '{' + ', '.join(json.dumps(k) + '=' + ('{' + ', '.join(json.dumps(r) + '=' + json.dumps(v) for r, v in value.items()) + '}' if isinstance(value, dict) else json.dumps(value)) for k, value in filesystem.items()) + '}'
+        return ['-P', 'paired_session_author', '--config', 'permissions.paired_session_author.filesystem=' + inline,
+                '--config', 'permissions.paired_session_author.network.enabled=false']
 
     def reviewer_flags_digest(self) -> str:
         raw = json.dumps(self.reviewer_flags(), sort_keys=True, separators=(',', ':')).encode()
@@ -3198,8 +3215,14 @@ class Coordinator:
     def _codex_sandbox_escape_check(self, workspace: Path, label: str, target: Path,
                                     expected_allowed=False) -> dict:
         command = ['touch', str(target)]
+        try:
+            profile_args = self._codex_sandbox_profile_args()
+        except ValueError as exc:
+            return {'label': label, 'status': 'CONTRACT-FAIL', 'reason': str(exc),
+                    'expected': 'allowed' if expected_allowed else 'denied',
+                    'sandbox_overrides': self._author_sandbox_overrides(), 'returncode': None}
         args = [self.args.codex_bin, 'sandbox', '--log-denials', '-C', str(workspace),
-                *self._author_sandbox_config_args(), '--', *command]
+                *profile_args, *self._author_sandbox_config_args(), '--', *command]
         outcome = {'label': label, 'command': shlex.join(command), 'argv': args,
                    'expected': 'allowed' if expected_allowed else 'denied',
                    'sandbox_overrides': self._author_sandbox_overrides(),
@@ -3208,9 +3231,17 @@ class Coordinator:
                    'target_present_after_command': False, 'denial_target_observed': False,
                    'policy_observed': False, 'cleanup_ok': True, 'stdout': '', 'stderr': ''}
         try:
-            result = subprocess.run(args, cwd=workspace, env=self._author_environment(),
-                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=30)
+            source = (self.global_codex_home / 'config.toml').read_bytes()
+            with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.run_dir) as sandbox_home:
+                copied = Path(sandbox_home) / 'config.toml'
+                if copied.write_bytes(source) != len(source) or copied.read_bytes() != source:
+                    raise OSError('synthetic config copy differs from source')
+                outcome['copied_policy_files'] = ['config.toml']
+                outcome['source_config_sha256'] = hashlib.sha256(source).hexdigest()
+                outcome['copy_config_sha256'] = hashlib.sha256(copied.read_bytes()).hexdigest()
+                result = subprocess.run(args, cwd=workspace,
+                    env={**self._author_environment(), 'CODEX_HOME': sandbox_home},
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             outcome.update({'returncode': result.returncode,
                             'stdout': result.stdout[-OUTPUT_TAIL_CHARS:],
                             'stderr': result.stderr[-OUTPUT_TAIL_CHARS:]})

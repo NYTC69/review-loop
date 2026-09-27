@@ -462,6 +462,11 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertTrue(denied['os_denial_observed'])
         self.assertTrue(denied['target_absent_before_cleanup'])
         invocation = json.loads(log.read_text().splitlines()[0])
+        self.assertIn('-P', invocation['args'])
+        self.assertEqual(denied['copied_policy_files'], ['config.toml'])
+        self.assertEqual(denied['source_config_sha256'], denied['copy_config_sha256'])
+        self.assertEqual(Path(invocation['codex_home']).parent, self.run_dir)
+        self.assertFalse(Path(invocation['codex_home']).exists())
         self.assertIn('--log-denials', invocation['args'])
         self.assertEqual(invocation['tmpdir'], str(co.author_temp_dir))
         config_values = [invocation['args'][i + 1] for i, arg in
@@ -478,6 +483,19 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertFalse(escaped['target_absent_before_cleanup'])
         self.assertTrue(escaped['cleanup_ok'])
         self.assertFalse(escaped_target.exists())
+
+    def test_synthetic_codex_contract_refuses_old_argv_and_unknown_version(self):
+        co = self.coordinator('--author-vendor', 'codex')
+        co.author_temp_dir.mkdir(parents=True, exist_ok=True)
+        old = subprocess.run([str(self.fake_codex_cli()), 'sandbox', '-C', str(self.workspace),
+            *co._author_sandbox_config_args(), '--', 'touch', str(self.root / 'old-control-target')],
+            cwd=self.workspace, text=True, capture_output=True)
+        self.assertEqual(old.returncode, 2)
+        self.assertFalse((self.root / 'old-control-target').exists())
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
+            unknown = co._codex_sandbox_escape_check(self.workspace, 'unknown-version', self.root / 'target')
+        self.assertEqual(unknown['status'], 'CONTRACT-FAIL')
+        self.assertFalse((self.root / 'target').exists())
 
     def tearDown(self):
         if self.original_home is None:
@@ -496,7 +514,7 @@ args = sys.argv[1:]
 if args == ["--version"]:
     print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.157.0")); sys.exit(0)
 if args and args[0] == "sandbox":
-    if os.environ.get("FAKE_CODEX_SANDBOX_CONTRACT_REJECT"):
+    if os.environ.get("FAKE_CODEX_SANDBOX_CONTRACT_REJECT") or "-P" not in args:
         print("error: --permission-profile <NAME> required", file=sys.stderr); sys.exit(2)
     command = args[args.index("--") + 1:] if "--" in args else []
     config = {{}}
@@ -507,6 +525,19 @@ if args and args[0] == "sandbox":
                 config[key] = json.loads(raw)
             except ValueError:
                 config[key] = raw.strip('"')
+    profile = args[args.index("-P") + 1]
+    fs = config.get("permissions." + profile + ".filesystem", "")
+    home = Path(os.environ.get("CODEX_HOME", "/nonexistent")).resolve()
+    test_root = Path(os.environ.get("FAKE_CODEX_TEST_ROOT", "/nonexistent")).resolve()
+    if (not isinstance(fs, str) or '\":root\"=\"read\"' not in fs or
+            '\":tmpdir\"=\"write\"' not in fs or
+            '\":workspace_roots\"={{\".\"=\"write\"' not in fs or
+            config.get("permissions." + profile + ".network.enabled") is not False or
+            config.get("sandbox_workspace_write.network_access") is not False or
+            config.get("sandbox_workspace_write.exclude_slash_tmp") is not True or
+            config.get("sandbox_workspace_write.exclude_tmpdir_env_var") is not False or
+            test_root not in home.parents or not (home / "config.toml").is_file()):
+        print("error: unsupported synthetic author policy", file=sys.stderr); sys.exit(2)
     target = Path(command[-1]).resolve() if command else None
     cwd = Path(args[args.index("-C") + 1]).resolve() if "-C" in args else Path.cwd().resolve()
     roots = [Path(item).resolve() for item in config.get("sandbox_workspace_write.writable_roots", [])]
@@ -526,7 +557,8 @@ if args and args[0] == "sandbox":
     if workspace_write and direct_slash_tmp and config.get("sandbox_workspace_write.exclude_slash_tmp") is False:
         allowed = True
     record = {{"args": args, "command": command, "config": config,
-              "tmpdir": os.environ.get("TMPDIR"), "cwd": os.getcwd()}}
+              "tmpdir": os.environ.get("TMPDIR"), "cwd": os.getcwd(),
+              "codex_home": str(home)}}
     log_path = os.environ.get("FAKE_CODEX_SANDBOX_LOG")
     if log_path:
         log = Path(log_path); log.parent.mkdir(parents=True, exist_ok=True)
