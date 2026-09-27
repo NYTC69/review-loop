@@ -971,6 +971,10 @@ class Coordinator:
     def __init__(self, args: argparse.Namespace):
         resolve_role_model_defaults(args)
         validate_role_models(args)
+        if args.lifecycle_mode == 'on':
+            if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
+            if args.polish: raise ValueError('lifecycle refuses resume --polish')
+            raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
@@ -994,6 +998,8 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
+            if self.state.get('config', {}).get('lifecycle_mode') == 'on':
+                raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
             if (self.state.get('supersedes') != (str(Path(args.supersedes).resolve()) if args.supersedes else None) or
                     (self.state.get('effective_task_sha256') and
                      self.state['effective_task_sha256'] != hashlib.sha256(self.workitem.read_bytes()).hexdigest())):
@@ -1063,6 +1069,7 @@ class Coordinator:
                 raise ValueError('--workspace must be a git worktree')
             if not self.workitem.is_file():
                 raise ValueError('--workitem must be a file')
+            frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
             self.evidence.mkdir(exist_ok=True)
@@ -1072,7 +1079,7 @@ class Coordinator:
             self.state = {
                 'version': 1, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
                 'workspace': str(self.workspace), 'workitem': str(self.workitem),
-                'config': self._config(),
+                'config': frozen_config,
                 'sessions': {
                     'author': str(uuid.uuid4()) if args.author_vendor == 'claude' else None,
                     'reviewer': str(uuid.uuid4()) if args.reviewer_vendor == 'claude' else None,
@@ -1172,7 +1179,8 @@ class Coordinator:
                 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
-                'author_subagents')
+                'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
+                'skip_globs', 'skip_quality_polish')
         config = {key: getattr(self.args, key) for key in keys}
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
@@ -1181,6 +1189,14 @@ class Coordinator:
         config['gate_prompt'] = (
             '<bundled-default>:' + hashlib.sha256(gate_prompt.read_bytes()).hexdigest()
             if gate_prompt == DEFAULT_GATE_PROMPT.resolve() else str(gate_prompt))
+        def frozen_doc_path(value):
+            if any(char in value for char in '*?['): raise ValueError('lifecycle doc paths must be exact')
+            path = (self.workspace / value).expanduser().resolve()
+            if self.workspace not in path.parents: raise ValueError('lifecycle doc path escapes workspace')
+            return str(path)
+        config['docs_file'] = frozen_doc_path(self.args.docs_file) if self.args.docs_file else ''
+        config['docs_allowlist'] = sorted({frozen_doc_path(value) for value in
+                                           [*self.args.docs_allowlist, *([self.args.docs_file] if self.args.docs_file else [])]})
         config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text())
         return config
 
@@ -3936,6 +3952,12 @@ class StoreExplicitInteger(argparse.Action):
         setattr(namespace, self.dest + '_explicit', True)
 
 
+def config_bool(value):
+    if type(value) is bool: return value
+    if value in ('true', 'false'): return value == 'true'
+    raise ValueError('expected true or false')
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
@@ -3956,6 +3978,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
+    p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
+    p.add_argument('--docs-file', default='')
+    p.add_argument('--docs-allowlist', action='append', default=[])
+    p.add_argument('--skip-globs', action='append', default=[])
+    p.add_argument('--skip-quality-polish', type=config_bool, default=False)
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
@@ -3997,6 +4024,7 @@ CONFIGURABLE_DESTS = {
     'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
+    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish',
 }
 
 
@@ -4064,9 +4092,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.Ar
         if key in explicit:
             continue
         action = actions[key]
-        if action.dest == 'reviewer_command':
+        if action.dest in ('reviewer_command', 'docs_allowlist', 'skip_globs'):
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-                raise ValueError('config reviewer_command must be an array of strings')
+                raise ValueError(f'config {key} must be an array of strings')
         else:
             if action.type:
                 if action.type is int and type(value) is not int:

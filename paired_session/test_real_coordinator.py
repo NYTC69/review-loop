@@ -2336,6 +2336,57 @@ sys.exit(result.returncode)
             rc.configure_parser(rc.parser(), ['run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
 
+    def test_lifecycle_config_is_frozen_while_default_route_stays_off(self):
+        co = self.coordinator('--docs-file', 'docs/guide.md', '--docs-allowlist', 'docs/other.md',
+                              '--skip-globs', 'generated/**', '--skip-quality-polish', 'true')
+        saved = co.state['config']
+        self.assertEqual(saved['lifecycle_mode'], 'off')
+        self.assertTrue(saved['skip_quality_polish'])
+        self.assertEqual(saved['skip_globs'], ['generated/**'])
+        self.assertEqual(saved['docs_file'], str(self.workspace / 'docs/guide.md'))
+        self.assertEqual(saved['docs_allowlist'], sorted([str(self.workspace / 'docs/guide.md'),
+                                                          str(self.workspace / 'docs/other.md')]))
+        args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()),
+            '--docs-file', 'docs/changed.md', '--docs-allowlist', 'docs/other.md',
+            '--skip-globs', 'generated/**', '--skip-quality-polish', 'true'])
+        with self.assertRaisesRegex(ValueError, 'resume configuration differs: docs_file'):
+            rc.Coordinator(args)
+
+    def test_lifecycle_on_and_old_done_are_refused_before_dispatch(self):
+        self.run_dir = self.root / 'lifecycle-refusal'
+        for flags, message in ((['--lifecycle-mode', 'on'], 'lifecycle remains disabled'),
+                               (['--lifecycle-mode', 'on', '--adversarial-gate', 'off'], 'lifecycle refuses --adversarial-gate off')):
+            with self.subTest(flags=flags):
+                args = rc.parser().parse_args(self.command(*flags)[2:])
+                with self.assertRaisesRegex(ValueError, message): rc.Coordinator(args)
+                self.assertFalse((self.run_dir / 'state.json').exists())
+        co = self.coordinator()
+        for status in ('DONE', 'ACCEPTED'):
+            with self.subTest(status=status):
+                co.state['status'] = status
+                co.state['config']['lifecycle_mode'] = 'on'
+                co.save()
+                args = rc.parser().parse_args(self.command()[2:]); args.action = 'resume'
+                with self.assertRaisesRegex(ValueError, 'saved lifecycle run cannot resume'):
+                    rc.Coordinator(args)
+        self.assertEqual(len(co.state['turns']), 0)
+
+    def test_lifecycle_project_config_enablement_is_refused(self):
+        config_dir = self.workspace / '.review-loop'; config_dir.mkdir()
+        (config_dir / 'paired-session.json').write_text(json.dumps({'lifecycle_mode': 'on'}))
+        with patch('sys.stdout', new=io.StringIO()) as output:
+            result = rc.main(self.command()[2:])
+        self.assertEqual(result, 2)
+        self.assertIn('lifecycle remains disabled', output.getvalue())
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
+    def test_lifecycle_doc_paths_refuse_escape_before_state(self):
+        with self.assertRaisesRegex(ValueError, 'lifecycle doc path escapes workspace'):
+            self.coordinator('--docs-allowlist', '../outside.md')
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
     def test_project_json_config_rejects_noninteger_numeric_values(self):
         config_dir = self.workspace / '.review-loop'
         config_dir.mkdir()

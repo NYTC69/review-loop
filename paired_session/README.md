@@ -80,6 +80,13 @@ resume, the effective settings must still match the saved run configuration.
 Models follow ADR-7 vendor pins (Claude: `claude-opus-5-5`; Codex:
 `gpt-6-sol`). Changing a role's vendor without updating incompatible model
 values is rejected before run state is created.
+`lifecycle_mode` defaults to `off`. The frozen config also records exact
+`docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
+outside-workspace or wildcard doc paths are refused. `lifecycle_mode=on` is
+currently refused before any model dispatch, including resume of a saved
+lifecycle state: FINISH through CLOSE and their isolation checks are not yet
+implemented. Legacy DONE/ACCEPTED, gate-off and `resume --polish` cannot enter
+the incomplete lifecycle. No real lifecycle run is enabled by these fields.
 
 ```sh
 bin/paired-session run \
