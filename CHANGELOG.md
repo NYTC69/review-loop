@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2026-09-27
 
-### 第一批自查（W01/W06/W07/W12/W13）与第二批交付控制（W02/W04/W05）：交付身份、只读审查、调用边界、用量账本、原生回归与交付门禁
+### v2.8.10 第一批自查（W01/W06/W07/W12/W13）与第二批交付控制（W02/W04/W05）：交付身份、只读审查、调用边界、用量账本、原生回归与交付门禁
 
 - 新增只读 `delivery_scope.py`，分别绑定任务前后的 HEAD、index 和工作区内容，显式区分既有用户改动、任务范围、范围外变化及同文件所有权歧义。
 - report-only Reviewer 和质量检查角色统一通过受限原生 Claude/Codex launcher：Claude 仅开放 Read/Grep/Glob，Codex 使用干净配置上下文与 read-only sandbox；写入型 Executor/Simplifier 保持原路径。
