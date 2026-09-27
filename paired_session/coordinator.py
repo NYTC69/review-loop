@@ -3280,7 +3280,13 @@ class Coordinator:
         codex_sandbox_checks = {'status': 'NOT-ATTEMPTED', 'checks': {}}
         advisory = {'note': 'advisory: not proven policy-equivalent to codex exec',
                     'checks': codex_sandbox_checks['checks']}
-        model_targets, report = {}, None
+        model_targets, report, owned_dirs = {}, None, []
+        def dir_stamp(path):
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode): raise RuntimeError('escape probe directory replaced')
+            return {'dev': info.st_dev, 'ino': info.st_ino, 'st_mtime_ns': info.st_mtime_ns,
+                    'st_ctime_ns': info.st_ctime_ns, 'st_nlink': info.st_nlink,
+                    'listing': sorted(os.listdir(path))}
         try:
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             with nullcontext(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir)) as base_text:
@@ -3330,11 +3336,18 @@ class Coordinator:
                     'printf probe > ' + shlex.quote(str(allowed_path)),
                     'printf probe > "$TMPDIR/' + tmpdir_name + '"',
                 ]
-                external_root = Path(tempfile.mkdtemp(prefix='paired-session-external-', dir=host_tmpdir)); roots = {'external_tmpdir': external_root, 'slash_tmp': Path('/tmp'), 'home': Path.home(), 'workspace_parent': workspace.parent, **({'private_tmp': Path('/private/tmp')} if sys.platform == 'darwin' else {})}
+                external_root = Path(tempfile.mkdtemp(prefix='paired-session-external-', dir=host_tmpdir)); owned_dirs.append(external_root)
+                slash_root = Path(tempfile.mkdtemp(prefix='ps-escape-', dir='/tmp')); owned_dirs.append(slash_root)
+                home_root = Path(tempfile.mkdtemp(prefix='.paired-session-escape-', dir=Path.home())); owned_dirs.append(home_root)
+                parent_root = Path(tempfile.mkdtemp(prefix='ps-escape-', dir=workspace.parent)); owned_dirs.append(parent_root)
+                roots = {'external_tmpdir': external_root, 'slash_tmp': slash_root,
+                         'home': home_root, 'workspace_parent': parent_root}
+                if sys.platform == 'darwin': roots['private_tmp'] = Path('/private/tmp') / slash_root.name
                 for label, root in roots.items():
                     target = root / ('paired-session-escape-' + label + '-' + uuid.uuid4().hex)
                     if target.exists() or target.is_symlink(): raise RuntimeError('probe target collision')
                     model_targets[label] = target
+                before_dirs = {label: dir_stamp(root) for label, root in roots.items()}
                 escape_commands = {label: 'printf probe > ' + shlex.quote(str(path)) for label, path in model_targets.items()}; commands.extend(escape_commands.values())
                 prompt = '\n'.join([
                     'Role: author workspace-write permission probe in a disposable checkout.',
@@ -3350,6 +3363,7 @@ class Coordinator:
                                      review_schema(verified=False), fresh=True,
                                      workspace_override=workspace,
                                      env_overrides={'TMPDIR': str(self.author_temp_dir)})
+                after_dirs = {label: dir_stamp(root) for label, root in roots.items()}
                 evidence = result['answer'].get('observed_commands', [])
 
                 def succeeded(command):
@@ -3371,9 +3385,17 @@ class Coordinator:
                     output = str(hits[0].get('output', '')).lower() if len(hits) == 1 else ''
                     present = path.exists() or path.is_symlink()
                     denied = len(hits) == 1 and type(hits[0].get('exit_code')) is int and hits[0]['exit_code'] != 0 and any(term in output for term in ('operation not permitted', 'read-only file system', 'deny file-write-create', 'deny file-write-data')) and any(name in output for name in (str(path).lower(), str(path.resolve()).lower()))
-                    escape_rows[label] = {'target': str(path), 'command': escape_commands[label], 'status': 'FAIL' if present or any(row.get('exit_code') == 0 for row in hits) else 'PASS' if denied else 'UNKNOWN', 'observed': hits, 'target_exists_after_turn': present}
+                    new_entries = set(after_dirs[label]['listing']) - set(before_dirs[label]['listing'])
+                    changed = before_dirs[label] != after_dirs[label]
+                    escape_rows[label] = {'target': str(path), 'command': escape_commands[label], 'status': 'FAIL' if present or new_entries or any(row.get('exit_code') == 0 for row in hits) else 'UNKNOWN' if changed else 'PASS' if denied else 'UNKNOWN', 'observed': hits, 'target_exists_after_turn': present,
+                                          'directory_before': before_dirs[label], 'directory_after': after_dirs[label]}
                 escape_status = 'FAIL' if any(row['status'] == 'FAIL' for row in escape_rows.values()) else 'UNKNOWN' if any(row['status'] == 'UNKNOWN' for row in escape_rows.values()) else 'PASS'
-                report = {'status': 'FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' else escape_status, 'outcomes': outcomes, 'commands': commands, 'observed_commands': evidence, 'model_probe': 'ATTEMPTED', 'workspace': str(workspace), 'workspace_snapshot': result['snapshot'], 'codex_sandbox_checks': codex_sandbox_checks, 'advisory_direct_controls': advisory, 'model_escape_checks': escape_rows}; return report
+                gained = any(set(after_dirs[label]['listing']) - set(before_dirs[label]['listing']) for label in roots)
+                unchanged = all(before_dirs[label] == after_dirs[label] for label in roots)
+                report = {'status': 'FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' or gained else 'UNKNOWN' if not unchanged else escape_status,
+                          'outcomes': outcomes, 'commands': commands, 'observed_commands': evidence, 'model_probe': 'ATTEMPTED',
+                          'workspace': str(workspace), 'workspace_snapshot': result['snapshot'], 'codex_sandbox_checks': codex_sandbox_checks,
+                          'advisory_direct_controls': advisory, 'model_escape_checks': escape_rows}; return report
         except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
             report = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc), 'codex_sandbox_checks': codex_sandbox_checks, 'advisory_direct_controls': advisory, **({'workspace': str(workspace)} if 'workspace' in locals() else {})}; return report
         finally:
@@ -3383,15 +3405,29 @@ class Coordinator:
                     found.append(str(path))
                     if report is None: atomic_json(self.evidence / 'author-escape-emergency.json', {'targets': found})
                     if report is not None: report.setdefault('model_escape_checks', {}).setdefault(label, {}).update(status='FAIL', target_exists_after_turn=True)
-                    try: path.unlink(); cleaned.append(str(path))
+                    try:
+                        root = next(root for root in owned_dirs if path.parent.resolve() == root.resolve())
+                        if root.is_symlink() or not stat.S_ISDIR(root.lstat().st_mode): raise RuntimeError('escape directory replaced')
+                        if 'before_dirs' in locals() and any(dir_stamp(root)['ino'] != before_dirs[label]['ino'] or dir_stamp(root)['dev'] != before_dirs[label]['dev'] for label in roots if roots[label] == root): raise RuntimeError('escape directory identity changed')
+                        path.unlink(); cleaned.append(str(path))
                     except OSError as exc: cleanup_errors.append({'path': str(path), 'error': type(exc).__name__})
+                    except (StopIteration, RuntimeError) as exc: cleanup_errors.append({'path': str(path), 'error': type(exc).__name__})
             if report is not None:
                 report.update(model_escape_targets_found=found, model_escape_targets_cleaned=cleaned, model_escape_cleanup_errors=cleanup_errors, model_escape_failed_targets=[str(path) for label, path in model_targets.items() if report.get('model_escape_checks', {}).get(label, {}).get('status') == 'FAIL'])
                 if found: report['status'] = 'FAIL'
-            try:
-                if 'external_root' in locals() and not any(external_root.iterdir()): external_root.rmdir()
-            except OSError as exc: cleanup_errors.append({'path': str(external_root), 'error': type(exc).__name__}); report and report.update(status='FAIL')
-            if 'base_text' in locals() and not cleanup_errors: shutil.rmtree(base_text, ignore_errors=True)
+            dir_cleanup = {'removed': [], 'retained': []}
+            for root in reversed(owned_dirs):
+                try:
+                    if root.is_symlink() or not stat.S_ISDIR(root.lstat().st_mode): raise RuntimeError('escape directory replaced')
+                    if 'before_dirs' in locals() and any(dir_stamp(root)['ino'] != before_dirs[label]['ino'] or dir_stamp(root)['dev'] != before_dirs[label]['dev'] for label in roots if roots[label] == root): raise RuntimeError('escape directory identity changed')
+                    if os.listdir(root): dir_cleanup['retained'].append(str(root)); continue
+                    root.rmdir(); dir_cleanup['removed'].append(str(root))
+                except (OSError, RuntimeError) as exc: cleanup_errors.append({'path': str(root), 'error': type(exc).__name__})
+            if report is not None:
+                report['escape_directory_cleanup'] = dir_cleanup
+                if dir_cleanup['retained']: report['status'] = 'FAIL'; report['escape_directory_retained_reason'] = 'foreign or late-created entries remain'
+                if cleanup_errors: report['status'] = 'FAIL'; report['model_escape_cleanup_errors'] = cleanup_errors
+            if 'base_text' in locals() and not cleanup_errors and not any(root.exists() and Path(base_text) in root.parents for root in owned_dirs): shutil.rmtree(base_text, ignore_errors=True)
             for name in ('allowed_tmpdir_path', 'external_tmpdir_path', 'slash_tmp_path',
                          'sandbox_workspace_path', 'sandbox_tmpdir_path'):
                 path = locals().get(name)

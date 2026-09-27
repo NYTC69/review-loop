@@ -3261,6 +3261,41 @@ sys.exit(result.returncode)
                 self.assertEqual(found, result['model_escape_targets_cleaned'])
                 self.assertTrue(all(not Path(path).exists() for path in found))
 
+    def test_dedicated_escape_directory_evidence_and_cleanup(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'home'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['status'], 'UNKNOWN')
+        for row in report['model_escape_checks'].values():
+            before, after = row['directory_before'], row['directory_after']
+            self.assertEqual(before, after)
+            self.assertEqual(before['listing'], [])
+            self.assertTrue(all(key in before for key in ('st_mtime_ns', 'st_ctime_ns', 'st_nlink')))
+        self.assertEqual(len(report['escape_directory_cleanup']['removed']), 4)
+        self.assertFalse(report['escape_directory_cleanup']['retained'])
+        self.assertTrue(all(not Path(path).exists() for path in report['escape_directory_cleanup']['removed']))
+
+    def test_escape_directory_cleanup_preserves_foreign_file(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_FOREIGN': 'home'}):
+            report = co._author_permission_probe()
+        self.assertEqual(report['status'], 'FAIL')
+        root = Path(report['model_escape_checks']['home']['target']).parent
+        self.assertIn(str(root), report['escape_directory_cleanup']['retained'])
+        self.assertEqual((root / 'foreign-file').read_text(), 'not a coordinator sentinel\n')
+
+    def test_escape_directory_write_delete_with_denial_is_unknown(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_WRITE_DELETE_DENIED': 'home'}):
+            report = co._author_permission_probe()
+        row = report['model_escape_checks']['home']
+        self.assertEqual(row['directory_before']['listing'], row['directory_after']['listing'])
+        self.assertNotEqual((row['directory_before']['st_mtime_ns'], row['directory_before']['st_ctime_ns']),
+                            (row['directory_after']['st_mtime_ns'], row['directory_after']['st_ctime_ns']))
+        self.assertEqual(row['status'], 'UNKNOWN')
+        self.assertEqual(report['status'], 'UNKNOWN')
+        self.assertFalse(report['model_escape_targets_found'])
+
     def test_author_model_escape_probe_fail_unknown_and_cleanup(self):
         for mode, setting, expected in (
                 ('write', 'FAKE_AUTHOR_ESCAPE_WRITE', 'FAIL'),

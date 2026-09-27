@@ -123,6 +123,12 @@ OS-denied attempt is `PASS`; an absent target without a usable attempt report
 is `UNKNOWN`. A missing or malformed attempt stays `UNKNOWN` and blocks run
 start; direct-control success cannot promote it. `permission-probe.json`
 records per-target evidence and cleanup.
+Escape sentinels live in coordinator-created dedicated directories. The probe
+records each directory's before/after mtime, ctime, link count and sorted
+listing. A new entry FAILs; a changed directory with no entry stays UNKNOWN.
+Dedicated-directory cleanup removes only known sentinels and its own empty
+directories; foreign entries there are retained and reported. D1(b) synthetic
+promotion is a separate batch.
 For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
 on the permission-probe command; this changes only the prompt, not the sandbox.
 

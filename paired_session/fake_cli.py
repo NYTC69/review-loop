@@ -338,6 +338,10 @@ def main():
             if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE') == label:
                 target = Path(shlex.split(command)[-1]); target.write_text('fake escaped\n'); target.unlink()
                 exit_code = 0
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE_DELETE_DENIED') == label:
+                target = Path(shlex.split(command)[-1]); target.write_text('fake escaped\n'); target.unlink()
+            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_FOREIGN') == label:
+                (Path(shlex.split(command)[-1]).parent / 'foreign-file').write_text('not a coordinator sentinel\n')
             if index < 2:
                 parts = shlex.split(command)
                 target_arg = parts[parts.index('>') + 1]
