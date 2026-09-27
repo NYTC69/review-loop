@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from paired_session import candidate_tree as ct
 
 
 MODULE_PATH = Path(__file__).with_name('coordinator.py')
@@ -2436,6 +2437,51 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'lifecycle doc path escapes workspace'):
             self.coordinator('--docs-allowlist', '../outside.md')
         self.assertFalse((self.run_dir / 'state.json').exists())
+
+    def test_candidate_baseline_isolated_git_index_matches_clean_head(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        index_text = subprocess.check_output(['git', 'rev-parse', '--git-path', 'index'],
+                                              cwd=self.workspace, text=True).strip()
+        live_index = Path(index_text)
+        if not live_index.is_absolute(): live_index = self.workspace / live_index
+        before = hashlib.sha256(live_index.read_bytes()).hexdigest()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        self.assertEqual(baseline.parent_head, subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], cwd=self.workspace, text=True).strip())
+        self.assertEqual(baseline.tree_oid, subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD^{tree}'], cwd=self.workspace, text=True).strip())
+        self.assertEqual((baseline.root / 'tracked.txt').read_bytes(),
+                         (self.workspace / 'tracked.txt').read_bytes())
+        self.assertFalse((baseline.root / '.git').exists())
+        self.assertTrue(baseline.git_dir.is_dir() and baseline.index.is_file())
+        self.assertNotEqual(baseline.git_dir.parent, baseline.root.parent)
+        self.assertEqual(hashlib.sha256(live_index.read_bytes()).hexdigest(), before)
+        self.assertFalse(baseline.separate_filesystems)
+
+    def test_candidate_baseline_refuses_dirty_or_inside_scratch(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        (self.workspace / 'tracked.txt').write_text('user change\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'globally clean'):
+            ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        self.assertEqual(list(scratch.iterdir()), [])
+        (self.workspace / 'tracked.txt').write_text('base\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'outside workspace'):
+            ct.prepare_candidate_baseline(self.workspace, self.run_dir, self.workspace, scratch, ('tracked.txt',))
+
+    def test_candidate_baseline_rejects_symlink_escape_and_inherited_git_env(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        outside_index = self.root / 'outside-index'; outside_index.write_text('do not overwrite')
+        with patch.dict(os.environ, {'GIT_INDEX_FILE': str(outside_index),
+                                     'GIT_WORK_TREE': str(self.root)}):
+            baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir,
+                                                     scratch, scratch, ('tracked.txt',))
+        self.assertEqual(outside_index.read_text(), 'do not overwrite')
+        self.assertEqual(baseline.tree_oid, subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD^{tree}'], cwd=self.workspace, text=True).strip())
+        bad = scratch / 'bad-tree'; bad.mkdir()
+        os.symlink('../outside-index', bad / 'escape')
+        with self.assertRaisesRegex(ct.CandidateError, 'symlink escapes'):
+            ct._validate_checkout(bad)
 
     def test_project_json_config_rejects_noninteger_numeric_values(self):
         config_dir = self.workspace / '.review-loop'

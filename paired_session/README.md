@@ -88,6 +88,14 @@ lifecycle state: FINISH through CLOSE and their isolation checks are not yet
 implemented. Legacy DONE/ACCEPTED, gate-off and `resume --polish` cannot enter
 the incomplete lifecycle. No real lifecycle run is enabled by these fields.
 
+The disabled E2E candidate-tree module can materialize a clean HEAD into an
+external scratch checkout with a separate scratch Git directory and index. It
+returns the baseline tree OID, frozen parent/ref, live-index hash and whether
+the candidate is on a different filesystem from the other roots. Same-device
+materialization is useful for offline tests but cannot activate lifecycle.
+Writer-delta ingestion, immutable review/test checkouts and OS enforcement are
+separate implementation steps; this module is not called by the live route.
+
 ```sh
 bin/paired-session run \
   --workspace /path/to/disposable-worktree \
