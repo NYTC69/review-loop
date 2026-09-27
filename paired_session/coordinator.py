@@ -50,6 +50,20 @@ OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+
+
+def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
+    """Freeze open item-wide blockers for a successor without changing legacy dispatch."""
+    rows = {}
+    for source in (*state.get('item_blockers', []), *state.get('finding_ledger', [])):
+        if source.get('status') not in ('open', 'awaiting-revalidation') or not (source.get('severity') in BLOCKING_REVIEW_SEVERITIES or
+                source.get('security') or source.get('source') == 'adversarial-gate' and source.get('severity') in ('CRITICAL', 'HIGH', 'MEDIUM')):
+            continue
+        row = copy.deepcopy(source); row.setdefault('origin_run', str(run_dir))
+        key = (row['origin_run'], row['id'])
+        if key in rows and rows[key] != row: raise ValueError('item blocker identity changed')
+        rows[key] = row
+    return [rows[key] for key in sorted(rows)]
 REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
 
 
@@ -1000,6 +1014,9 @@ class Coordinator:
             self.state = json.loads(self.state_path.read_text())
             if self.state.get('config', {}).get('lifecycle_mode') == 'on':
                 raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
+            self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
+            self.state.setdefault('item_blockers', [])
+            self.state.setdefault('item_blockers_complete', False)
             if (self.state.get('supersedes') != (str(Path(args.supersedes).resolve()) if args.supersedes else None) or
                     (self.state.get('effective_task_sha256') and
                      self.state['effective_task_sha256'] != hashlib.sha256(self.workitem.read_bytes()).hexdigest())):
@@ -1018,6 +1035,10 @@ class Coordinator:
                         old.get('successor_spec_sha256') != hashlib.sha256(spec_path.read_bytes()).hexdigest() or
                         spec.get('original_hash') != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest()):
                     raise ValueError('saved successor link differs')
+                if spec.get('item_uuid') and (self.state['item_uuid'] != spec['item_uuid'] or old.get('item_uuid') != spec['item_uuid'] or
+                        self.state.get('item_blockers') != spec.get('item_blockers') or spec['item_blockers'] != pending_item_blockers(old, parent) or
+                        self.state.get('item_blockers_complete') != spec.get('item_blockers_complete')):
+                    raise ValueError('saved successor item identity or blockers differ')
             if 'reason' in self.state and 'hold_reason' not in self.state:
                 self.state['hold_reason'] = self.state.pop('reason')
                 self.save()
@@ -1093,6 +1114,7 @@ class Coordinator:
                 'last_end': {}, 'waiting_model_calls': 0, 'base_commit': self._head_commit(),
                 'reviews_completed': 0,
                 'finding_ledger': [], 'next_finding_id': 1, 'exec_comparisons': [],
+                'item_uuid': str(uuid.uuid4()), 'item_blockers': [], 'item_blockers_complete': True,
                 'review_verdicts': [],
                 'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
                 'acceptance_state': 'IN_PROGRESS',
@@ -1112,6 +1134,9 @@ class Coordinator:
                         spec.get('config_sha256') != hashlib.sha256((parent / 'evidence/successor-config.json').read_bytes()).hexdigest() or
                         old.get('successor_spec_sha256') != hashlib.sha256((parent / 'evidence/successor-spec.json').read_bytes()).hexdigest()):
                     raise ValueError('successor spec or parent state differs')
+                if spec.get('item_uuid') and (spec['item_uuid'] != old.get('item_uuid') or
+                        spec.get('item_blockers') != pending_item_blockers(old, parent)):
+                    raise ValueError('successor item identity or blockers differ')
                 if subprocess.run(['git', 'merge-base', '--is-ancestor', old['base_commit'], 'HEAD'],
                                   cwd=self.workspace).returncode:
                     raise ValueError('parent base_commit is not an ancestor of HEAD')
@@ -1123,7 +1148,10 @@ class Coordinator:
                         atomic_json(claim, {'run_dir': str(self.run_dir)})
                 self.state.update(base_commit=old['base_commit'], supersedes=str(parent),
                                   scope_chain_depth=old.get('scope_chain_depth', 0) + 1,
-                                  effective_task_sha256=task_hash)
+                                  effective_task_sha256=task_hash,
+                                  item_uuid=old.get('item_uuid') or str(uuid.uuid5(uuid.NAMESPACE_URL, str(parent))),
+                                  item_blockers=copy.deepcopy(spec.get('item_blockers', [])),
+                                  item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')))
             self.save()
 
     def _migrate_invocation_budget(self) -> int:
@@ -1785,7 +1813,10 @@ class Coordinator:
                 'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
                 'task_sha256': hashlib.sha256(task.encode()).hexdigest(), 'base_commit': self.state['base_commit'],
                 'task': task, 'note_sha256': intent['sha256'],
-                'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}
+                'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest(),
+                'item_uuid': self.state['item_uuid'],
+                'item_blockers': pending_item_blockers(self.state, self.run_dir),
+                'item_blockers_complete': bool(self.state.get('item_blockers_complete'))}
         spec_path = self.evidence / 'successor-spec.json'; atomic_json(spec_path, spec)
         self._write_scope_change_report(spec_path)
         self.state.update(status='ABORTED', abort_kind='scope-change',

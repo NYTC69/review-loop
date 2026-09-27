@@ -1145,6 +1145,56 @@ sys.exit(result.returncode)
         self.assertEqual(co.hold('late abort'), 'ABORTED')
         self.assertIn('Superseded run', (co.run_dir / 'scope-change-report.md').read_text())
 
+    def test_item_uuid_and_blockers_survive_scope_change_without_fresh_role_leak(self):
+        parent = self.coordinator()
+        item_uuid = parent.state['item_uuid']
+        parent.state['finding_ledger'] = [
+            {'id': 'F001', 'status': 'open', 'severity': 'MAJOR', 'source': 'persistent-reviewer',
+             'body': 'private prior finding text', 'security': False},
+            {'id': 'F002', 'status': 'open', 'severity': 'LOW', 'source': 'security-reviewer',
+             'body': 'security blocker', 'security': True},
+            {'id': 'F003', 'status': 'open', 'severity': 'MINOR', 'source': 'persistent-reviewer',
+             'body': 'advisory only', 'security': False},
+            {'id': 'F004', 'status': 'closed', 'severity': 'CRITICAL', 'source': 'shadow',
+             'body': 'already closed', 'security': False},
+            {'id': 'F005', 'status': 'awaiting-revalidation', 'severity': 'MEDIUM', 'source': 'adversarial-gate',
+             'body': 'gate rubric needs owner', 'security': False}]
+        for row in parent.state['finding_ledger']:
+            row.update(file='source.py', summary=row['body'], phase='EXEC', status_history=[])
+        parent.save(); parent.args.action = 'note'; parent.args.scope_change = True
+        parent.scope_change('Expand scope.', None)
+        spec_path = parent.evidence / 'successor-spec.json'
+        spec = json.loads(spec_path.read_text())
+        self.assertEqual(spec['item_uuid'], item_uuid)
+        self.assertEqual([row['id'] for row in spec['item_blockers']], ['F001', 'F002', 'F005'])
+        self.run_dir = parent.run_dir.with_name(parent.run_dir.name + '-successor')
+        self.workitem = parent.evidence / 'successor-workitem.md'
+        child = self.coordinator('--supersedes', str(parent.run_dir))
+        self.assertEqual(child.state['item_uuid'], item_uuid)
+        self.assertEqual(child.state['item_blockers'], spec['item_blockers'])
+        self.assertTrue(child.state['item_blockers_complete'])
+        self.assertEqual(child.state['finding_ledger'], [])
+        self.assertNotIn('private prior finding text', child.open_findings_prompt())
+        child.state['item_blockers'][0]['body'] = 'tampered'; child.save()
+        with self.assertRaisesRegex(ValueError, 'saved successor item identity or blockers differ'):
+            self.coordinator('--supersedes', str(parent.run_dir))
+
+    def test_legacy_successor_without_item_fields_is_marked_unverified(self):
+        self.run_dir = self.root / 'legacy-parent'
+        parent = self.coordinator(); parent.args.action = 'note'; parent.args.scope_change = True
+        parent.scope_change('New scope.', None)
+        spec_path = parent.evidence / 'successor-spec.json'
+        spec = json.loads(spec_path.read_text())
+        spec.pop('item_uuid'); spec.pop('item_blockers')
+        rc.atomic_json(spec_path, spec)
+        parent.state['successor_spec_sha256'] = rc.hashlib.sha256(spec_path.read_bytes()).hexdigest()
+        parent.save()
+        self.run_dir = parent.run_dir.with_name(parent.run_dir.name + '-successor')
+        self.workitem = parent.evidence / 'successor-workitem.md'
+        child = self.coordinator('--supersedes', str(parent.run_dir))
+        self.assertEqual(child.state['item_uuid'], parent.state['item_uuid'])
+        self.assertFalse(child.state['item_blockers_complete'])
+
     def test_hold_note_storage_replaces_pending_and_refuses_other_roles(self):
         co = self.coordinator()
         co.hold('operator pause')

@@ -227,6 +227,12 @@ The old run cannot resume or be accepted; a second chained scope change is
 refused. A scope-change note requires the named existing run. Author-produced
 plan/code remains visible to reviewers, while the operator note itself is not
 forwarded to their prompts.
+Each run now records an item UUID. A successor inherits it and copies the
+parent's OPEN blocking findings into its protected successor spec and state,
+with their original run/ID provenance. These records do not enter fresh-role
+prompts or change the legacy reviewer gate. A legacy successor spec lacking
+the item fields is marked `item_blockers_complete=false`; it cannot later be
+treated as verified lifecycle handoff evidence. Lifecycle dispatch remains off.
 
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting
