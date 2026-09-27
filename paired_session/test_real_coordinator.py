@@ -112,6 +112,59 @@ class RealCoordinatorTests(unittest.TestCase):
         self._assert_no_real_provider_cli(command)
         return self._unpatched_popen(command, *args, **kwargs)
 
+    def test_frozen_role_manifest_hashes_config_agent_and_gate_inputs(self):
+        agents = self.root / 'agents'
+        agents.mkdir()
+        body = agents / 'reviewer.md'
+        body.write_text('read-only reviewer body\n')
+        gate = self.root / 'gate.md'
+        gate.write_text('gate rubric\n')
+        roles = {'reviewer': {'vendor': 'claude', 'model': 'claude-opus-5-5',
+                              'sandbox': {'read_only': True}}}
+        required = {'reviewer': 'reviewer.md'}
+        first = rc.frozen_role_manifest({'author_model': 'gpt-6-luna'}, roles, agents, gate, required)
+        again = rc.frozen_role_manifest({'author_model': 'gpt-6-luna'}, roles, agents, gate, required)
+        self.assertEqual(first, again)
+        self.assertEqual(first['agent_body_sha256']['reviewer.md'],
+                         hashlib.sha256(body.read_bytes()).hexdigest())
+        body.write_text('changed reviewer body\n')
+        changed = rc.frozen_role_manifest({'author_model': 'gpt-6-luna'}, roles, agents, gate, required)
+        self.assertNotEqual(first['agent_body_sha256'], changed['agent_body_sha256'])
+        self.assertEqual(first['config_sha256'], changed['config_sha256'])
+        roles['reviewer']['sandbox']['read_only'] = False
+        different_flags = rc.frozen_role_manifest({'author_model': 'gpt-6-luna'}, roles, agents,
+                                                  gate, required)
+        self.assertNotEqual(first['role_flags_sha256'], different_flags['role_flags_sha256'])
+        different_config = rc.frozen_role_manifest({'author_model': 'gpt-6-sol'}, roles, agents,
+                                                   gate, required)
+        self.assertNotEqual(first['config_sha256'], different_config['config_sha256'])
+        gate.write_text('changed gate rubric\n')
+        different_gate = rc.frozen_role_manifest({'author_model': 'gpt-6-luna'}, roles, agents,
+                                                 gate, required)
+        self.assertNotEqual(first['gate_prompt_sha256'], different_gate['gate_prompt_sha256'])
+
+    def test_frozen_role_manifest_requires_each_regular_role_body(self):
+        agents = self.root / 'agents'
+        agents.mkdir()
+        (agents / 'reviewer.md').write_text('reviewer\n')
+        gate = self.root / 'gate.md'
+        gate.write_text('gate\n')
+        flags = {'reviewer': {'model': 'claude-opus-5-5'}}
+        with self.assertRaisesRegex(ValueError, 'missing'):
+            rc.frozen_role_manifest({}, flags, agents, gate, {'reviewer': 'executor.md'})
+        (agents / 'linked.md').symlink_to(agents / 'reviewer.md')
+        with self.assertRaisesRegex(ValueError, 'links'):
+            rc.frozen_role_manifest({}, flags, agents, gate, {'reviewer': 'reviewer.md'})
+        (agents / 'linked.md').unlink()
+        (agents / 'directory.md').mkdir()
+        with self.assertRaisesRegex(ValueError, 'regular file'):
+            rc.frozen_role_manifest({}, flags, agents, gate, {'reviewer': 'reviewer.md'})
+        (agents / 'directory.md').rmdir()
+        gate_link = self.root / 'gate-link.md'
+        gate_link.symlink_to(gate)
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            rc.frozen_role_manifest({}, flags, agents, gate_link, {'reviewer': 'reviewer.md'})
+
     def test_global_hash_attribution_accepts_only_trust_and_last_updated_autochanges(self):
         home = self.root / 'global-state'
         (home / '.codex').mkdir(parents=True)

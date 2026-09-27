@@ -64,6 +64,53 @@ def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
         if key in rows and rows[key] != row: raise ValueError('item blocker identity changed')
         rows[key] = row
     return [rows[key] for key in sorted(rows)]
+
+
+def _read_role_source(path: Path) -> bytes:
+    nofollow = getattr(os, 'O_NOFOLLOW', None)
+    if nofollow is None:
+        raise ValueError('role source no-follow reads are unavailable')
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, 'O_CLOEXEC', 0) |
+                     getattr(os, 'O_NONBLOCK', 0))
+    except OSError as exc:
+        raise ValueError('role source cannot be opened without following links') from exc
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode):
+        os.close(fd)
+        raise ValueError('role source is not a regular file')
+    with os.fdopen(fd, 'rb') as stream:
+        content = stream.read()
+        after = os.fstat(stream.fileno())
+    fields = ('st_dev', 'st_ino', 'st_mtime_ns', 'st_ctime_ns', 'st_size')
+    if any(getattr(before, field) != getattr(after, field) for field in fields):
+        raise ValueError('role source changed while reading')
+    return content
+
+
+def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
+                         gate_prompt: Path, required_agents: dict[str, str]) -> dict:
+    agents_dir = Path(agents_dir)
+    if (agents_dir.is_symlink() or not agents_dir.is_dir() or not required_agents or
+            set(required_agents) != set(role_flags)):
+        raise ValueError('required role-agent directory or mapping is missing')
+    agents = {}
+    for path in sorted(agents_dir.glob('*.md')):
+        agents[path.name] = hashlib.sha256(_read_role_source(path)).hexdigest()
+    if any(name not in agents for name in required_agents.values()):
+        raise ValueError('required role-agent body is missing')
+    prompt_path = Path(gate_prompt)
+    if prompt_path.is_symlink():
+        raise ValueError('gate prompt cannot be a symlink')
+    prompt_hash = hashlib.sha256(_read_role_source(prompt_path)).hexdigest()
+    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True,
+                                             separators=(',', ':')).encode()).hexdigest()
+    role_bytes = json.dumps(role_flags, sort_keys=True, separators=(',', ':')).encode()
+    return {'config_sha256': config_hash, 'role_flags': copy.deepcopy(role_flags),
+            'role_flags_sha256': hashlib.sha256(role_bytes).hexdigest(),
+            'role_agents': dict(required_agents), 'agents_dir': str(agents_dir.resolve()),
+            'agent_body_sha256': agents, 'gate_prompt_path': str(prompt_path.resolve()),
+            'gate_prompt_sha256': prompt_hash}
 REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
 
 
