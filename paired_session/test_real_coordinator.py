@@ -2517,10 +2517,13 @@ sys.exit(result.returncode)
             ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
 
     def test_candidate_baseline_normalizes_prefixes_and_index_paths(self):
-        for bad in ('.', './', '.GIT', '.git ', 'src/../x', '/absolute', 'src/{wide}', 'src\\name'):
+        for bad in ('.', './', '.GIT', '.git ', 'src/../x', '/absolute',
+                    'src/{wide}', 'src\\name', ':(glob)', 'docs\nother'):
             with self.subTest(bad=bad):
                 with self.assertRaises(ct.CandidateError): ct._prefixes((bad,))
         with self.assertRaises(ct.CandidateError): ct._prefixes('src')
+        with self.assertRaisesRegex(ct.CandidateError, 'Unicode/case alias'):
+            ct._prefixes(('docs', 'Docs'))
         self.assertEqual(ct._prefixes(('b', 'a', 'b')), ('a', 'b'))
         duplicate = (b'100644 ' + b'a' * 40 + b' 0\tFoo\0'
                      b'100644 ' + b'b' * 40 + b' 0\tfoo\0')
@@ -2555,6 +2558,258 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ct.CandidateError, 'outside workspace/worktrees'):
             ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, meta, ('tracked.txt',))
         self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_candidate_ingest_authorized_edit_binds_tree_and_preserves_live_index(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        (baseline.root / 'tracked.txt').write_text('candidate change\n')
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertNotEqual(revision.tree_oid, baseline.tree_oid)
+        self.assertEqual(revision.manifest, ({'status': 'M', 'path': 'tracked.txt'},))
+        self.assertEqual((self.workspace / 'tracked.txt').read_text(), 'base\n')
+        ct.verify_candidate_revision(baseline, revision)
+        (baseline.root / 'tracked.txt').write_text('changed after review\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'differs from reviewed candidate OID'):
+            ct.verify_candidate_revision(baseline, revision)
+        newer = ct.ingest_candidate_revision(baseline)
+        self.assertEqual(newer.manifest, ({'status': 'M', 'path': 'tracked.txt'},))
+        ct.verify_candidate_revision(baseline, newer)
+        with self.assertRaises(ct.CandidateError): ct.verify_candidate_revision(baseline, revision)
+        (self.workspace / 'tracked.txt').write_text('live drift after review\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'live or scratch parent changed'):
+            ct.verify_candidate_revision(baseline, newer)
+
+    def test_candidate_ingest_includes_ignored_file_and_refuses_unauthorized_paths(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('generated',))
+        generated = baseline.root / 'generated'; generated.mkdir()
+        (generated / 'result.cache').write_bytes(b'ignored by live Git, required in candidate\n')
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertEqual(revision.manifest, ({'status': 'A', 'path': 'generated/result.cache'},))
+        (baseline.root / 'tracked.txt').write_text('unauthorized\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'unauthorized path'):
+            ct.ingest_candidate_revision(baseline)
+
+    def test_candidate_ingest_rejects_prefix_alias_and_unapproved_deletion(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('generated',))
+        alias = baseline.root / 'Generated'; alias.mkdir()
+        (alias / 'x').write_text('alias\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'authorized-prefix alias'):
+            ct.ingest_candidate_revision(baseline)
+        (alias / 'x').unlink(); alias.rmdir()
+        (baseline.root / 'tracked.txt').unlink()
+        with self.assertRaisesRegex(ct.CandidateError, 'unauthorized path'):
+            ct.ingest_candidate_revision(baseline)
+
+    def test_candidate_ingest_deletion_rename_and_mode_are_manifested(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt', 'renamed.txt'))
+        (baseline.root / 'tracked.txt').rename(baseline.root / 'renamed.txt')
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertEqual({(row['status'], row['path']) for row in revision.manifest},
+                         {('D', 'tracked.txt'), ('A', 'renamed.txt')})
+        ct.verify_candidate_revision(baseline, revision)
+        (baseline.root / 'renamed.txt').chmod(0o755)
+        updated = ct.ingest_candidate_revision(baseline)
+        self.assertEqual({row['path'] for row in updated.manifest}, {'tracked.txt', 'renamed.txt'})
+        ct.verify_candidate_revision(baseline, updated)
+
+    def test_candidate_ingest_rejects_crlf_attribute_and_late_live_drift(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt', '.gitattributes'))
+        old_index = baseline.index.read_bytes()
+        (baseline.root / '.gitattributes').write_text('*.txt crlf=input\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'transforming Git attributes'):
+            ct.ingest_candidate_revision(baseline)
+        self.assertEqual(baseline.index.read_bytes(), old_index)
+        self.assertEqual(list(baseline.index.parent.glob('stage-*.index')), [])
+        (baseline.root / '.gitattributes').unlink()
+        (self.workspace / 'tracked.txt').write_text('live user edit\n')
+        with self.assertRaisesRegex(ct.CandidateError, 'live or scratch parent changed'):
+            ct.ingest_candidate_revision(baseline)
+
+    def test_fake_author_write_is_ingested_only_in_isolated_candidate(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('sum_ints.py',))
+        author = subprocess.run([sys.executable, str(FAKE), 'exec'], cwd=baseline.root,
+                                input='Role: persistent. Phase: EXEC. Implement the approved plan.',
+                                text=True, capture_output=True, env=os.environ.copy())
+        self.assertEqual(author.returncode, 0, author.stderr)
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertEqual(revision.manifest, ({'status': 'A', 'path': 'sum_ints.py'},))
+        self.assertFalse((self.workspace / 'sum_ints.py').exists())
+        ct.verify_candidate_revision(baseline, revision)
+
+    def test_fake_author_unapproved_doc_write_is_rejected(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('sum_ints.py',))
+        author = subprocess.run([sys.executable, str(FAKE), 'exec'], cwd=baseline.root,
+                                input='Role: persistent. Phase: EXEC. Implement the approved plan.',
+                                text=True, capture_output=True,
+                                env={**os.environ, 'FAKE_DOC_DELTA': '1'})
+        self.assertEqual(author.returncode, 0, author.stderr)
+        with self.assertRaisesRegex(ct.CandidateError, 'unauthorized path: CLAUDE.md'):
+            ct.ingest_candidate_revision(baseline)
+
+    def test_candidate_ingest_rejects_unindexed_empty_directory_and_corrupt_blob(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('generated',))
+        (baseline.root / 'generated').mkdir()
+        before = baseline.index.read_bytes()
+        with self.assertRaisesRegex(ct.CandidateError, 'path-byte set differs'):
+            ct.ingest_candidate_revision(baseline)
+        self.assertEqual(baseline.index.read_bytes(), before)
+        (baseline.root / 'generated').rmdir()
+        blobs = ct._indexed_blobs
+        def corrupt(env, entries):
+            result = blobs(env, entries)
+            oid = next(oid for _, oid, path in entries if path == 'tracked.txt')
+            result[oid] = b'corrupt scratch blob'
+            return result
+        with patch.object(ct, '_indexed_blobs', side_effect=corrupt):
+            with self.assertRaisesRegex(ct.CandidateError, 'candidate bytes changed before new tree OID'):
+                ct.ingest_candidate_revision(baseline)
+
+    def test_candidate_ingest_rejects_prepoisoned_scratch_index_path(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('generated',))
+        (baseline.root / 'tracked.txt').write_text('unauthorized but preindexed\n')
+        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(baseline.index),
+                          GIT_WORK_TREE=str(baseline.root))
+        data = (baseline.root / 'tracked.txt').read_bytes()
+        oid = ct._git_bytes(['hash-object', '-w', '--no-filters', '--stdin'], env=env,
+                            input_bytes=data).decode().strip()
+        ct._git(['update-index', '--add', '--cacheinfo', '100644', oid, 'tracked.txt'], env=env)
+        with self.assertRaisesRegex(ct.CandidateError, 'unauthorized path'):
+            ct.ingest_candidate_revision(baseline)
+
+    def test_candidate_verify_rejects_forged_unauthorized_manifest(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('generated',))
+        generated = baseline.root / 'generated'; generated.mkdir()
+        (generated / 'ok').write_text('allowed\n')
+        ct.ingest_candidate_revision(baseline)
+        (baseline.root / 'tracked.txt').write_text('unauthorized\n')
+        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(baseline.index),
+                          GIT_WORK_TREE=str(baseline.root))
+        data = (baseline.root / 'tracked.txt').read_bytes()
+        oid = ct._git_bytes(['hash-object', '-w', '--no-filters', '--stdin'], env=env,
+                            input_bytes=data).decode().strip()
+        ct._git(['update-index', '--add', '--cacheinfo', '100644', oid, 'tracked.txt'], env=env)
+        forged_oid = ct._git(['write-tree'], env=env)
+        ct._git(['update-ref', 'refs/paired-session/candidates/' + forged_oid, forged_oid], env=env)
+        forged = ct.CandidateRevision(forged_oid, ct._manifest(env, baseline.tree_oid, forged_oid), 3)
+        with self.assertRaisesRegex(ct.CandidateError, 'unauthorized path'):
+            ct.verify_candidate_revision(baseline, forged)
+
+    def test_candidate_manifest_ignores_scratch_replace_ref(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        alternate_index = baseline.index.with_name('alternate.index')
+        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(alternate_index),
+                          GIT_WORK_TREE=str(baseline.root))
+        ct._git(['read-tree', baseline.tree_oid], env=env)
+        data = b'alternate tree\n'
+        oid = ct._git_bytes(['hash-object', '-w', '--no-filters', '--stdin'], env=env,
+                            input_bytes=data).decode().strip()
+        ct._git(['update-index', '--add', '--cacheinfo', '100644', oid, 'tracked.txt'], env=env)
+        replacement = ct._git(['write-tree'], env=env)
+        ct._git(['update-ref', 'refs/replace/' + baseline.tree_oid, replacement], env=env)
+        (baseline.root / 'tracked.txt').write_text('candidate tree\n')
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertEqual(revision.manifest, ({'status': 'M', 'path': 'tracked.txt'},))
+        ct.verify_candidate_revision(baseline, revision)
+
+    def test_candidate_poisoned_index_cache_tree_is_refused(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        alt_index = baseline.index.with_name('alternate.index')
+        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(alt_index),
+                          GIT_WORK_TREE=str(baseline.root))
+        ct._git(['read-tree', baseline.tree_oid], env=env)
+        blob = ct._git_bytes(['hash-object', '-w', '--no-filters', '--stdin'], env=env,
+                             input_bytes=b'older tree bytes\n').decode().strip()
+        ct._git(['update-index', '--add', '--cacheinfo', '100644', blob, 'tracked.txt'], env=env)
+        older_tree = ct._git(['write-tree'], env=env)
+        original = baseline.index.read_bytes()
+        def poison(raw, replacement):
+            offset = raw.find(bytes.fromhex(baseline.tree_oid))
+            self.assertGreaterEqual(offset, 0)
+            body = raw[:-20]
+            body = body[:offset] + bytes.fromhex(replacement) + body[offset + 20:]
+            return body + hashlib.sha1(body).digest()
+        baseline.index.write_bytes(poison(original, older_tree))
+        with self.assertRaisesRegex(ct.CandidateError, 'cache-tree differs'):
+            ct.ingest_candidate_revision(baseline)
+        baseline.index.write_bytes(original)
+        revision = ct.ingest_candidate_revision(baseline)
+        adopted = baseline.index.read_bytes()
+        baseline.index.write_bytes(poison(adopted, older_tree))
+        with self.assertRaisesRegex(ct.CandidateError, 'cache-tree differs'):
+            ct.verify_candidate_revision(baseline, revision)
+
+    def test_candidate_verify_rejects_tampered_scratch_blob_bytes(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt',))
+        (baseline.root / 'tracked.txt').write_text('reviewed bytes\n')
+        revision = ct.ingest_candidate_revision(baseline)
+        indexed_blobs = ct._indexed_blobs
+        def corrupt(env, entries):
+            blobs = indexed_blobs(env, entries)
+            oid = next(oid for _, oid, path in entries if path == 'tracked.txt')
+            blobs[oid] = b'wrong object-store bytes'
+            return blobs
+        with patch.object(ct, '_indexed_blobs', side_effect=corrupt):
+            with self.assertRaisesRegex(ct.CandidateError, 'scratch blob differs'):
+                ct.verify_candidate_revision(baseline, revision)
+
+    def test_candidate_ingest_replaces_directory_with_symlink_after_deletions(self):
+        directory = self.workspace / 'a'; directory.mkdir()
+        (directory / 'child.txt').write_text('old\n')
+        subprocess.run(['git', 'add', 'a/child.txt'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'directory'], cwd=self.workspace, check=True)
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('a',))
+        (baseline.root / 'a/child.txt').unlink(); (baseline.root / 'a').rmdir()
+        os.symlink('tracked.txt', baseline.root / 'a')
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertEqual({(row['status'], row['path']) for row in revision.manifest},
+                         {('A', 'a'), ('D', 'a/child.txt')})
+        ct.verify_candidate_revision(baseline, revision)
+
+    def test_candidate_ingest_rejects_raw_oid_mismatch_and_symlink_escape(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('tracked.txt', 'links'))
+        (baseline.root / 'tracked.txt').write_text('writer bytes\n')
+        git_bytes = ct._git_bytes
+        def wrong_oid(args, **kwargs):
+            if args[:2] == ['hash-object', '-w']: return b'0' * 40 + b'\n'
+            return git_bytes(args, **kwargs)
+        with patch.object(ct, '_git_bytes', side_effect=wrong_oid):
+            with self.assertRaisesRegex(ct.CandidateError, 'raw blob ID differs'):
+                ct.ingest_candidate_revision(baseline)
+        links = baseline.root / 'links'; links.mkdir()
+        os.symlink('../../outside', links / 'escape')
+        with self.assertRaisesRegex(ct.CandidateError, 'symlink escapes'):
+            ct.ingest_candidate_revision(baseline)
+
+    def test_candidate_ingest_safe_symlink_and_hardlink_boundary(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, ('assets',))
+        assets = baseline.root / 'assets'; assets.mkdir()
+        (assets / 'target').write_text('blob\n')
+        os.symlink('target', assets / 'link')
+        revision = ct.ingest_candidate_revision(baseline)
+        self.assertEqual({row['path'] for row in revision.manifest}, {'assets/target', 'assets/link'})
+        ct.verify_candidate_revision(baseline, revision)
+        outside = self.root / 'outside-hardlink'; outside.write_text('external\n')
+        os.link(outside, assets / 'hardlink')
+        with self.assertRaisesRegex(ct.CandidateError, 'hardlinked'):
+            ct.ingest_candidate_revision(baseline)
+        self.assertEqual(outside.read_text(), 'external\n')
 
     def test_project_json_config_rejects_noninteger_numeric_values(self):
         config_dir = self.workspace / '.review-loop'

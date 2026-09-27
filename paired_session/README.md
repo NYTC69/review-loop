@@ -93,16 +93,28 @@ external scratch checkout with a separate scratch Git directory and index. It
 returns the baseline tree OID, frozen parent/ref, live-index hash and whether
 the candidate is on a different filesystem from the other roots. Same-device
 materialization is useful for offline tests but cannot activate lifecycle.
-Writer-delta ingestion, immutable review/test checkouts and OS enforcement are
-separate implementation steps; this module is not called by the live route.
+Immutable review/test checkouts and OS enforcement are separate steps; this
+module is not called by the live route.
 The baseline now rejects hidden/sparse live index state, linked worktree or
 common-Git scratch paths, ambiguous prefixes and transforming Git attributes.
-Each checkout file is compared byte-for-byte to its indexed blob; this check
-must pass before writer-delta ingest is added.
+Each checkout file is compared byte-for-byte to its indexed blob before ingest.
 The offline baseline now batches blob and attribute checks, including legacy
 `crlf`, and checks NFC/casefold aliases at each directory component. Scratch
 Git uses fixed case/symlink settings and pins the source commit under a private
-scratch ref. Writer-delta ingestion and post-write OID checks are still pending.
+scratch ref. Offline ingest stages only authorized adds/deletes/modes/symlinks,
+including ignored files, as no-filter blobs in a temporary scratch index. It
+adopts a verified index, returns a manifest/tree OID, and rejects later byte,
+path, ref or live-index drift. Every cumulative manifest path is rechecked
+against the frozen grant, even if the scratch index was changed before ingest.
+The adopted tree is rebuilt from an empty scratch index using independently
+hashed candidate bytes; it never trusts a copied cache-tree or Git replace
+ref. Verification repeats that fresh-index proof before a review may rely on
+the OID. These helpers still require a stopped writer and installed OS denial
+of metadata writes before any real lifecycle activation.
+It does not dispatch writers or prove installed OS sandboxing. Before any live
+caller may use ingest, it must positively stop the writer process group and
+deny that writer OS access to the scratch Git directory and index. Same-device
+candidates remain ineligible for activation.
 
 ```sh
 bin/paired-session run \
