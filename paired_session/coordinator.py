@@ -4377,6 +4377,8 @@ class Coordinator:
         ingest = self.state.get('fake_ingest_receipt')
         if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
                 not ingest or self.state.get('fake_candidate_test') or
+                self.state.get('fake_candidate_test_pending') or
+                self.state.get('fake_candidate_test_failed') or
                 self.state.get('active') or self.state.get('uncertain_active')):
             raise RuntimeError('fake OID review requires a completed ingest')
         stored = json.loads((self.evidence / (ingest['id'] + '-ingest.json')).read_text())
@@ -4399,11 +4401,13 @@ class Coordinator:
                     'XDG_CONFIG_HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
                     'GIT_CEILING_DIRECTORIES': str(checkout.root.parent),
                     'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+        test_id = str(uuid.uuid4())
+        self.state['fake_candidate_test_pending'] = test_id
+        self.save()
         test = subprocess.run(command, cwd=checkout.root,
                               env=test_env,
                               capture_output=True, timeout=self.args.timeout)
         candidate_tree.verify_candidate_revision(checkout, revision)
-        test_id = str(uuid.uuid4())
         test_receipt = {'id': test_id, 'ingest_id': ingest['id'], 'oid': revision.tree_oid,
                         'command': command, 'returncode': test.returncode,
                         'root': str(checkout.root), 'root_identity': checkout.root_identity,
@@ -4417,7 +4421,11 @@ class Coordinator:
                         'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
                         'stderr_sha256': hashlib.sha256(test.stderr).hexdigest()}
         atomic_json(self.evidence / (test_id + '-oid-test.json'), test_receipt)
-        if test.returncode: raise RuntimeError('OID-bound coordinator test failed')
+        self.state.pop('fake_candidate_test_pending')
+        if test.returncode:
+            self.state['fake_candidate_test_failed'] = test_id
+            self.save()
+            raise RuntimeError('OID-bound coordinator test failed')
         self.state['fake_candidate_test'] = test_receipt
         self.save()
         return test_receipt

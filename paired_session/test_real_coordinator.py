@@ -3619,6 +3619,23 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(RuntimeError, 'completed ingest'):
             co.fake_candidate_oid_test()
 
+    def test_fake_candidate_oid_test_failure_and_pending_cannot_rerun(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        co.state['fake_candidate_test_pending'] = 'interrupted-test'
+        with self.assertRaisesRegex(RuntimeError, 'completed ingest'):
+            co.fake_candidate_oid_test()
+        co.state.pop('fake_candidate_test_pending')
+        co.args.test_command = 'python3 -c "raise SystemExit(1)"'
+        with self.assertRaisesRegex(RuntimeError, 'OID-bound coordinator test failed'):
+            co.fake_candidate_oid_test()
+        self.assertNotIn('fake_candidate_test_pending', co.state)
+        self.assertIn('fake_candidate_test_failed', co.state)
+        with self.assertRaisesRegex(RuntimeError, 'completed ingest'):
+            co.fake_candidate_oid_test()
+
     def test_fake_candidate_oid_test_rejects_changed_candidate_bytes(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
