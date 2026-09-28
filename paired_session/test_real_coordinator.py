@@ -3255,6 +3255,199 @@ sys.exit(result.returncode)
                                     security_context={'baseline': finish['baseline'],
                                                       'revision': after, 'repair': repair})
 
+    def test_fake_security_same_owner_disposes_frozen_id_after_repair(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'repair tracked file', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        frozen = co.state['lifecycle']['awaiting_owner_reverify']['finding_ids']
+        repair = {'proposals': (), 'paths': ('tracked.txt',), 'allowed_paths': ('tracked.txt',),
+                  'reserved_docs': (),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('repaired\n')}
+        frozen_manifest = co.state['role_dispatch_manifest_sha256']
+        co.state['role_dispatch_manifest_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'owner identity changed'):
+            co.fake_lifecycle_route(approved, security_context={**context, 'repair': repair})
+        co.state['role_dispatch_manifest_sha256'] = frozen_manifest
+        self.assertEqual(co.fake_lifecycle_route(approved,
+                         security_context={**context, 'repair': repair}), 'EXEC')
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        replay = dict(approved, epoch=life['epoch'], candidate_oid=after.tree_oid)
+        seen = []
+        def owner_review(request):
+            seen.append(request['prior_finding_ids'])
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read repaired candidate diff'], 'findings': [],
+                    'dispositions': [{'id': frozen[0], 'disposition': 'fixed',
+                                      'evidence': 'verified repair on new OID'}]}
+        current = {'baseline': finish['baseline'], 'revision': after, 'review': owner_review}
+        self.assertEqual(co.fake_lifecycle_route(replay, stub_mode=True,
+                         security_context=current), 'STOP_BEFORE_DELIVERY')
+        self.assertEqual(seen, [tuple(frozen)])
+        self.assertEqual(co.state['finding_ledger'][0]['status'], 'fixed')
+        self.assertNotIn('awaiting_owner_reverify', co.state['lifecycle'])
+
+    def test_fake_security_approve_without_frozen_disposition_holds(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'repair tracked file', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        repair = {'proposals': (), 'paths': ('tracked.txt',), 'allowed_paths': ('tracked.txt',),
+                  'reserved_docs': (),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('repaired\n')}
+        self.assertEqual(co.fake_lifecycle_route(approved,
+                         security_context={**context, 'repair': repair}), 'EXEC')
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        replay = dict(approved, epoch=life['epoch'], candidate_oid=after.tree_oid)
+        approve = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                               'observed_tools': ['read repaired candidate diff'], 'findings': []}
+        security_before = sum(row['stage'] == 'SECURITY' for row in life['receipts'])
+        with self.assertRaisesRegex(ValueError, 'disposition is missing'):
+            co.fake_lifecycle_route(replay, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': after, 'review': approve})
+        self.assertEqual(co.state['finding_ledger'][0]['status'], 'open')
+        self.assertEqual(sum(row['stage'] == 'SECURITY' for row in co.state['lifecycle']['receipts']),
+                         security_before)
+
+    def test_fake_security_new_critical_keeps_old_open_id_and_repair_lineage(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'first issue', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        old_id = co.state['lifecycle']['awaiting_owner_reverify']['finding_ids'][0]
+        repair = {'proposals': (), 'paths': ('tracked.txt',), 'allowed_paths': ('tracked.txt',),
+                  'reserved_docs': (),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('repaired\n')}
+        self.assertEqual(co.fake_lifecycle_route(approved,
+                         security_context={**context, 'repair': repair}), 'EXEC')
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        prior_request = life['awaiting_owner_reverify']['request_id']
+        replay = dict(approved, epoch=life['epoch'], candidate_oid=after.tree_oid)
+        def still_blocking(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read repaired diff'],
+                    'dispositions': [{'id': old_id, 'disposition': 'still_open',
+                                      'evidence': 'first issue remains'}],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'second issue', 'failure_scenario': 'reachable'}]}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(replay, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': after, 'review': still_blocking})
+        marker = co.state['lifecycle']['awaiting_owner_reverify']
+        self.assertIn(old_id, marker['finding_ids'])
+        self.assertEqual(len(marker['finding_ids']), 2)
+        self.assertEqual(marker['repair_history'], ((after.tree_oid, prior_request),))
+        self.assertNotIn('repair_oid', marker)
+
+    def test_fake_security_still_open_only_reopens_repair_without_pending(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'first issue', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        old_id = co.state['lifecycle']['awaiting_owner_reverify']['finding_ids'][0]
+        repair = {'proposals': (), 'paths': ('tracked.txt',), 'allowed_paths': ('tracked.txt',),
+                  'reserved_docs': (),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('repaired\n')}
+        self.assertEqual(co.fake_lifecycle_route(approved,
+                         security_context={**context, 'repair': repair}), 'EXEC')
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        replay = dict(approved, epoch=life['epoch'], candidate_oid=after.tree_oid)
+        def still_open(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read repaired diff'], 'findings': [],
+                    'dispositions': [{'id': old_id, 'disposition': 'still_open',
+                                      'evidence': 'repair did not solve issue'}]}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(replay, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': after, 'review': still_open})
+        marker = co.state['lifecycle']['awaiting_owner_reverify']
+        self.assertEqual(marker['finding_ids'], (old_id,))
+        self.assertNotIn('repair_oid', marker)
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertEqual(co.state['finding_ledger'][0]['status'], 'open')
+
+    def test_fake_security_owner_disposition_after_docs_changes_oid(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        baseline = finish['baseline']
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'repair tracked file', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': baseline, 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        frozen_id = co.state['lifecycle']['awaiting_owner_reverify']['finding_ids'][0]
+        repair = {'proposals': (), 'paths': ('tracked.txt',), 'allowed_paths': ('tracked.txt',),
+                  'reserved_docs': (),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('repaired\n')}
+        self.assertEqual(co.fake_lifecycle_route(approved,
+                         security_context={**context, 'repair': repair}), 'EXEC')
+        repaired = ct.ingest_candidate_revision(baseline)
+        life = co.state['lifecycle']
+        next_approval = dict(approved, epoch=life['epoch'], candidate_oid=repaired.tree_oid)
+        proof = json.loads(json.dumps(approved['proof']))
+        for role in ('reviewer', 'gate'):
+            proof[role].update(epoch=life['epoch'], candidate_oid=repaired.tree_oid)
+        next_approval['proof'] = proof
+        next_finish = dict(finish, revision=repaired, tested_oid=repaired.tree_oid)
+        specialist = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                                  'findings': []}
+        def write_docs(root, path):
+            target = root / path
+            target.parent.mkdir(exist_ok=True)
+            target.write_text('# Replayed docs\n')
+        docs = {'baseline': baseline, 'before': repaired, 'write': write_docs,
+                'test': lambda oid: oid}
+        self.assertEqual(co.fake_lifecycle_route(next_approval, finish_context=next_finish,
+                         polish_context={'python-reviewer': specialist}, docs_context=docs), 'EXEC')
+        after_docs = ct.ingest_candidate_revision(baseline)
+        self.assertNotEqual(after_docs.tree_oid, repaired.tree_oid)
+        life = co.state['lifecycle']
+        final_approval = dict(next_approval, epoch=life['epoch'], candidate_oid=after_docs.tree_oid)
+        for role in ('reviewer', 'gate'):
+            proof[role].update(epoch=life['epoch'], candidate_oid=after_docs.tree_oid)
+        final_approval['proof'] = proof
+        final_finish = dict(finish, revision=after_docs, tested_oid=after_docs.tree_oid)
+        docs.update(before=after_docs, write=lambda root, path: None)
+        def owner_review(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read final OID diff'], 'findings': [],
+                    'dispositions': [{'id': frozen_id, 'disposition': 'fixed',
+                                      'evidence': 'verified at final OID'}]}
+        self.assertEqual(co.fake_lifecycle_route(final_approval, finish_context=final_finish,
+                         polish_context={'python-reviewer': specialist}, docs_context=docs,
+                         security_context={'baseline': baseline, 'revision': after_docs,
+                                           'review': owner_review}), 'STOP_BEFORE_DELIVERY')
+        self.assertEqual(co.state['finding_ledger'][0]['status'], 'fixed')
+
     def test_fake_security_owner_marker_does_not_exempt_foreign_blocker(self):
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
         def critical(request):

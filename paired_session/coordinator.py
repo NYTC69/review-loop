@@ -1726,11 +1726,26 @@ class Coordinator:
                         if (kind := sensitive_policy.sensitive_path_category(path))}
                 marker = life.get('awaiting_owner_reverify')
                 if marker and marker.get('owner') == 'security-reviewer':
+                    if marker.get('role_manifest_sha256') != self.state['role_dispatch_manifest_sha256']:
+                        raise ValueError('SECURITY reviewer owner identity changed')
                     if not marker.get('repair_oid') and not security_context.get('repair'):
                         raise ValueError('SECURITY reviewer blocker requires a repair')
-                    if marker.get('repair_oid') and marker['repair_oid'] not in [
-                            row.get('output_oid') for row in life['receipts']]:
-                        raise ValueError('SECURITY reviewer owner requires repaired OID')
+                    if marker.get('repair_oid'):
+                        repairs = [i for i, row in enumerate(life['receipts'])
+                                   if row.get('stage') == 'SECURITY' and
+                                   row.get('request_id') == marker.get('request_id') and
+                                   row.get('output_oid') == marker['repair_oid'] and
+                                   row.get('security_repair') == marker.get('repair_digest')]
+                        if len(repairs) != 1:
+                            raise ValueError('SECURITY reviewer owner requires bound repair receipt')
+                        replay_oid = marker['repair_oid']
+                        for row in life['receipts'][repairs[0] + 1:]:
+                            if (row.get('stage') not in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS') or
+                                    row.get('candidate_oid') != replay_oid):
+                                raise ValueError('SECURITY owner replay lineage differs')
+                            replay_oid = row['output_oid']
+                        if replay_oid != revision.tree_oid:
+                            raise ValueError('SECURITY owner replay OID differs')
                     if marker.get('repair_oid') and security_context.get('repair'):
                         raise ValueError('SECURITY reviewer repair already dispatched')
                 elif marker:
@@ -1879,7 +1894,9 @@ class Coordinator:
                     self.fake_lifecycle_event('receipt', receipt)
                     continue
                 review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,
-                                                     'run_id': self.run_dir.name, 'epoch': life['epoch']})
+                                                     'run_id': self.run_dir.name, 'epoch': life['epoch'],
+                                                     'prior_finding_ids': tuple(marker['finding_ids'])
+                                                     if owner_waiting else ()})
                 candidate_tree.verify_candidate_revision(baseline, revision)
                 if (not isinstance(review, dict) or not isinstance(review.get('findings'), list) or
                         any(not isinstance(row, dict) or
@@ -1889,17 +1906,37 @@ class Coordinator:
                     raise ValueError('SECURITY reviewer result is malformed')
                 if review.get('candidate_oid') != revision.tree_oid or not review.get('observed_tools'):
                     raise ValueError('SECURITY review lacks current-OID inspection evidence')
+                if owner_waiting:
+                    dispositions = review.get('dispositions')
+                    frozen = set(marker['finding_ids'])
+                    if (not isinstance(dispositions, list) or
+                            len(dispositions) != len(frozen) or
+                            {row.get('id') for row in dispositions if isinstance(row, dict)} != frozen or
+                            any(not isinstance(row, dict) or row.get('disposition') not in
+                                ('fixed', 'withdrawn', 'still_open') or not row.get('evidence')
+                                for row in dispositions)):
+                        raise ValueError('SECURITY owner disposition is missing or malformed')
+                    missing = self.apply_dispositions(dispositions, life['epoch'] + 1,
+                                                      list(frozen), 'security-reviewer')
+                    if missing:
+                        raise ValueError('SECURITY owner disposition omitted frozen IDs')
                 recorded = self.record_findings('security-reviewer', 'SECURITY', life['epoch'] + 1,
                                                 review.get('findings', []))
                 direct_blocking = any(str(row['severity']).upper() in BLOCKING_REVIEW_SEVERITIES or
                                       row.get('security') for row in review['findings'])
-                if direct_blocking:
-                    blockers = [row for row in recorded if str(row['severity']).upper() in
-                                BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+                still_open = owner_waiting and any(
+                    row['id'] in frozen for row in self.blocking_open_findings())
+                if direct_blocking or still_open:
+                    blockers = [row for row in self.blocking_open_findings()
+                                if row['source'] == 'security-reviewer']
+                    previous = tuple(marker.get('repair_history', ())) if owner_waiting else ()
+                    history = previous + ((marker['repair_oid'], marker['request_id']),) if owner_waiting else ()
                     self.state['lifecycle']['awaiting_owner_reverify'] = {
                         'owner': 'security-reviewer', 'source_oid': revision.tree_oid,
                         'finding_ids': tuple(row['id'] for row in blockers),
-                        'paths': tuple(row['file'] for row in blockers)}
+                        'paths': tuple(row.get('file', '') for row in blockers),
+                        'role_manifest_sha256': self.state['role_dispatch_manifest_sha256'],
+                        'repair_history': history}
                     owner_hold = {**request, 'status': 'HOLD', 'finding_ids': tuple(row['id'] for row in blockers)}
                     atomic_json(self.evidence / (request['request_id'] + '-owner-hold.json'), owner_hold)
                     self.state['lifecycle']['owner_hold_receipt'] = owner_hold
@@ -1908,6 +1945,8 @@ class Coordinator:
                     raise ValueError('SECURITY review did not approve current OID')
                 if direct_blocking or self.blocking_open_findings() or review.get('status') != 'APPROVE':
                     raise ValueError('SECURITY review did not approve current OID')
+                if owner_waiting:
+                    self.state['lifecycle'].pop('awaiting_owner_reverify')
                 receipt.update(output_oid=revision.tree_oid, security_review='APPROVE',
                                scanned_paths=paths, fake_only=True)
             self.fake_lifecycle_event('receipt', receipt)
