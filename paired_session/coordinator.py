@@ -3059,7 +3059,8 @@ class Coordinator:
         schema_path = prefix.with_suffix('.schema.json')
         atomic_json(schema_path, schema)
         atomic_text(prefix.with_suffix('.prompt.txt'), prompt)
-        before, manifest = git_snapshot(active_workspace)
+        snapshot_workspace = self.workspace if self._fake_lifecycle and workspace_override else active_workspace
+        before, manifest = git_snapshot(snapshot_workspace)
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh)
@@ -3088,6 +3089,8 @@ class Coordinator:
         env = cli_env()
         if env_overrides:
             env.update(env_overrides)
+        if self._fake_lifecycle and workspace_override:
+            env = {key: value for key, value in env.items() if not key.startswith('GIT_')}
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
@@ -3187,7 +3190,7 @@ class Coordinator:
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
-        after, after_manifest = git_snapshot(active_workspace)
+        after, after_manifest = git_snapshot(snapshot_workspace)
         context_after = directory_digest(self.context)
         receipt['snapshot_after'] = after
         receipt['context_after'] = context_after
@@ -4254,6 +4257,55 @@ class Coordinator:
             return self._drive_loop()
         finally:
             self._fake_dispatching = False
+
+    def fake_candidate_author_turn(self) -> dict:
+        """Run one fake EXEC author against a clean isolated candidate root."""
+        if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
+                self.state['phase'] != 'EXEC' or self.state['next'] != 'author' or
+                self.state.get('status') != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON or
+                self.state.get('active') or self.state.get('uncertain_active') or
+                self.state.get('pending_operator_note_id') or self.state.get('pending_rejection_id') or
+                self.state.get('fake_candidate_pending') or self.state.get('fake_ingest_receipt')):
+            raise RuntimeError('fake candidate author requires an unstarted EXEC turn')
+        plan = (self.context / 'plan.md').read_bytes()
+        baseline = candidate_tree.prepare_candidate_baseline(
+            self.workspace, self.run_dir, self.run_dir.parent, self.run_dir.parent, ('sum_ints.py',))
+        request_id = str(uuid.uuid4())
+        binding = {key: str(value) if isinstance(value, Path) else value
+                   for key, value in vars(baseline).items()}
+        self.state['fake_candidate_pending'] = {'request_id': request_id, 'baseline': binding,
+            'plan_sha256': hashlib.sha256(plan).hexdigest(), 'epoch': self.state['lifecycle']['epoch'],
+            'sequence': self.state['sequence'] + 1, 'item_uuid': self.state['item_uuid']}
+        self.state['sessions']['author'] = None
+        self.state['started']['author'] = False
+        self.save()
+        prompt = (f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.\n'
+                  f'Workspace: {baseline.root}\nImplement approved plan (sha256={hashlib.sha256(plan).hexdigest()}):\n'
+                  + plan.decode() + '\nReturn only JSON matching the supplied schema.')
+        self._fake_dispatching = True
+        try:
+            result = self.invoke('author', 'EXEC', prompt, author_schema(),
+                                 workspace_override=baseline.root,
+                                 env_overrides={'FAKE_UNIQUE_CODEX_THREAD': '1'})
+        finally:
+            self._fake_dispatching = False
+        if result['answer']['status'] != 'READY':
+            raise RuntimeError('fake candidate author did not finish READY')
+        revision = candidate_tree.ingest_candidate_revision(baseline)
+        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+        entries = candidate_tree._tree_entries(env, revision.tree_oid)
+        digest = hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest()
+        receipt = {'id': request_id, 'run_id': self.run_dir.name, 'author_sequence': result['sequence'],
+                   'input_oid': baseline.tree_oid, 'output_oid': revision.tree_oid,
+                   'manifest_sha256': digest, 'manifest': revision.manifest,
+                   'plan_sha256': hashlib.sha256(plan).hexdigest(),
+                   'root': str(baseline.root), 'baseline': binding,
+                   'epoch': self.state['lifecycle']['epoch'], 'item_uuid': self.state['item_uuid']}
+        atomic_json(self.evidence / (request_id + '-ingest.json'), receipt)
+        self.state['fake_ingest_receipt'] = receipt
+        self.state.pop('fake_candidate_pending')
+        self.save()
+        return receipt
 
     def _freeze_fake_exec_source(self) -> None:
         self.state.pop('fake_exec_source', None)

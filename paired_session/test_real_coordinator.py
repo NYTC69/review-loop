@@ -3397,6 +3397,81 @@ sys.exit(result.returncode)
         self.assertLess(source['author_sequence'], source['reviewer_sequence'])
         self.assertLess(source['reviewer_sequence'], source['gate_sequence'])
 
+    def test_fake_candidate_author_ingest_uses_clean_root_and_fresh_exec_session(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        self.assertEqual(co.state['phase'], 'EXEC')
+        self.assertEqual(co.state['next'], 'author')
+        plan_session = co.state['sessions']['author']
+        live_before = rc.git_snapshot(self.workspace)[0]
+        receipt = co.fake_candidate_author_turn()
+        author = co.state['turns'][-1]
+        self.assertEqual(author['phase'], 'EXEC')
+        self.assertEqual(author['answer']['status'], 'READY')
+        self.assertNotEqual(co.state['sessions']['author'], plan_session)
+        self.assertNotIn('resume', author['command'])
+        self.assertEqual(Path(author['workspace']), Path(receipt['root']))
+        self.assertTrue((Path(receipt['root']) / 'sum_ints.py').is_file())
+        self.assertFalse((self.workspace / 'sum_ints.py').exists())
+        self.assertEqual(rc.git_snapshot(self.workspace)[0], live_before)
+        self.assertEqual(co.state['fake_ingest_receipt']['id'], receipt['id'])
+        self.assertTrue((co.evidence / (receipt['id'] + '-ingest.json')).is_file())
+        root_stat = Path(receipt['root']).stat()
+        self.assertEqual(receipt['baseline']['root_identity'], (root_stat.st_dev, root_stat.st_ino))
+        saved = json.loads((co.evidence / (receipt['id'] + '-ingest.json')).read_text())
+        baseline_data = dict(saved['baseline'])
+        for key in ('workspace', 'run_dir', 'root', 'git_dir', 'index'):
+            baseline_data[key] = Path(baseline_data[key])
+        for key in ('root_identity', 'authorized_prefixes', 'parent_entries'):
+            baseline_data[key] = tuple(baseline_data[key])
+        restored = ct.CandidateBaseline(**baseline_data)
+        revision = ct.CandidateRevision(saved['output_oid'], tuple(saved['manifest']), 1)
+        ct.verify_candidate_revision(restored, revision)
+        self.assertNotIn(str(self.workspace), (co.evidence /
+            f"{author['sequence']:03d}-exec-author.prompt.txt").read_text())
+
+    def test_fake_candidate_author_rejects_unapproved_write_and_keeps_pending(self):
+        with patch.dict(os.environ, {'FAKE_DOC_DELTA': '1', 'TEST_SECRET_NEVER_PERSIST': 's3cr3t'}):
+            args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+            co = rc.Coordinator(args, _fake_lifecycle=True)
+            self.assertEqual(co.fake_drive(), 'HOLD')
+            with self.assertRaisesRegex(ValueError, 'authorized|candidate'):
+                co.fake_candidate_author_turn()
+        self.assertIsNotNone(co.state['fake_candidate_pending'])
+        self.assertNotIn('fake_ingest_receipt', co.state)
+        self.assertNotIn('s3cr3t', (self.run_dir / 'state.json').read_text())
+
+    def test_fake_candidate_author_refuses_uncertain_or_unrelated_hold(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.state['active'] = {'sequence': 999}
+        with self.assertRaisesRegex(RuntimeError, 'unstarted EXEC turn'):
+            co.fake_candidate_author_turn()
+        co.state['active'] = None
+        co.state['hold_reason'] = 'permission probe failed'
+        with self.assertRaisesRegex(RuntimeError, 'unstarted EXEC turn'):
+            co.fake_candidate_author_turn()
+        self.assertFalse(any(row['phase'] == 'EXEC' and row['role'] == 'author'
+                             for row in co.state['turns']))
+
+    def test_fake_candidate_author_rejects_live_workspace_change_before_ingest(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = ct.ingest_candidate_revision
+
+        def change_live(baseline):
+            (self.workspace / 'tracked.txt').write_text('user change\n')
+            return ingest(baseline)
+
+        with patch.object(rc.candidate_tree, 'ingest_candidate_revision', side_effect=change_live):
+            with self.assertRaisesRegex(ValueError, 'live|worktree|workspace'):
+                co.fake_candidate_author_turn()
+        self.assertIsNotNone(co.state['fake_candidate_pending'])
+        self.assertNotIn('fake_ingest_receipt', co.state)
+
     def test_fake_exec_source_rejects_stale_or_other_run_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)

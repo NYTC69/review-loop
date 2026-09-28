@@ -161,6 +161,8 @@ def main():
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
     session = 'fake-codex-thread'
+    if vendor == 'codex' and os.environ.get('FAKE_UNIQUE_CODEX_THREAD') and 'resume' not in args:
+        session = str(uuid.uuid4())
     if vendor == 'codex' and 'resume' in args:
         session = args[args.index('resume') + 1]
     elif vendor == 'claude' and '--session-id' in args:
