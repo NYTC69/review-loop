@@ -2795,6 +2795,57 @@ sys.exit(result.returncode)
                     rc.Coordinator(args)
         self.assertEqual(len(co.state['turns']), 0)
 
+    def test_fake_lifecycle_state_receipts_resume_idempotently_and_cli_stays_off(self):
+        command = self.command('--lifecycle-mode', 'on')
+        args = rc.parser().parse_args(command[2:])
+        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+            rc.Coordinator(args)
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        life = co.state['lifecycle']
+        self.assertEqual((life['stage'], life['epoch'], life['candidate_oid']), ('EXEC', 0, None))
+        self.assertEqual(life['parent'], co.state['base_commit'])
+        request = {key: life[key] for key in ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')}
+        request.update(request_id='fake-request-1', role='reviewer')
+        co.fake_lifecycle_event('begin', request)
+        co.fake_lifecycle_event('begin', request)
+        self.assertEqual(json.loads(co.state_path.read_text())['lifecycle']['pending'], request)
+        resume = command.copy(); resume[2] = 'resume'
+        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+            rc.Coordinator(rc.parser().parse_args(resume[2:]))
+        again = rc.Coordinator(rc.parser().parse_args(resume[2:]), _fake_lifecycle=True)
+        self.assertEqual(again.state['lifecycle']['pending'], request)
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            again.fake_lifecycle_event('receipt', {**request, 'epoch': 1, 'status': 'READY'})
+        self.assertEqual(again.state['lifecycle']['receipts'], [])
+        receipt = {**request, 'status': 'READY', 'output_sha256': 'a' * 64}
+        again.fake_lifecycle_event('receipt', receipt)
+        reloaded = rc.Coordinator(rc.parser().parse_args(resume[2:]), _fake_lifecycle=True)
+        reloaded.fake_lifecycle_event('receipt', receipt)
+        self.assertEqual(reloaded.state['lifecycle']['receipts'], [receipt])
+        self.assertIsNone(reloaded.state['lifecycle']['pending'])
+        with self.assertRaisesRegex(ValueError, 'already completed'):
+            reloaded.fake_lifecycle_event('begin', request)
+        self.assertEqual(reloaded.state['lifecycle']['stage'], 'EXEC')
+        with self.assertRaisesRegex(RuntimeError, 'cannot enter legacy drive'):
+            reloaded.drive()
+        with self.assertRaisesRegex(RuntimeError, 'cannot enter legacy resume'):
+            reloaded.resume()
+        with self.assertRaisesRegex(RuntimeError, 'cannot dispatch a real provider'):
+            reloaded._invoke_once('author', 'EXEC', 'fake-only', {})
+
+    def test_fake_lifecycle_guard_rejects_real_provider_path(self):
+        command = self.command('--lifecycle-mode', 'on', '--codex-bin', '/usr/bin/true')
+        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+            rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        bare = self.command('--lifecycle-mode', 'on', '--codex-bin', 'codex')
+        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+            rc.Coordinator(rc.parser().parse_args(bare[2:]), _fake_lifecycle=True)
+        with patch.dict(os.environ, {'FAKE_CODEX_TEST_ROOT': '/'}):
+            normal = self.command('--lifecycle-mode', 'on')
+            with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+                rc.Coordinator(rc.parser().parse_args(normal[2:]), _fake_lifecycle=True)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
     def test_lifecycle_project_config_enablement_is_refused(self):
         config_dir = self.workspace / '.review-loop'; config_dir.mkdir()
         (config_dir / 'paired-session.json').write_text(json.dumps({'lifecycle_mode': 'on'}))

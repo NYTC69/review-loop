@@ -32,9 +32,11 @@ import uuid
 from typing import Optional
 try:
     from paired_session import codex_capability_guard
+    from paired_session import lifecycle_spine
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import codex_capability_guard
+    import lifecycle_spine
     from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
@@ -1035,17 +1037,19 @@ def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
 
 
 class Coordinator:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
         validate_role_models(args)
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
-            raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
+            if not (_fake_lifecycle and lifecycle_spine.fake_guard(args)):
+                raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
         self.args = args
+        self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
         self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
         self.workitem = Path(args.workitem).expanduser().resolve()
@@ -1065,7 +1069,7 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
-            if self.state.get('config', {}).get('lifecycle_mode') == 'on':
+            if self.state.get('config', {}).get('lifecycle_mode') == 'on' and not self._fake_lifecycle:
                 raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
             self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
             self.state.setdefault('item_blockers', [])
@@ -1174,6 +1178,8 @@ class Coordinator:
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
+            if self._fake_lifecycle:
+                self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
             self._freeze_role_dispatch()
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
@@ -1595,6 +1601,14 @@ class Coordinator:
     def save(self) -> None:
         with self._save_lock:
             atomic_json(self.state_path, self.state)
+
+    def fake_lifecycle_event(self, event, value):
+        if not self._fake_lifecycle or 'lifecycle' not in self.state:
+            raise ValueError('fake lifecycle state is unavailable')
+        action = {'begin': lifecycle_spine.begin, 'receipt': lifecycle_spine.complete}.get(event)
+        if action is None: raise ValueError('unknown fake lifecycle event')
+        self.state['lifecycle'] = action(self.state['lifecycle'], value)
+        self.save()
 
     def _head_commit(self) -> Optional[str]:
         proc = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.workspace,
@@ -2751,6 +2765,7 @@ class Coordinator:
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
+        if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot dispatch a real provider')
         issue = self._program_state(hold=True)[1]
         if issue: raise RuntimeError(issue)
         if self.state.get('config', {}).get('lifecycle_mode') == 'on':
@@ -3976,6 +3991,7 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
+        if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy drive')
         if self.state.get('uncertain_active'):
             return self.hold('uncertain CLI turn; inspect evidence, then use resume --retry-uncertain')
         if self.state['active']:
@@ -3996,6 +4012,7 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
+        if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.args.acknowledge_codex_trust:
             if self.args.acknowledge_codex_trust != self.run_dir.name or not self.state.get('uncertain_active') or not self.state.get('hold_reason', '').startswith('global Codex config changed during uncertain turn'):
                 raise ValueError('trust acknowledgment requires the named run and a prior uncertain trust HOLD')
