@@ -4,7 +4,10 @@ import re
 from fnmatch import fnmatchcase
 from pathlib import Path
 from collections import namedtuple
-from .candidate_tree import _canonical_parts, _prefixes
+try:
+    from .candidate_tree import _canonical_parts, _prefixes
+except ImportError:
+    from candidate_tree import _canonical_parts, _prefixes
 PATTERNS = json.loads(Path(__file__).with_name('security_ignore_patterns.json').read_text())
 ReservedDocsRepair = type('ReservedDocsRepair', (ValueError,), {})
 SecurityRepair = namedtuple('SecurityRepair',
@@ -36,8 +39,8 @@ def plan_security_repair(run_id, oid, proposals, repair_paths, allowed_paths,
     leaves = set(_paths(candidate_files)) | {'.gitignore'}
     if not wanted or not wanted <= set(_paths(allowed_paths)) or not wanted <= leaves:
         raise ValueError('security repair lacks an exact candidate-file grant')
-    if any(_canonical_parts(p)[-1] == '.gitignore' for p in paths):
-        raise ValueError('ignore repair requires frozen proposals')
+    if any(_canonical_parts(p)[-1] in ('.gitignore', '.gitattributes') for p in paths):
+        raise ValueError('ignore repair requires frozen proposals; attributes edits are forbidden')
     if any(a[:len(b)] == b or b[:len(a)] == a for p in wanted for q in _paths(reserved_docs)
            for a, b in [(_canonical_parts(p), _canonical_parts(q))]):
         raise ReservedDocsRepair('reserved docs repair requires replayed DOCS writer')

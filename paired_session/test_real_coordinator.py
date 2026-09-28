@@ -2973,12 +2973,12 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'uncertain FINISH request'):
             co.fake_lifecycle_route(approved, stub_mode=True)
 
-    def fake_lifecycle_ready_for_specialists(self, docs=False):
+    def fake_lifecycle_ready_for_specialists(self, docs=False, security_paths=()):
         flags = ('--docs-file', 'docs/guide.md') if docs else ()
         command = self.command('--lifecycle-mode', 'on', *flags)
         co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
         scratch = self.root / 'scratch'; scratch.mkdir()
-        paths = ('tracked.txt', 'docs/guide.md') if docs else ('tracked.txt',)
+        paths = (('tracked.txt', 'docs/guide.md') if docs else ('tracked.txt',)) + tuple(security_paths)
         baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, paths)
         baseline = dataclasses.replace(baseline, separate_filesystems=True)
         revision = ct.ingest_candidate_revision(baseline)
@@ -3209,6 +3209,149 @@ sys.exit(result.returncode)
                                     security_context=context)
         self.assertEqual(co.state['lifecycle']['stage'], 'SECURITY')
         self.assertEqual(co.blocking_open_findings()[0]['source'], 'security-reviewer')
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_security_ignore_repair_requires_operator_consent_and_replays_exec(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        proposals = [('Generic secret files', '*secret*', [])]
+        written = []
+        def write(root, paths):
+            written.append(paths)
+            with (root / '.gitignore').open('a') as target:
+                target.write('*secret*\n')
+        repair = {'proposals': proposals, 'paths': (), 'allowed_paths': ('.gitignore',),
+                  'reserved_docs': ('docs/guide.md',), 'write': write}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        with self.assertRaisesRegex(ValueError, 'operator confirmation'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertEqual(co.state['lifecycle']['stage'], 'SECURITY')
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertEqual(written, [])
+        digest = rc.security_repair_policy.repair_digest(
+            self.run_dir.name, finish['revision'].tree_oid, proposals, ())
+        repair['consent'] = {'decision': 'confirm', 'digest': digest, 'run_id': self.run_dir.name,
+                             'actor': 'operator', 'time': '2026-09-29T02:00:00+09:00',
+                             'command_sha256': hashlib.sha256(
+                                 f'confirm-ignore --digest {digest}'.encode()).hexdigest()}
+        self.assertEqual(co.fake_lifecycle_route(approved, security_context=context), 'EXEC')
+        self.assertEqual(written, [('.gitignore',)])
+        self.assertEqual(co.state['lifecycle']['epoch'], 1)
+        self.assertFalse(co.state['gate_ran'])
+        self.assertEqual(co.state['lifecycle']['receipts'][-1]['invalidated'], ('*',))
+
+    def test_fake_security_sensitive_repair_write_replays_exec(self):
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'secret.key'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'fake secret'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('secret.key',))
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        repair = {'proposals': (), 'paths': ('secret.key',), 'allowed_paths': ('secret.key',),
+                  'reserved_docs': ('docs/guide.md',),
+                  'write': lambda root, paths: (root / 'secret.key').unlink()}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=finish,
+                         polish_context={'python-reviewer': specialist}, docs_stub=True,
+                         security_context=context), 'EXEC')
+        self.assertEqual(co.state['lifecycle']['epoch'], 1)
+        self.assertEqual(co.state['lifecycle']['receipts'][-1]['stage'], 'SECURITY')
+        self.assertNotEqual(co.state['lifecycle']['receipts'][-1]['output_oid'],
+                            finish['revision'].tree_oid)
+
+    def test_fake_security_ignore_repair_rejects_extra_rule(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': (),
+                  'write': lambda root, paths: (root / '.gitignore').write_text('*.pem\n*secret*\n')}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        with self.assertRaisesRegex(ValueError, 'beyond approved patterns'):
+            specialist = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'], 'findings': []}
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_security_ignore_repair_rejects_deleted_old_rule(self):
+        (self.workspace / '.gitignore').write_text('original-rule\n')
+        subprocess.run(['git', 'add', '.gitignore'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'original ignore'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': (),
+                  'write': lambda root, paths: (root / '.gitignore').write_text('*.pem\n')}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        with self.assertRaisesRegex(ValueError, 'beyond approved patterns'):
+            specialist = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'], 'findings': []}
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_security_repair_rejects_no_change_oid(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        def write(root, paths):
+            with (root / '.gitignore').open('a') as target:
+                target.write('*.pem\n')
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': (),
+                  'write': write}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        specialist = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'], 'findings': []}
+        with patch.object(rc.candidate_tree, 'ingest_candidate_revision', return_value=finish['revision']):
+            with self.assertRaisesRegex(ValueError, 'made no change'):
+                co.fake_lifecycle_route(approved, finish_context=finish,
+                                        polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                        security_context=context)
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_security_repair_rejects_late_candidate_mutation(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        def write(root, paths):
+            with (root / '.gitignore').open('a') as target:
+                target.write('*.pem\n')
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': (),
+                  'write': write}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        specialist = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'], 'findings': []}
+        ingest = rc.candidate_tree.ingest_candidate_revision
+        def mutate(baseline):
+            result = ingest(baseline)
+            if co.state['lifecycle']['stage'] == 'SECURITY':
+                with (baseline.root / '.gitignore').open('a') as target:
+                    target.write('*secret*\n')
+            return result
+        with patch.object(rc.candidate_tree, 'ingest_candidate_revision', side_effect=mutate):
+            with self.assertRaisesRegex(ValueError, 'changed during ingest'):
+                co.fake_lifecycle_route(approved, finish_context=finish,
+                                        polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                        security_context=context)
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_security_repair_rejects_ungranted_candidate_write(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': ('docs/guide.md',),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('ungranted\n')}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        with self.assertRaisesRegex(ValueError, 'ungranted candidate path'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertEqual(co.state['lifecycle']['stage'], 'SECURITY')
         self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
 
     def test_fake_lifecycle_docs_write_without_retest_cannot_pass(self):

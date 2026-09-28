@@ -38,6 +38,7 @@ try:
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session import sensitive_policy
+    from paired_session import security_repair_policy
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
@@ -47,6 +48,7 @@ except ModuleNotFoundError:
     import finish_dispatch
     import lifecycle_spine
     import sensitive_policy
+    import security_repair_policy
     from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
@@ -1717,8 +1719,15 @@ class Coordinator:
                                for path in baseline.root.rglob('*') if not path.is_dir() or path.is_symlink())
                 hits = {path: kind for path in paths
                         if (kind := sensitive_policy.sensitive_path_category(path))}
-                if hits:
+                repair = security_context.get('repair')
+                if hits and not repair:
                     raise ValueError('SECURITY sensitive candidate paths: ' + ', '.join(hits))
+                if repair:
+                    plan = security_repair_policy.plan_security_repair(
+                        self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
+                        repair['allowed_paths'], repair['reserved_docs'], paths, repair.get('consent'))
+                    if not set(hits) <= set(plan.fixer_paths):
+                        raise ValueError('SECURITY repair does not cover sensitive paths')
             if stage == 'FINISH' and not stub_mode:
                 baseline, revision = finish_context['baseline'], finish_context['revision']
                 if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
@@ -1782,6 +1791,42 @@ class Coordinator:
                 receipt.update(output_oid=after.tree_oid, docs_file=path, docs_paths=change.paths,
                                invalidated=change.invalidated_receipts, fake_only=True)
             if stage == 'SECURITY':
+                if repair:
+                    source_env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+                    source_entries = candidate_tree._tree_entries(source_env, revision.tree_oid)
+                    ignore_entry = next((row for row in source_entries if row[2] == '.gitignore'), None)
+                    if ignore_entry and ignore_entry[0] != '100644':
+                        raise ValueError('SECURITY ignore source is not a regular 100644 file')
+                    old_ignore = (candidate_tree._indexed_blobs(source_env, (ignore_entry,))[ignore_entry[1]]
+                                  if ignore_entry else b'')
+                    ignore_path = baseline.root / '.gitignore'
+                    if plan.approved_patterns:
+                        lines = old_ignore.decode('utf-8').split('\n')
+                        missing = [pattern for _, pattern in plan.approved_patterns if pattern not in lines]
+                        suffix = (b'\n' if old_ignore and not old_ignore.endswith(b'\n') and missing else b'')
+                        suffix += b''.join((pattern + '\n').encode() for pattern in missing)
+                        expected_ignore = old_ignore + suffix
+                    repair['write'](baseline.root, plan.fixer_paths)
+                    blobs = candidate_tree._indexed_blobs(source_env, source_entries)
+                    source_files = {path: (mode, blobs[oid]) for mode, oid, path in source_entries}
+                    seen_files = candidate_tree._candidate_files(baseline)
+                    changed = {path for path in set(seen_files) | set(source_files)
+                               if seen_files.get(path) != source_files.get(path)}
+                    if not changed or not changed <= set(plan.fixer_paths):
+                        raise ValueError('SECURITY writer changed an ungranted candidate path')
+                    if plan.approved_patterns and (ignore_path.is_symlink() or not ignore_path.is_file() or
+                            ignore_path.stat().st_mode & 0o111 or ignore_path.read_bytes() != expected_ignore):
+                        raise ValueError('SECURITY ignore writer changed bytes beyond approved patterns')
+                    after = candidate_tree.ingest_candidate_revision(baseline)
+                    if after.tree_oid == revision.tree_oid or candidate_tree._candidate_files(baseline) != seen_files:
+                        raise ValueError('SECURITY repair made no change or changed during ingest')
+                    candidate_tree.verify_candidate_revision(baseline, after)
+                    self.state['gate_ran'] = False
+                    receipt.update(output_oid=after.tree_oid, security_repair=plan.digest,
+                                   consent_digest=plan.consent_digest, approved_patterns=plan.approved_patterns,
+                                   invalidated=plan.invalidated_receipts, fake_only=True)
+                    self.fake_lifecycle_event('receipt', receipt)
+                    continue
                 review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,
                                                      'run_id': self.run_dir.name, 'epoch': life['epoch']})
                 candidate_tree.verify_candidate_revision(baseline, revision)
@@ -1795,7 +1840,9 @@ class Coordinator:
                     raise ValueError('SECURITY review lacks current-OID inspection evidence')
                 self.record_findings('security-reviewer', 'SECURITY', life['epoch'] + 1,
                                      review.get('findings', []))
-                if self.blocking_open_findings() or review.get('status') != 'APPROVE':
+                direct_blocking = any(str(row['severity']).upper() in BLOCKING_REVIEW_SEVERITIES or
+                                      row.get('security') for row in review['findings'])
+                if direct_blocking or self.blocking_open_findings() or review.get('status') != 'APPROVE':
                     raise ValueError('SECURITY review did not approve current OID')
                 receipt.update(output_oid=revision.tree_oid, security_review='APPROVE',
                                scanned_paths=paths, fake_only=True)
