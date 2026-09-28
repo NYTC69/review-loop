@@ -16,8 +16,7 @@ class DocsPolicyTests(unittest.TestCase):
     def test_reserved_docs_write_requires_full_rechecks(self):
         result = docs_change(['docs/guide.md'], ['docs/guide.md'])
         self.assertTrue(result.requires_rechecks)
-        self.assertEqual(result.invalidated_receipts,
-                         ('FINISH', 'POLISH-Q', 'DOCS', 'FINAL-REVIEW', 'TESTS', 'SECURITY'))
+        self.assertEqual(result.invalidated_receipts, ('*',))
 
     def test_no_docs_write_does_not_invalidate_receipts(self):
         result = docs_change([], ['docs/guide.md'])
@@ -58,8 +57,13 @@ class DocsPolicyTests(unittest.TestCase):
         for path in ('src/app.py', 'tests/x.py', 'pkg/tests/golden.md',
                      'sub/test/fixtures/expected.txt', 'requirements.txt',
                      'requirements-dev.txt', 'constraints-prod.txt', 'CMakeLists.txt',
+                     'dev-requirements.txt', 'test-requirements.txt',
+                     'requirements/base.txt', 'constraints/prod.txt',
                      'pyproject.toml', 'manifest.json', '.gitattributes', '.gitmodules',
-                     '.mailmap', 'docs/protocol/x.md'):
+                     '.mailmap', 'docs/protocol/x.md', 'pkg/scripts/x.md',
+                     'sub/.github/x.md', 'testdata/example.txt', 'fixtures/readme.md',
+                     '__tests__/readme.md', '__snapshots__/readme.md', 'spec/readme.md',
+                     '.review-loop/config.md', '.compass/notes.md'):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 docs_change([path], [path])
 

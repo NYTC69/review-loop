@@ -4,20 +4,20 @@ from typing import NamedTuple
 from .candidate_tree import _canonical_parts, _prefixes
 
 
-DOCS_INVALIDATED = ('FINISH', 'POLISH-Q', 'DOCS', 'FINAL-REVIEW', 'TESTS', 'SECURITY')
+DOCS_INVALIDATED = ('*',)
 PROTECTED_PARTS = {'.git', '.gitignore', '.gitattributes', '.gitmodules', '.mailmap', '.claude',
-                   '.env', '.npmrc', '.netrc', '.pypirc', 'agents', 'skills', 'agents.md',
+                   '.env', '.npmrc', '.netrc', '.pypirc', '.review-loop', '.compass',
+                   'agents', 'skills', 'agents.md',
                    'claude.md', 'claude.local.md', 'manifest.md', 'makefile', 'dockerfile'}
-PROTECTED_DIRS = {'src', 'lib', 'bin', 'scripts', 'test', 'tests', '.agents', '.codex', '.github'}
+PROTECTED_DIRS = {'src', 'lib', 'bin', 'scripts', 'test', 'tests', '.agents', '.codex', '.github',
+                  'testdata', 'fixtures', '__tests__', '__snapshots__', 'spec', 'requirements',
+                  'constraints'}
 DOCS_SUFFIXES = ('.md', '.mdx', '.rst', '.txt', '.adoc')
-
 
 class DocsChange(NamedTuple):
     paths: tuple[str, ...]
     requires_rechecks: bool
     invalidated_receipts: tuple[str, ...]
-
-
 def _exact_paths(values, docs_only):
     if not isinstance(values, (list, tuple)):
         raise ValueError('paths must be a list or tuple')
@@ -28,14 +28,14 @@ def _exact_paths(values, docs_only):
             basename = value.rsplit('/', 1)[-1].casefold()
             if (any(part in PROTECTED_PARTS for part in parts) or
                     any(part in ('test', 'tests') for part in parts) or
-                    parts[0] in PROTECTED_DIRS or not value.casefold().endswith(DOCS_SUFFIXES) or
-                    (basename.endswith('.txt') and (basename.startswith('requirements') or
-                     basename.startswith('constraints') or basename == 'cmakelists.txt')) or
+                    any(part in PROTECTED_DIRS for part in parts) or
+                    not value.casefold().endswith(DOCS_SUFFIXES) or
+                    (basename.endswith('.txt') and
+                     (any(term in basename for term in ('requirements', 'constraints')) or
+                      basename == 'cmakelists.txt')) or
                     parts[:2] == ('docs', 'protocol')):
                 raise ValueError('protected documentation path')
     return paths
-
-
 def validate_docs_change(changed_paths, allowed_paths, *, exec_paths, finish_paths,
                          polish_paths, closure_inputs, closure_uncertain):
     if type(closure_uncertain) is not bool:
