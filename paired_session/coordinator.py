@@ -3324,6 +3324,9 @@ class Coordinator:
                               (role == 'gate' and answer.get('verdict') == 'approve')))
             if approves_exec and not (self._fake_lifecycle and workspace_override and
                                       self.state.get('fake_candidate_test') and
+                                      self.state.get('fake_ingest_receipt') and
+                                      self.state['fake_candidate_test']['ingest_id'] ==
+                                      self.state['fake_ingest_receipt']['id'] and
                                       Path(workspace_override).resolve() == Path(
                                           self.state['fake_candidate_test']['root']).resolve()) and not any(
                     observed_test_succeeded(row, self.args.test_command)
@@ -4469,7 +4472,6 @@ class Coordinator:
             review = self.invoke('reviewer', 'EXEC', 'Role: reviewer, fresh. ' + proof,
                                  review_schema(), fresh=True, workspace_override=checkout.root)
             candidate_tree.verify_candidate_revision(checkout, revision)
-            self.state.pop('pending_reviewer_result_sequence', None)
             if review['answer']['status'] != 'APPROVE' or review['answer']['full_review']:
                 raise RuntimeError('OID reviewer did not approve')
             reviewed = {'id': str(uuid.uuid4()), 'test_id': test['id'],
@@ -4492,16 +4494,26 @@ class Coordinator:
             self.state['fake_candidate_chain'] = chain
             self.save()
         finally:
+            self.state.pop('pending_reviewer_result_sequence', None)
             self._fake_dispatching = False
+            self.save()
 
     def fake_candidate_approval(self) -> dict:
+        try:
+            return self._fake_candidate_approval()
+        except (KeyError, TypeError, IndexError, OSError, ValueError) as exc:
+            raise RuntimeError('fake approval receipt is missing or malformed') from exc
+
+    def _fake_candidate_approval(self) -> dict:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise RuntimeError('fake approval requires fake-only dispatch')
         state = self.state
         ingest, test = state.get('fake_ingest_receipt'), state.get('fake_candidate_test')
         reviewed, chain = state.get('fake_candidate_review'), state.get('fake_candidate_chain')
         if (not all((ingest, test, reviewed, chain)) or state.get('fake_candidate_review_rejected') or
-                state.get('active') or state.get('uncertain_active') or self.blocking_open_findings()):
+                state.get('active') or state.get('uncertain_active') or self.blocking_open_findings() or
+                state.get('fake_candidate_test_failed') or state.get('fake_candidate_test_pending') or
+                state.get('pending_reviewer_result_sequence') or test['returncode'] != 0):
             raise RuntimeError('fake approval lacks a clean receipt chain')
         life = state['lifecycle']
         identity = [self.run_dir.name, state['item_uuid'], life['epoch']]
@@ -4521,22 +4533,41 @@ class Coordinator:
         turns = {row['sequence']: row for row in state['turns']}
         reviewer, gate = turns[reviewed['sequence']], turns[chain['gate_sequence']]
         if (reviewer['role'] != 'reviewer' or gate['role'] != 'gate' or
+                reviewer['phase'] != 'EXEC' or gate['phase'] != 'EXEC' or
+                reviewer.get('error') or gate.get('error') or
+                reviewer.get('verified_claims_error') or gate.get('verified_claims_error') or
                 reviewer['answer']['status'] != 'APPROVE' or reviewer['answer']['full_review'] or
                 gate['answer']['verdict'] != 'approve' or gate['answer']['findings'] or
                 reviewed['sequence'] >= chain['gate_sequence']):
             raise RuntimeError('fake approval roles or verdicts differ')
         if any(row.get('run_id') != identity[0] or row.get('workspace') != test['root']
                for row in (reviewer, gate)): raise RuntimeError('fake approval turn identity differs')
+        for row in (reviewer, gate):
+            path = self.evidence / f"{row['sequence']:03d}-exec-{row['role']}.receipt.json"
+            if json.loads(path.read_text()) != json.loads(json.dumps(row)):
+                raise RuntimeError('fake approval turn evidence differs')
+        if (hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest() != ingest['plan_sha256'] or
+                hashlib.sha256(json.dumps(state['config'], sort_keys=True).encode()).hexdigest() !=
+                test['config_sha256'] or
+                hashlib.sha256(Path(test['command'][0]).read_bytes()).hexdigest() != test['executable_sha256']):
+            raise RuntimeError('fake approval inputs changed')
+        if any(row['sequence'] > ingest['author_sequence'] and row['role'] == 'author'
+               for row in state['turns']): raise RuntimeError('fake approval has a later author')
         baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
         revision = candidate_tree.CandidateRevision(chain['oid'], tuple(ingest['manifest']), 0)
+        if baseline.parent_head != life['parent']:
+            raise RuntimeError('fake approval differs from frozen parent')
         candidate_tree.verify_candidate_revision(baseline, revision)
         fields = {'run_id': identity[0], 'convergence_id': chain['id'], 'epoch': identity[2],
                   'candidate_oid': chain['oid'], 'parent_head': baseline.parent_head,
                   'workspace': str(self.workspace.resolve()), 'run_dir': str(self.run_dir.resolve()),
                   'phase': 'EXEC'}
-        proof = {**fields, 'blocking_findings': [],
-                 'reviewer': {**fields, 'role': 'reviewer', 'status': 'APPROVE'},
-                 'gate': {**fields, 'role': 'gate', 'verdict': 'approve'}}
+        source = {'fake_only': True, 'ingest_id': ingest['id'], 'test_id': test['id']}
+        proof = {**fields, **source, 'blocking_findings': [],
+                 'reviewer': {**fields, **source, 'role': 'reviewer', 'status': 'APPROVE',
+                              'receipt_id': reviewed['id'], 'sequence': reviewed['sequence']},
+                 'gate': {**fields, **source, 'role': 'gate', 'verdict': 'approve',
+                          'sequence': chain['gate_sequence']}}
         return {'status': 'APPROVE', 'epoch': identity[2], 'item_uuid': identity[1],
                 'run_id': identity[0], 'parent': baseline.parent_head,
                 'candidate_oid': chain['oid'], 'proof': proof}

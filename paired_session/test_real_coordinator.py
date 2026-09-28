@@ -3806,6 +3806,49 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(RuntimeError, 'evidence differs'):
             co.fake_candidate_approval()
 
+    def test_fake_candidate_approval_rechecks_current_inputs_and_turns(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        approved = co.fake_candidate_approval()
+        self.assertTrue(approved['proof']['fake_only'])
+        co.state['pending_reviewer_result_sequence'] = 999
+        with self.assertRaisesRegex(RuntimeError, 'clean receipt chain'):
+            co.fake_candidate_approval()
+        co.state['pending_reviewer_result_sequence'] = None
+        plan = co.context / 'plan.md'
+        original = plan.read_text()
+        plan.write_text(original + '\nChanged after approval\n')
+        with self.assertRaisesRegex(RuntimeError, 'inputs changed'):
+            co.fake_candidate_approval()
+        plan.write_text(original)
+        co.state['turns'].append({'sequence': co.state['sequence'] + 1, 'role': 'author'})
+        with self.assertRaisesRegex(RuntimeError, 'later author'):
+            co.fake_candidate_approval()
+        co.state['turns'].pop()
+        reviewed = co.state['fake_candidate_review']
+        (co.evidence / (reviewed['id'] + '-oid-review.json')).unlink()
+        with self.assertRaisesRegex(RuntimeError, 'missing or malformed'):
+            co.fake_candidate_approval()
+
+    def test_fake_candidate_approval_rejects_new_head_after_plan_stop(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        frozen = co.state['lifecycle']['parent']
+        subprocess.run(['git', 'commit', '--allow-empty', '-qm', 'new head after plan'],
+                       cwd=self.workspace, check=True)
+        head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.workspace, text=True).strip()
+        self.assertNotEqual(head, frozen)
+        co.fake_candidate_author_turn()
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        with self.assertRaisesRegex(RuntimeError, 'frozen parent'):
+            co.fake_candidate_approval()
+
     def test_fake_candidate_oid_review_rejects_reviewer_tree_mutation_before_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
