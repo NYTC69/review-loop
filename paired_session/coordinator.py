@@ -3322,7 +3322,9 @@ class Coordinator:
             approves_exec = (phase in ('EXEC', 'POLISH') and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'approve')))
-            if approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
+            if approves_exec and not (self._fake_lifecycle and workspace_override and
+                                      self.state.get('fake_candidate_test')) and not any(
+                    observed_test_succeeded(row, self.args.test_command)
                                          for row in observed_commands):
                 raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command')
             if not fresh:
@@ -4429,6 +4431,61 @@ class Coordinator:
         self.state['fake_candidate_test'] = test_receipt
         self.save()
         return test_receipt
+
+    def fake_candidate_oid_review(self) -> dict:
+        ingest, test = self.state.get('fake_ingest_receipt'), self.state.get('fake_candidate_test')
+        if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
+                not ingest or not test or self.state.get('fake_candidate_test_failed') or
+                self.state.get('fake_candidate_review') or self.state.get('fake_candidate_review_rejected') or
+                self.state.get('active') or
+                self.state.get('uncertain_active') or self.state['lifecycle']['stage'] != 'EXEC'):
+            raise RuntimeError('fake OID review requires a current successful test')
+        identity = (self.run_dir.name, self.state['item_uuid'], self.state['lifecycle']['epoch'])
+        if (any((ingest[k], test[k]) != (v, v) for k, v in zip(('run_id', 'item_uuid', 'epoch'), identity)) or
+                test['ingest_id'] != ingest['id'] or
+                test['oid'] != ingest['output_oid'] or test['manifest_sha256'] != ingest['manifest_sha256'] or
+                test['config_sha256'] != hashlib.sha256(json.dumps(
+                    self.state['config'], sort_keys=True).encode()).hexdigest() or
+                hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest() != ingest['plan_sha256']):
+            raise RuntimeError('fake test receipt does not bind current ingest')
+        saved = json.loads((self.evidence / (test['id'] + '-oid-test.json')).read_text())
+        if saved != json.loads(json.dumps(test)): raise RuntimeError('test evidence differs from state')
+        if hashlib.sha256(Path(test['command'][0]).read_bytes()).hexdigest() != test['executable_sha256']:
+            raise RuntimeError('OID test executable changed')
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        checkout = candidate_tree.replace(baseline, root=Path(test['root']), index=Path(test['index']),
+                                          root_identity=tuple(test['root_identity']))
+        candidate_tree.verify_candidate_revision(checkout, revision)
+        proof = (f'Phase: EXEC.\nWorkspace: {checkout.root}\nCandidate OID: {revision.tree_oid}; test: {test["id"]}\n'
+                 f'Approved plan:\n{(self.context / "plan.md").read_text()}\nOID delta:\n{ingest["manifest"]}\n'
+                 f'Run this test command exactly as written in one Bash call: {self.args.test_command}')
+        self.state['fake_candidate_review_rejected'] = (revision.tree_oid, test['id'])
+        self.save()
+        self._fake_dispatching = True
+        try:
+            review = self.invoke('reviewer', 'EXEC', 'Role: reviewer, fresh. ' + proof,
+                                 review_schema(), fresh=True, workspace_override=checkout.root)
+            candidate_tree.verify_candidate_revision(checkout, revision)
+            self.state.pop('pending_reviewer_result_sequence', None)
+            if review['answer']['status'] != 'APPROVE' or review['answer']['full_review']:
+                raise RuntimeError('OID reviewer did not approve')
+            reviewed = {'id': str(uuid.uuid4()), 'test_id': test['id'],
+                        'oid': revision.tree_oid, 'sequence': review['sequence']}
+            self.state['fake_candidate_review'] = reviewed
+            self.save()
+            gate = self.invoke('gate', 'EXEC', 'You are an adversarial reviewer. ' + proof,
+                               gate_schema(), fresh=True, workspace_override=checkout.root)
+            candidate_tree.verify_candidate_revision(checkout, revision)
+            if gate['answer']['verdict'] != 'approve' or gate['answer']['findings']:
+                raise RuntimeError('OID gate did not approve')
+            chain = {'id': str(uuid.uuid4()), 'ingest_id': ingest['id'], 'test_id': test['id'], 'identity': identity,
+                     'review_id': reviewed['id'], 'gate_sequence': gate['sequence'], 'oid': revision.tree_oid}
+            self.state.pop('fake_candidate_review_rejected')
+            self.state['fake_candidate_chain'] = chain
+            self.save()
+        finally:
+            self._fake_dispatching = False
 
     def _freeze_fake_exec_source(self) -> None:
         self.state.pop('fake_exec_source', None)

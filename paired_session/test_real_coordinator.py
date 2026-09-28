@@ -3677,6 +3677,125 @@ sys.exit(result.returncode)
                 co.fake_candidate_oid_test()
         self.assertNotIn('fake_candidate_test', co.state)
 
+    def test_fake_candidate_oid_review_chains_ingest_test_reviewer_gate(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn()
+        tested = co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        chain = co.state['fake_candidate_chain']
+        reviewed = co.state['fake_candidate_review']
+        self.assertEqual(chain['ingest_id'], ingest['id'])
+        self.assertEqual(chain['test_id'], tested['id'])
+        self.assertEqual(chain['review_id'], reviewed['id'])
+        self.assertEqual(chain['oid'], ingest['output_oid'])
+        self.assertLess(reviewed['sequence'], chain['gate_sequence'])
+        self.assertEqual(co.state['fake_candidate_chain'], chain)
+        for role in ('reviewer', 'gate'):
+            row = next(row for row in co.state['turns'] if row['phase'] == 'EXEC' and
+                       row['role'] == role and row['sequence'] >= reviewed['sequence'])
+            prompt = (co.evidence / f"{row['sequence']:03d}-exec-{role}.prompt.txt").read_text()
+            self.assertIn(ingest['output_oid'], prompt)
+            self.assertIn(str(tested['root']), prompt)
+            self.assertNotIn(str(self.workspace), prompt)
+            self.assertEqual(row['workspace'], tested['root'])
+
+    def test_fake_candidate_oid_review_rejects_stale_test_or_changed_checkout(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        tested = co.fake_candidate_oid_test()
+        co.state['lifecycle']['epoch'] += 1
+        with self.assertRaisesRegex(RuntimeError, 'bind current ingest'):
+            co.fake_candidate_oid_review()
+        co.state['lifecycle']['epoch'] -= 1
+        (Path(tested['root']) / 'sum_ints.py').write_text('changed\n')
+        with self.assertRaisesRegex(ValueError, 'candidate|reviewed OID'):
+            co.fake_candidate_oid_review()
+        self.assertNotIn('fake_candidate_review', co.state)
+
+    def test_fake_candidate_oid_review_uses_coordinator_test_not_model_claim(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        co.fake_candidate_oid_test()
+        with patch.dict(os.environ, {'FAKE_REVIEW_NO_TEST_EVENT': '1'}):
+            co.fake_candidate_oid_review()
+        self.assertIn('fake_candidate_chain', co.state)
+
+    def test_fake_candidate_oid_review_blocks_gate_finding(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        co.fake_candidate_oid_test()
+        with patch.dict(os.environ, {'FAKE_GATE_BLOCK': '1'}):
+            with self.assertRaisesRegex(RuntimeError, 'OID gate did not approve'):
+                co.fake_candidate_oid_review()
+        self.assertIn('fake_candidate_review', co.state)
+        self.assertNotIn('fake_candidate_chain', co.state)
+        rejected = co.state['fake_candidate_review_rejected']
+        self.assertEqual(tuple(rejected[:2]),
+                         (co.state['fake_candidate_test']['oid'], co.state['fake_candidate_test']['id']))
+        resumed = rc.Coordinator(args, _fake_lifecycle=True)
+        with self.assertRaisesRegex(RuntimeError, 'current successful test'):
+            resumed.fake_candidate_oid_review()
+
+    def test_fake_candidate_oid_review_revise_persists_same_oid_rejection(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        tested = co.fake_candidate_oid_test()
+        with patch.dict(os.environ, {'FAKE_EXEC_MIXED_REVISE': '1'}):
+            with self.assertRaisesRegex(RuntimeError, 'OID reviewer did not approve'):
+                co.fake_candidate_oid_review()
+        rejected = co.state['fake_candidate_review_rejected']
+        self.assertEqual(tuple(rejected[:2]), (tested['oid'], tested['id']))
+        self.assertNotIn('fake_candidate_chain', co.state)
+        review_count = sum(row['role'] == 'reviewer' and row['phase'] == 'EXEC'
+                           for row in co.state['turns'])
+        resumed = rc.Coordinator(args, _fake_lifecycle=True)
+        with self.assertRaisesRegex(RuntimeError, 'current successful test'):
+            resumed.fake_candidate_oid_review()
+        self.assertEqual(sum(row['role'] == 'reviewer' and row['phase'] == 'EXEC'
+                             for row in resumed.state['turns']), review_count)
+        self.assertNotIn('fake_candidate_chain', resumed.state)
+
+    def test_fake_candidate_oid_review_protocol_error_cannot_reroll(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        tested = co.fake_candidate_oid_test()
+        with patch.dict(os.environ, {'FAKE_EXEC_MIXED_REVISE': '1',
+                                     'FAKE_EMPTY_CLAIMS': 'reviewer', 'FAKE_ALWAYS_EMPTY_CLAIMS': '1'}):
+            with self.assertRaises(RuntimeError):
+                co.fake_candidate_oid_review()
+        resumed = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(tuple(resumed.state['fake_candidate_review_rejected']),
+                         (tested['oid'], tested['id']))
+        count = len(resumed.state['turns'])
+        with self.assertRaisesRegex(RuntimeError, 'current successful test'):
+            resumed.fake_candidate_oid_review()
+        self.assertEqual(len(resumed.state['turns']), count)
+        self.assertNotIn('fake_candidate_chain', resumed.state)
+
+    def test_fake_candidate_oid_review_rejects_reviewer_tree_mutation_before_gate(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        co.fake_candidate_oid_test()
+        with patch.dict(os.environ, {'FAKE_MUTATION': 'checkout'}):
+            with self.assertRaisesRegex(ValueError, 'candidate|reviewed OID'):
+                co.fake_candidate_oid_review()
+        self.assertNotIn('fake_candidate_review', co.state)
+        self.assertNotIn('fake_candidate_chain', co.state)
+
     def test_fake_exec_source_rejects_stale_or_other_run_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
