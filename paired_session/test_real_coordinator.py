@@ -662,7 +662,7 @@ class RealCoordinatorTests(unittest.TestCase):
                          enumerate(invocation['args'][:-1]) if arg == '-c']
         expected = co._author_sandbox_config_args()
         self.assertEqual(config_values, expected[1::2])
-        self.assertEqual(invocation['command'][0], 'touch')
+        self.assertEqual(invocation['command'][0], '/usr/bin/touch')
 
         escaped_target = self.root / 'escaped-target'
         with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'escape',
@@ -672,6 +672,128 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertFalse(escaped['target_absent_before_cleanup'])
         self.assertTrue(escaped['cleanup_ok'])
         self.assertFalse(escaped_target.exists())
+
+    def test_workspace_program_and_relative_path_shims_cannot_drive_probe(self):
+        shim_dir = self.workspace / 'bin'
+        shim_dir.mkdir()
+        for name in ('touch', 'node', 'codex'):
+            shim = shim_dir / name
+            shim.write_text('#!/bin/sh\nexit 0\n')
+            shim.chmod(0o755)
+        with patch.dict(os.environ, {'PATH': 'bin::' + str(shim_dir) + os.pathsep + os.environ['PATH']}):
+            co = self.coordinator()
+            programs, issue = co._program_state()
+            self.assertIsNone(issue)
+            self.assertNotIn(str(shim_dir), programs['path_env'])
+            self.assertNotIn('::', programs['path_env'])
+            self.assertFalse(any(not Path(p).is_absolute() for p in programs['path_env'].split(os.pathsep)))
+            target = self.root / 'safe-control-target'
+            co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', target)
+        self.run_dir = self.root / 'forbidden-program-run'
+        forbidden = self.command('--codex-bin', str(shim_dir / 'codex'))
+        forbidden[2] = 'permission-probe'
+        result = subprocess.run(forbidden, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertIn('author-writable root', json.dumps(report['failure_reasons']))
+
+    def test_bound_provider_binary_change_holds_before_dispatch(self):
+        co = self.coordinator()
+        programs, issue = co._program_state()
+        self.assertIsNone(issue)
+        binary = Path(programs['codex_bin']['path'])
+        binary.write_bytes(binary.read_bytes() + b'\n# changed after probe\n')
+        with self.assertRaisesRegex(RuntimeError, 'operator program or PATH changed'):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', rc.author_schema())
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertEqual(co.state['invocations_used'], 0)
+
+    def test_workspace_profile_symlink_to_prior_author_tmp_is_refused(self):
+        prior_tmp = self.root / 'prior-run' / 'author-tmp'
+        prior_tmp.mkdir(parents=True)
+        unsafe = prior_tmp / 'paired-session.json'
+        unsafe.write_text(json.dumps({'codex_bin': str(prior_tmp / 'codex')}))
+        profile = self.workspace / '.review-loop' / 'paired-session.json'
+        profile.parent.mkdir()
+        profile.symlink_to(unsafe)
+        command = self.command()
+        command[2] = 'permission-probe'
+        result = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        self.assertIn('workspace profile cannot select operator programs',
+                      json.dumps(report['failure_reasons']))
+
+    def test_fresh_permission_probe_rebinds_changed_operator_binary(self):
+        co = self.coordinator()
+        before, issue = co._program_state()
+        self.assertIsNone(issue)
+        binary = Path(before['codex_bin']['path'])
+        binary.write_bytes(binary.read_bytes() + b'\n# upgraded\n')
+        co.args.action = 'permission-probe'
+        after, issue = co._program_state()
+        self.assertIsNone(issue)
+        self.assertNotEqual(before['codex_bin']['sha256'], after['codex_bin']['sha256'])
+        self.assertEqual(co.state['operator_programs'], after)
+        co.args.action = 'run'
+        self.assertIsNone(co._program_state()[1])
+
+    def test_done_program_drift_does_not_mutate_acceptance_state(self):
+        co = self.coordinator()
+        programs, issue = co._program_state()
+        self.assertIsNone(issue)
+        co.state.update(status='DONE', acceptance_state='PENDING', phase='EXEC')
+        co.save()
+        binary = Path(programs['codex_bin']['path'])
+        binary.write_bytes(binary.read_bytes() + b'\n# updated while DONE\n')
+        passed, reason = co.probe_passed()
+        self.assertFalse(passed)
+        self.assertIn('operator program or PATH changed', reason)
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertEqual(co.state['acceptance_state'], 'PENDING')
+
+    def test_done_missing_codex_probe_fails_without_losing_accept(self):
+        command = self.command()
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]))
+        self.assertIsNone(co._program_state()[1])
+        co.state.update(status='DONE', acceptance_state='PENDING', phase='EXEC')
+        co.save()
+        Path(co.args.codex_bin).unlink()
+        command[2] = 'permission-probe'
+        probe = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(probe.returncode, 2)
+        self.assertIn('FAIL', probe.stdout)
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'DONE')
+        command[2] = 'accept'
+        accepted = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertIn('ACCEPTED', accepted.stdout)
+
+    def test_program_issue_never_executes_version_or_synthetic_control(self):
+        co = self.coordinator()
+        programs, issue = co._program_state()
+        self.assertIsNone(issue)
+        binary = Path(programs['codex_bin']['path'])
+        binary.write_bytes(binary.read_bytes() + b'\n# changed before control\n')
+        self.assertEqual(co._codex_cli_version(), 'UNAVAILABLE')
+        with self.assertRaisesRegex(RuntimeError, 'operator program or PATH changed'):
+            co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', self.root / 'target')
+        self.assertFalse((self.root / 'target').exists())
+
+    def test_snapshot_action_cannot_choose_workspace_git_from_relative_path(self):
+        marker = self.root / 'workspace-git-ran'
+        shim = self.workspace / 'git'
+        shim.write_text('#!/bin/sh\necho shim > ' + shlex.quote(str(marker)) + '\nexit 0\n')
+        shim.chmod(0o755)
+        command = self.command()
+        command[2] = 'snapshot'
+        result = subprocess.run(command, cwd=self.workspace,
+                                env={**os.environ, 'PATH': '.:' + os.environ['PATH']},
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
 
     def test_synthetic_codex_contract_refuses_old_argv_and_unknown_version(self):
         co = self.coordinator('--author-vendor', 'codex')

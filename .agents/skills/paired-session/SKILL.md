@@ -11,9 +11,13 @@ invoke the legacy review-loop workflow for this task.
 1. Identify the intended Git worktree. Use a dedicated task worktree; preserve
    unrelated user changes and do not switch away from a dirty checkout. If a
    dedicated worktree is unavailable, ask before creating one.
-2. Read `<workspace>/.review-loop/paired-session.json` if present. It controls
-   author/reviewer/gate models, effort, test command, and protocol limits. CLI
-   options can override profile values for this run, but models must match the
+2. Read `<workspace>/.review-loop/paired-session.json` if present. It may set
+   non-program limits only. Put role/vendor/program/test-command settings in an
+   operator-owned profile outside the workspace and run directory, and pass
+   its absolute path with `--config` for probe and run. `--config` replaces the
+   workspace profile; copy desired non-program limits into the external profile.
+   CLI options can override
+   that profile, but models must match the
    ADR-8 vendor pins (`claude-opus-5-5` for Claude; `gpt-6-luna` for Codex).
    Without a profile, the coordinator selects those pins by role vendor.
    Determine the project's test command from its docs/manifests and ask only if
@@ -54,6 +58,8 @@ invoke the legacy review-loop workflow for this task.
    ```
 
    Replace the work-item placeholder and test command before running. Add
+   `--config /absolute/path/to/profile.json` to both calls when using the
+   external operator profile. Add
    user-requested CLI overrides identically to probe and run; add
    `--stop-after-plan` only to `run` when requested. Keep the heredoc delimiter
    unique and quoted; never interpolate user text as shell code. Never use

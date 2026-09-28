@@ -20,9 +20,11 @@ Start a new session. The `/review-loop` command is now available in all your pro
 
 The paired-session coordinator is also available as an explicit opt-in through
 `/review-loop:paired-session <work item>`. This does not change the current
-default route. Per-project coordinator settings live in
-`.review-loop/paired-session.json`; the plugin ships
-`paired_session/paired-session-config.example.json` as a starting profile.
+default route. Workspace `.review-loop/paired-session.json` may contain
+non-program limits only. Keep role, vendor, program and test-command settings
+in an operator-owned profile outside the product workspace and run directory,
+then pass its absolute path with `--config` to both probe and run. The plugin
+ships `paired_session/paired-session-config.example.json` for that profile.
 
 **Optional** — copy the config template to customize per-project defaults:
 
@@ -104,8 +106,11 @@ natural-language triggers like "run review-loop on this branch" or
 Codex.
 
 Ask Codex to "use paired-session for this task" to opt into the coordinator.
-It reads `.review-loop/paired-session.json` when present and stores its run
-artifacts outside the product workspace under the user-level Codex state folder.
+It reads non-program workspace defaults from `.review-loop/paired-session.json`
+when no `--config` is given. Program and role settings require an external operator
+profile passed with `--config`, which replaces rather than layers onto the workspace profile.
+Run artifacts stay outside the product workspace under
+the user-level Codex state folder.
 
 Full step-by-step + verification: [`docs/install-codex.md`](docs/install-codex.md).
 

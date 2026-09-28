@@ -73,10 +73,17 @@ workspace: the author can write to the workspace and must not be able to alter
 coordinator state. The workspace must be a Git worktree and the work item must
 be a file. The configured test command is checked before the coordinator starts.
 
-For per-project settings, copy `paired-session-config.example.json` to
-`.review-loop/paired-session.json` in the workspace. The CLI loads that profile
-for run, probe, and resume; explicit CLI options override profile values. On
-resume, the effective settings must still match the saved run configuration.
+For operator-selected programs, role/vendor settings and test commands, copy
+`paired-session-config.example.json` to an operator-owned path outside the
+workspace, run directory and author temp directory, then pass it with
+`--config /absolute/path/to/profile.json`. A workspace
+`.review-loop/paired-session.json` may hold limits and other non-program
+settings, but program/role/test-command keys there cause HOLD when that profile
+is selected. `--config` replaces the workspace profile; copy any desired limits
+into the external profile because the two files are not layered. The CLI loads the selected profile for run, probe,
+and resume; explicit CLI options override it. On resume, effective settings
+must still match the saved run configuration. A changed binary or PATH requires
+a fresh permission probe before the run can continue.
 Models follow ADR-8 vendor pins (Claude: `claude-opus-5-5`; Codex:
 `gpt-6-luna`). Changing a role's vendor without updating incompatible model
 values is rejected before run state is created.

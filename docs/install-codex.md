@@ -76,9 +76,12 @@ Stage 1 exposes five skills under `.agents/skills/`:
 with the Claude Code path, so a session started under one runtime can be
 resumed under the other.
 
-Paired-session reads the optional project profile
-`.review-loop/paired-session.json` and stores coordinator state outside the
-workspace under `$CODEX_HOME/state/paired-session/`.
+Paired-session reads non-program defaults from the optional workspace
+`.review-loop/paired-session.json`. Keep role, vendor, program and test-command
+settings in an operator-owned profile outside the workspace and run directory,
+and pass it with `--config` to both probe and run. This replaces the workspace
+profile, so copy any desired non-program limits into it. Coordinator state stays
+outside the workspace under `$CODEX_HOME/state/paired-session/`.
 
 ## Verification
 

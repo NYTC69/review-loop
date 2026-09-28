@@ -32,8 +32,10 @@ import uuid
 from typing import Optional
 try:
     from paired_session import codex_capability_guard
+    from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import codex_capability_guard
+    from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
@@ -1355,6 +1357,17 @@ class Coordinator:
                 result.append(command)
         return result
 
+    def _program_state(self, hold=False):
+        current, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir,
+                                    self.args.codex_bin, self.args.claude_bin, self.args.gate_prompt, self.args.config)
+        frozen = self.state.get('operator_programs')
+        if issue is None and (frozen is None or self.args.action == 'permission-probe'):
+            self.state['operator_programs'] = current
+            self.save()
+        elif frozen is not None and frozen != current:
+            issue = 'configured operator program or PATH changed since permission probe'
+        if issue and hold and self.state.get('status') != 'DONE': self.hold(issue)
+        return current, issue
     def reviewer_flags(self) -> dict:
         """Permission surface whose probe PASS is valid for a later run."""
         flags = {
@@ -1382,6 +1395,7 @@ class Coordinator:
                 'author_model': self.args.author_model,
                 'author_effort': self.args.author_effort,
                 'author_binary': self.args.claude_bin if self.args.author_vendor == 'claude' else self.args.codex_bin,
+                'operator_programs': self._program_state()[0],
         }
         if self.args.author_vendor == 'codex':
             flags.update({
@@ -1402,7 +1416,8 @@ class Coordinator:
 
     def _codex_cli_version(self) -> str:
         try:
-            result = subprocess.run([self.args.codex_bin, '--version'], text=True,
+            if self._program_state()[1]: return 'UNAVAILABLE'
+            result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True,
                                     capture_output=True, timeout=10)
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
@@ -1504,6 +1519,7 @@ class Coordinator:
         return hashlib.sha256(raw).hexdigest()
 
     def probe_passed(self) -> tuple[bool, str]:
+        if (issue := self._program_state()[1]): return False, issue
         path = self.run_dir / 'permission-probe.json'
         if not path.exists():
             return False, 'permission-probe.json is missing'
@@ -2735,6 +2751,8 @@ class Coordinator:
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
+        issue = self._program_state(hold=True)[1]
+        if issue: raise RuntimeError(issue)
         if self.state.get('config', {}).get('lifecycle_mode') == 'on':
             self._verify_frozen_role_dispatch()
         rejection = None
@@ -2785,6 +2803,7 @@ class Coordinator:
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh)
+        command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
         now = time.time()
         receipt = {'sequence': seq, 'role': role, 'phase': phase, 'vendor': self._role_vendor(role),
                    'model': self._model_effort(role)[0], 'command': command, 'snapshot_before': before,
@@ -3418,14 +3437,17 @@ class Coordinator:
 
     def _codex_sandbox_escape_check(self, workspace: Path, label: str, target: Path,
                                     expected_allowed=False) -> dict:
-        command = ['touch', str(target)]
+        issue = self._program_state(hold=True)[1]
+        if issue: raise RuntimeError(issue)
+        command = ['/usr/bin/touch', str(target)]
         try:
             profile_args = self._codex_sandbox_profile_args()
         except ValueError as exc:
             return {'label': label, 'status': 'CONTRACT-FAIL', 'reason': str(exc),
                     'expected': 'allowed' if expected_allowed else 'denied',
                     'sandbox_overrides': self._author_sandbox_overrides(), 'returncode': None}
-        args = [self.args.codex_bin, 'sandbox', '--log-denials', '-C', str(workspace),
+        args = [self.state['operator_programs']['codex_bin']['path'],
+                'sandbox', '--log-denials', '-C', str(workspace),
                 *profile_args, *self._author_sandbox_config_args(), '--', *command]
         outcome = {'label': label, 'command': shlex.join(command), 'argv': args,
                    'expected': 'allowed' if expected_allowed else 'denied',
@@ -4358,7 +4380,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         try:
             passed = co.permission_probe(retry_uncertain=args.retry_uncertain)
         except RuntimeError as exc:
-            co.hold('permission probe: ' + str(exc))
+            if co.state.get('status') != 'DONE': co.hold('permission probe: ' + str(exc))
             passed = False
         suffix = ': ' + co.state.get('hold_reason', '') if co.state.get('hold_reason') else ''
         print(('PASS' if passed else 'FAIL') + suffix)
@@ -4411,6 +4433,8 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    roots = (Path(args.workspace), Path(args.run_dir))
+    os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
