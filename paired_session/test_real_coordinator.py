@@ -3443,6 +3443,25 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ct.CandidateError, 'live or scratch parent changed'):
             ct.verify_candidate_revision(baseline, newer)
 
+    def test_candidate_rebuild_from_verified_oid_uses_new_root_and_frozen_live_baseline(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt',))
+        (baseline.root / 'tracked.txt').write_text('candidate change\n')
+        revision = ct.ingest_candidate_revision(baseline)
+        rebuilt = ct.rebuild_candidate_from_oid(baseline, revision)
+        self.assertNotEqual(rebuilt.root, baseline.root)
+        self.assertNotEqual(rebuilt.root_identity, baseline.root_identity)
+        self.assertEqual(rebuilt.tree_oid, baseline.tree_oid)
+        self.assertEqual(rebuilt.parent_entries, baseline.parent_entries)
+        self.assertEqual((rebuilt.root / 'tracked.txt').read_text(), 'candidate change\n')
+        self.assertEqual((self.workspace / 'tracked.txt').read_text(), 'base\n')
+        ct.verify_candidate_revision(rebuilt, revision)
+        (baseline.root / 'tracked.txt').write_text('dirty old root\n')
+        second = ct.rebuild_candidate_from_oid(baseline, revision)
+        self.assertEqual((second.root / 'tracked.txt').read_text(), 'candidate change\n')
+        self.assertNotEqual(second.root_identity, rebuilt.root_identity)
+
     def test_docs_paths_are_derived_from_candidate_oids_and_invalidate_receipts(self):
         scratch = self.root / 'scratch'; scratch.mkdir()
         baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,

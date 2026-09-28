@@ -5,7 +5,7 @@ stop the writer process group and enforce OS denial of scratch Git/index writes
 before ingest; no live route calls these helpers today.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -481,3 +481,50 @@ def verify_candidate_revision(baseline: CandidateBaseline, revision: CandidateRe
             raise CandidateError('candidate bytes differ from reviewed OID')
     finally:
         staging_index.unlink(missing_ok=True)
+
+
+def rebuild_candidate_from_oid(baseline: CandidateBaseline,
+                               revision: CandidateRevision) -> CandidateBaseline:
+    """Rebuild a verified candidate into a fresh root without importing live bytes."""
+    old_env = _git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(baseline.index),
+                       GIT_WORK_TREE=str(baseline.root))
+    _assert_live_unchanged(baseline, old_env)
+    if (_git(['rev-parse', 'refs/paired-session/candidates/' + revision.tree_oid], env=old_env)
+            != revision.tree_oid or
+            _git(['rev-parse', baseline.parent_head + '^{tree}'], env=old_env) != baseline.tree_oid or
+            _tree_entries(old_env, baseline.tree_oid) != baseline.parent_entries or
+            _manifest(old_env, baseline.tree_oid, revision.tree_oid) != revision.manifest):
+        raise CandidateError('candidate rebuild OID differs from verified scratch history')
+    _check_attributes(old_env, _tree_entries(old_env, revision.tree_oid))
+    _require_authorized((row['path'] for row in revision.manifest), baseline.authorized_prefixes)
+    parent = baseline.root.parent.parent.resolve()
+    common = Path(_git(['rev-parse', '--git-common-dir'], cwd=baseline.workspace, env=_git_env()))
+    if not common.is_absolute(): common = baseline.workspace / common
+    linked = [Path(line[9:]) for line in _git(['worktree', 'list', '--porcelain'],
+                                              cwd=baseline.workspace, env=_git_env()).splitlines()
+              if line.startswith('worktree ')]
+    protected = (baseline.workspace, baseline.run_dir, baseline.git_dir,
+                 baseline.index.parent, common.resolve(), *linked)
+    if any(not _outside(parent, path) for path in protected):
+        raise CandidateError('candidate rebuild parent is protected')
+    base = Path(tempfile.mkdtemp(prefix='paired-session-tree-', dir=parent))
+    root = base / 'tree'
+    index = baseline.index.with_name('rebuild-' + uuid.uuid4().hex + '.index')
+    try:
+        root.mkdir()
+        env = _git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(index),
+                       GIT_WORK_TREE=str(root), GIT_CEILING_DIRECTORIES=str(base))
+        _git(['read-tree', revision.tree_oid], env=env)
+        _git(['checkout-index', '--all', '--prefix=' + str(root) + os.sep], env=env)
+        separate = root.stat().st_dev not in {
+            baseline.git_dir.stat().st_dev, index.stat().st_dev,
+            baseline.workspace.stat().st_dev,
+            (baseline.run_dir if baseline.run_dir.exists() else baseline.run_dir.parent).stat().st_dev}
+        rebuilt = replace(baseline, root=root, index=index, separate_filesystems=separate,
+                          root_identity=(root.lstat().st_dev, root.lstat().st_ino))
+        verify_candidate_revision(rebuilt, revision)
+        return rebuilt
+    except BaseException:
+        index.unlink(missing_ok=True)
+        shutil.rmtree(base, ignore_errors=True)
+        raise
