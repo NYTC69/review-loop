@@ -110,3 +110,53 @@ Deferred to **doc 2b**: per-epoch/whole-item budgets, replay/reject caps, simpli
 dispositions and tool-use retry. Its tests include EXEC-invalidating DOCS source comments, simplifier/test-writer
 replay/cap HOLD, gate REQUEST_CHANGES→repair→FINISH, malformed gate revalidation, reviewer write/report-read attempts,
 writer run-dir/receipt/accept attempts, and stage budget exhaustion. Docs 3/4 own DOCS/SECURITY content and closeout.
+
+## Fake-drive author boundary (R30-D1; fake harness only)
+
+Choose isolated candidate-root dispatch. Copying a live-workspace delta then restoring it risks user work and crash
+ambiguity. Admit only clean live HEAD/index; candidate bytes originate from frozen HEAD plus candidate writers,
+never live ignored/untracked files. PLAN may read live workspace: its output is a plan, not candidate content.
+On PLAN→EXEC, each rebuilt root, and each new EXEC convergence, clear `sessions['author']`, set
+`started['author']=False`, create/persist a fresh `exec_session_id` bound to approved plan hash and root nonce.
+EXEC prompt includes approved plan text/hash, names only candidate_root, and never resumes PLAN's session ID.
+Repair turns may resume only this EXEC ID; any other resumed ID HOLDs. Fake tests inspect every EXEC argv for absence
+of PLAN session ID. Fake mode is single-process state testing, not OS isolation or real activation.
+
+Before author call, verify root against input OID; persist unique turn UUID, epoch, sequence, parent, run/item IDs,
+root path/nonce/identity, scratch Git/index identity, frozen config/role/model/environment hashes and pending.
+After fake call, coordinator computes full file/mode manifest hash, never trusting provider text. Ingest rejects
+unauthorized differences (never filters), checks live HEAD/index, writes scratch objects/index and output OID,
+then persists an ingest receipt **before** review. Every writer (author, FINISH, DOCS, SECURITY) gets this same
+receipt format with input/output OIDs, manifest hash and source turn/receipt ID. Interrupted scratch refs/objects
+are necessary but insufficient evidence; reverify bytes, index and receipt. All fake-drive outputs derive only
+from these ingest receipts, never caller approval/proof, `outputs`, stub switches or context callbacks.
+
+Fake recovery adds `rebuild_candidate_from_oid(X)`: reuse verified scratch Git; materialize X into a new root/nonce,
+reset a new isolated index to X, verify root bytes/modes and OID; never refetch live. Recompute root identity/device
+flag, but reread parent entries and live-index hash only to compare with frozen admission values; mismatch HOLDs.
+An uncertain author with no complete receipt HOLDs; fake resume/re-entry uses rebuilt root after resolving pending,
+quarantines old root forever and starts a new EXEC session. `fake_drive` validates saved epoch/pending, not only
+fresh epoch 0. An OID change from FINISH/DOCS starts fresh EXEC review without a new author turn.
+
+Role context/status/delta comes from scratch Git `diff-tree parent→current OID`, never live Git; clear inherited
+`GIT_*`, set ceiling and verify each fresh role checkout OID before/after. Coordinator runs configured tests in
+its own one-use OID checkout, resolves in-tree executable there by blob hash, redirects caches outside checkout,
+and stores OID/root/test-command/result receipt referring to ingest ID **before** reviewer and gate calls (doc 2a
+§4). Fake EXEC replaces the legacy reviewer-self-test approval gate with this coordinator receipt; model-reported
+commands are advisory. Receipts chain ingest ID→test ID→reviewer ID→gate ID, with matching run/item, OID, epoch,
+convergence ID and no later writer before approval. `workspace` proof remains live delivery path; candidate-root
+path/identity is a separate FINISH/DOCS/SECURITY proof. Router builds proof only from persisted current receipts,
+verifies candidate tree/manifest immediately before accepting and re-reviews after any writer OID change.
+FINISH/POLISH/DOCS/SECURITY callbacks and observed-tools claims in fake drive are coordinator-owned fake dispatch,
+not caller-injected approval; no stub may satisfy M3. Legacy `snapshot_after`, live `git_snapshot` and model
+snapshot text cannot authorize the path. Test: no hand-built approvals, no skipped review after DOCS, final
+OID-bound receipts at SECURITY preflight.
+
+**Real activation gates (all default FAIL/CLOSED):** `A-author-sandbox` (owner M4-activation-A1) OS-denies EXEC
+author read/write of live workspace (including ignored files), run dir and credentials; proves old/detached writer
+termination/capability revocation and denies old writer access to new roots/reviewer checkouts. `A-candidate-rebuild`
+(owner M4-activation-A2) owns crash-safe real-process reconstruction. `A-role-tmp` (owner M4-activation-A3)
+moves author TMPDIR/schema/context outside run dir and test caches outside candidate. `A-oid-tests` (owner
+M4-activation-A4) owns OS-contained OID testing/receipt evidence. `A-filesystem` (owner M4-activation-A5) proves
+scratch/candidate separation; fake FINISH alone may simulate it behind `fake_dispatch_guard`, recording
+`simulated_separation`, never real evidence. Real provider activation refuses until every gate is verified.
