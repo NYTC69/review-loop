@@ -2920,7 +2920,8 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'candidate differs'):
             co.fake_lifecycle_route(approved, finish_context=foreign)
         self.assertIsNone(co.state['lifecycle']['pending'])
-        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=context), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=context, polish_stub=True),
+                         'STOP_BEFORE_SECURITY')
         self.assertEqual(len(launched), 1)
         self.assertEqual(co.state['lifecycle']['receipts'][1]['finish_result'], 'TESTS_REQUIRED')
         self.assertEqual(co.state['turns'], [])
@@ -2971,6 +2972,117 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['lifecycle']['pending']['stage'], 'FINISH')
         with self.assertRaisesRegex(ValueError, 'uncertain FINISH request'):
             co.fake_lifecycle_route(approved, stub_mode=True)
+
+    def fake_lifecycle_ready_for_specialists(self):
+        command = self.command('--lifecycle-mode', 'on')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt',))
+        baseline = dataclasses.replace(baseline, separate_filesystems=True)
+        revision = ct.ingest_candidate_revision(baseline)
+        life = co.state['lifecycle']
+        fields = {'candidate_oid': revision.tree_oid, 'epoch': 0, 'phase': 'EXEC',
+                  'run_id': self.run_dir.name, 'convergence_id': 'exec-1',
+                  'workspace': str(self.workspace.resolve()), 'run_dir': str(self.run_dir.resolve()),
+                  'parent_head': baseline.parent_head}
+        proof = {'run_id': self.run_dir.name, 'convergence_id': 'exec-1', 'blocking_findings': [],
+                 'reviewer': {**fields, 'role': 'reviewer', 'status': 'APPROVE'},
+                 'gate': {**fields, 'role': 'gate', 'verdict': 'approve'}}
+        approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
+                    'run_id': self.run_dir.name, 'parent': life['parent'],
+                    'candidate_oid': revision.tree_oid, 'proof': proof}
+        def launch(request):
+            return {'sandbox_id': 'fake-stopped', 'request_sha256': request['sha256'], 'status': 'READY'}
+        context = {'baseline': baseline, 'revision': revision, 'launch': launch,
+                   'sandbox_stopped': lambda identity: identity == 'fake-stopped',
+                   'tested_oid': revision.tree_oid}
+        return co, approved, context
+
+    def test_fake_lifecycle_specialist_budget_and_clean_approval(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        seen = []
+        def specialist(request):
+            seen.append(request)
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=finish,
+                         polish_context={'python-reviewer': specialist}), 'STOP_BEFORE_SECURITY')
+        self.assertEqual([row['role'] for row in seen], ['specialist:python-reviewer'])
+        self.assertEqual(co.state['lifecycle']['polish_calls'], 1)
+        self.assertEqual(co.state['lifecycle']['specialist_counts'], {'python-reviewer': 1})
+        self.assertEqual(co.state['lifecycle']['receipts'][2]['specialists'], ('python-reviewer',))
+
+    def test_fake_lifecycle_specialist_blocker_stops_before_docs(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        def specialist(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'findings': [{'severity': 'MAJOR', 'file': 'tracked.txt',
+                                  'summary': 'specialist blocker', 'failure_scenario': 'unsafe'}]}
+        with self.assertRaisesRegex(ValueError, 'open specialist blocker'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist})
+        self.assertEqual(co.state['lifecycle']['stage'], 'POLISH-Q')
+        self.assertEqual(co.state['lifecycle']['hold_reason'], 'open specialist blocker')
+        self.assertNotIn('DOCS', [row['stage'] for row in co.state['lifecycle']['receipts']])
+        self.assertEqual(co.blocking_open_findings()[0]['owner_role'], 'specialist:python-reviewer')
+        with self.assertRaisesRegex(ValueError, 'uncertain POLISH-Q request'):
+            co.fake_lifecycle_route(approved, polish_stub=True)
+
+    def test_fake_lifecycle_specialist_budget_refuses_before_dispatch(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        co.state['lifecycle']['polish_calls'] = rc.budget_policy.BUDGET_CAPS['POLISH-Q'][0]
+        co.save()
+        def forbidden(request):
+            self.fail('budget exhausted before specialist dispatch')
+        specialists = {'python-reviewer': forbidden}
+        with self.assertRaisesRegex(ValueError, 'budget exhausted'):
+            co.fake_lifecycle_route(approved, finish_context=finish, polish_context=specialists)
+        self.assertEqual(co.state['lifecycle']['stage'], 'POLISH-Q')
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        co.state['lifecycle']['polish_calls'] = 0
+        co.state['lifecycle']['specialist_counts'] = {'python-reviewer': 4}
+        co.save()
+        with self.assertRaisesRegex(ValueError, 'budget exhausted'):
+            co.fake_lifecycle_route(approved, polish_context=specialists)
+        self.assertIsNone(co.state['lifecycle']['pending'])
+
+    def test_fake_lifecycle_polish_stub_cannot_bypass_blocker_or_budget(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        co.record_findings('reviewer', 'EXEC', 1, [{'severity': 'MAJOR', 'file': 'tracked.txt',
+            'summary': 'existing blocker', 'failure_scenario': 'unsafe'}])
+        with self.assertRaisesRegex(ValueError, 'open blocker'):
+            co.fake_lifecycle_route(approved, stub_mode=True)
+        self.assertNotIn('DOCS', [row['stage'] for row in co.state['lifecycle']['receipts']])
+        co.state['finding_ledger'].clear()
+        co.state['lifecycle']['polish_calls'] = rc.budget_policy.BUDGET_CAPS['POLISH-Q'][0]
+        co.save()
+        with self.assertRaisesRegex(ValueError, 'budget exhausted'):
+            co.fake_lifecycle_route(approved, stub_mode=True)
+
+    def test_fake_lifecycle_specialist_crash_counts_durable_start(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        def crash(request):
+            raise RuntimeError('fake specialist crashed')
+        with self.assertRaisesRegex(RuntimeError, 'fake specialist crashed'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': crash})
+        self.assertEqual(co.state['lifecycle']['polish_calls'], 1)
+        self.assertEqual(co.state['lifecycle']['specialist_counts'], {'python-reviewer': 1})
+        self.assertEqual(co.state['invocations_used'], 1)
+        with self.assertRaisesRegex(ValueError, 'uncertain POLISH-Q request'):
+            co.fake_lifecycle_route(approved, polish_context={'python-reviewer': crash})
+
+    def test_fake_lifecycle_unknown_specialist_severity_cannot_pass(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        def unknown(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'],
+                    'findings': [{'severity': 'high', 'file': 'tracked.txt',
+                                  'summary': 'unknown schema', 'failure_scenario': 'unsafe'}]}
+        with self.assertRaisesRegex(ValueError, 'unknown severity'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': unknown})
+        self.assertEqual(co.state['lifecycle']['stage'], 'POLISH-Q')
+        self.assertNotIn('DOCS', [row['stage'] for row in co.state['lifecycle']['receipts']])
 
     def test_lifecycle_project_config_enablement_is_refused(self):
         config_dir = self.workspace / '.review-loop'; config_dir.mkdir()

@@ -31,11 +31,13 @@ import time
 import uuid
 from typing import Optional
 try:
+    from paired_session import budget_policy
     from paired_session import codex_capability_guard
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
+    import budget_policy
     import codex_capability_guard
     import finish_dispatch
     import lifecycle_spine
@@ -1612,7 +1614,8 @@ class Coordinator:
         self.state['lifecycle'] = action(self.state['lifecycle'], value)
         self.save()
 
-    def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False):
+    def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
+                             polish_context=None, polish_stub=False):
         if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
         outputs = outputs or {}
         start_epoch = self.state['lifecycle']['epoch']
@@ -1648,6 +1651,24 @@ class Coordinator:
                 raise ValueError('uncertain FINISH request requires operator resolution')
             if stage == 'FINISH' and not stub_mode and not finish_context:
                 raise ValueError('FINISH requires a candidate-bound dispatch context')
+            if stage == 'POLISH-Q' and life['pending']:
+                raise ValueError('uncertain POLISH-Q request requires operator resolution')
+            if stage == 'POLISH-Q' and self.blocking_open_findings():
+                raise ValueError('POLISH-Q has an open blocker')
+            if stage == 'POLISH-Q' and life.get('polish_calls', 0) >= budget_policy.BUDGET_CAPS['POLISH-Q'][0]:
+                raise ValueError('POLISH-Q specialist budget exhausted')
+            if stage == 'POLISH-Q' and not stub_mode and not polish_stub and not polish_context:
+                raise ValueError('POLISH-Q requires fake specialists')
+            if stage == 'POLISH-Q' and not stub_mode and not polish_stub:
+                names = tuple(sorted(polish_context))
+                counts = life.get('specialist_counts', {})
+                used = life.get('polish_calls', 0)
+                if any(not re.fullmatch(r'[A-Za-z0-9_.-]+', name) for name in names):
+                    raise ValueError('invalid specialist owner')
+                if (used + len(names) > budget_policy.BUDGET_CAPS['POLISH-Q'][0] or
+                        any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
+                        self.state['invocations_used'] + len(names) > self.args.max_invocations):
+                    raise ValueError('POLISH-Q specialist budget exhausted')
             if stage == 'FINISH' and not stub_mode:
                 baseline, revision = finish_context['baseline'], finish_context['revision']
                 if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
@@ -1670,6 +1691,31 @@ class Coordinator:
                 if result['status'] == 'TESTS_REQUIRED' and finish_context.get('tested_oid') != output:
                     raise ValueError('FINISH current-OID tests are missing')
                 receipt.update(output_oid=output, finish_result=result['status'])
+            if stage == 'POLISH-Q' and not stub_mode and not polish_stub:
+                for name in names:
+                    call = {'role': 'specialist:' + name, 'candidate_oid': life['candidate_oid'],
+                            'epoch': life['epoch'], 'run_id': self.run_dir.name}
+                    used += 1
+                    counts[name] = counts.get(name, 0) + 1
+                    self.state['invocations_used'] += 1
+                    self.state['lifecycle'].update(polish_calls=used, specialist_counts=counts)
+                    self.save()
+                    result = polish_context[name](call)
+                    if result.get('candidate_oid') != life['candidate_oid']:
+                        raise ValueError('specialist result has a stale OID')
+                    if any(str(finding.get('severity', '')).upper() not in
+                           (ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)
+                           for finding in result.get('findings', [])):
+                        raise ValueError('specialist result has an unknown severity')
+                    self.record_findings('specialist:' + name, 'POLISH-Q', life['epoch'] + 1,
+                                         result.get('findings', []))
+                    if self.blocking_open_findings():
+                        self.state['lifecycle']['hold_reason'] = 'open specialist blocker'
+                        self.save()
+                        raise ValueError('POLISH-Q has an open specialist blocker')
+                    if result.get('status') != 'APPROVE':
+                        raise ValueError('specialist did not approve current OID')
+                receipt.update(specialists=names, polish_calls=used)
             self.fake_lifecycle_event('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:
