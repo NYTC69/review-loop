@@ -2973,9 +2973,10 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'uncertain FINISH request'):
             co.fake_lifecycle_route(approved, stub_mode=True)
 
-    def fake_lifecycle_ready_for_specialists(self, docs=False, security_paths=()):
+    def fake_lifecycle_ready_for_specialists(self, docs=False, security_paths=(), docs_allowlist=()):
         flags = ('--docs-file', 'docs/guide.md') if docs else ()
-        command = self.command('--lifecycle-mode', 'on', *flags)
+        allow_flags = tuple(value for path in docs_allowlist for value in ('--docs-allowlist', path))
+        command = self.command('--lifecycle-mode', 'on', *flags, *allow_flags)
         co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
         scratch = self.root / 'scratch'; scratch.mkdir()
         paths = (('tracked.txt', 'docs/guide.md') if docs else ('tracked.txt',)) + tuple(security_paths)
@@ -3574,6 +3575,92 @@ sys.exit(result.returncode)
             co.fake_lifecycle_route(next_approval, stub_mode=True, security_context=context)
         self.assertIn('awaiting_owner_reverify', co.state['lifecycle'])
         self.assertNotEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_security_reserved_docs_constraint_never_dispatches_security_writer(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        repair = {'proposals': (), 'paths': ('docs/guide.md',),
+                  'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
+                  'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        with self.assertRaisesRegex(ValueError, 'replayed DOCS receipt and retest'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        marker = co.state['lifecycle']['reserved_docs_constraint']
+        self.assertEqual(marker['docs_file'], 'docs/guide.md')
+        self.assertEqual(marker['source_oid'], finish['revision'].tree_oid)
+        self.assertTrue((co.evidence / (marker['id'] + '-reserved-docs.json')).is_file())
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+        approve = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                               'observed_tools': ['read candidate diff'], 'findings': []}
+        with self.assertRaisesRegex(ValueError, 'replayed DOCS receipt and retest'):
+            co.fake_lifecycle_route(approved,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': finish['revision'], 'review': approve})
+        self.assertEqual(co.state['lifecycle']['reserved_docs_constraint'], marker)
+
+    def test_fake_security_unneeded_repair_never_dispatches_writer(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        repair = {'proposals': (), 'paths': ('tracked.txt',),
+                  'allowed_paths': ('tracked.txt',), 'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('unneeded SECURITY writer ran')}
+        with self.assertRaisesRegex(ValueError, 'no frozen coordinator-owned blocker'):
+            co.fake_lifecycle_route(approved, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': finish['revision'], 'repair': repair})
+
+    def test_fake_security_caller_cannot_unreserve_frozen_docs_file(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'secret.key'],
+                       cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide and fake secret'],
+                       cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        repair = {'proposals': (), 'paths': ('secret.key', 'docs/guide.md'),
+                  'allowed_paths': ('secret.key', 'docs/guide.md'), 'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('SECURITY writer edited frozen docs')}
+        with self.assertRaisesRegex(ValueError, 'one frozen docs_file'):
+            co.fake_lifecycle_route(approved, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': finish['revision'], 'repair': repair})
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+
+    def test_fake_security_caller_cannot_unreserve_frozen_docs_allowlist(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Guide\n')
+        (self.workspace / 'docs/extra.md').write_text('# Extra\n')
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'docs/extra.md', 'secret.key'],
+                       cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add docs and fake secret'],
+                       cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, docs_allowlist=('docs/extra.md',))
+        repair = {'proposals': (), 'paths': ('secret.key', 'docs/extra.md'),
+                  'allowed_paths': ('secret.key', 'docs/extra.md'), 'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('SECURITY writer edited frozen allowlist docs')}
+        with self.assertRaisesRegex(ValueError, 'one frozen docs_file'):
+            co.fake_lifecycle_route(approved, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': finish['revision'], 'repair': repair})
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_security_repair_must_cover_every_sensitive_path(self):
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'secret.key'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'fake secret'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        repair = {'proposals': (), 'paths': ('tracked.txt',),
+                  'allowed_paths': ('tracked.txt',), 'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('incomplete SECURITY writer ran')}
+        with self.assertRaisesRegex(ValueError, 'does not cover sensitive paths'):
+            co.fake_lifecycle_route(approved, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': finish['revision'], 'repair': repair})
 
     def test_fake_security_negated_ignore_rule_requires_operator_consent(self):
         proposals = (('Environment & config', '!.env.example', ()),)

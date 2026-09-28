@@ -1713,6 +1713,8 @@ class Coordinator:
             if stage == 'SECURITY':
                 if not security_context:
                     raise ValueError('SECURITY requires a candidate-bound fake reviewer')
+                if life.get('reserved_docs_constraint'):
+                    raise ValueError('reserved docs constraint requires replayed DOCS receipt and retest')
                 if life['pending'] or (self.blocking_open_findings() and not owner_waiting):
                     raise ValueError('SECURITY has an uncertain request or open blocker')
                 baseline, revision = security_context['baseline'], security_context['revision']
@@ -1769,11 +1771,27 @@ class Coordinator:
                     if owner_waiting and (hits or repair['proposals']):
                         raise ValueError('SECURITY repair cannot combine owner groups')
                     allowed = marker['paths'] if owner_waiting else repair['allowed_paths']
-                    reserved = ((Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix(),)
-                                if owner_waiting and self.state['config'].get('docs_file') else repair['reserved_docs'])
-                    plan = security_repair_policy.plan_security_repair(
-                        self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
-                        allowed, reserved, paths, repair.get('consent'))
+                    docs_file = self.state['config'].get('docs_file')
+                    docs_path = Path(docs_file).relative_to(self.workspace).as_posix() if docs_file else None
+                    frozen_docs = {Path(value).relative_to(self.workspace).as_posix()
+                                   for value in self.state['config']['docs_allowlist']}
+                    reserved = tuple(sorted(frozen_docs | set(
+                        security_repair_policy._paths(repair['reserved_docs']))))
+                    try:
+                        plan = security_repair_policy.plan_security_repair(
+                            self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
+                            allowed, reserved, paths, repair.get('consent'))
+                    except security_repair_policy.ReservedDocsRepair as exc:
+                        if (not docs_path or tuple(repair['paths']) != (docs_path,) or repair['proposals'] or
+                                life.get('reserved_docs_constraint')):
+                            raise ValueError('reserved docs repair needs one frozen docs_file') from exc
+                        constraint = {'id': str(uuid.uuid4()), 'source_oid': revision.tree_oid,
+                                      'docs_file': docs_path, 'epoch': life['epoch'],
+                                      'owner': marker.get('owner') if marker else 'coordinator'}
+                        atomic_json(self.evidence / (constraint['id'] + '-reserved-docs.json'), constraint)
+                        self.state['lifecycle']['reserved_docs_constraint'] = constraint
+                        self.save()
+                        raise ValueError('reserved docs repair requires replayed DOCS receipt and retest') from exc
                     if not set(hits) <= set(plan.fixer_paths):
                         raise ValueError('SECURITY repair does not cover sensitive paths')
                     if not hits and not plan.approved_patterns and not owner_waiting:
@@ -1836,10 +1854,12 @@ class Coordinator:
                     baseline, before, polish_approval, after, [path], exec_paths=(),
                     finish_paths=(), polish_paths=(), closure_inputs=(), closure_uncertain=False,
                     replay_receipt=replay)
-                if change.requires_rechecks and docs_context['test'](after.tree_oid) != after.tree_oid:
+                retested_oid = docs_context['test'](after.tree_oid) if change.requires_rechecks else None
+                if change.requires_rechecks and retested_oid != after.tree_oid:
                     raise ValueError('DOCS write lacks current-OID retest')
                 receipt.update(output_oid=after.tree_oid, docs_file=path, docs_paths=change.paths,
-                               invalidated=change.invalidated_receipts, fake_only=True)
+                               invalidated=change.invalidated_receipts, retested_oid=retested_oid,
+                               fake_only=True)
             if stage == 'SECURITY':
                 if repair:
                     source_env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
