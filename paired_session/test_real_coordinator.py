@@ -3143,6 +3143,74 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['lifecycle']['stage'], 'DOCS')
         self.assertIsNone(co.state['lifecycle']['pending'])
 
+    def test_fake_lifecycle_security_approves_current_tree_before_delivery(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        def security(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'], 'findings': []}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': security}
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=finish,
+                         polish_context={'python-reviewer': specialist}, docs_stub=True,
+                         security_context=context), 'STOP_BEFORE_DELIVERY')
+        receipt = co.state['lifecycle']['receipts'][-1]
+        self.assertEqual(receipt['stage'], 'SECURITY')
+        self.assertEqual(receipt['candidate_oid'], finish['revision'].tree_oid)
+        self.assertIn('tracked.txt', receipt['scanned_paths'])
+
+    def test_fake_lifecycle_security_sensitive_path_blocks_before_review(self):
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'secret.key'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'fake secret'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        def forbidden(request):
+            self.fail('sensitive path must block before security reviewer')
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': forbidden}
+        with self.assertRaisesRegex(ValueError, 'sensitive candidate paths: secret.key'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertEqual(co.state['lifecycle']['stage'], 'SECURITY')
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_lifecycle_security_dangling_sensitive_symlink_blocks(self):
+        (self.workspace / 'id_rsa').symlink_to('missing-key')
+        subprocess.run(['git', 'add', 'id_rsa'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'fake symlink'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        def forbidden(request):
+            self.fail('sensitive symlink must block before security reviewer')
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': forbidden}
+        with self.assertRaisesRegex(ValueError, 'sensitive candidate paths: id_rsa'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertIsNone(co.state['lifecycle']['pending'])
+
+    def test_fake_lifecycle_security_critical_finding_blocks_delivery(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        def security(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'security defect', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': security}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_stub=True,
+                                    security_context=context)
+        self.assertEqual(co.state['lifecycle']['stage'], 'SECURITY')
+        self.assertEqual(co.blocking_open_findings()[0]['source'], 'security-reviewer')
+        self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
     def test_fake_lifecycle_docs_write_without_retest_cannot_pass(self):
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
         def specialist(request):

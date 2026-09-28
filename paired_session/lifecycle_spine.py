@@ -53,7 +53,7 @@ def complete(life, receipt):
 
 
 NEXT_STAGE = {'EXEC': 'FINISH', 'FINISH': 'POLISH-Q', 'POLISH-Q': 'DOCS',
-              'DOCS': 'STOP_BEFORE_SECURITY'}
+              'DOCS': 'STOP_BEFORE_SECURITY', 'SECURITY': 'STOP_BEFORE_DELIVERY'}
 
 def advance(life):
     if life['pending'] or life['stage'] not in NEXT_STAGE or not life['receipts']:

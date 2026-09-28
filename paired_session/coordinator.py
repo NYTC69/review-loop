@@ -37,6 +37,7 @@ try:
     from paired_session import docs_policy
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
+    from paired_session import sensitive_policy
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
@@ -45,6 +46,7 @@ except ModuleNotFoundError:
     import docs_policy
     import finish_dispatch
     import lifecycle_spine
+    import sensitive_policy
     from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
@@ -1620,14 +1622,22 @@ class Coordinator:
         self.save()
 
     def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
-                             polish_context=None, polish_stub=False, docs_context=None, docs_stub=False):
+                             polish_context=None, polish_stub=False, docs_context=None, docs_stub=False,
+                             security_context=None):
         if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
         outputs = outputs or {}
         start_epoch = self.state['lifecycle']['epoch']
         while True:
             life = self.state['lifecycle']
             stage = life['stage']
-            if stage == 'STOP_BEFORE_SECURITY' or (stage == 'EXEC' and life['epoch'] != start_epoch):
+            if stage == 'STOP_BEFORE_SECURITY' and security_context:
+                if self.blocking_open_findings():
+                    raise ValueError('SECURITY has an upstream blocker')
+                self.state['lifecycle'] = {**life, 'stage': 'SECURITY'}
+                self.save()
+                continue
+            if stage in ('STOP_BEFORE_SECURITY', 'STOP_BEFORE_DELIVERY') or (
+                    stage == 'EXEC' and life['epoch'] != start_epoch):
                 return stage
             last = life['receipts'][-1] if life['receipts'] else {}
             if (not life['pending'] and last.get('stage') == stage and
@@ -1693,6 +1703,22 @@ class Coordinator:
                 replay = next((row for row in reversed(life['receipts'])
                                if row.get('stage') == 'DOCS' and row.get('output_oid') == before.tree_oid and
                                row.get('docs_file') == path), None)
+            if stage == 'SECURITY':
+                if not security_context:
+                    raise ValueError('SECURITY requires a candidate-bound fake reviewer')
+                if life['pending'] or self.blocking_open_findings():
+                    raise ValueError('SECURITY has an uncertain request or open blocker')
+                baseline, revision = security_context['baseline'], security_context['revision']
+                if (baseline.workspace != self.workspace or baseline.run_dir != self.run_dir or
+                        revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent']):
+                    raise ValueError('SECURITY candidate differs from persisted item state')
+                candidate_tree.verify_candidate_revision(baseline, revision)
+                paths = sorted(path.relative_to(baseline.root).as_posix()
+                               for path in baseline.root.rglob('*') if not path.is_dir() or path.is_symlink())
+                hits = {path: kind for path in paths
+                        if (kind := sensitive_policy.sensitive_path_category(path))}
+                if hits:
+                    raise ValueError('SECURITY sensitive candidate paths: ' + ', '.join(hits))
             if stage == 'FINISH' and not stub_mode:
                 baseline, revision = finish_context['baseline'], finish_context['revision']
                 if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
@@ -1755,6 +1781,24 @@ class Coordinator:
                     raise ValueError('DOCS write lacks current-OID retest')
                 receipt.update(output_oid=after.tree_oid, docs_file=path, docs_paths=change.paths,
                                invalidated=change.invalidated_receipts, fake_only=True)
+            if stage == 'SECURITY':
+                review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,
+                                                     'run_id': self.run_dir.name, 'epoch': life['epoch']})
+                candidate_tree.verify_candidate_revision(baseline, revision)
+                if (not isinstance(review, dict) or not isinstance(review.get('findings'), list) or
+                        any(not isinstance(row, dict) or
+                            str(row.get('severity', '')).upper() not in
+                            (ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)
+                            for row in review['findings'])):
+                    raise ValueError('SECURITY reviewer result is malformed')
+                if review.get('candidate_oid') != revision.tree_oid or not review.get('observed_tools'):
+                    raise ValueError('SECURITY review lacks current-OID inspection evidence')
+                self.record_findings('security-reviewer', 'SECURITY', life['epoch'] + 1,
+                                     review.get('findings', []))
+                if self.blocking_open_findings() or review.get('status') != 'APPROVE':
+                    raise ValueError('SECURITY review did not approve current OID')
+                receipt.update(output_oid=revision.tree_oid, security_review='APPROVE',
+                               scanned_paths=paths, fake_only=True)
             self.fake_lifecycle_event('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:
