@@ -116,6 +116,18 @@ caller may use ingest, it must positively stop the writer process group and
 deny that writer OS access to the scratch Git directory and index. Same-device
 candidates remain ineligible for activation.
 
+The disabled `security_repair_policy` helper checks a proposed SECURITY
+repair against the frozen legacy ignore-pattern table and a caller-supplied
+candidate-file inventory. Its `SecurityRepair` result lists exact fixer paths,
+approved ignore patterns, any operator-consent digest, and an EXEC replay
+requirement. It does not authorize a writer by itself. A future dispatcher must
+derive the file inventory from the current candidate OID, prove each grant is
+an exact no-follow file leaf, and enforce the observed write boundary: every
+SECURITY OID change replays EXEC and the gate even if no repair was planned.
+It must verify appended `.gitignore` lines against `approved_patterns`, route
+`ReservedDocsRepair` to the replayed DOCS writer, and require both a fresh
+SECURITY review and disposition by the original finding owner on the new OID.
+
 ```sh
 bin/paired-session run \
   --workspace /path/to/disposable-worktree \
