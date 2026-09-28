@@ -36,3 +36,53 @@ M4 must provide frozen `agents/*.md` bodies for docs-consistency inspector, docs
 - `test_security_noop_and_retest_same_oid`: no-op still scans; post-write test/scan, final-review and security OIDs agree; mismatch HOLDs.
 
 Doc 4 owns acceptance, commit, Compass CLOSE and final gate.
+
+## SECURITY repair ownership and ignore bytes (R30-D2; fake harness only)
+
+A SECURITY repair begins with a frozen set of blockers from one stage and one owner. Owners are disjoint:
+(a) a coordinator sensitive-path preflight CRITICAL closes only after coordinator rescans the new OID and finds
+that path safe or absent; security reviewer prose cannot close it;
+(b) an ignore gap closes only after coordinator verifies new root `.gitignore` bytes/mode against the frozen OID
+blob plus the digest-bound canonical suffix; consent, when required, covers the entire digest;
+(c) a coordinator-created reserved-doc constraint ID closes only after replayed DOCS receipt and current-OID
+retest; its source finding remains in its original owner group, then SECURITY reruns;
+(d) a reviewer finding closes only by its original owner explicitly disposing its frozen ID as fixed or
+reasoned invalid on fresh new-OID review (doc 2b-ii). Silence/APPROVE does not close it.
+A request may contain several owner groups; each group has its own closure proof. Root `.gitignore` is writable
+only by a digest-bound ignore proposal; all other fixer/untrack grants exclude `.gitignore` and `.gitattributes`.
+Any other write to either path HOLDs. Empty reviewer-finding set plus
+ignore digest is valid. No group may borrow another owner's proof. The stage cannot PASS/DELIVER until all groups
+are closed and a fresh coordinator preflight and security review pass at the same final OID.
+
+`awaiting_owner_reverify` records the frozen blocker IDs, owner, repair constraint/digest, source OID, repair
+request/receipt ID and new-OID lineage. It specializes doc 2b-ii's downstream-blocker rule: only upstream
+EXEC/gate/FINISH/POLISH-Q/DOCS replay and the exact owner check may proceed, never PASS/DELIVERY. For a preflight
+CRITICAL, the owner check is the coordinator rescan; for ignore, the byte audit; for reserved docs, the replayed
+DOCS receipt plus retest; for reviewer IDs, their role/vendor/model/body-hash owner (or doc 2b-ii's provenanced
+reassignment). Each group marker is consumed after its own owner check even if blockers remain OPEN. A new repair requires a
+fresh receipt enumerating every still-OPEN ID. Limits and `resume --extend-budget` follow doc 2b-i; uncertainty
+HOLDs for bounded retry from the old verified OID or abort, never auto-accepts.
+
+Only root `.gitignore` (regular 100644 or absent) is repairable. Freeze old bytes/mode from candidate OID, and
+require root bytes/mode to equal that blob before dispatch and every retry; never refreeze dirty writer bytes.
+Proposal digest binds item/run/request ID, source OID, old-byte hash, policy-ordered unique UTF-8 lines, exact
+canonical suffix, and Git-semantic tracked matches including descendants and `core.ignorecase`. Each line must
+be a frozen policy member, without NUL/CR/LF, leading `#`, outer whitespace or backslash. Missing means a literal
+line absent from that OID blob. Broad, tracked-matching and negated (`!`) lines need operator consent. Only a
+coordinator-recorded `confirm-ignore`/`decline-ignore` CLI receipt outside agent-write roots counts; caller dicts
+do not. Receipts bind item/run/request, increasing sequence and digest. At dispatch, latest valid receipt wins;
+confirm then decline revokes, and any dispatch consumes the consent. Decline/missing/stale consent HOLDs the whole
+proposal. A no-op gets no writer grant.
+Canonical suffix: one LF if old nonempty bytes lack final LF, then each approved proposal line plus LF in policy
+order. Result must be **old bytes + suffix**, regular 100644; exact authorized paths only. Compare raw bytes before
+ingest, then verify new OID blob/mode. Extra, removed or reordered rules HOLD. Repair receipt records proposal,
+consent, patterns, old/new hashes, actual paths and OID. Nested `.gitignore` and export-ignore changes are denied.
+
+**Activation gates (default CLOSED):** `S-ignore-environment` (owner M4-activation-S1) OS-confines writer to
+candidate root and hashes candidate/live Git `info/exclude`, config and effective excludesFile (including XDG)
+before/after; `S-consent-cli` (owner M4-activation-S2) proves operator CLI provenance is outside agent control;
+All four owner checks run in the fake harness. `S-owner-replay` (owner M4-activation-S3) owns real-process
+crash recovery only; fake checks cannot clear real gates. Real lifecycle refuses while any gate or doc 1–4 condition is unmet.
+Fake tests: `test_reviewer_cannot_close_preflight_or_ignore_blocker`;
+`test_reserved_docs_constraint_and_finding_close_separately`; `test_gitignore_exact_suffix_or_hold`;
+`test_ignore_consent_latest_revoke_consume_and_marker_never_pass`.
