@@ -3211,6 +3211,70 @@ sys.exit(result.returncode)
         self.assertEqual(co.blocking_open_findings()[0]['source'], 'security-reviewer')
         self.assertNotIn('SECURITY', [row['stage'] for row in co.state['lifecycle']['receipts']])
 
+    def test_fake_security_reviewer_owner_hold_allows_only_frozen_repair_path(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'repair tracked file', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        marker = co.state['lifecycle']['awaiting_owner_reverify']
+        self.assertEqual(marker['owner'], 'security-reviewer')
+        self.assertEqual(marker['paths'], ('tracked.txt',))
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertEqual(co.state['lifecycle']['owner_hold_receipt']['finding_ids'], marker['finding_ids'])
+        self.assertTrue((co.evidence / 'fake-SECURITY-0-owner-hold.json').is_file())
+        with self.assertRaisesRegex(RuntimeError, 'owning specialist'):
+            co.apply_dispositions([{'id': marker['finding_ids'][0], 'disposition': 'fixed',
+                                    'evidence': 'other reviewer claim'}], 2,
+                                  list(marker['finding_ids']), 'persistent-reviewer')
+        denied = {'proposals': (), 'paths': ('docs/guide.md',),
+                  'allowed_paths': ('docs/guide.md',), 'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('ungranted writer ran')}
+        with self.assertRaisesRegex(ValueError, 'exact candidate-file grant'):
+            co.fake_lifecycle_route(approved, security_context={**context, 'repair': denied})
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        repair = {'proposals': (), 'paths': ('tracked.txt',),
+                  'allowed_paths': ('tracked.txt',), 'reserved_docs': (),
+                  'write': lambda root, paths: (root / 'tracked.txt').write_text('repaired\n')}
+        self.assertEqual(co.fake_lifecycle_route(approved,
+                         security_context={**context, 'repair': repair}), 'EXEC')
+        self.assertEqual(co.state['lifecycle']['awaiting_owner_reverify']['repair_oid'],
+                         co.state['lifecycle']['candidate_oid'])
+        self.assertEqual(co.state['lifecycle']['receipts'][-1]['request_id'], 'fake-SECURITY-0-repair')
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        next_approval = {'status': 'APPROVE', 'epoch': life['epoch'],
+                         'item_uuid': life['item_uuid'], 'run_id': self.run_dir.name,
+                         'parent': life['parent'], 'candidate_oid': after.tree_oid}
+        with self.assertRaisesRegex(ValueError, 'repair already dispatched'):
+            co.fake_lifecycle_route(next_approval, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': after, 'repair': repair})
+
+    def test_fake_security_owner_marker_does_not_exempt_foreign_blocker(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def critical(request):
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read candidate diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'tracked.txt',
+                                  'summary': 'security finding', 'failure_scenario': 'reachable'}]}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'review': critical}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(approved, stub_mode=True, security_context=context)
+        co.record_findings('persistent-reviewer', 'EXEC', 99,
+                           [{'severity': 'MAJOR', 'file': 'tracked.txt',
+                             'summary': 'foreign blocker', 'failure_scenario': 'reachable'}])
+        repair = {'proposals': (), 'paths': ('tracked.txt',),
+                  'allowed_paths': ('tracked.txt',), 'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('foreign blocker let writer run')}
+        with self.assertRaisesRegex(ValueError, 'open blocker'):
+            co.fake_lifecycle_route(approved, security_context={**context, 'repair': repair})
+        self.assertIsNone(co.state['lifecycle']['pending'])
+
     def test_fake_security_ignore_repair_requires_operator_consent_and_replays_exec(self):
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(
             docs=True, security_paths=('.gitignore',))

@@ -1632,8 +1632,11 @@ class Coordinator:
         while True:
             life = self.state['lifecycle']
             stage = life['stage']
+            owner_marker = life.get('awaiting_owner_reverify', {})
+            owner_waiting = (owner_marker.get('owner') == 'security-reviewer' and not any(
+                row['id'] not in owner_marker['finding_ids'] for row in self.blocking_open_findings()))
             if stage == 'STOP_BEFORE_SECURITY' and security_context:
-                if self.blocking_open_findings():
+                if self.blocking_open_findings() and not owner_waiting:
                     raise ValueError('SECURITY has an upstream blocker')
                 self.state['lifecycle'] = {**life, 'stage': 'SECURITY'}
                 self.save()
@@ -1644,7 +1647,7 @@ class Coordinator:
             last = life['receipts'][-1] if life['receipts'] else {}
             if (not life['pending'] and last.get('stage') == stage and
                     last.get('epoch') == life['epoch'] and last.get('candidate_oid') == life['candidate_oid']):
-                if stage == 'POLISH-Q' and self.blocking_open_findings():
+                if stage == 'POLISH-Q' and self.blocking_open_findings() and not owner_waiting:
                     raise ValueError('POLISH-Q has an open blocker')
                 self.state['lifecycle'] = lifecycle_spine.advance(life)
                 self.save()
@@ -1663,7 +1666,9 @@ class Coordinator:
                     self.save()
                     life = self.state['lifecycle']
             request = {key: life[key] for key in ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')}
-            request.update(request_id=f"fake-{stage}-{life['epoch']}", role='reviewer' if stage == 'EXEC' else stage)
+            suffix = '-repair' if stage == 'SECURITY' and owner_waiting else ''
+            request.update(request_id=f"fake-{stage}-{life['epoch']}{suffix}",
+                           role='reviewer' if stage == 'EXEC' else stage)
             if life['pending'] and life['pending'] != request:
                 raise ValueError('fake stage has a different pending request')
             if stage == 'FINISH' and life['pending']:
@@ -1672,7 +1677,7 @@ class Coordinator:
                 raise ValueError('FINISH requires a candidate-bound dispatch context')
             if stage == 'POLISH-Q' and life['pending']:
                 raise ValueError('uncertain POLISH-Q request requires operator resolution')
-            if stage == 'POLISH-Q' and self.blocking_open_findings():
+            if stage == 'POLISH-Q' and self.blocking_open_findings() and not owner_waiting:
                 raise ValueError('POLISH-Q has an open blocker')
             if stage == 'POLISH-Q' and life.get('polish_calls', 0) >= budget_policy.BUDGET_CAPS['POLISH-Q'][0]:
                 raise ValueError('POLISH-Q specialist budget exhausted')
@@ -1688,7 +1693,7 @@ class Coordinator:
                         any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
                         self.state['invocations_used'] + len(names) > self.args.max_invocations):
                     raise ValueError('POLISH-Q specialist budget exhausted')
-            if stage == 'DOCS' and (life['pending'] or self.blocking_open_findings()):
+            if stage == 'DOCS' and (life['pending'] or (self.blocking_open_findings() and not owner_waiting)):
                 raise ValueError('DOCS has an uncertain request or open blocker')
             if stage == 'DOCS' and not stub_mode and not docs_stub:
                 if not docs_context: raise ValueError('DOCS requires a candidate-bound fake writer')
@@ -1708,7 +1713,7 @@ class Coordinator:
             if stage == 'SECURITY':
                 if not security_context:
                     raise ValueError('SECURITY requires a candidate-bound fake reviewer')
-                if life['pending'] or self.blocking_open_findings():
+                if life['pending'] or (self.blocking_open_findings() and not owner_waiting):
                     raise ValueError('SECURITY has an uncertain request or open blocker')
                 baseline, revision = security_context['baseline'], security_context['revision']
                 if (baseline.workspace != self.workspace or baseline.run_dir != self.run_dir or
@@ -1720,7 +1725,15 @@ class Coordinator:
                 hits = {path: kind for path in paths
                         if (kind := sensitive_policy.sensitive_path_category(path))}
                 marker = life.get('awaiting_owner_reverify')
-                if marker:
+                if marker and marker.get('owner') == 'security-reviewer':
+                    if not marker.get('repair_oid') and not security_context.get('repair'):
+                        raise ValueError('SECURITY reviewer blocker requires a repair')
+                    if marker.get('repair_oid') and marker['repair_oid'] not in [
+                            row.get('output_oid') for row in life['receipts']]:
+                        raise ValueError('SECURITY reviewer owner requires repaired OID')
+                    if marker.get('repair_oid') and security_context.get('repair'):
+                        raise ValueError('SECURITY reviewer repair already dispatched')
+                elif marker:
                     if (marker['repair_oid'] not in [row.get('output_oid') for row in life['receipts']] or
                             marker['request_id'] not in [row.get('request_id') for row in life['receipts']]):
                         raise ValueError('SECURITY owner marker lacks repair lineage')
@@ -1738,12 +1751,17 @@ class Coordinator:
                 if hits and not repair:
                     raise ValueError('SECURITY sensitive candidate paths: ' + ', '.join(hits))
                 if repair:
+                    if owner_waiting and (hits or repair['proposals']):
+                        raise ValueError('SECURITY repair cannot combine owner groups')
+                    allowed = marker['paths'] if owner_waiting else repair['allowed_paths']
+                    reserved = ((Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix(),)
+                                if owner_waiting and self.state['config'].get('docs_file') else repair['reserved_docs'])
                     plan = security_repair_policy.plan_security_repair(
                         self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
-                        repair['allowed_paths'], repair['reserved_docs'], paths, repair.get('consent'))
+                        allowed, reserved, paths, repair.get('consent'))
                     if not set(hits) <= set(plan.fixer_paths):
                         raise ValueError('SECURITY repair does not cover sensitive paths')
-                    if not hits and not plan.approved_patterns:
+                    if not hits and not plan.approved_patterns and not owner_waiting:
                         raise ValueError('SECURITY repair has no frozen coordinator-owned blocker')
             if stage == 'FINISH' and not stub_mode:
                 baseline, revision = finish_context['baseline'], finish_context['revision']
@@ -1785,7 +1803,7 @@ class Coordinator:
                         raise ValueError('specialist result has an unknown severity')
                     self.record_findings('specialist:' + name, 'POLISH-Q', life['epoch'] + 1,
                                          result.get('findings', []))
-                    if self.blocking_open_findings():
+                    if any(row['source'].startswith('specialist:') for row in self.blocking_open_findings()):
                         self.state['lifecycle']['hold_reason'] = 'open specialist blocker'
                         self.save()
                         raise ValueError('POLISH-Q has an open specialist blocker')
@@ -1854,6 +1872,10 @@ class Coordinator:
                                           if plan.approved_patterns else None),
                         'source_oid': revision.tree_oid, 'repair_oid': after.tree_oid,
                         'request_id': request['request_id'], 'consent_digest': plan.consent_digest}
+                    if owner_waiting:
+                        self.state['lifecycle']['awaiting_owner_reverify'] = {
+                            **marker, 'repair_oid': after.tree_oid, 'request_id': request['request_id'],
+                            'repair_digest': plan.digest}
                     self.fake_lifecycle_event('receipt', receipt)
                     continue
                 review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,
@@ -1867,10 +1889,23 @@ class Coordinator:
                     raise ValueError('SECURITY reviewer result is malformed')
                 if review.get('candidate_oid') != revision.tree_oid or not review.get('observed_tools'):
                     raise ValueError('SECURITY review lacks current-OID inspection evidence')
-                self.record_findings('security-reviewer', 'SECURITY', life['epoch'] + 1,
-                                     review.get('findings', []))
+                recorded = self.record_findings('security-reviewer', 'SECURITY', life['epoch'] + 1,
+                                                review.get('findings', []))
                 direct_blocking = any(str(row['severity']).upper() in BLOCKING_REVIEW_SEVERITIES or
                                       row.get('security') for row in review['findings'])
+                if direct_blocking:
+                    blockers = [row for row in recorded if str(row['severity']).upper() in
+                                BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+                    self.state['lifecycle']['awaiting_owner_reverify'] = {
+                        'owner': 'security-reviewer', 'source_oid': revision.tree_oid,
+                        'finding_ids': tuple(row['id'] for row in blockers),
+                        'paths': tuple(row['file'] for row in blockers)}
+                    owner_hold = {**request, 'status': 'HOLD', 'finding_ids': tuple(row['id'] for row in blockers)}
+                    atomic_json(self.evidence / (request['request_id'] + '-owner-hold.json'), owner_hold)
+                    self.state['lifecycle']['owner_hold_receipt'] = owner_hold
+                    self.state['lifecycle']['pending'] = None
+                    self.save()
+                    raise ValueError('SECURITY review did not approve current OID')
                 if direct_blocking or self.blocking_open_findings() or review.get('status') != 'APPROVE':
                     raise ValueError('SECURITY review did not approve current OID')
                 receipt.update(output_oid=revision.tree_oid, security_review='APPROVE',
@@ -2008,6 +2043,7 @@ class Coordinator:
                                         'evidence': 'program assigned identity'}]}
             if source.startswith('specialist:'):
                 entry['owner_role'] = 'specialist:' + specialist_owner
+            if source == 'security-reviewer': entry['owner_role'] = 'security-reviewer'
             self.state['finding_ledger'].append(entry)
             recorded.append({'id': finding_id, **finding})
             changed = True
