@@ -1719,6 +1719,21 @@ class Coordinator:
                                for path in baseline.root.rglob('*') if not path.is_dir() or path.is_symlink())
                 hits = {path: kind for path in paths
                         if (kind := sensitive_policy.sensitive_path_category(path))}
+                marker = life.get('awaiting_owner_reverify')
+                if marker:
+                    if (marker['repair_oid'] not in [row.get('output_oid') for row in life['receipts']] or
+                            marker['request_id'] not in [row.get('request_id') for row in life['receipts']]):
+                        raise ValueError('SECURITY owner marker lacks repair lineage')
+                    if marker['preflight_paths'] and hits:
+                        raise ValueError('SECURITY preflight owner rescan still has sensitive paths')
+                    if marker['ignore_sha256']:
+                        ignore = baseline.root / '.gitignore'
+                        if (ignore.is_symlink() or not ignore.is_file() or
+                                ignore.stat().st_mode & 0o111 or
+                                hashlib.sha256(ignore.read_bytes()).hexdigest() != marker['ignore_sha256']):
+                            raise ValueError('SECURITY ignore owner byte check differs')
+                    self.state['lifecycle'].pop('awaiting_owner_reverify')
+                    self.save()
                 repair = security_context.get('repair')
                 if hits and not repair:
                     raise ValueError('SECURITY sensitive candidate paths: ' + ', '.join(hits))
@@ -1728,6 +1743,8 @@ class Coordinator:
                         repair['allowed_paths'], repair['reserved_docs'], paths, repair.get('consent'))
                     if not set(hits) <= set(plan.fixer_paths):
                         raise ValueError('SECURITY repair does not cover sensitive paths')
+                    if not hits and not plan.approved_patterns:
+                        raise ValueError('SECURITY repair has no frozen coordinator-owned blocker')
             if stage == 'FINISH' and not stub_mode:
                 baseline, revision = finish_context['baseline'], finish_context['revision']
                 if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
@@ -1799,7 +1816,6 @@ class Coordinator:
                         raise ValueError('SECURITY ignore source is not a regular 100644 file')
                     old_ignore = (candidate_tree._indexed_blobs(source_env, (ignore_entry,))[ignore_entry[1]]
                                   if ignore_entry else b'')
-                    ignore_path = baseline.root / '.gitignore'
                     if plan.approved_patterns:
                         lines = old_ignore.decode('utf-8').split('\n')
                         missing = [pattern for _, pattern in plan.approved_patterns if pattern not in lines]
@@ -1814,17 +1830,30 @@ class Coordinator:
                                if seen_files.get(path) != source_files.get(path)}
                     if not changed or not changed <= set(plan.fixer_paths):
                         raise ValueError('SECURITY writer changed an ungranted candidate path')
-                    if plan.approved_patterns and (ignore_path.is_symlink() or not ignore_path.is_file() or
-                            ignore_path.stat().st_mode & 0o111 or ignore_path.read_bytes() != expected_ignore):
+                    if plan.approved_patterns and seen_files.get('.gitignore') != ('100644', expected_ignore):
                         raise ValueError('SECURITY ignore writer changed bytes beyond approved patterns')
                     after = candidate_tree.ingest_candidate_revision(baseline)
                     if after.tree_oid == revision.tree_oid or candidate_tree._candidate_files(baseline) != seen_files:
                         raise ValueError('SECURITY repair made no change or changed during ingest')
                     candidate_tree.verify_candidate_revision(baseline, after)
+                    if plan.approved_patterns:
+                        current = candidate_tree._tree_entries(source_env, after.tree_oid)
+                        entry = next((row for row in current if row[2] == '.gitignore'), None)
+                        if (not entry or entry[0] != '100644' or
+                                candidate_tree._indexed_blobs(source_env, (entry,))[entry[1]] != expected_ignore):
+                            raise ValueError('SECURITY ingested ignore bytes differ from approval')
                     self.state['gate_ran'] = False
                     receipt.update(output_oid=after.tree_oid, security_repair=plan.digest,
                                    consent_digest=plan.consent_digest, approved_patterns=plan.approved_patterns,
                                    invalidated=plan.invalidated_receipts, fake_only=True)
+                    self.state['lifecycle']['awaiting_owner_reverify'] = {
+                        'owners': tuple(name for name, needed in (
+                            ('preflight', bool(hits)), ('ignore', bool(plan.approved_patterns))) if needed),
+                        'preflight_paths': tuple(sorted(hits)),
+                        'ignore_sha256': (hashlib.sha256(expected_ignore).hexdigest()
+                                          if plan.approved_patterns else None),
+                        'source_oid': revision.tree_oid, 'repair_oid': after.tree_oid,
+                        'request_id': request['request_id'], 'consent_digest': plan.consent_digest}
                     self.fake_lifecycle_event('receipt', receipt)
                     continue
                 review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,

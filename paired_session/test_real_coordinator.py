@@ -3264,6 +3264,66 @@ sys.exit(result.returncode)
         self.assertNotEqual(co.state['lifecycle']['receipts'][-1]['output_oid'],
                             finish['revision'].tree_oid)
 
+    def test_fake_security_preflight_owner_rescans_after_exec_replay(self):
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'secret.key'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'fake secret'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('secret.key',))
+        repair = {'proposals': (), 'paths': ('secret.key',), 'allowed_paths': ('secret.key',),
+                  'reserved_docs': ('docs/guide.md',),
+                  'write': lambda root, paths: (root / 'secret.key').unlink()}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True,
+                         security_context=context), 'EXEC')
+        marker = co.state['lifecycle']['awaiting_owner_reverify']
+        self.assertEqual(marker['owners'], ('preflight',))
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        next_approval = {'status': 'APPROVE', 'epoch': life['epoch'],
+                         'item_uuid': life['item_uuid'], 'run_id': self.run_dir.name,
+                         'parent': life['parent'], 'candidate_oid': after.tree_oid}
+        security = lambda request: {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'],
+                                    'observed_tools': ['read candidate diff'], 'findings': []}
+        context = {'baseline': finish['baseline'], 'revision': after, 'review': security}
+        self.assertEqual(co.fake_lifecycle_route(next_approval, stub_mode=True,
+                         security_context=context), 'STOP_BEFORE_DELIVERY')
+        self.assertNotIn('awaiting_owner_reverify', co.state['lifecycle'])
+
+    def test_fake_security_ignore_owner_requires_exact_replayed_bytes(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        def write(root, paths):
+            with (root / '.gitignore').open('a') as output:
+                output.write('*.pem\n')
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': (),
+                  'write': write}
+        context = {'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair}
+        self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True,
+                         security_context=context), 'EXEC')
+        marker = co.state['lifecycle']['awaiting_owner_reverify']
+        self.assertEqual(marker['owners'], ('ignore',))
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        next_approval = {'status': 'APPROVE', 'epoch': life['epoch'],
+                         'item_uuid': life['item_uuid'], 'run_id': self.run_dir.name,
+                         'parent': life['parent'], 'candidate_oid': after.tree_oid}
+        marker['ignore_sha256'] = '0' * 64
+        security = lambda request: {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'],
+                                    'observed_tools': ['read candidate diff'], 'findings': []}
+        context = {'baseline': finish['baseline'], 'revision': after, 'review': security}
+        with self.assertRaisesRegex(ValueError, 'ignore owner byte check differs'):
+            co.fake_lifecycle_route(next_approval, stub_mode=True, security_context=context)
+        self.assertIn('awaiting_owner_reverify', co.state['lifecycle'])
+        self.assertNotEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_security_negated_ignore_rule_requires_operator_consent(self):
+        proposals = (('Environment & config', '!.env.example', ()),)
+        with self.assertRaisesRegex(ValueError, 'operator confirmation required'):
+            rc.security_repair_policy.plan_security_repair(
+                self.run_dir.name, 'a' * 40, proposals, (), ('.gitignore',), (), ('.gitignore',))
+
     def test_fake_security_ignore_repair_rejects_extra_rule(self):
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(
             docs=True, security_paths=('.gitignore',))

@@ -49,7 +49,8 @@ def plan_security_repair(run_id, oid, proposals, repair_paths, allowed_paths,
         p.lstrip('!').casefold().rstrip('/') in _canonical_parts(f)[:-1] if p.endswith('/') else
         fnmatchcase(_canonical_parts(f)[-1], p.lstrip('!').casefold()))}
         for _, p, m in records): raise ValueError('tracked matches differ from candidate')
-    needs_consent = any(c in {'Cloud credentials', 'Generic secret files'} or m for c, _, m in records)
+    needs_consent = any(c in {'Cloud credentials', 'Generic secret files'} or m or p.startswith('!')
+                        for c, p, m in records)
     if needs_consent or consent is not None:
         command = hashlib.sha256(f'confirm-ignore --digest {digest}'.encode()).hexdigest()
         if not isinstance(consent, dict) or consent.get('decision') == 'decline':
