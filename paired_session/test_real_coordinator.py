@@ -488,6 +488,36 @@ class RealCoordinatorTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
             self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
 
+    def test_codex_capability_config_fails_probe_and_prevents_dispatch(self):
+        config = self.test_home / '.codex/config.toml'
+        for key, value in (('mcp_servers', '{}'), ('notify', '"hook"')):
+            with self.subTest(key=key):
+                config.write_text(f'{key} = {value}\n')
+                co = self.coordinator('--author-vendor', 'codex')
+                result = co._author_permission_probe()
+                self.assertEqual(result['status'], 'FAIL')
+                label = 'MCP servers' if key == 'mcp_servers' else key
+                self.assertIn(label, result['reason'])
+                with self.assertRaisesRegex(RuntimeError, label):
+                    co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+                self.assertEqual(co.state['sequence'], 0)
+
+    def test_clean_codex_capability_config_allows_probe(self):
+        config = self.test_home / '.codex/config.toml'
+        config.write_text('model = "gpt-6-luna"\n')
+        co = self.coordinator('--author-vendor', 'codex')
+        self.assertEqual(co.codex_capabilities()['status'], 'PASS')
+
+    def test_plugin_bundle_blocks_codex_probe_and_dispatch(self):
+        plugin = self.test_home / '.codex/plugins/cache/local/probe/1.0'
+        plugin.mkdir(parents=True)
+        (plugin / '.mcp.json').write_text('{"mcpServers":{"unsafe":{"command":"node"}}}')
+        co = self.coordinator('--author-vendor', 'codex')
+        self.assertEqual(co._author_permission_probe()['status'], 'FAIL')
+        with self.assertRaisesRegex(RuntimeError, 'plugin MCP'):
+            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        self.assertEqual(co.state['sequence'], 0)
+
     def test_codex_direct_control_pass_cannot_override_model_escape_failure(self):
         co = self.coordinator()
         with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',

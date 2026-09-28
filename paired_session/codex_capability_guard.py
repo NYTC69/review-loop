@@ -1,10 +1,13 @@
 """Read-only conservative scan of active Codex capability configuration."""
 import hashlib
 import json
+import os, pwd
+import subprocess
+import sys
 from pathlib import Path
 
-_CAPABILITIES = {'mcp_servers', 'notify', 'profile'}
-_REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes',
+_CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions'}
+_REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes', 'features',
                  'allowed_permission_profiles', 'permissions'}
 
 
@@ -31,7 +34,7 @@ def _inspect_file(path, project=False, requirements=False):
     return hashlib.sha256(raw).hexdigest(), labels
 
 
-def inspect(code_home, workspace):
+def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=None):
     workspace, home = Path(workspace).resolve(), Path(code_home).resolve()
     sources = {(home / 'config.toml', False, False), (home / 'managed_config.toml', False, True),
                (home / 'requirements.toml', False, True), (Path('/etc/codex/config.toml'), False, False),
@@ -44,7 +47,7 @@ def inspect(code_home, workspace):
             break
     else:
         project_dirs = [workspace]
-    sources.update((parent / '.codex/config.toml', True, False) for parent in project_dirs)
+    sources.update((p / '.codex/config.toml', not (project_dirs[-1] / '.git').exists(), False) for p in project_dirs)
     files, issues = {}, []
     for path, project, requirements in sorted(sources, key=lambda row: str(row[0])):
         try:
@@ -56,5 +59,40 @@ def inspect(code_home, workspace):
             continue
         files[str(path.resolve())] = digest
         issues.extend(f'{key} configured in {path}' for key in sorted(findings))
+    for version in (home / 'plugins/cache').glob('*/*/*'):
+        for name in ('mcp.json', '.mcp.json', '.app.json', 'plugin.json', '.codex-plugin/plugin.json'):
+            path = version / name
+            try:
+                if not path.is_file(): continue
+                raw = path.read_bytes()
+                if name in ('mcp.json', '.mcp.json', '.app.json') or b'mcpServers' in raw or b'"apps"' in raw:
+                    files[str(path.resolve())] = hashlib.sha256(raw).hexdigest()
+                    issues.append('plugin MCP or app bundle configured in ' + str(path))
+            except OSError:
+                issues.append('cannot inspect plugin capability bundle: ' + str(path))
+    if (platform or sys.platform) == 'darwin':
+        managed = Path(managed_root or '/Library/Managed Preferences')
+        user = pwd.getpwuid(os.getuid()).pw_name
+        paths = (managed / 'com.openai.codex.plist', managed / user / 'com.openai.codex.plist',
+                 Path('/Library/Preferences/com.openai.codex.plist'))
+        for path in paths:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                issues.append('cannot inspect managed Codex preferences: ' + str(path))
+            else:
+                issues.append('macOS managed Codex preferences present: ' + str(path))
+        for key in ('config_toml_base64', 'requirements_toml_base64'):
+            runner = mdm_run or subprocess.run
+            try:
+                result = runner(['/usr/bin/defaults', 'read', 'com.openai.codex', key], capture_output=True, timeout=5)
+                if result.returncode and b'does not exist' in result.stderr:
+                    continue
+                if result.returncode: raise OSError('MDM read refused')
+                issues.append('macOS MDM Codex policy configured: ' + key)
+            except (OSError, subprocess.SubprocessError):
+                issues.append('cannot verify macOS MDM Codex policy: ' + key)
     return {'status': 'FAIL' if issues else 'PASS', 'sources': files,
             'issues': sorted(set(issues))}

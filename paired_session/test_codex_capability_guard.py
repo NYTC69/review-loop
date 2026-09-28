@@ -1,4 +1,5 @@
 import hashlib
+import base64
 from pathlib import Path
 import tempfile
 import subprocess
@@ -25,6 +26,7 @@ class CodexCapabilityGuardTests(unittest.TestCase):
                 ('"notify" = ["touch"]\n', 'notify configured'),
                 ('profile = "unsafe"\n', 'profile configured'),
                 ('"profile" = "unsafe"\n', 'profile configured'),
+                ('[permissions.wide]\nnetwork = true\n', 'permissions configured'),
             )
             for contents, reason in variants:
                 with self.subTest(reason=reason, contents=contents):
@@ -72,6 +74,59 @@ class CodexCapabilityGuardTests(unittest.TestCase):
             result = guard.inspect(home, workspace)
             self.assertEqual(result['status'], 'FAIL', result)
             self.assertTrue(any('MCP servers configured' in issue for issue in result['issues']))
+
+    def test_trusted_git_project_notify_and_default_profile_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / 'codex-home'; home.mkdir()
+            workspace = root / 'workspace'; workspace.mkdir()
+            subprocess.run(['git', 'init', '-q'], cwd=workspace, check=True)
+            project = workspace / '.codex/config.toml'
+            project.parent.mkdir()
+            for content in ('notify = ["hook"]\n', 'default_permissions = "wide"\n'):
+                project.write_text(content)
+                result = guard.inspect(home, workspace, platform='linux')
+                self.assertEqual(result['status'], 'FAIL', result)
+
+    def test_plugin_bundled_mcp_fails_closed_without_exposing_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / 'codex-home'; home.mkdir()
+            workspace = root / 'workspace'; workspace.mkdir()
+            plugin = home / 'plugins/cache/market/plugin/1.0'; plugin.mkdir(parents=True)
+            manifest = plugin / '.codex-plugin/plugin.json'; manifest.parent.mkdir()
+            manifest.write_text('{"mcpServers":"./.mcp.json"}')
+            mcp = plugin / '.mcp.json'; mcp.write_text('{"mcpServers":{"unsafe":{"command":"node"}}}')
+            result = guard.inspect(home, workspace, platform='linux')
+            self.assertEqual(result['status'], 'FAIL')
+            self.assertTrue(any('plugin MCP or app bundle' in row for row in result['issues']))
+            self.assertNotIn('node', repr(result))
+            self.assertIn(str(mcp.resolve()), result['sources'])
+
+    def test_macos_mdm_payload_and_unreadable_domain_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / 'codex-home'; home.mkdir()
+            workspace = root / 'workspace'; workspace.mkdir()
+            payload = base64.b64encode(b'[mcp_servers.evil]\ncommand="node"\n')
+            def mdm_read(argv, *, capture_output, timeout):
+                if argv[-1] == 'config_toml_base64':
+                    return subprocess.CompletedProcess(argv, 0, payload, b'')
+                return subprocess.CompletedProcess(argv, 1, b'', b'does not exist')
+            result = guard.inspect(home, workspace, platform='darwin', mdm_run=mdm_read)
+            self.assertEqual(result['status'], 'FAIL')
+            self.assertTrue(any('macOS MDM Codex policy configured' in row for row in result['issues']))
+            self.assertNotIn('node', repr(result))
+            def refused(argv, *, capture_output, timeout):
+                return subprocess.CompletedProcess(argv, 2, b'', b'permission denied')
+            unknown = guard.inspect(home, workspace, platform='darwin', mdm_run=refused)
+            self.assertEqual(unknown['status'], 'FAIL')
+            self.assertTrue(any('cannot verify macOS MDM' in row for row in unknown['issues']))
+            managed = root / 'managed'
+            managed.mkdir()
+            (managed / 'com.openai.codex.plist').write_bytes(b'opaque MDM payload')
+            policy = guard.inspect(home, workspace, platform='darwin', managed_root=managed, mdm_run=mdm_read)
+            self.assertTrue(any('managed Codex preferences present' in row for row in policy['issues']))
 
 
 if __name__ == '__main__':

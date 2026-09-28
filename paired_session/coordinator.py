@@ -30,6 +30,10 @@ import threading
 import time
 import uuid
 from typing import Optional
+try:
+    from paired_session import codex_capability_guard
+except ModuleNotFoundError:
+    import codex_capability_guard
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
@@ -1392,6 +1396,9 @@ class Coordinator:
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
                           'non_bash_run_state_edit_access': 'denied by Edit/Write path rules'})
         return flags
+
+    def codex_capabilities(self, workspace=None) -> dict:
+        return codex_capability_guard.inspect(self.global_codex_home, workspace or self.workspace)
 
     def _codex_cli_version(self) -> str:
         try:
@@ -2757,6 +2764,10 @@ class Coordinator:
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
         self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
+        if self._role_vendor(role) == 'codex':
+            capability = self.codex_capabilities(active_workspace)
+            if capability['status'] != 'PASS':
+                raise RuntimeError('; '.join(capability['issues']))
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
@@ -3470,6 +3481,9 @@ class Coordinator:
     def _author_permission_probe(self) -> dict:
         if self.args.author_vendor != 'codex':
             return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
+        capability = self.codex_capabilities()
+        if capability['status'] != 'PASS':
+            return {'status': 'FAIL', 'reason': '; '.join(capability['issues'])}
         codex_sandbox_checks = {'status': 'NOT-ATTEMPTED', 'checks': {}}
         advisory = {'note': 'advisory: not proven policy-equivalent to codex exec',
                     'checks': codex_sandbox_checks['checks']}

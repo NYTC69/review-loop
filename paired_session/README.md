@@ -161,6 +161,15 @@ and model positive writes succeeded. A refused synthetic argv stays UNKNOWN;
 a written target or failed positive check FAILs. The report states
 "equivalence to real codex exec UNVERIFIED; re-check at M6". Reviewer OS-only
 UNKNOWN still blocks the overall probe.
+The Codex capability guard scans local user, project, system and file-managed
+config, macOS `com.openai.codex` MDM preferences, and MCP/app bundles in the
+active CODEX_HOME plugin cache. It does not rely on an unverified plugin-disable
+override. Managed feature settings and unreadable MDM preferences fail closed.
+The scanner runs at the author probe and before each Codex dispatch; the author
+config digest remains part of the probe binding. This reflects the
+[OpenAI plugin packaging](https://developers.openai.com/plugins/build/plugins)
+and [managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration)
+contracts. The scanner reads configuration only and records no raw payload.
 For installed Codex 0.157, the direct control requires a named `-P` profile
 derived from the author's sandbox overrides. It byte-copies only the active
 `config.toml` into a disposable `CODEX_HOME` under the run directory, verifies
