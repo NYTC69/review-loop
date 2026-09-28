@@ -3180,6 +3180,46 @@ sys.exit(result.returncode)
         self.assertIn(('author', 'PLAN'), [(row['role'], row['phase']) for row in co.state['turns']])
         self.assertIn(('reviewer', 'EXEC'), [(row['role'], row['phase']) for row in co.state['turns']])
         self.assertIn(('gate', 'EXEC'), [(row['role'], row['phase']) for row in co.state['turns']])
+        source = co.state['fake_exec_source']
+        self.assertEqual(source['run_id'], self.run_dir.name)
+        self.assertEqual(source['workspace_snapshot'], rc.git_snapshot(self.workspace)[0])
+        self.assertLess(source['author_sequence'], source['reviewer_sequence'])
+        self.assertLess(source['reviewer_sequence'], source['gate_sequence'])
+
+    def test_fake_exec_source_rejects_stale_or_other_run_gate(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        gate = next(row for row in reversed(co.state['turns']) if row['role'] == 'gate')
+        gate['snapshot_before'] = 'stale'
+        with self.assertRaisesRegex(RuntimeError, 'current reviewer and gate'):
+            co._freeze_fake_exec_source()
+        gate['snapshot_before'] = rc.git_snapshot(self.workspace)[0]
+        gate['run_id'] = 'other-run'
+        with self.assertRaisesRegex(RuntimeError, 'current reviewer and gate'):
+            co._freeze_fake_exec_source()
+
+    def test_fake_exec_source_uses_effective_retry_reviewer(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            self.assertEqual(co.fake_drive(), 'HOLD')
+        rejected = [row for row in co.state['turns'] if row.get('phase') == 'EXEC' and
+                    row.get('role') == 'reviewer' and row.get('verified_claims_error')]
+        self.assertEqual(len(rejected), 1)
+        source = co.state['fake_exec_source']
+        self.assertNotEqual(source['reviewer_sequence'], rejected[0]['sequence'])
+        self.assertEqual(source['reviewer_sequence'],
+                         co.state['exec_comparisons'][-1]['review_sequence'])
+        self.assertLess(source['reviewer_sequence'], source['gate_sequence'])
+
+    def test_fake_drive_rejects_lifecycle_receipt_before_turns(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        co.state['lifecycle']['stage'] = 'FINISH'
+        with self.assertRaisesRegex(RuntimeError, 'fresh EXEC lifecycle state'):
+            co.fake_drive()
+        self.assertEqual(co.state['turns'], [])
 
     def test_fake_lifecycle_refuses_unrecognized_provider_wrapper(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])

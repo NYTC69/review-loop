@@ -2320,6 +2320,7 @@ class Coordinator:
 
     def start_polish_or_done(self, force=False) -> str:
         if self._fake_lifecycle:
+            self._freeze_fake_exec_source()
             return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
         findings = self.nonblocking_open_findings()
         if (self.args.polish_round == 'off' and not force) or not findings:
@@ -2981,6 +2982,8 @@ class Coordinator:
                    'role_identity_sha256': self.state.get('role_dispatch_manifest_sha256'),
                    'timeout_seconds': timeout_seconds,
                    'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
+        if self._fake_lifecycle:
+            receipt['run_id'] = self.run_dir.name
         if role == 'reviewer':
             receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
         if rejection:
@@ -4151,11 +4154,46 @@ class Coordinator:
     def fake_drive(self) -> str:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise RuntimeError('fake lifecycle refuses a non-fake provider')
+        life = self.state['lifecycle']
+        if (life['stage'] != 'EXEC' or life['epoch'] != 0 or life['candidate_oid'] is not None or
+                life['pending'] or life['receipts']):
+            raise RuntimeError('fake drive requires a fresh EXEC lifecycle state')
         self._fake_dispatching = True
         try:
             return self._drive_loop()
         finally:
             self._fake_dispatching = False
+
+    def _freeze_fake_exec_source(self) -> None:
+        self.state.pop('fake_exec_source', None)
+        rows = [row for row in self.state['turns'] if row.get('phase') == 'EXEC']
+        author = next((row for row in reversed(rows) if row['role'] == 'author'), None)
+        if author is None:
+            raise RuntimeError('fake EXEC has no author turn')
+        later = [row for row in rows if row['sequence'] > author['sequence']]
+        comparison = self.state['exec_comparisons'][-1] if self.state['exec_comparisons'] else {}
+        verdict = comparison.get('effective_verdict')
+        reviewer = next((row for row in later if row['role'] == 'reviewer' and
+                         row['sequence'] == comparison.get('review_sequence')), None)
+        gate = next((row for row in reversed(later) if row['role'] == 'gate' and not row.get('error') and
+                     not row.get('verified_claims_error') and reviewer and
+                     row['sequence'] > reviewer['sequence']), None)
+        snapshot = git_snapshot(self.workspace)[0]
+        if (not reviewer or not gate or verdict not in ('APPROVE', 'APPROVE_WITH_ADVISORY') or
+                reviewer.get('error') or reviewer.get('verified_claims_error') or
+                any(row.get('run_id') != self.run_dir.name for row in (author, reviewer, gate)) or
+                reviewer.get('answer', {}).get('status') != 'APPROVE' or
+                gate.get('answer', {}).get('verdict') != 'approve' or
+                gate.get('answer', {}).get('findings') or
+                any(row.get('snapshot_before') != snapshot or
+                    row.get('answer', {}).get('reviewed_snapshot') != snapshot for row in (reviewer, gate))):
+            raise RuntimeError('fake EXEC lacks current reviewer and gate receipts')
+        self.state['fake_exec_source'] = {'run_id': self.run_dir.name,
+                                          'author_sequence': author['sequence'],
+                                          'reviewer_sequence': reviewer['sequence'],
+                                          'gate_sequence': gate['sequence'],
+                                          'workspace_snapshot': snapshot}
+        self.save()
 
     def _drive_loop(self) -> str:
         if self.state.get('uncertain_active'):
