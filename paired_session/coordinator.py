@@ -32,13 +32,17 @@ import uuid
 from typing import Optional
 try:
     from paired_session import budget_policy
+    from paired_session import candidate_tree
     from paired_session import codex_capability_guard
+    from paired_session import docs_policy
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
+    import candidate_tree
     import codex_capability_guard
+    import docs_policy
     import finish_dispatch
     import lifecycle_spine
     from program_binding import snapshot as program_snapshot, safe_path
@@ -1615,7 +1619,7 @@ class Coordinator:
         self.save()
 
     def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
-                             polish_context=None, polish_stub=False):
+                             polish_context=None, polish_stub=False, docs_context=None, docs_stub=False):
         if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
         outputs = outputs or {}
         start_epoch = self.state['lifecycle']['epoch']
@@ -1627,6 +1631,8 @@ class Coordinator:
             last = life['receipts'][-1] if life['receipts'] else {}
             if (not life['pending'] and last.get('stage') == stage and
                     last.get('epoch') == life['epoch'] and last.get('candidate_oid') == life['candidate_oid']):
+                if stage == 'POLISH-Q' and self.blocking_open_findings():
+                    raise ValueError('POLISH-Q has an open blocker')
                 self.state['lifecycle'] = lifecycle_spine.advance(life)
                 self.save()
                 continue
@@ -1669,6 +1675,23 @@ class Coordinator:
                         any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
                         self.state['invocations_used'] + len(names) > self.args.max_invocations):
                     raise ValueError('POLISH-Q specialist budget exhausted')
+            if stage == 'DOCS' and (life['pending'] or self.blocking_open_findings()):
+                raise ValueError('DOCS has an uncertain request or open blocker')
+            if stage == 'DOCS' and not stub_mode and not docs_stub:
+                if not docs_context: raise ValueError('DOCS requires a candidate-bound fake writer')
+                baseline, before = docs_context['baseline'], docs_context['before']
+                if (baseline.workspace != self.workspace or baseline.run_dir != self.run_dir or
+                        baseline.parent_head != life['parent'] or before.tree_oid != life['candidate_oid']):
+                    raise ValueError('DOCS candidate differs from persisted item state')
+                prior = life['receipts'][-1]
+                if (prior['stage'] != 'POLISH-Q' or prior['output_oid'] != before.tree_oid or
+                        prior['epoch'] != life['epoch'] or prior['status'] != 'READY'):
+                    raise ValueError('DOCS lacks current POLISH-Q receipt')
+                if not self.state['config']['docs_file']: raise ValueError('DOCS requires a frozen docs_file')
+                path = Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix()
+                replay = next((row for row in reversed(life['receipts'])
+                               if row.get('stage') == 'DOCS' and row.get('output_oid') == before.tree_oid and
+                               row.get('docs_file') == path), None)
             if stage == 'FINISH' and not stub_mode:
                 baseline, revision = finish_context['baseline'], finish_context['revision']
                 if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
@@ -1716,6 +1739,21 @@ class Coordinator:
                     if result.get('status') != 'APPROVE':
                         raise ValueError('specialist did not approve current OID')
                 receipt.update(specialists=names, polish_calls=used)
+            if stage == 'DOCS' and not stub_mode and not docs_stub:
+                docs_context['write'](baseline.root, path)
+                after = candidate_tree.ingest_candidate_revision(baseline)
+                polish_approval = {'candidate_oid': before.tree_oid, 'run_id': self.run_dir.name,
+                                   'workspace': str(self.workspace), 'run_dir': str(self.run_dir),
+                                   'parent_head': life['parent'], 'phase': 'POLISH-Q',
+                                   'status': 'APPROVE', 'blocking_findings': [], 'epoch': life['epoch']}
+                change = docs_policy.validate_candidate_docs_change(
+                    baseline, before, polish_approval, after, [path], exec_paths=(),
+                    finish_paths=(), polish_paths=(), closure_inputs=(), closure_uncertain=False,
+                    replay_receipt=replay)
+                if change.requires_rechecks and docs_context['test'](after.tree_oid) != after.tree_oid:
+                    raise ValueError('DOCS write lacks current-OID retest')
+                receipt.update(output_oid=after.tree_oid, docs_file=path, docs_paths=change.paths,
+                               invalidated=change.invalidated_receipts, fake_only=True)
             self.fake_lifecycle_event('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:

@@ -1,8 +1,12 @@
 """Exact documentation grants and mandatory downstream recheck policy."""
 
 from typing import NamedTuple
-from .candidate_tree import (CandidateError, CandidateRevision, _canonical_parts, _git, _git_env, _manifest,
-                             _prefixes, _tree_entries, verify_candidate_revision)
+try:
+    from .candidate_tree import (CandidateError, CandidateRevision, _canonical_parts, _git, _git_env, _manifest,
+                                 _prefixes, _tree_entries, verify_candidate_revision)
+except ImportError:
+    from candidate_tree import (CandidateError, CandidateRevision, _canonical_parts, _git, _git_env, _manifest,
+                                _prefixes, _tree_entries, verify_candidate_revision)
 
 
 DOCS_INVALIDATED = ('*',)
@@ -62,7 +66,8 @@ def validate_docs_change(changed_paths, allowed_paths, *, exec_paths, finish_pat
 
 
 def validate_candidate_docs_change(baseline, before, approval, after, allowed_paths, *, exec_paths,
-                                   finish_paths, polish_paths, closure_inputs, closure_uncertain):
+                                   finish_paths, polish_paths, closure_inputs, closure_uncertain,
+                                   replay_receipt=None):
     """Derive DOCS writes from scratch Git OIDs, never a caller-supplied path list."""
     verify_candidate_revision(baseline, after)
     if not isinstance(before, CandidateRevision) or not isinstance(exec_paths, (tuple, list)):
@@ -90,7 +95,14 @@ def validate_candidate_docs_change(baseline, before, approval, after, allowed_pa
     present = {path: mode for mode, _, path in _tree_entries(env, after.tree_oid)}
     if any(path in present and present[path] != '100644' for path in paths):
         raise CandidateError('DOCS candidate contains a non-regular documentation file')
-    prior_paths = tuple(row['path'] for row in prior)
+    owned = ()
+    if replay_receipt is not None:
+        marker = (replay_receipt.get('stage'), replay_receipt.get('output_oid'),
+                  tuple(replay_receipt.get('docs_paths', ())), tuple(replay_receipt.get('invalidated', ())))
+        if marker != ('DOCS', before_oid, (replay_receipt.get('docs_file'),), DOCS_INVALIDATED):
+            raise CandidateError('DOCS replay receipt differs from the prior candidate')
+        owned = (replay_receipt['docs_file'],)
+    prior_paths = tuple(row['path'] for row in prior if row['path'] not in owned)
     return validate_docs_change(paths, allowed_paths, exec_paths=tuple(exec_paths) + prior_paths,
                                 finish_paths=finish_paths, polish_paths=polish_paths,
                                 closure_inputs=closure_inputs, closure_uncertain=closure_uncertain)

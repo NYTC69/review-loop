@@ -2920,7 +2920,7 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'candidate differs'):
             co.fake_lifecycle_route(approved, finish_context=foreign)
         self.assertIsNone(co.state['lifecycle']['pending'])
-        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=context, polish_stub=True),
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=context, polish_stub=True, docs_stub=True),
                          'STOP_BEFORE_SECURITY')
         self.assertEqual(len(launched), 1)
         self.assertEqual(co.state['lifecycle']['receipts'][1]['finish_result'], 'TESTS_REQUIRED')
@@ -2973,12 +2973,13 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'uncertain FINISH request'):
             co.fake_lifecycle_route(approved, stub_mode=True)
 
-    def fake_lifecycle_ready_for_specialists(self):
-        command = self.command('--lifecycle-mode', 'on')
+    def fake_lifecycle_ready_for_specialists(self, docs=False):
+        flags = ('--docs-file', 'docs/guide.md') if docs else ()
+        command = self.command('--lifecycle-mode', 'on', *flags)
         co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
         scratch = self.root / 'scratch'; scratch.mkdir()
-        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
-                                                 ('tracked.txt',))
+        paths = ('tracked.txt', 'docs/guide.md') if docs else ('tracked.txt',)
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch, paths)
         baseline = dataclasses.replace(baseline, separate_filesystems=True)
         revision = ct.ingest_candidate_revision(baseline)
         life = co.state['lifecycle']
@@ -3006,7 +3007,7 @@ sys.exit(result.returncode)
             seen.append(request)
             return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
         self.assertEqual(co.fake_lifecycle_route(approved, finish_context=finish,
-                         polish_context={'python-reviewer': specialist}), 'STOP_BEFORE_SECURITY')
+                         polish_context={'python-reviewer': specialist}, docs_stub=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual([row['role'] for row in seen], ['specialist:python-reviewer'])
         self.assertEqual(co.state['lifecycle']['polish_calls'], 1)
         self.assertEqual(co.state['lifecycle']['specialist_counts'], {'python-reviewer': 1})
@@ -3082,6 +3083,80 @@ sys.exit(result.returncode)
             co.fake_lifecycle_route(approved, finish_context=finish,
                                     polish_context={'python-reviewer': unknown})
         self.assertEqual(co.state['lifecycle']['stage'], 'POLISH-Q')
+        self.assertNotIn('DOCS', [row['stage'] for row in co.state['lifecycle']['receipts']])
+
+    def test_fake_lifecycle_docs_write_retests_and_replays_to_final_oid(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        baseline, first = finish['baseline'], finish['revision']
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        specialists = {'python-reviewer': specialist}
+        tested = []
+        def write_docs(root, path):
+            target = root / path; target.parent.mkdir(exist_ok=True)
+            target.write_text('# Guide\n')
+        def retest(oid):
+            tested.append(oid)
+            return oid
+        docs = {'baseline': baseline, 'before': first, 'write': write_docs, 'test': retest}
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=finish,
+                         polish_context=specialists, docs_context=docs), 'EXEC')
+        final = ct.ingest_candidate_revision(baseline)
+        self.assertNotEqual(final.tree_oid, first.tree_oid)
+        self.assertEqual(tested, [final.tree_oid])
+        self.assertEqual(co.state['lifecycle']['receipts'][3]['docs_file'], 'docs/guide.md')
+        self.assertEqual(co.state['lifecycle']['receipts'][3]['invalidated'], ('*',))
+        second = dict(approved, epoch=1, candidate_oid=final.tree_oid)
+        proof = json.loads(json.dumps(approved['proof']))
+        for role in ('reviewer', 'gate'):
+            proof[role].update(epoch=1, candidate_oid=final.tree_oid)
+        second['proof'] = proof
+        next_finish = dict(finish, revision=final, tested_oid=final.tree_oid)
+        docs.update(before=final, write=lambda root, path: (root / path).write_text('# Guide v2\n'))
+        self.assertEqual(co.fake_lifecycle_route(second, finish_context=next_finish,
+                         polish_context=specialists, docs_context=docs), 'EXEC')
+        final_again = ct.ingest_candidate_revision(baseline)
+        self.assertNotEqual(final_again.tree_oid, final.tree_oid)
+        third = dict(approved, epoch=2, candidate_oid=final_again.tree_oid)
+        for role in ('reviewer', 'gate'):
+            proof[role].update(epoch=2, candidate_oid=final_again.tree_oid)
+        third['proof'] = proof
+        final_finish = dict(finish, revision=final_again, tested_oid=final_again.tree_oid)
+        docs.update(before=final_again, write=lambda root, path: None)
+        self.assertEqual(co.fake_lifecycle_route(third, finish_context=final_finish,
+                         polish_context=specialists, docs_context=docs), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(co.state['lifecycle']['candidate_oid'], final_again.tree_oid)
+        self.assertEqual([row['stage'] for row in co.state['lifecycle']['receipts']],
+                         ['EXEC', 'FINISH', 'POLISH-Q', 'DOCS'] * 3)
+        self.assertEqual(tested, [final.tree_oid, final_again.tree_oid])
+
+    def test_fake_lifecycle_bad_docs_context_does_not_leave_pending(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        bad = {'baseline': finish['baseline'],
+               'before': ct.CandidateRevision('0' * 40, (), 0),
+               'write': lambda root, path: None, 'test': lambda oid: oid}
+        with self.assertRaisesRegex(ValueError, 'candidate differs'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_context=bad)
+        self.assertEqual(co.state['lifecycle']['stage'], 'DOCS')
+        self.assertIsNone(co.state['lifecycle']['pending'])
+
+    def test_fake_lifecycle_docs_write_without_retest_cannot_pass(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        def specialist(request):
+            return {'status': 'APPROVE', 'candidate_oid': request['candidate_oid'], 'findings': []}
+        def write_docs(root, path):
+            target = root / path; target.parent.mkdir(exist_ok=True)
+            target.write_text('# Untested\n')
+        docs = {'baseline': finish['baseline'], 'before': finish['revision'],
+                'write': write_docs, 'test': lambda oid: None}
+        with self.assertRaisesRegex(ValueError, 'current-OID retest'):
+            co.fake_lifecycle_route(approved, finish_context=finish,
+                                    polish_context={'python-reviewer': specialist}, docs_context=docs)
+        self.assertEqual(co.state['lifecycle']['stage'], 'DOCS')
+        self.assertIsNotNone(co.state['lifecycle']['pending'])
         self.assertNotIn('DOCS', [row['stage'] for row in co.state['lifecycle']['receipts']])
 
     def test_lifecycle_project_config_enablement_is_refused(self):
