@@ -3323,7 +3323,9 @@ class Coordinator:
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'approve')))
             if approves_exec and not (self._fake_lifecycle and workspace_override and
-                                      self.state.get('fake_candidate_test')) and not any(
+                                      self.state.get('fake_candidate_test') and
+                                      Path(workspace_override).resolve() == Path(
+                                          self.state['fake_candidate_test']['root']).resolve()) and not any(
                     observed_test_succeeded(row, self.args.test_command)
                                          for row in observed_commands):
                 raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command')
@@ -4471,7 +4473,10 @@ class Coordinator:
             if review['answer']['status'] != 'APPROVE' or review['answer']['full_review']:
                 raise RuntimeError('OID reviewer did not approve')
             reviewed = {'id': str(uuid.uuid4()), 'test_id': test['id'],
-                        'oid': revision.tree_oid, 'sequence': review['sequence']}
+                        'oid': revision.tree_oid, 'sequence': review['sequence'],
+                        'run_id': self.run_dir.name, 'item_uuid': identity[1], 'epoch': identity[2],
+                        'ingest_id': ingest['id']}
+            atomic_json(self.evidence / (reviewed['id'] + '-oid-review.json'), reviewed)
             self.state['fake_candidate_review'] = reviewed
             self.save()
             gate = self.invoke('gate', 'EXEC', 'You are an adversarial reviewer. ' + proof,
@@ -4480,12 +4485,61 @@ class Coordinator:
             if gate['answer']['verdict'] != 'approve' or gate['answer']['findings']:
                 raise RuntimeError('OID gate did not approve')
             chain = {'id': str(uuid.uuid4()), 'ingest_id': ingest['id'], 'test_id': test['id'], 'identity': identity,
-                     'review_id': reviewed['id'], 'gate_sequence': gate['sequence'], 'oid': revision.tree_oid}
+                     'review_id': reviewed['id'], 'gate_sequence': gate['sequence'], 'oid': revision.tree_oid,
+                     'root': str(checkout.root), 'root_identity': checkout.root_identity}
+            atomic_json(self.evidence / (chain['id'] + '-oid-chain.json'), chain)
             self.state.pop('fake_candidate_review_rejected')
             self.state['fake_candidate_chain'] = chain
             self.save()
         finally:
             self._fake_dispatching = False
+
+    def fake_candidate_approval(self) -> dict:
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise RuntimeError('fake approval requires fake-only dispatch')
+        state = self.state
+        ingest, test = state.get('fake_ingest_receipt'), state.get('fake_candidate_test')
+        reviewed, chain = state.get('fake_candidate_review'), state.get('fake_candidate_chain')
+        if (not all((ingest, test, reviewed, chain)) or state.get('fake_candidate_review_rejected') or
+                state.get('active') or state.get('uncertain_active') or self.blocking_open_findings()):
+            raise RuntimeError('fake approval lacks a clean receipt chain')
+        life = state['lifecycle']
+        identity = [self.run_dir.name, state['item_uuid'], life['epoch']]
+        if (list(chain['identity']) != identity or reviewed['run_id'] != identity[0] or
+                reviewed['item_uuid'] != identity[1] or reviewed['epoch'] != identity[2] or
+                chain['ingest_id'] != ingest['id'] or chain['test_id'] != test['id'] or
+                chain['review_id'] != reviewed['id'] or reviewed['ingest_id'] != ingest['id'] or
+                chain['oid'] != reviewed['oid'] or chain['oid'] != test['oid'] or
+                chain['oid'] != ingest['output_oid'] or chain['root'] != test['root'] or
+                list(chain['root_identity']) != list(test['root_identity']) or life['stage'] != 'EXEC'):
+            raise RuntimeError('fake approval has stale or unrelated receipts')
+        for row, suffix in ((ingest, 'ingest'), (test, 'oid-test'),
+                            (reviewed, 'oid-review'), (chain, 'oid-chain')):
+            saved = json.loads((self.evidence / (row['id'] + '-' + suffix + '.json')).read_text())
+            if saved != json.loads(json.dumps(row)):
+                raise RuntimeError('fake approval evidence differs from state')
+        turns = {row['sequence']: row for row in state['turns']}
+        reviewer, gate = turns[reviewed['sequence']], turns[chain['gate_sequence']]
+        if (reviewer['role'] != 'reviewer' or gate['role'] != 'gate' or
+                reviewer['answer']['status'] != 'APPROVE' or reviewer['answer']['full_review'] or
+                gate['answer']['verdict'] != 'approve' or gate['answer']['findings'] or
+                reviewed['sequence'] >= chain['gate_sequence']):
+            raise RuntimeError('fake approval roles or verdicts differ')
+        if any(row.get('run_id') != identity[0] or row.get('workspace') != test['root']
+               for row in (reviewer, gate)): raise RuntimeError('fake approval turn identity differs')
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        revision = candidate_tree.CandidateRevision(chain['oid'], tuple(ingest['manifest']), 0)
+        candidate_tree.verify_candidate_revision(baseline, revision)
+        fields = {'run_id': identity[0], 'convergence_id': chain['id'], 'epoch': identity[2],
+                  'candidate_oid': chain['oid'], 'parent_head': baseline.parent_head,
+                  'workspace': str(self.workspace.resolve()), 'run_dir': str(self.run_dir.resolve()),
+                  'phase': 'EXEC'}
+        proof = {**fields, 'blocking_findings': [],
+                 'reviewer': {**fields, 'role': 'reviewer', 'status': 'APPROVE'},
+                 'gate': {**fields, 'role': 'gate', 'verdict': 'approve'}}
+        return {'status': 'APPROVE', 'epoch': identity[2], 'item_uuid': identity[1],
+                'run_id': identity[0], 'parent': baseline.parent_head,
+                'candidate_oid': chain['oid'], 'proof': proof}
 
     def _freeze_fake_exec_source(self) -> None:
         self.state.pop('fake_exec_source', None)

@@ -3690,6 +3690,11 @@ sys.exit(result.returncode)
         self.assertEqual(chain['test_id'], tested['id'])
         self.assertEqual(chain['review_id'], reviewed['id'])
         self.assertEqual(chain['oid'], ingest['output_oid'])
+        approval = co.fake_candidate_approval()
+        self.assertEqual(approval['candidate_oid'], ingest['output_oid'])
+        self.assertEqual(approval['proof']['convergence_id'], chain['id'])
+        self.assertEqual(approval['proof']['reviewer']['status'], 'APPROVE')
+        self.assertEqual(approval['proof']['gate']['verdict'], 'approve')
         self.assertLess(reviewed['sequence'], chain['gate_sequence'])
         self.assertEqual(co.state['fake_candidate_chain'], chain)
         for role in ('reviewer', 'gate'):
@@ -3783,6 +3788,23 @@ sys.exit(result.returncode)
             resumed.fake_candidate_oid_review()
         self.assertEqual(len(resumed.state['turns']), count)
         self.assertNotIn('fake_candidate_chain', resumed.state)
+
+    def test_fake_candidate_approval_rejects_changed_evidence_and_identity(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        chain = co.state['fake_candidate_chain']
+        chain['identity'] = ('another-run', co.state['item_uuid'], 0)
+        with self.assertRaisesRegex(RuntimeError, 'stale or unrelated'):
+            co.fake_candidate_approval()
+        chain['identity'] = (self.run_dir.name, co.state['item_uuid'], 0)
+        receipt = co.evidence / (chain['id'] + '-oid-chain.json')
+        receipt.write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, 'evidence differs'):
+            co.fake_candidate_approval()
 
     def test_fake_candidate_oid_review_rejects_reviewer_tree_mutation_before_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
