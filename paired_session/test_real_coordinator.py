@@ -17,6 +17,7 @@ import time
 import unittest
 from unittest.mock import patch
 from paired_session import candidate_tree as ct
+from paired_session.docs_policy import validate_candidate_docs_change
 
 
 MODULE_PATH = Path(__file__).with_name('coordinator.py')
@@ -2826,6 +2827,78 @@ sys.exit(result.returncode)
         (self.workspace / 'tracked.txt').write_text('live drift after review\n')
         with self.assertRaisesRegex(ct.CandidateError, 'live or scratch parent changed'):
             ct.verify_candidate_revision(baseline, newer)
+
+    def test_docs_paths_are_derived_from_candidate_oids_and_invalidate_receipts(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt', 'docs'))
+        (baseline.root / 'tracked.txt').write_text('reviewed code\n')
+        before = ct.ingest_candidate_revision(baseline)
+        docs = baseline.root / 'docs'; docs.mkdir()
+        (docs / 'guide.md').write_text('new documentation\n')
+        after = ct.ingest_candidate_revision(baseline)
+        kwargs = dict(exec_paths=(), finish_paths=(), polish_paths=(),
+                      closure_inputs=(), closure_uncertain=False)
+        approval = dict(candidate_oid=before.tree_oid, run_id=self.run_dir.name,
+                        workspace=str(baseline.workspace), run_dir=str(baseline.run_dir),
+                        parent_head=baseline.parent_head, phase='POLISH-Q', status='APPROVE',
+                        blocking_findings=[], epoch=1)
+        result = validate_candidate_docs_change(baseline, before, approval, after,
+                                                ['docs/guide.md'], **kwargs)
+        self.assertEqual(result.paths, ('docs/guide.md',))
+        self.assertTrue(result.requires_rechecks)
+        self.assertEqual(result.invalidated_receipts, ('*',))
+        approved_after = {**approval, 'candidate_oid': after.tree_oid}
+        unchanged = validate_candidate_docs_change(baseline, after, approved_after, after,
+                                                    ['docs/guide.md'], **kwargs)
+        self.assertFalse(unchanged.requires_rechecks)
+        with self.assertRaisesRegex(ct.CandidateError, 'approved prior candidate'):
+            validate_candidate_docs_change(baseline, after, approval, after,
+                                           ['docs/guide.md'], **kwargs)
+        missing = ct.CandidateRevision('0' * len(before.tree_oid), (), 0)
+        with self.assertRaises(ct.CandidateError):
+            validate_candidate_docs_change(baseline, missing,
+                                           {**approval, 'candidate_oid': missing.tree_oid}, after,
+                                           ['docs/guide.md'], **kwargs)
+        with self.assertRaisesRegex(ValueError, 'EXEC-reviewed path'):
+            validate_candidate_docs_change(baseline, before, approval, after,
+                                           ['docs/guide.md'], exec_paths=('docs/guide.md',),
+                                           finish_paths=(), polish_paths=(), closure_inputs=(),
+                                           closure_uncertain=False)
+        (docs / 'guide.md').write_text('second edit\n')
+        later = ct.ingest_candidate_revision(baseline)
+        with self.assertRaisesRegex(ValueError, 'EXEC-reviewed path'):
+            validate_candidate_docs_change(baseline, after, approved_after, later,
+                                           ['docs/guide.md'], **kwargs)
+        (docs / 'guide.md').write_text('post-ingest drift\n')
+        with self.assertRaises(ct.CandidateError):
+            validate_candidate_docs_change(baseline, before, approval, after,
+                                           ['docs/guide.md'], **kwargs)
+
+    def test_docs_oid_policy_refuses_unlisted_source_and_symlink(self):
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt', 'docs'))
+        kwargs = dict(exec_paths=(), finish_paths=(), polish_paths=(),
+                      closure_inputs=(), closure_uncertain=False)
+        before = ct.CandidateRevision(baseline.tree_oid, (), 2)
+        approval = dict(candidate_oid=before.tree_oid, run_id=self.run_dir.name,
+                        workspace=str(baseline.workspace), run_dir=str(baseline.run_dir),
+                        parent_head=baseline.parent_head, phase='POLISH-Q', status='APPROVE',
+                        blocking_findings=[], epoch=1)
+        (baseline.root / 'tracked.txt').write_text('unlisted change\n')
+        after = ct.ingest_candidate_revision(baseline)
+        with self.assertRaisesRegex(ValueError, 'unreserved path'):
+            validate_candidate_docs_change(baseline, before, approval, after,
+                                           ['docs/guide.md'], **kwargs)
+        (baseline.root / 'tracked.txt').write_text('base\n')
+        docs = baseline.root / 'docs'; docs.mkdir()
+        (docs / 'target.md').write_text('safe target\n')
+        (docs / 'guide.md').symlink_to('target.md')
+        after = ct.ingest_candidate_revision(baseline)
+        with self.assertRaisesRegex(ct.CandidateError, 'non-regular documentation'):
+            validate_candidate_docs_change(baseline, before, approval, after,
+                                           ['docs/guide.md'], **kwargs)
 
     def test_candidate_ingest_includes_ignored_file_and_refuses_unauthorized_paths(self):
         scratch = self.root / 'scratch'; scratch.mkdir()

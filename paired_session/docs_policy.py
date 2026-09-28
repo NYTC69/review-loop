@@ -1,7 +1,8 @@
 """Exact documentation grants and mandatory downstream recheck policy."""
 
 from typing import NamedTuple
-from .candidate_tree import _canonical_parts, _prefixes
+from .candidate_tree import (CandidateError, CandidateRevision, _canonical_parts, _git, _git_env, _manifest,
+                             _prefixes, _tree_entries, verify_candidate_revision)
 
 
 DOCS_INVALIDATED = ('*',)
@@ -58,3 +59,38 @@ def validate_docs_change(changed_paths, allowed_paths, *, exec_paths, finish_pat
     if overlap:
         raise ValueError('documentation writer changed an EXEC-reviewed path: ' + sorted(overlap)[0])
     return DocsChange(tuple(sorted(changed)), bool(changed), DOCS_INVALIDATED if changed else ())
+
+
+def validate_candidate_docs_change(baseline, before, approval, after, allowed_paths, *, exec_paths,
+                                   finish_paths, polish_paths, closure_inputs, closure_uncertain):
+    """Derive DOCS writes from scratch Git OIDs, never a caller-supplied path list."""
+    verify_candidate_revision(baseline, after)
+    if not isinstance(before, CandidateRevision) or not isinstance(exec_paths, (tuple, list)):
+        raise CandidateError('DOCS prior revision or reviewed paths are malformed')
+    expected = {'candidate_oid': before.tree_oid, 'run_id': baseline.run_dir.name,
+                'workspace': str(baseline.workspace), 'run_dir': str(baseline.run_dir),
+                'parent_head': baseline.parent_head, 'phase': 'POLISH-Q', 'status': 'APPROVE'}
+    if (not isinstance(approval, dict) or
+            any(approval.get(key) != value for key, value in expected.items()) or
+            approval.get('blocking_findings') != [] or
+            type(approval.get('epoch')) is not int or approval['epoch'] < 0):
+        raise CandidateError('DOCS lacks approved prior candidate receipt')
+    env = _git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(baseline.index),
+                   GIT_WORK_TREE=str(baseline.root), GIT_CEILING_DIRECTORIES=str(baseline.root.parent))
+    before_oid = before.tree_oid
+    if before_oid != baseline.tree_oid:
+        ref = 'refs/paired-session/candidates/' + before_oid
+        if _git(['rev-parse', '--verify', ref], env=env) != before_oid:
+            raise CandidateError('prior DOCS candidate OID has no scratch ref')
+    prior = _manifest(env, baseline.tree_oid, before_oid)
+    if prior != before.manifest:
+        raise CandidateError('prior DOCS candidate manifest differs from its OID')
+    changes = _manifest(env, before_oid, after.tree_oid)
+    paths = [row['path'] for row in changes]
+    present = {path: mode for mode, _, path in _tree_entries(env, after.tree_oid)}
+    if any(path in present and present[path] != '100644' for path in paths):
+        raise CandidateError('DOCS candidate contains a non-regular documentation file')
+    prior_paths = tuple(row['path'] for row in prior)
+    return validate_docs_change(paths, allowed_paths, exec_paths=tuple(exec_paths) + prior_paths,
+                                finish_paths=finish_paths, polish_paths=polish_paths,
+                                closure_inputs=closure_inputs, closure_uncertain=closure_uncertain)
