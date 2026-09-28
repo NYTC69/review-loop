@@ -11,6 +11,21 @@ def fake_guard(args):
     names = ('workspace', 'workitem', 'run_dir', 'codex_bin', 'claude_bin')
     return all(root in Path(getattr(args, name)).resolve().parents for name in names)
 
+def fake_dispatch_guard(args):
+    if not fake_guard(args):
+        return False
+    for name in ('codex_bin', 'claude_bin'):
+        path = Path(getattr(args, name))
+        if path.is_symlink() or path.name in ('codex', 'claude'):
+            return False
+        try:
+            source = path.read_text()
+        except (OSError, UnicodeError):
+            return False
+        if 'fake_cli.py' not in source or not source.startswith('#!'):
+            return False
+    return True
+
 def initial(item_uuid, parent):
     return {'item_uuid': item_uuid, 'stage': 'EXEC', 'epoch': 0,
             'candidate_oid': None, 'parent': parent, 'receipts': [], 'pending': None}

@@ -1058,6 +1058,7 @@ class Coordinator:
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
         self.args = args
         self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
+        self._fake_dispatching = False
         self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
         self.workitem = Path(args.workitem).expanduser().resolve()
@@ -1348,7 +1349,7 @@ class Coordinator:
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
             raise RuntimeError('frozen role dispatch changed; abort or start a new run')
-        if not current['role_flags']['author']['tmp_isolated']:
+        if not current['role_flags']['author']['tmp_isolated'] and not self._fake_lifecycle:
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
     def reviewer_commands(self) -> list[str]:
@@ -2318,6 +2319,8 @@ class Coordinator:
             self.state['exec_comparisons'][-1]['effective_verdict'] = verdict
 
     def start_polish_or_done(self, force=False) -> str:
+        if self._fake_lifecycle:
+            return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
         findings = self.nonblocking_open_findings()
         if (self.args.polish_round == 'off' and not force) or not findings:
             return self.done()
@@ -2911,7 +2914,11 @@ class Coordinator:
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
-        if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot dispatch a real provider')
+        if self._fake_lifecycle:
+            if not self._fake_dispatching:
+                raise RuntimeError('fake lifecycle cannot dispatch a real provider')
+            if not lifecycle_spine.fake_dispatch_guard(self.args):
+                raise RuntimeError('fake lifecycle refuses a non-fake provider')
         issue = self._program_state(hold=True)[1]
         if issue: raise RuntimeError(issue)
         if self.state.get('config', {}).get('lifecycle_mode') == 'on':
@@ -4137,7 +4144,20 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
-        if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy drive')
+        if self._fake_lifecycle:
+            raise RuntimeError('fake lifecycle cannot enter legacy drive')
+        return self._drive_loop()
+
+    def fake_drive(self) -> str:
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise RuntimeError('fake lifecycle refuses a non-fake provider')
+        self._fake_dispatching = True
+        try:
+            return self._drive_loop()
+        finally:
+            self._fake_dispatching = False
+
+    def _drive_loop(self) -> str:
         if self.state.get('uncertain_active'):
             return self.hold('uncertain CLI turn; inspect evidence, then use resume --retry-uncertain')
         if self.state['active']:

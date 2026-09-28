@@ -3168,6 +3168,27 @@ sys.exit(result.returncode)
         self.assertIn('lifecycle remains disabled', output.getvalue())
         self.assertFalse((self.run_dir / 'state.json').exists())
 
+    def test_fake_lifecycle_shared_drive_stops_after_real_fake_cli_reviews(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        self.assertIn('router binding is pending', co.state['hold_reason'])
+        self.assertEqual(co.state['phase'], 'EXEC')
+        self.assertTrue(co.state['gate_ran'])
+        self.assertEqual(co.state['lifecycle']['stage'], 'EXEC')
+        self.assertEqual(co.state['lifecycle']['receipts'], [])
+        self.assertIn(('author', 'PLAN'), [(row['role'], row['phase']) for row in co.state['turns']])
+        self.assertIn(('reviewer', 'EXEC'), [(row['role'], row['phase']) for row in co.state['turns']])
+        self.assertIn(('gate', 'EXEC'), [(row['role'], row['phase']) for row in co.state['turns']])
+
+    def test_fake_lifecycle_refuses_unrecognized_provider_wrapper(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        Path(args.codex_bin).write_text('#!/bin/sh\nexit 0\n')
+        with self.assertRaisesRegex(RuntimeError, 'non-fake provider'):
+            co.fake_drive()
+        self.assertEqual(co.state['turns'], [])
+
     def test_lifecycle_doc_paths_refuse_escape_before_state(self):
         with self.assertRaisesRegex(ValueError, 'lifecycle doc path escapes workspace'):
             self.coordinator('--docs-allowlist', '../outside.md')
