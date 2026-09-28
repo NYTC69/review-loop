@@ -3472,6 +3472,70 @@ sys.exit(result.returncode)
         self.assertIsNotNone(co.state['fake_candidate_pending'])
         self.assertNotIn('fake_ingest_receipt', co.state)
 
+    def test_fake_candidate_oid_test_binds_rebuilt_tree_and_ingest_id(self):
+        (self.workspace / 'test_sum_ints.py').write_text(
+            'import unittest\nfrom sum_ints import sum_ints\n'
+            'class TestSum(unittest.TestCase):\n'
+            '    def test_sum(self):\n'
+            '        self.assertEqual(sum_ints([1, 2]), 3)\n')
+        subprocess.run(['git', 'add', 'test_sum_ints.py'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add oid test'], cwd=self.workspace, check=True)
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn()
+        test = co.fake_candidate_oid_test()
+        self.assertEqual(test['ingest_id'], ingest['id'])
+        self.assertEqual(test['oid'], ingest['output_oid'])
+        self.assertTrue(Path(test['command'][0]).is_absolute())
+        self.assertEqual(test['command'][1:], ['-m', 'unittest'])
+        self.assertEqual(test['returncode'], 0)
+        self.assertEqual(co.state['fake_candidate_test']['id'], test['id'])
+        self.assertTrue((co.evidence / (test['id'] + '-oid-test.json')).is_file())
+        with self.assertRaisesRegex(RuntimeError, 'completed ingest'):
+            co.fake_candidate_oid_test()
+
+    def test_fake_candidate_oid_test_rejects_changed_candidate_bytes(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn()
+        (Path(ingest['root']) / 'sum_ints.py').write_text('changed after ingest\n')
+        with self.assertRaisesRegex(ValueError, 'candidate|reviewed OID'):
+            co.fake_candidate_oid_test()
+        self.assertNotIn('fake_candidate_test', co.state)
+
+    def test_fake_candidate_oid_test_rejects_mismatched_ingest_evidence(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn()
+        saved = co.evidence / (ingest['id'] + '-ingest.json')
+        body = json.loads(saved.read_text())
+        body['output_oid'] = '0' * len(ingest['output_oid'])
+        saved.write_text(json.dumps(body))
+        with self.assertRaisesRegex(RuntimeError, 'evidence differs'):
+            co.fake_candidate_oid_test()
+        self.assertNotIn('fake_candidate_test', co.state)
+
+    def test_fake_candidate_oid_test_does_not_import_from_inherited_pythonpath(self):
+        outside = self.root / 'outside'; outside.mkdir()
+        (outside / 'outside_only.py').write_text('VALUE = 1\n')
+        (self.workspace / 'test_external.py').write_text(
+            'import unittest\nimport outside_only\n'
+            'class TestExternal(unittest.TestCase):\n'
+            '    def test_value(self):\n        self.assertEqual(outside_only.VALUE, 1)\n')
+        subprocess.run(['git', 'add', 'test_external.py'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'external import test'], cwd=self.workspace, check=True)
+        with patch.dict(os.environ, {'PYTHONPATH': str(outside)}):
+            args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+            co = rc.Coordinator(args, _fake_lifecycle=True)
+            self.assertEqual(co.fake_drive(), 'HOLD')
+            co.fake_candidate_author_turn()
+            with self.assertRaisesRegex(RuntimeError, 'OID-bound coordinator test failed'):
+                co.fake_candidate_oid_test()
+        self.assertNotIn('fake_candidate_test', co.state)
+
     def test_fake_exec_source_rejects_stale_or_other_run_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)

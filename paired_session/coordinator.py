@@ -4307,6 +4307,56 @@ class Coordinator:
         self.save()
         return receipt
 
+    def fake_candidate_oid_test(self) -> dict:
+        """Run configured tests against a rebuilt checkout of the ingested OID."""
+        ingest = self.state.get('fake_ingest_receipt')
+        if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
+                not ingest or self.state.get('fake_candidate_test') or
+                self.state.get('active') or self.state.get('uncertain_active')):
+            raise RuntimeError('fake OID review requires a completed ingest')
+        stored = json.loads((self.evidence / (ingest['id'] + '-ingest.json')).read_text())
+        if stored != json.loads(json.dumps(ingest)): raise RuntimeError('persisted ingest evidence differs from state')
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        candidate_tree.verify_candidate_revision(baseline, revision)
+        checkout = candidate_tree.rebuild_candidate_from_oid(baseline, revision)
+        command = shlex.split(self.args.test_command)
+        if not command or Path(command[0]).name == 'env': raise RuntimeError('fake OID test requires direct executable')
+        executable = Path(resolve_test_executable(checkout.root, self.args.test_command)).resolve()
+        if any(executable == root or root in executable.parents for root in (self.workspace, self.run_dir)):
+            raise RuntimeError('OID test executable resolves outside candidate into writable roots')
+        command[0] = str(executable)
+        safe_path = [part for part in os.environ.get('PATH', '').split(os.pathsep)
+                     if Path(part).is_absolute() and not any(
+                         root == Path(part).resolve() or root in Path(part).resolve().parents
+                         for root in (self.workspace, self.run_dir))]
+        test_env = {'PATH': os.pathsep.join(safe_path), 'HOME': os.devnull,
+                    'XDG_CONFIG_HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
+                    'GIT_CEILING_DIRECTORIES': str(checkout.root.parent),
+                    'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+        test = subprocess.run(command, cwd=checkout.root,
+                              env=test_env,
+                              capture_output=True, timeout=self.args.timeout)
+        candidate_tree.verify_candidate_revision(checkout, revision)
+        test_id = str(uuid.uuid4())
+        test_receipt = {'id': test_id, 'ingest_id': ingest['id'], 'oid': revision.tree_oid,
+                        'command': command, 'returncode': test.returncode,
+                        'root': str(checkout.root), 'root_identity': checkout.root_identity,
+                        'index': str(checkout.index), 'run_id': self.run_dir.name,
+                        'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
+                        'manifest_sha256': ingest['manifest_sha256'],
+                        'config_sha256': hashlib.sha256(json.dumps(
+                            self.state['config'], sort_keys=True).encode()).hexdigest(),
+                        'env_sha256': hashlib.sha256(json.dumps(test_env, sort_keys=True).encode()).hexdigest(),
+                        'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
+                        'stderr_sha256': hashlib.sha256(test.stderr).hexdigest()}
+        atomic_json(self.evidence / (test_id + '-oid-test.json'), test_receipt)
+        if test.returncode: raise RuntimeError('OID-bound coordinator test failed')
+        self.state['fake_candidate_test'] = test_receipt
+        self.save()
+        return test_receipt
+
     def _freeze_fake_exec_source(self) -> None:
         self.state.pop('fake_exec_source', None)
         rows = [row for row in self.state['turns'] if row.get('phase') == 'EXEC']

@@ -46,6 +46,16 @@ class CandidateRevision:
     files_verified: int
 
 
+def baseline_from_binding(binding: dict) -> CandidateBaseline:
+    values = dict(binding)
+    for key in ('workspace', 'run_dir', 'root', 'git_dir', 'index'):
+        values[key] = Path(values[key])
+    for key in ('root_identity', 'authorized_prefixes'):
+        values[key] = tuple(values[key])
+    values['parent_entries'] = tuple(tuple(row) for row in values['parent_entries'])
+    return CandidateBaseline(**values)
+
+
 def _git_env(**overrides):
     env = {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
