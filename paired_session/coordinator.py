@@ -1610,6 +1610,43 @@ class Coordinator:
         self.state['lifecycle'] = action(self.state['lifecycle'], value)
         self.save()
 
+    def fake_lifecycle_route(self, approval, outputs=None):
+        if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
+        outputs = outputs or {}
+        start_epoch = self.state['lifecycle']['epoch']
+        while True:
+            life = self.state['lifecycle']
+            stage = life['stage']
+            if stage == 'STOP_BEFORE_SECURITY' or (stage == 'EXEC' and life['epoch'] != start_epoch):
+                return stage
+            last = life['receipts'][-1] if life['receipts'] else {}
+            if (not life['pending'] and last.get('stage') == stage and
+                    last.get('epoch') == life['epoch'] and last.get('candidate_oid') == life['candidate_oid']):
+                self.state['lifecycle'] = lifecycle_spine.advance(life)
+                self.save()
+                continue
+            if stage == 'EXEC':
+                expected = {'status': 'APPROVE', 'epoch': life['epoch'],
+                            'item_uuid': life['item_uuid'], 'run_id': self.run_dir.name,
+                            'parent': life['parent']}
+                if not isinstance(approval, dict) or any(approval.get(k) != v for k, v in expected.items()):
+                    raise ValueError('fake EXEC approval is stale or malformed')
+                oid = approval.get('candidate_oid')
+                if not isinstance(oid, str) or not oid or life['candidate_oid'] not in (None, oid):
+                    raise ValueError('fake EXEC approval differs from current OID')
+                if life['candidate_oid'] is None:
+                    self.state['lifecycle'] = {**life, 'candidate_oid': oid}
+                    self.save()
+                    life = self.state['lifecycle']
+            request = {key: life[key] for key in ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')}
+            request.update(request_id=f"fake-{stage}-{life['epoch']}", role='reviewer' if stage == 'EXEC' else stage)
+            if life['pending'] and life['pending'] != request:
+                raise ValueError('fake stage has a different pending request')
+            self.fake_lifecycle_event('begin', request)
+            output = outputs.get(stage, life['candidate_oid'])
+            receipt = {**request, 'status': 'APPROVE' if stage == 'EXEC' else 'READY', 'output_oid': output}
+            self.fake_lifecycle_event('receipt', receipt)
+
     def _head_commit(self) -> Optional[str]:
         proc = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.workspace,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

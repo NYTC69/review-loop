@@ -2846,6 +2846,44 @@ sys.exit(result.returncode)
                 rc.Coordinator(rc.parser().parse_args(normal[2:]), _fake_lifecycle=True)
         self.assertFalse((self.run_dir / 'state.json').exists())
 
+    def test_fake_lifecycle_router_follows_approved_oid_to_security_boundary(self):
+        command = self.command('--lifecycle-mode', 'on')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        life = co.state['lifecycle']
+        approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
+                    'run_id': self.run_dir.name, 'parent': life['parent'], 'candidate_oid': 'a' * 40}
+        self.assertEqual(co.fake_lifecycle_route(approved), 'STOP_BEFORE_SECURITY')
+        saved = json.loads(co.state_path.read_text())['lifecycle']
+        self.assertEqual([row['stage'] for row in saved['receipts']],
+                         ['EXEC', 'FINISH', 'POLISH-Q', 'DOCS'])
+        self.assertEqual(saved['candidate_oid'], 'a' * 40)
+        self.assertEqual(saved['epoch'], 0)
+        self.assertEqual(co.state['turns'], [])
+        self.assertEqual(co.fake_lifecycle_route(approved), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
+
+    def test_fake_lifecycle_router_replays_receipt_and_restarts_on_oid_change(self):
+        command = self.command('--lifecycle-mode', 'on')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        life = co.state['lifecycle']
+        approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
+                    'run_id': self.run_dir.name, 'parent': life['parent'], 'candidate_oid': 'a' * 40}
+        with patch.object(rc.lifecycle_spine, 'advance', side_effect=RuntimeError('simulated crash')):
+            with self.assertRaisesRegex(RuntimeError, 'simulated crash'):
+                co.fake_lifecycle_route(approved)
+        self.assertEqual(json.loads(co.state_path.read_text())['lifecycle']['stage'], 'EXEC')
+        resume = command.copy(); resume[2] = 'resume'
+        again = rc.Coordinator(rc.parser().parse_args(resume[2:]), _fake_lifecycle=True)
+        self.assertEqual(again.fake_lifecycle_route(approved, {'FINISH': 'b' * 40}), 'EXEC')
+        self.assertEqual(again.state['lifecycle']['epoch'], 1)
+        self.assertEqual(again.state['lifecycle']['candidate_oid'], 'b' * 40)
+        with self.assertRaisesRegex(ValueError, 'stale or malformed'):
+            again.fake_lifecycle_route(approved)
+        next_approval = {**approved, 'epoch': 1, 'candidate_oid': 'b' * 40}
+        self.assertEqual(again.fake_lifecycle_route(next_approval), 'STOP_BEFORE_SECURITY')
+        self.assertEqual([row['stage'] for row in again.state['lifecycle']['receipts']],
+                         ['EXEC', 'FINISH', 'EXEC', 'FINISH', 'POLISH-Q', 'DOCS'])
+
     def test_lifecycle_project_config_enablement_is_refused(self):
         config_dir = self.workspace / '.review-loop'; config_dir.mkdir()
         (config_dir / 'paired-session.json').write_text(json.dumps({'lifecycle_mode': 'on'}))

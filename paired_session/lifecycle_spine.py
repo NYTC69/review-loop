@@ -33,5 +33,26 @@ def complete(life, receipt):
     pending = life['pending']
     if not pending or any(key not in receipt or receipt[key] != value for key, value in pending.items()):
         raise ValueError('lifecycle receipt does not match persisted request')
-    if receipt.get('status') not in ('READY', 'HOLD'): raise ValueError('lifecycle receipt has no terminal status')
+    if receipt.get('status') not in ('READY', 'HOLD', 'APPROVE'): raise ValueError('invalid receipt status')
     return {**life, 'pending': None, 'receipts': [*life['receipts'], dict(receipt)]}
+
+
+NEXT_STAGE = {'EXEC': 'FINISH', 'FINISH': 'POLISH-Q', 'POLISH-Q': 'DOCS',
+              'DOCS': 'STOP_BEFORE_SECURITY'}
+
+def advance(life):
+    if life['pending'] or life['stage'] not in NEXT_STAGE or not life['receipts']:
+        raise ValueError('lifecycle stage has no completed current request')
+    receipt = life['receipts'][-1]
+    keys = ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')
+    if any(receipt.get(key) != life[key] for key in keys):
+        raise ValueError('lifecycle receipt is stale for current stage')
+    required = 'APPROVE' if life['stage'] == 'EXEC' else 'READY'
+    if receipt.get('status') != required:
+        raise ValueError('lifecycle stage lacks required approval')
+    output = receipt.get('output_oid')
+    if not isinstance(output, str) or not output:
+        raise ValueError('lifecycle receipt lacks output OID')
+    if output != life['candidate_oid']:
+        return {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': output}
+    return {**life, 'stage': NEXT_STAGE[life['stage']]}
