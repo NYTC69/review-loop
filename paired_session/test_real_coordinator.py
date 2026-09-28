@@ -1,4 +1,5 @@
 import importlib.util
+import dataclasses
 import errno
 import hashlib
 import io
@@ -2852,14 +2853,14 @@ sys.exit(result.returncode)
         life = co.state['lifecycle']
         approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
                     'run_id': self.run_dir.name, 'parent': life['parent'], 'candidate_oid': 'a' * 40}
-        self.assertEqual(co.fake_lifecycle_route(approved), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         saved = json.loads(co.state_path.read_text())['lifecycle']
         self.assertEqual([row['stage'] for row in saved['receipts']],
                          ['EXEC', 'FINISH', 'POLISH-Q', 'DOCS'])
         self.assertEqual(saved['candidate_oid'], 'a' * 40)
         self.assertEqual(saved['epoch'], 0)
         self.assertEqual(co.state['turns'], [])
-        self.assertEqual(co.fake_lifecycle_route(approved), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
 
     def test_fake_lifecycle_router_replays_receipt_and_restarts_on_oid_change(self):
@@ -2870,19 +2871,106 @@ sys.exit(result.returncode)
                     'run_id': self.run_dir.name, 'parent': life['parent'], 'candidate_oid': 'a' * 40}
         with patch.object(rc.lifecycle_spine, 'advance', side_effect=RuntimeError('simulated crash')):
             with self.assertRaisesRegex(RuntimeError, 'simulated crash'):
-                co.fake_lifecycle_route(approved)
+                co.fake_lifecycle_route(approved, stub_mode=True)
         self.assertEqual(json.loads(co.state_path.read_text())['lifecycle']['stage'], 'EXEC')
         resume = command.copy(); resume[2] = 'resume'
         again = rc.Coordinator(rc.parser().parse_args(resume[2:]), _fake_lifecycle=True)
-        self.assertEqual(again.fake_lifecycle_route(approved, {'FINISH': 'b' * 40}), 'EXEC')
+        self.assertEqual(again.fake_lifecycle_route(approved, {'FINISH': 'b' * 40}, stub_mode=True), 'EXEC')
         self.assertEqual(again.state['lifecycle']['epoch'], 1)
         self.assertEqual(again.state['lifecycle']['candidate_oid'], 'b' * 40)
         with self.assertRaisesRegex(ValueError, 'stale or malformed'):
-            again.fake_lifecycle_route(approved)
+            again.fake_lifecycle_route(approved, stub_mode=True)
         next_approval = {**approved, 'epoch': 1, 'candidate_oid': 'b' * 40}
-        self.assertEqual(again.fake_lifecycle_route(next_approval), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(again.fake_lifecycle_route(next_approval, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual([row['stage'] for row in again.state['lifecycle']['receipts']],
                          ['EXEC', 'FINISH', 'EXEC', 'FINISH', 'POLISH-Q', 'DOCS'])
+
+    def test_fake_lifecycle_finish_dispatch_binds_candidate_and_tests(self):
+        command = self.command('--lifecycle-mode', 'on')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt',))
+        baseline = dataclasses.replace(baseline, separate_filesystems=True)
+        revision = ct.ingest_candidate_revision(baseline)
+        life = co.state['lifecycle']
+        fields = {'candidate_oid': revision.tree_oid, 'epoch': 0, 'phase': 'EXEC',
+                  'run_id': self.run_dir.name, 'convergence_id': 'exec-1',
+                  'workspace': str(self.workspace.resolve()), 'run_dir': str(self.run_dir.resolve()),
+                  'parent_head': baseline.parent_head}
+        proof = {'run_id': self.run_dir.name, 'convergence_id': 'exec-1', 'blocking_findings': [],
+                 'reviewer': {**fields, 'role': 'reviewer', 'status': 'APPROVE'},
+                 'gate': {**fields, 'role': 'gate', 'verdict': 'approve'}}
+        approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
+                    'run_id': self.run_dir.name, 'parent': life['parent'],
+                    'candidate_oid': revision.tree_oid, 'proof': proof}
+        launched = []
+        def launch(request):
+            launched.append(request)
+            return {'sandbox_id': 'fake-stopped', 'request_sha256': request['sha256'], 'status': 'READY'}
+        context = {'baseline': baseline, 'revision': revision, 'launch': launch,
+                   'sandbox_stopped': lambda identity: identity == 'fake-stopped',
+                   'tested_oid': revision.tree_oid}
+        wrong = {**context, 'revision': ct.CandidateRevision('0' * 40, (), 0)}
+        with self.assertRaisesRegex(ValueError, 'candidate differs'):
+            co.fake_lifecycle_route(approved, finish_context=wrong)
+        self.assertEqual(co.state['lifecycle']['stage'], 'FINISH')
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        foreign = {**context, 'baseline': dataclasses.replace(baseline, workspace=self.root / 'foreign')}
+        with self.assertRaisesRegex(ValueError, 'candidate differs'):
+            co.fake_lifecycle_route(approved, finish_context=foreign)
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=context), 'STOP_BEFORE_SECURITY')
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(co.state['lifecycle']['receipts'][1]['finish_result'], 'TESTS_REQUIRED')
+        self.assertEqual(co.state['turns'], [])
+
+    def test_fake_lifecycle_finish_code_write_restarts_exec(self):
+        command = self.command('--lifecycle-mode', 'on')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        scratch = self.root / 'scratch'; scratch.mkdir()
+        baseline = ct.prepare_candidate_baseline(self.workspace, self.run_dir, scratch, scratch,
+                                                 ('tracked.txt',))
+        baseline = dataclasses.replace(baseline, separate_filesystems=True)
+        revision = ct.ingest_candidate_revision(baseline)
+        life = co.state['lifecycle']
+        fields = {'candidate_oid': revision.tree_oid, 'epoch': 0, 'phase': 'EXEC',
+                  'run_id': self.run_dir.name, 'convergence_id': 'exec-1',
+                  'workspace': str(self.workspace.resolve()), 'run_dir': str(self.run_dir.resolve()),
+                  'parent_head': baseline.parent_head}
+        proof = {'run_id': self.run_dir.name, 'convergence_id': 'exec-1', 'blocking_findings': [],
+                 'reviewer': {**fields, 'role': 'reviewer', 'status': 'APPROVE'},
+                 'gate': {**fields, 'role': 'gate', 'verdict': 'approve'}}
+        approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
+                    'run_id': self.run_dir.name, 'parent': life['parent'],
+                    'candidate_oid': revision.tree_oid, 'proof': proof}
+        def launch(request):
+            (baseline.root / 'tracked.txt').write_text('FINISH wrote code\n')
+            return {'sandbox_id': 'fake-stopped', 'request_sha256': request['sha256'], 'status': 'READY'}
+        context = {'baseline': baseline, 'revision': revision, 'launch': launch,
+                   'sandbox_stopped': lambda identity: identity == 'fake-stopped'}
+        self.assertEqual(co.fake_lifecycle_route(approved, finish_context=context), 'EXEC')
+        self.assertEqual(co.state['lifecycle']['epoch'], 1)
+        self.assertNotEqual(co.state['lifecycle']['candidate_oid'], revision.tree_oid)
+        self.assertEqual([row['stage'] for row in co.state['lifecycle']['receipts']], ['EXEC', 'FINISH'])
+
+    def test_fake_lifecycle_pending_finish_cannot_switch_to_stub(self):
+        command = self.command('--lifecycle-mode', 'on')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        life = co.state['lifecycle']
+        approved = {'status': 'APPROVE', 'epoch': 0, 'item_uuid': life['item_uuid'],
+                    'run_id': self.run_dir.name, 'parent': life['parent'], 'candidate_oid': 'a' * 40}
+        original = co.fake_lifecycle_event
+        def interrupted(event, value):
+            if event == 'receipt' and value['stage'] == 'FINISH':
+                raise RuntimeError('simulated FINISH crash')
+            original(event, value)
+        with patch.object(co, 'fake_lifecycle_event', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'simulated FINISH crash'):
+                co.fake_lifecycle_route(approved, stub_mode=True)
+        self.assertEqual(co.state['lifecycle']['pending']['stage'], 'FINISH')
+        with self.assertRaisesRegex(ValueError, 'uncertain FINISH request'):
+            co.fake_lifecycle_route(approved, stub_mode=True)
 
     def test_lifecycle_project_config_enablement_is_refused(self):
         config_dir = self.workspace / '.review-loop'; config_dir.mkdir()

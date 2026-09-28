@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 import uuid
 
-from paired_session import candidate_tree
+try:
+    from paired_session import candidate_tree
+except ModuleNotFoundError:
+    import candidate_tree
 
 
 class FinishDispatchError(ValueError):

@@ -32,10 +32,12 @@ import uuid
 from typing import Optional
 try:
     from paired_session import codex_capability_guard
+    from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import codex_capability_guard
+    import finish_dispatch
     import lifecycle_spine
     from program_binding import snapshot as program_snapshot, safe_path
 
@@ -1610,7 +1612,7 @@ class Coordinator:
         self.state['lifecycle'] = action(self.state['lifecycle'], value)
         self.save()
 
-    def fake_lifecycle_route(self, approval, outputs=None):
+    def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False):
         if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
         outputs = outputs or {}
         start_epoch = self.state['lifecycle']['epoch']
@@ -1642,9 +1644,32 @@ class Coordinator:
             request.update(request_id=f"fake-{stage}-{life['epoch']}", role='reviewer' if stage == 'EXEC' else stage)
             if life['pending'] and life['pending'] != request:
                 raise ValueError('fake stage has a different pending request')
+            if stage == 'FINISH' and life['pending']:
+                raise ValueError('uncertain FINISH request requires operator resolution')
+            if stage == 'FINISH' and not stub_mode and not finish_context:
+                raise ValueError('FINISH requires a candidate-bound dispatch context')
+            if stage == 'FINISH' and not stub_mode:
+                baseline, revision = finish_context['baseline'], finish_context['revision']
+                if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
+                        baseline.run_dir != self.run_dir or baseline.workspace != self.workspace):
+                    raise ValueError('FINISH candidate differs from persisted item state')
+                prior = next((row for row in reversed(life['receipts'])
+                              if row['stage'] == 'EXEC' and row['epoch'] == life['epoch']), None)
+                if not prior or not isinstance(prior.get('approval_proof'), dict):
+                    raise ValueError('FINISH lacks persisted EXEC approval proof')
             self.fake_lifecycle_event('begin', request)
             output = outputs.get(stage, life['candidate_oid'])
             receipt = {**request, 'status': 'APPROVE' if stage == 'EXEC' else 'READY', 'output_oid': output}
+            if stage == 'EXEC': receipt['approval_proof'] = approval.get('proof')
+            if stage == 'FINISH' and not stub_mode:
+                result = finish_dispatch.dispatch(
+                    baseline, revision, prior['approval_proof'], life['epoch'],
+                    self.state['role_dispatch_manifest_sha256'],
+                    finish_context['launch'], finish_context['sandbox_stopped'])
+                output = result['output_oid']
+                if result['status'] == 'TESTS_REQUIRED' and finish_context.get('tested_oid') != output:
+                    raise ValueError('FINISH current-OID tests are missing')
+                receipt.update(output_oid=output, finish_result=result['status'])
             self.fake_lifecycle_event('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:
