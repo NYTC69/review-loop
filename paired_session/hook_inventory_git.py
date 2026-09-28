@@ -8,6 +8,7 @@ _READ_ONLY_ARGV = {
     ("rev-parse", "--git-dir"), ("rev-parse", "--path-format=absolute", "--git-path", "hooks"),
     ("config", "--null", "--type=path", "--get-all", "core.hooksPath"),
     ("config", "--show-origin", "--show-scope", "--get-all", "core.hooksPath"),
+    ("config", "--null", "--list", "--show-origin", "--show-scope"),
     ("ls-files",), ("ls-files", "-z"), ("ls-files", "-z", "--stage"),
 }
 _UI_ENV = {"GIT_PAGER", "GIT_EDITOR"}
@@ -32,11 +33,12 @@ def checked_git_environment():
 def git_result(root, *args, timeout=10):
     if tuple(args) not in _READ_ONLY_ARGV:
         raise HookInventoryError("Git hook inventory command failed: unreviewed command")
-    command = ["git", "-c", "core.fsmonitor=false"]
+    command = ["git"] if args[0] == "config" else ["git", "-c", "core.fsmonitor=false"]
     selector_read = args[0] == "config" or args[:3] == ("rev-parse", "--path-format=absolute", "--git-path")
     if not selector_read:
         command.extend(("-c", "core.hooksPath=/dev/null"))
-    command.extend(("-c", "core.fsmonitor="))
+    if args[0] != "config":
+        command.extend(("-c", "core.fsmonitor="))
     command.extend(("-C", str(root), *args))
     environment = checked_git_environment()
     try:
