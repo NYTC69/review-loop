@@ -3601,6 +3601,53 @@ sys.exit(result.returncode)
                                                       'revision': finish['revision'], 'review': approve})
         self.assertEqual(co.state['lifecycle']['reserved_docs_constraint'], marker)
 
+    def test_fake_reserved_docs_replay_routes_to_fresh_exec_then_security(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+                                                   '--docs-file', 'docs/guide.md')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        before = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        repair = {'proposals': (), 'paths': ('docs/guide.md',),
+                  'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
+                  'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
+        with self.assertRaisesRegex(ValueError, 'replayed DOCS receipt and retest'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': baseline, 'revision': before,
+                                                      'repair': repair})
+        co.fake_reserved_docs_begin_replay()
+        docs_baseline = ct.replace(baseline, authorized_prefixes=('sum_ints.py', 'docs/guide.md'))
+        def write_docs(root, path):
+            target = root / path
+            target.parent.mkdir(exist_ok=True)
+            target.write_text('# Repaired guide\n')
+        docs = {'baseline': docs_baseline, 'before': before, 'write': write_docs,
+                'test': lambda oid: oid}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True, docs_context=docs), 'EXEC')
+        replay = co.fake_reserved_docs_writer_ingest()
+        tested = co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        self.assertEqual(tested['oid'], replay['output_oid'])
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        revision = ct.CandidateRevision(replay['output_oid'], tuple(replay['manifest']), 0)
+        review = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                              'observed_tools': ['read final OID diff'], 'findings': []}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
+                         security_context={'baseline': ct.baseline_from_binding(replay['baseline']),
+                                           'revision': revision, 'review': review}),
+                         'STOP_BEFORE_DELIVERY')
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+
     def test_fake_reserved_docs_replay_needs_marker_evidence_and_current_oid_test(self):
         (self.workspace / 'docs').mkdir()
         (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')

@@ -1674,6 +1674,17 @@ class Coordinator:
         if marker['owner'] != 'coordinator':
             raise ValueError(fail)
 
+    def fake_reserved_docs_begin_replay(self):
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise ValueError('reserved DOCS replay requires fake-only dispatch')
+        life = self.state['lifecycle']
+        marker = life.get('reserved_docs_constraint') or {}
+        if (life['stage'] != 'SECURITY' or life['pending'] or marker.get('owner') != 'coordinator' or
+                marker.get('source_oid') != life['candidate_oid']):
+            raise ValueError('reserved DOCS replay lacks coordinator-owned source')
+        self.state['lifecycle'] = {**life, 'stage': 'DOCS'}
+        self.save()
+
     def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
                              polish_context=None, polish_stub=False, docs_context=None, docs_stub=False,
                              security_context=None, chain_only=False):
@@ -1733,7 +1744,10 @@ class Coordinator:
                     stage == 'EXEC' and life['epoch'] != start_epoch):
                 return stage
             last = life['receipts'][-1] if life['receipts'] else {}
-            if (not life['pending'] and last.get('stage') == stage and
+            replay_unfinished = (stage == 'DOCS' and life.get('reserved_docs_constraint') and
+                                 not str(last.get('request_id', '')).endswith('-reserved-replay'))
+            if (not replay_unfinished and
+                    not life['pending'] and last.get('stage') == stage and
                     last.get('epoch') == life['epoch'] and last.get('candidate_oid') == life['candidate_oid']):
                 if stage == 'POLISH-Q' and self.blocking_open_findings() and not owner_waiting:
                     raise ValueError('POLISH-Q has an open blocker')
@@ -1755,6 +1769,8 @@ class Coordinator:
                     life = self.state['lifecycle']
             request = {key: life[key] for key in ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')}
             suffix = '-repair' if stage == 'SECURITY' and owner_waiting else ''
+            if stage == 'DOCS' and life.get('reserved_docs_constraint'):
+                suffix = '-reserved-replay'
             request.update(request_id=f"fake-{stage}-{life['epoch']}{suffix}",
                            role='reviewer' if stage == 'EXEC' else stage)
             if life['pending'] and life['pending'] != request:
@@ -1790,7 +1806,9 @@ class Coordinator:
                         baseline.parent_head != life['parent'] or before.tree_oid != life['candidate_oid']):
                     raise ValueError('DOCS candidate differs from persisted item state')
                 prior = life['receipts'][-1]
-                if (prior['stage'] != 'POLISH-Q' or prior['output_oid'] != before.tree_oid or
+                replaying = bool(life.get('reserved_docs_constraint') and prior['stage'] == 'DOCS')
+                if (prior['stage'] != 'POLISH-Q' and not replaying or
+                        prior['output_oid'] != before.tree_oid or
                         prior['epoch'] != life['epoch'] or prior['status'] != 'READY'):
                     raise ValueError('DOCS lacks current POLISH-Q receipt')
                 if not self.state['config']['docs_file']: raise ValueError('DOCS requires a frozen docs_file')
@@ -4590,6 +4608,40 @@ class Coordinator:
         self.state['fake_candidate_test'] = test_receipt
         self.save()
         return test_receipt
+
+    def fake_reserved_docs_writer_ingest(self) -> dict:
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise RuntimeError('reserved DOCS ingest requires fake-only dispatch')
+        life = self.state['lifecycle']
+        prior = life['receipts'][-1] if life['receipts'] else {}
+        old = self.state.get('fake_ingest_receipt') or {}
+        marker = life.get('reserved_docs_constraint') or {}
+        if (life['stage'] != 'EXEC' or life['epoch'] <= marker.get('epoch', life['epoch']) or
+                prior.get('stage') != 'DOCS' or prior.get('output_oid') != life['candidate_oid'] or
+                prior.get('docs_file') != marker.get('docs_file') or not old.get('chain_only') or
+                self.state.get('active') or self.state.get('uncertain_active')):
+            raise RuntimeError('reserved DOCS ingest lacks a current writer receipt')
+        baseline = candidate_tree.baseline_from_binding(old['baseline'])
+        paths = tuple(sorted(set(baseline.authorized_prefixes) | {marker['docs_file']}))
+        baseline = candidate_tree.replace(baseline, authorized_prefixes=paths)
+        revision = candidate_tree.ingest_candidate_revision(baseline)
+        if revision.tree_oid != prior['output_oid']:
+            raise RuntimeError('reserved DOCS output differs from candidate OID')
+        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+        entries = candidate_tree._tree_entries(env, revision.tree_oid)
+        binding = {key: str(value) if isinstance(value, Path) else value
+                   for key, value in vars(baseline).items()}
+        receipt = {**old, 'id': str(uuid.uuid4()), 'input_oid': old['output_oid'],
+                   'output_oid': revision.tree_oid, 'manifest': revision.manifest,
+                   'manifest_sha256': hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest(),
+                   'baseline': binding, 'epoch': life['epoch'],
+                   'source_writer_request_id': prior['request_id']}
+        atomic_json(self.evidence / (receipt['id'] + '-ingest.json'), receipt)
+        for key in ('fake_candidate_test', 'fake_candidate_review', 'fake_candidate_chain'):
+            self.state.pop(key, None)
+        self.state['fake_ingest_receipt'] = receipt
+        self.save()
+        return receipt
 
     def fake_candidate_oid_review(self) -> dict:
         ingest, test = self.state.get('fake_ingest_receipt'), self.state.get('fake_candidate_test')
