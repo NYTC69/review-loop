@@ -1629,6 +1629,51 @@ class Coordinator:
         self.state['lifecycle'] = action(self.state['lifecycle'], value)
         self.save()
 
+    def _verify_reserved_docs_replay(self, baseline, revision, hits):
+        life = self.state['lifecycle']
+        marker = life['reserved_docs_constraint']
+        fail = 'reserved docs constraint requires replayed DOCS receipt and retest'
+        saved = json.loads((self.evidence / (marker['id'] + '-reserved-docs.json')).read_text())
+        rows = life['receipts'][marker['receipt_count']:]
+        test = self.state.get('fake_candidate_test') or {}
+        chain = self.state.get('fake_candidate_chain') or {}
+        if (hits or saved != json.loads(json.dumps(marker)) or marker['epoch'] >= life['epoch'] or
+                marker['docs_file'] != Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix() or
+                not rows or test.get('oid') != revision.tree_oid or test.get('returncode') != 0 or
+                test.get('epoch') != life['epoch'] or chain.get('oid') != revision.tree_oid or
+                chain.get('test_id') != test.get('id')):
+            raise ValueError(fail)
+        stored_test = json.loads((self.evidence / (test['id'] + '-oid-test.json')).read_text())
+        if stored_test != json.loads(json.dumps(test)):
+            raise ValueError(fail)
+        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+        def blob(oid):
+            return next(((mode, digest) for mode, digest, path in
+                         candidate_tree._tree_entries(env, oid) if path == marker['docs_file']), None)
+        oid, changed_docs = marker['source_oid'], None
+        for row in rows:
+            if (row.get('candidate_oid') != oid or row.get('status') not in ('READY', 'APPROVE') or
+                    row.get('stage') == 'SECURITY'):
+                raise ValueError(fail)
+            if row.get('stage') != 'DOCS' and blob(oid) != blob(row['output_oid']):
+                raise ValueError(fail)
+            if (row.get('stage') == 'DOCS' and row.get('docs_file') == marker['docs_file'] and
+                    row.get('retested_oid') == row.get('output_oid') and
+                    blob(oid) != blob(row['output_oid'])):
+                changed_docs = row
+            oid = row.get('output_oid')
+        reviews = [row for row in rows if row.get('stage') == 'EXEC' and
+                   isinstance(row.get('approval_proof'), dict) and
+                   row['approval_proof'].get('fake_only') is True and
+                   row['approval_proof'].get('convergence_id') == chain.get('id') and
+                   row.get('candidate_oid') == revision.tree_oid]
+        if (oid != revision.tree_oid or not changed_docs or not reviews or
+                blob(marker['source_oid']) == blob(revision.tree_oid) or
+                blob(changed_docs['output_oid']) != blob(revision.tree_oid)):
+            raise ValueError(fail)
+        if marker['owner'] != 'coordinator':
+            raise ValueError(fail)
+
     def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
                              polish_context=None, polish_stub=False, docs_context=None, docs_stub=False,
                              security_context=None, chain_only=False):
@@ -1756,8 +1801,6 @@ class Coordinator:
             if stage == 'SECURITY':
                 if not security_context:
                     raise ValueError('SECURITY requires a candidate-bound fake reviewer')
-                if life.get('reserved_docs_constraint'):
-                    raise ValueError('reserved docs constraint requires replayed DOCS receipt and retest')
                 if life['pending'] or (self.blocking_open_findings() and not owner_waiting):
                     raise ValueError('SECURITY has an uncertain request or open blocker')
                 baseline, revision = security_context['baseline'], security_context['revision']
@@ -1769,6 +1812,10 @@ class Coordinator:
                                for path in baseline.root.rglob('*') if not path.is_dir() or path.is_symlink())
                 hits = {path: kind for path in paths
                         if (kind := sensitive_policy.sensitive_path_category(path))}
+                if life.get('reserved_docs_constraint'):
+                    self._verify_reserved_docs_replay(baseline, revision, hits)
+                    self.state['lifecycle'].pop('reserved_docs_constraint')
+                    self.save()
                 marker = life.get('awaiting_owner_reverify')
                 if marker and marker.get('owner') == 'security-reviewer':
                     if marker.get('role_manifest_sha256') != self.state['role_dispatch_manifest_sha256']:
@@ -1825,12 +1872,14 @@ class Coordinator:
                             self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
                             allowed, reserved, paths, repair.get('consent'))
                     except security_repair_policy.ReservedDocsRepair as exc:
-                        if (not docs_path or tuple(repair['paths']) != (docs_path,) or repair['proposals'] or
+                        if (hits or owner_waiting or not docs_path or
+                                tuple(repair['paths']) != (docs_path,) or repair['proposals'] or
                                 life.get('reserved_docs_constraint')):
                             raise ValueError('reserved docs repair needs one frozen docs_file') from exc
                         constraint = {'id': str(uuid.uuid4()), 'source_oid': revision.tree_oid,
                                       'docs_file': docs_path, 'epoch': life['epoch'],
-                                      'owner': marker.get('owner') if marker else 'coordinator'}
+                                      'owner': 'coordinator',
+                                      'receipt_count': len(life['receipts'])}
                         atomic_json(self.evidence / (constraint['id'] + '-reserved-docs.json'), constraint)
                         self.state['lifecycle']['reserved_docs_constraint'] = constraint
                         self.save()
