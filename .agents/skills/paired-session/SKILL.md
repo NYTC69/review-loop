@@ -81,4 +81,6 @@ invoke the legacy review-loop workflow for this task.
    authorization from DONE.
 
 The coordinator owns reviewer dispatch and limits. This skill is the explicit
-paired-session entry until the migration batch changes default routing.
+paired-session entry and the review-loop handoff target only when the config
+key `entry` is exactly `paired-session` and the work is fresh; otherwise default
+routing stays legacy.

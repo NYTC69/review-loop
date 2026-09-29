@@ -1924,6 +1924,10 @@
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
         "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
       }
     ],
     "entry_unreadable_warning": [
@@ -1933,6 +1937,10 @@
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
         "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
       }
     ],
@@ -1944,6 +1952,10 @@
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
         "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
       }
     ],
     "entry_non_fresh_state_warning": [
@@ -1953,6 +1965,10 @@
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry is paired-session but"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
         "needle": "review-loop: entry is paired-session but"
       }
     ],
@@ -1968,6 +1984,10 @@
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
         "needle": "exact values `legacy` and `paired-session` are accepted"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "exact values `legacy` and `paired-session` only"
       }
     ],
     "legacy_command_ignores_entry": [
@@ -1978,6 +1998,40 @@
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
         "needle": "`/review-loop:legacy <work item>` ignores `entry`"
+      }
+    ],
+    "entry_codex_implicit_legacy_notice": [
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or ask for \"the legacy review-loop workflow\" explicitly"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "its implicit-entry notice names that phrase instead of the slash command"
+      }
+    ],
+    "entry_codex_legacy_control_phrase": [
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "\"use the\n  legacy review-loop workflow\""
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "use the legacy review-loop workflow"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "use the legacy review-loop workflow"
+      }
+    ],
+    "entry_codex_handoff_target": [
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "`.agents/skills/paired-session`"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "`.agents/skills/paired-session`"
       }
     ]
   }

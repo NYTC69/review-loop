@@ -3581,6 +3581,63 @@
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
       "needle": "This routing is decided once, before\nStep 0.5; once a legacy session file or lock exists, a re-detection or user\noverride never hands off."
+    },
+    {
+      "id": "entry_codex_implicit_legacy_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_codex_implicit_legacy_notice"
+    },
+    {
+      "id": "entry_codex_legacy_control_phrase_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_codex_legacy_control_phrase"
+    },
+    {
+      "id": "entry_codex_handoff_target_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_codex_handoff_target"
+    },
+    {
+      "id": "codex_entry_only_fresh_work_hands_off",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "`paired-session`: only fresh work (no existing plan, code target or session) hands off."
+    },
+    {
+      "id": "codex_entry_hold_never_falls_back_to_legacy",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "A paired-session probe/run HOLD is reported and never falls back to legacy."
+    },
+    {
+      "id": "codex_entry_non_fresh_states_stay_legacy",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "Plan-exists, code-exists and explicit resume always stay legacy; print"
+    },
+    {
+      "id": "codex_entry_resolved_before_uuid_and_lock",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "once, before allocating a UUID or acquiring the lock:"
+    },
+    {
+      "id": "codex_entry_decided_once_no_override_after_session_exists",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "exists, a re-detection or user override never hands off."
+    },
+    {
+      "id": "codex_entry_section_is_loaded_by_entry_review_loop_stage",
+      "kind": "contains",
+      "path": "docs/protocol/loading.json",
+      "needle": "\"path\": \".agents/skills/review-loop/references/entry.md\",\n      \"sections\": [\n        \"## Entry\""
+    },
+    {
+      "id": "codex_paired_session_skill_handoff_only_on_exact_entry_key",
+      "kind": "contains",
+      "path": ".agents/skills/paired-session/SKILL.md",
+      "needle": "key `entry` is exactly `paired-session` and the work is fresh"
     }
   ]
 }
