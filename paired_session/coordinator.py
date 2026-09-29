@@ -1707,6 +1707,8 @@ class Coordinator:
                 raise ValueError('chain-only route cannot accept caller output OIDs')
             if approval is not None:
                 raise ValueError('chain-only route rejects caller approval')
+            if (life := self.state['lifecycle'])['stage'] == 'EXEC' and life['epoch'] and not self._fake_reentry():
+                return 'HOLD'
             if self.state['lifecycle']['stage'] == 'EXEC':
                 approval = self.fake_candidate_approval()
                 if not self.state['fake_ingest_receipt'].get('chain_only'):
@@ -1753,6 +1755,8 @@ class Coordinator:
                 continue
             if stage in ('STOP_BEFORE_SECURITY', 'STOP_BEFORE_DELIVERY') or (
                     stage == 'EXEC' and life['epoch'] != start_epoch):
+                if stage == 'EXEC' and chain_only:
+                    if not self._fake_reentry(): return 'HOLD'
                 return stage
             last = life['receipts'][-1] if life['receipts'] else {}
             replay_unfinished = (stage == 'DOCS' and life.get('reserved_docs_constraint') and
@@ -4635,13 +4639,17 @@ class Coordinator:
         prior = life['receipts'][-1] if life['receipts'] else {}
         old = self.state.get('fake_ingest_receipt') or {}
         marker = life.get('reserved_docs_constraint') or {}
-        if (life['stage'] != 'EXEC' or life['epoch'] <= marker.get('epoch', life['epoch']) or
+        docs_file = marker.get('docs_file') or self.state['config'].get('docs_file')
+        docs_path = Path(docs_file) if docs_file else None
+        if docs_path and docs_path.is_absolute(): docs_path = docs_path.relative_to(self.workspace)
+        docs_path = docs_path.as_posix() if docs_path else None
+        if (life['stage'] != 'EXEC' or (marker and life['epoch'] <= marker['epoch']) or
                 prior.get('stage') != 'DOCS' or prior.get('output_oid') != life['candidate_oid'] or
-                prior.get('docs_file') != marker.get('docs_file') or not old.get('chain_only') or
+                prior.get('docs_file') != docs_path or not old.get('chain_only') or
                 self.state.get('active') or self.state.get('uncertain_active')):
             raise RuntimeError('reserved DOCS ingest lacks a current writer receipt')
         baseline = candidate_tree.baseline_from_binding(old['baseline'])
-        paths = tuple(sorted(set(baseline.authorized_prefixes) | {marker['docs_file']}))
+        paths = tuple(sorted(set(baseline.authorized_prefixes) | {docs_path}))
         baseline = candidate_tree.replace(baseline, authorized_prefixes=paths)
         revision = candidate_tree.ingest_candidate_revision(baseline)
         if revision.tree_oid != prior['output_oid']:
@@ -4661,6 +4669,52 @@ class Coordinator:
         self.state['fake_ingest_receipt'] = receipt
         self.save()
         return receipt
+
+    def fake_finish_writer_ingest(self) -> dict:
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise RuntimeError('FINISH ingest requires fake-only dispatch')
+        life = self.state['lifecycle']
+        prior = life['receipts'][-1] if life['receipts'] else {}
+        old = self.state.get('fake_ingest_receipt') or {}
+        if (life['stage'] != 'EXEC' or life['epoch'] < 1 or prior.get('stage') != 'FINISH' or
+                prior.get('output_oid') != life['candidate_oid'] or not old.get('chain_only') or
+                self.state.get('active') or self.state.get('uncertain_active')):
+            raise RuntimeError('FINISH ingest lacks a current writer receipt')
+        baseline = candidate_tree.baseline_from_binding(old['baseline'])
+        revision = candidate_tree.ingest_candidate_revision(baseline)
+        if revision.tree_oid != prior['output_oid']:
+            raise RuntimeError('FINISH output differs from candidate OID')
+        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+        entries = candidate_tree._tree_entries(env, revision.tree_oid)
+        binding = {key: str(value) if isinstance(value, Path) else value
+                   for key, value in vars(baseline).items()}
+        receipt = {**old, 'id': str(uuid.uuid4()), 'input_oid': old['output_oid'],
+                   'output_oid': revision.tree_oid, 'manifest': revision.manifest,
+                   'manifest_sha256': hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest(),
+                   'baseline': binding, 'epoch': life['epoch'],
+                   'source_writer_request_id': prior['request_id']}
+        atomic_json(self.evidence / (receipt['id'] + '-ingest.json'), receipt)
+        for key in ('fake_candidate_test', 'fake_candidate_review', 'fake_candidate_chain'):
+            self.state.pop(key, None)
+        self.state['fake_ingest_receipt'] = receipt
+        self.save()
+
+    def _fake_reentry(self) -> bool:
+        life = self.state['lifecycle']
+        prior = life['receipts'][-1] if life['receipts'] else {}
+        current = self.state.get('fake_ingest_receipt') or {}
+        if current.get('source_writer_request_id') != prior.get('request_id'):
+            if prior.get('stage') == 'DOCS': self.fake_reserved_docs_writer_ingest()
+            elif prior.get('stage') == 'FINISH': self.fake_finish_writer_ingest()
+            else:
+                self.hold('EXEC receipt needs abort or new run' if prior.get('stage') == 'EXEC' else
+                          'unsupported writer: abort or start a new run')
+                return False
+        if self.state.get('fake_candidate_test', {}).get('ingest_id') != self.state['fake_ingest_receipt']['id']:
+            self.fake_candidate_oid_test()
+        if self.state.get('fake_candidate_chain', {}).get('ingest_id') != self.state['fake_ingest_receipt']['id']:
+            self.fake_candidate_oid_review()
+        return True
 
     def fake_candidate_oid_review(self) -> dict:
         ingest, test = self.state.get('fake_ingest_receipt'), self.state.get('fake_candidate_test')

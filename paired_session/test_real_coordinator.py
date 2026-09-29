@@ -2955,6 +2955,119 @@ sys.exit(result.returncode)
         self.assertNotEqual(co.state['lifecycle']['candidate_oid'], revision.tree_oid)
         self.assertEqual([row['stage'] for row in co.state['lifecycle']['receipts']], ['EXEC', 'FINISH'])
 
+    def fake_chain_only_finish_fixture(self):
+        command = self.command('--lifecycle-mode', 'on', '--stop-after-plan')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        finish_baseline = dataclasses.replace(baseline, separate_filesystems=True)
+        revision = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+
+        launched = []
+        def launch(request):
+            launched.append(request)
+            (baseline.root / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+            return {'sandbox_id': 'fake-stopped', 'request_sha256': request['sha256'], 'status': 'READY'}
+
+        context = {'baseline': finish_baseline, 'revision': revision, 'launch': launch,
+                   'sandbox_stopped': lambda sandbox_id: sandbox_id == 'fake-stopped',
+                   'simulated_separation': True}
+        return co, ingest, baseline, context, launched
+
+    def test_fake_chain_only_finish_write_reingests_and_reviews_new_oid(self):
+        co, ingest, baseline, context, launched = self.fake_chain_only_finish_fixture()
+        revision = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        self.assertEqual(co.fake_lifecycle_route(None, finish_context=context, polish_stub=True,
+                         docs_stub=True, chain_only=True), 'EXEC')
+        chain = co.state['fake_candidate_chain']
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(co.state['lifecycle']['epoch'], 1)
+        self.assertEqual(chain['ingest_id'], co.state['fake_ingest_receipt']['id'])
+        self.assertEqual(chain['oid'], co.state['lifecycle']['candidate_oid'])
+        self.assertEqual(chain['oid'], co.state['fake_candidate_test']['oid'])
+        self.assertEqual(co.state['fake_candidate_review']['id'], chain['review_id'])
+
+    def test_fake_chain_only_writer_reentry_recovers_after_advance_crash(self):
+        co, ingest, baseline, context, _ = self.fake_chain_only_finish_fixture()
+        with patch.object(co, 'fake_finish_writer_ingest', side_effect=RuntimeError('crash after advance')):
+            with self.assertRaisesRegex(RuntimeError, 'crash after advance'):
+                co.fake_lifecycle_route(None, finish_context=context, polish_stub=True,
+                                        docs_stub=True, chain_only=True)
+        self.assertEqual(co.state['lifecycle']['stage'], 'EXEC')
+        self.assertEqual(co.state['lifecycle']['epoch'], 1)
+        self.assertIsNone(co.state['fake_ingest_receipt'].get('source_writer_request_id'))
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        ingest = co.state['fake_ingest_receipt']
+        self.assertEqual(ingest['source_writer_request_id'], co.state['lifecycle']['receipts'][1]['request_id'])
+        self.assertEqual(co.state['fake_candidate_chain']['oid'], co.state['lifecycle']['candidate_oid'])
+
+    def test_fake_chain_only_reviewer_rejection_cannot_resume_same_writer_oid(self):
+        co, _, _, context, _ = self.fake_chain_only_finish_fixture()
+        with patch.dict(os.environ, {'FAKE_EXEC_MIXED_REVISE': '1'}):
+            with self.assertRaisesRegex(RuntimeError, 'OID reviewer did not approve'):
+                co.fake_lifecycle_route(None, finish_context=context, polish_stub=True,
+                                        docs_stub=True, chain_only=True)
+        self.assertEqual(co.state['lifecycle']['stage'], 'EXEC')
+        self.assertTrue(co.state.get('fake_candidate_review_rejected'))
+        count = len(co.state['turns'])
+        with self.assertRaisesRegex(RuntimeError, 'current successful test'):
+            co.fake_lifecycle_route(None, stub_mode=True, chain_only=True)
+        self.assertEqual(len(co.state['turns']), count)
+
+    def test_fake_chain_only_security_writer_reentry_holds(self):
+        co, _, _, _, _ = self.fake_chain_only_finish_fixture()
+        life = co.state['lifecycle']
+        life.update(stage='EXEC', epoch=1)
+        life['receipts'].append({'request_id': 'security-write', 'stage': 'SECURITY', 'epoch': 1,
+                                 'item_uuid': life['item_uuid'], 'candidate_oid': life['candidate_oid'],
+                                 'parent': life['parent'], 'output_oid': life['candidate_oid']})
+        co.save()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True), 'HOLD')
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertIn('abort or start a new run', co.state['hold_reason'])
+
+    def test_fake_chain_only_exec_receipt_hold_names_recovery(self):
+        co, ingest, _, _, _ = self.fake_chain_only_finish_fixture()
+        life = co.state['lifecycle']
+        life.update(epoch=1, candidate_oid=ingest['output_oid'])
+        life['receipts'].append({'request_id': 'exec-crash', 'stage': 'EXEC', 'epoch': 1,
+                                 'item_uuid': life['item_uuid'], 'candidate_oid': life['candidate_oid'],
+                                 'parent': life['parent'], 'output_oid': life['candidate_oid']})
+        co.save()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True), 'HOLD')
+        self.assertIn('EXEC receipt needs abort or new run', co.state['hold_reason'])
+
+    def test_fake_chain_only_oid_test_failure_does_not_reenter(self):
+        co, _, _, context, _ = self.fake_chain_only_finish_fixture()
+        turns = len(co.state['turns'])
+        with patch.object(co, 'fake_candidate_oid_test', side_effect=RuntimeError('OID test failed')):
+            with self.assertRaisesRegex(RuntimeError, 'OID test failed'):
+                co.fake_lifecycle_route(None, finish_context=context, polish_stub=True,
+                                        docs_stub=True, chain_only=True)
+        self.assertEqual(co.state['lifecycle']['stage'], 'EXEC')
+        self.assertIsNone(co.state.get('fake_candidate_chain'))
+        self.assertEqual(len(co.state['turns']), turns)
+
+    def test_fake_chain_only_writer_reingest_rejects_post_receipt_change(self):
+        co, ingest, baseline, context, _ = self.fake_chain_only_finish_fixture()
+        original = co.fake_finish_writer_ingest
+
+        def change_then_ingest():
+            (baseline.root / 'sum_ints.py').write_text('changed after FINISH receipt\n')
+            return original()
+
+        with patch.object(co, 'fake_finish_writer_ingest', side_effect=change_then_ingest):
+            with self.assertRaisesRegex(RuntimeError, 'FINISH output differs from candidate OID'):
+                co.fake_lifecycle_route(None, finish_context=context, polish_stub=True,
+                                        docs_stub=True, chain_only=True)
+        receipt = co.state['lifecycle']['receipts'][-1]
+        self.assertEqual(receipt['stage'], 'FINISH')
+        self.assertNotEqual(co.state['fake_candidate_chain']['oid'], receipt['output_oid'])
+
     def test_fake_lifecycle_pending_finish_cannot_switch_to_stub(self):
         command = self.command('--lifecycle-mode', 'on')
         co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
@@ -3658,10 +3771,11 @@ sys.exit(result.returncode)
         docs = {'baseline': docs_baseline, 'before': before, 'write': write_docs,
                 'test': lambda oid: oid}
         self.assertEqual(co.fake_lifecycle_route(None, chain_only=True, docs_context=docs), 'EXEC')
-        replay = co.fake_reserved_docs_writer_ingest()
-        tested = co.fake_candidate_oid_test()
-        co.fake_candidate_oid_review()
+        replay = co.state['fake_ingest_receipt']
+        tested = co.state['fake_candidate_test']
         self.assertEqual(tested['oid'], replay['output_oid'])
+        self.assertEqual(co.state['fake_candidate_chain']['ingest_id'], replay['id'])
+        self.assertEqual(co.state['fake_candidate_chain']['oid'], tested['oid'])
         self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
                          'STOP_BEFORE_SECURITY')
         revision = ct.CandidateRevision(replay['output_oid'], tuple(replay['manifest']), 0)
@@ -3720,9 +3834,7 @@ sys.exit(result.returncode)
         docs = {'baseline': docs_baseline, 'before': before, 'write': write_docs,
                 'test': lambda oid: oid}
         self.assertEqual(co.fake_lifecycle_route(None, chain_only=True, docs_context=docs), 'EXEC')
-        replay = co.fake_reserved_docs_writer_ingest()
-        co.fake_candidate_oid_test()
-        co.fake_candidate_oid_review()
+        replay = co.state['fake_ingest_receipt']
         prior_ledger = json.loads(json.dumps(co.state['finding_ledger']))
         co.record_findings('specialist:other', 'POLISH-Q', 99,
                            [{'severity': 'MAJOR', 'file': 'tracked.txt',
