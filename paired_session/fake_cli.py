@@ -188,6 +188,11 @@ def main():
                 (Path.cwd() / 'plan-leak.txt').write_text('forbidden during plan\n')
             body = ('Plan\n\n1. Add sum_ints.\n2. Handle invalid input.' if 'No delivered review' in prompt
                     else 'Plan\n\n1. Add sum_ints.\n2. Reject bool and nested input.\n3. Verification: run unittest.')
+        elif 'Phase: DOCS' in prompt:
+            target = Path.cwd() / os.environ['FAKE_LIFECYCLE_DOCS_FILE']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('# Fake lifecycle guide\n')
+            body = 'Updated the configured documentation file.'
         else:
             module = Path.cwd() / 'sum_ints.py'
             if os.environ.get('FAKE_DOC_DELTA'):

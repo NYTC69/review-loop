@@ -1987,8 +1987,9 @@ class Coordinator:
                     baseline, before, polish_approval, after, [path], exec_paths=(),
                     finish_paths=(), polish_paths=(), closure_inputs=(), closure_uncertain=False,
                     replay_receipt=replay)
-                retested_oid = docs_context['test'](after.tree_oid) if change.requires_rechecks else None
-                if change.requires_rechecks and retested_oid != after.tree_oid:
+                retested_oid = (None if chain_only else
+                                docs_context['test'](after.tree_oid) if change.requires_rechecks else None)
+                if change.requires_rechecks and not chain_only and retested_oid != after.tree_oid:
                     raise ValueError('DOCS write lacks current-OID retest')
                 receipt.update(output_oid=after.tree_oid, docs_file=path, docs_paths=change.paths,
                                invalidated=change.invalidated_receipts, retested_oid=retested_oid,
@@ -4522,6 +4523,49 @@ class Coordinator:
         finally:
             self._fake_dispatching = False
 
+    def fake_lifecycle_drive(self) -> str:
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise RuntimeError('fake lifecycle refuses a non-fake provider')
+        if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:
+            return self.state['status']
+        self.fake_candidate_author_turn(chain_only=True)
+        self.fake_candidate_oid_test()
+        self.fake_candidate_oid_review()
+        for _ in range(3):
+            ingest = self.state['fake_ingest_receipt']
+            baseline = candidate_tree.replace(
+                candidate_tree.baseline_from_binding(ingest['baseline']), separate_filesystems=True)
+            revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+            def dispatch(role, phase, prompt, schema, root, env=None):
+                self._fake_dispatching = True
+                try: return self.invoke(role, phase, prompt, schema, fresh=True,
+                                        workspace_override=root, env_overrides=env)
+                finally: self._fake_dispatching = False
+            def finish(request):
+                result = dispatch('author', 'FINISH', 'Role: persistent finisher. Phase: FINISH.',
+                                  author_schema(), baseline.root)
+                return {'sandbox_id': str(result['sequence']), 'request_sha256': request['sha256'],
+                        'status': result['answer']['status']}
+            def specialist(request):
+                prompt = ('Role: reviewer, fresh. Phase: POLISH.\nRun this test command exactly as written '
+                          'in one Bash call: ' + self.args.test_command)
+                result = dispatch('reviewer', 'POLISH', prompt,
+                                  review_schema(), baseline.root)
+                return {'candidate_oid': request['candidate_oid'], 'status': result['answer']['status'],
+                        'findings': result['answer']['full_review']}
+            def write_docs(root, path):
+                result = dispatch('author', 'DOCS', 'Role: persistent docs writer. Phase: DOCS.',
+                                  author_schema(), root, {'FAKE_LIFECYCLE_DOCS_FILE': path})
+                if result['answer']['status'] != 'READY': raise RuntimeError('DOCS author did not report READY')
+            finish_context = {'baseline': baseline, 'revision': revision, 'launch': finish,
+                              'sandbox_stopped': lambda sandbox: True, 'tested_oid': revision.tree_oid}
+            docs_context = {'baseline': baseline, 'before': revision, 'write': write_docs}
+            route = self.fake_lifecycle_route(
+                None, finish_context=finish_context, polish_context={'python-reviewer': specialist},
+                docs_context=docs_context, chain_only=True)
+            if route != 'EXEC': return route
+        return 'HOLD'
+
     def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""
         if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
@@ -4532,8 +4576,10 @@ class Coordinator:
                 self.state.get('fake_candidate_pending') or self.state.get('fake_ingest_receipt')):
             raise RuntimeError('fake candidate author requires an unstarted EXEC turn')
         plan = (self.context / 'plan.md').read_bytes()
+        docs_file = self.state['config'].get('docs_file')
+        authorized = ['sum_ints.py', *([Path(docs_file).relative_to(self.workspace).as_posix()] if docs_file else [])]
         baseline = candidate_tree.prepare_candidate_baseline(
-            self.workspace, self.run_dir, self.run_dir.parent, self.run_dir.parent, ('sum_ints.py',))
+            self.workspace, self.run_dir, self.run_dir.parent, self.run_dir.parent, tuple(authorized))
         if chain_only and baseline.parent_head != self.state['lifecycle']['parent']:
             raise RuntimeError('fake candidate differs from frozen parent before author dispatch')
         request_id = str(uuid.uuid4())
@@ -4714,6 +4760,11 @@ class Coordinator:
             self.fake_candidate_oid_test()
         if self.state.get('fake_candidate_chain', {}).get('ingest_id') != self.state['fake_ingest_receipt']['id']:
             self.fake_candidate_oid_review()
+        if prior.get('stage') == 'DOCS':
+            test = self.state['fake_candidate_test']
+            self.state['lifecycle']['receipts'][-1].update(
+                retested_oid=test['oid'], retest_id=test['id'])
+            self.save()
         return True
 
     def fake_candidate_oid_review(self) -> dict:
@@ -4853,7 +4904,7 @@ class Coordinator:
                 test['config_sha256'] or
                 hashlib.sha256(Path(test['command'][0]).read_bytes()).hexdigest() != test['executable_sha256']):
             raise RuntimeError('fake approval inputs changed')
-        if any(row['sequence'] > ingest['author_sequence'] and row['role'] == 'author'
+        if any(row['sequence'] > chain['gate_sequence'] and row['role'] == 'author'
                for row in state['turns']): raise RuntimeError('fake approval has a later author')
         if any(row['sequence'] > ingest['author_sequence'] and row['role'] in
                ('finisher', 'docs', 'security-writer') for row in state['turns']):

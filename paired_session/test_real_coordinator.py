@@ -2863,6 +2863,44 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
 
+    def test_fake_lifecycle_drive_runs_m3_without_test_built_approvals(self):
+        docs = self.workspace / 'docs' / 'guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add docs fixture'], cwd=self.workspace, check=True)
+        command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe',
+                               '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        self.assertEqual(co.fake_lifecycle_drive(), 'STOP_BEFORE_SECURITY')
+        stages = [row['stage'] for row in co.state['lifecycle']['receipts']]
+        self.assertEqual(stages, ['EXEC', 'FINISH', 'POLISH-Q', 'DOCS',
+                                  'EXEC', 'FINISH', 'POLISH-Q', 'DOCS'])
+        final_oid = co.state['lifecycle']['candidate_oid']
+        docs_receipt = co.state['lifecycle']['receipts'][3]
+        self.assertNotEqual(docs_receipt['output_oid'], docs_receipt['candidate_oid'])
+        self.assertEqual(docs_receipt['retested_oid'], docs_receipt['output_oid'])
+        self.assertEqual(docs_receipt['docs_file'], 'docs/guide.md')
+        self.assertEqual(co.state['fake_ingest_receipt']['source_writer_request_id'],
+                         docs_receipt['request_id'])
+        self.assertEqual(docs_receipt['retest_id'], co.state['fake_candidate_test']['id'])
+        self.assertEqual(docs.read_text(), '# Draft guide\n')
+        self.assertEqual(co.state['fake_ingest_receipt']['output_oid'], final_oid)
+        self.assertEqual(co.state['fake_candidate_test']['oid'], final_oid)
+        self.assertEqual(co.state['fake_candidate_chain']['oid'], final_oid)
+        self.assertEqual(co.state['lifecycle']['receipts'][-1]['output_oid'], final_oid)
+        baseline = ct.baseline_from_binding(co.state['fake_ingest_receipt']['baseline'])
+        revision = ct.CandidateRevision(final_oid, tuple(co.state['fake_ingest_receipt']['manifest']), 0)
+        final_tree = ct.rebuild_candidate_from_oid(baseline, revision)
+        self.assertEqual((final_tree.root / 'docs/guide.md').read_text(), '# Fake lifecycle guide\n')
+        phases = [(row['role'], row['phase']) for row in co.state['turns']]
+        self.assertIn(('author', 'EXEC'), phases)
+        self.assertIn(('reviewer', 'EXEC'), phases)
+        self.assertIn(('gate', 'EXEC'), phases)
+        self.assertIn(('author', 'FINISH'), phases)
+        self.assertIn(('reviewer', 'POLISH'), phases)
+        self.assertIn(('author', 'DOCS'), phases)
+
     def test_fake_lifecycle_router_replays_receipt_and_restarts_on_oid_change(self):
         command = self.command('--lifecycle-mode', 'on')
         co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
