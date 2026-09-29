@@ -9,6 +9,12 @@ Read `.review-loop/config.md` (or defaults). Detect `--handsfree`.
 Reviewer backend availability check (`which codex` for
 `reviewer: codex`; suggest `reviewer: subagent` fallback if absent).
 
+Resolve `entry` (exact values `legacy` and `paired-session` only):
+- Absent: legacy. Print once: `review-loop: legacy workflow via implicit entry; set "entry: paired-session" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly`
+- Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
+- Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
+- `paired-session`: apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock.
+
 ### Step 0.5 — Initialize session file
 
 Generate a lowercase UUID. Create `.review-loop/sessions/{uuid}.md`
@@ -58,6 +64,15 @@ which only prints a suggestion, the umbrella dispatches internally:
 - **Existing session context file** matching this task: read it and
   resume (equivalent to `execute --session <uuid>`).
 - **No prior state**: start from the planning phase as normal.
+
+**Entry routing (only when `entry` resolved to `paired-session`).** Only
+"No prior state" hands off: print `review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)`,
+invoke the `paired-session` skill with the work item, and end this workflow
+(no legacy session file, lock or stage). A paired-session probe/run HOLD is
+reported to the user and never falls back to legacy. Plan-exists, code-exists
+(including a dirty tree detected as implemented code) and an existing session
+(explicit resume) always stay legacy; print
+`review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`.
 
 Current Codex Stage 1 uses the orchestrator's current workspace only.
 Executor-created hidden worktrees are forbidden in Codex Stage 1.

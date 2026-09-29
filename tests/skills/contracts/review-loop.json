@@ -3474,6 +3474,60 @@
       "kind": "contains",
       "path": "skills/legacy/SKILL.md",
       "needle": "--runtime claude --stage entry-review-loop"
+    },
+    {
+      "id": "entry_key_documented_in_config_example",
+      "kind": "contains",
+      "path": "review-loop-config.example.md",
+      "needle": "# \"legacy\" | \"paired-session\" (exact values only; anything else falls back to legacy with a warning)."
+    },
+    {
+      "id": "entry_key_default_legacy_in_config_example",
+      "kind": "contains",
+      "path": "review-loop-config.example.md",
+      "needle": "# entry: legacy\n"
+    },
+    {
+      "id": "entry_invalid_value_falls_back_to_legacy_with_warning",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "`review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow`"
+    },
+    {
+      "id": "entry_unreadable_or_duplicate_falls_back_to_legacy",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "`review-loop: entry could not be read (<reason>); using legacy workflow`"
+    },
+    {
+      "id": "entry_implicit_legacy_notice_exact_text",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "`review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly`"
+    },
+    {
+      "id": "entry_routing_only_fresh_work_hands_off",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "\"No prior state\" hands off: print `review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)`,"
+    },
+    {
+      "id": "entry_routing_non_fresh_states_stay_legacy",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "`review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`"
+    },
+    {
+      "id": "entry_routing_hold_never_falls_back_to_legacy",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "reported to the user and never falls back to legacy."
+    },
+    {
+      "id": "entry_routing_runs_before_session_file_creation",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock."
     }
   ]
 }
