@@ -3638,6 +3638,46 @@
       "kind": "contains",
       "path": ".agents/skills/paired-session/SKILL.md",
       "needle": "key `entry` is exactly `paired-session` and the work is fresh"
+    },
+    {
+      "id": "claude_paired_session_description_permits_configured_handoff",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "the review-loop entry hands off\n  because .review-loop/config.md sets `entry: paired-session`"
+    },
+    {
+      "id": "claude_paired_session_description_keeps_bare_request_prohibition",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "Do not trigger on\n  a bare review-loop request in any other case (key absent, invalid, legacy, or\n  /review-loop:legacy)."
+    },
+    {
+      "id": "codex_paired_session_description_permits_configured_handoff",
+      "kind": "contains",
+      "path": ".agents/skills/paired-session/SKILL.md",
+      "needle": "the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`"
+    },
+    {
+      "id": "codex_paired_session_description_keeps_bare_request_prohibition",
+      "kind": "contains",
+      "path": ".agents/skills/paired-session/SKILL.md",
+      "needle": "Generic review-loop requests in every other case (key absent, invalid, legacy, or explicit legacy) use the legacy entry."
+    },
+    {
+      "id": "paired_session_skills_configured_handoff_permitted_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "paired_session_skill_configured_handoff_permitted"
+    },
+    {
+      "id": "paired_session_skills_bare_request_prohibition_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "paired_session_skill_bare_request_prohibition_cases"
+    },
+    {
+      "id": "claude_paired_session_body_names_configured_handoff_target",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "key `entry` is exactly `paired-session` and the work is fresh"
     }
   ]
 }

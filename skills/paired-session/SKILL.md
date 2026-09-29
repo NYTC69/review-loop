@@ -4,8 +4,11 @@ argument-hint: "<work item> [--plan-only]"
 description: >
   Drive an implementation through the paired-session coordinator: independent
   PLAN review, EXEC implementation/review, adversarial gate, and delivery.
-  Trigger only when the user explicitly asks for paired-session or names this
-  explicit coordinator entry. Do not trigger on a bare review-loop request.
+  Trigger in exactly two cases: (1) the user explicitly asks for paired-session
+  or names this explicit coordinator entry; (2) the review-loop entry hands off
+  because .review-loop/config.md sets `entry: paired-session`. Do not trigger on
+  a bare review-loop request in any other case (key absent, invalid, legacy, or
+  /review-loop:legacy).
 ---
 
 # Paired-session workflow
@@ -98,6 +101,7 @@ legacy review-loop workflow for this task.
    profile, and options; wait for background completion and inspect its final
    status. Do not imply user acceptance or delivery authorization from DONE.
 
-The coordinator owns reviewer dispatch and limits. The current user-facing
-default is still staged; this skill is the explicit paired-session entry until
-the migration batch changes routing.
+The coordinator owns reviewer dispatch and limits. This skill is the explicit
+paired-session entry and the review-loop handoff target only when the config
+key `entry` is exactly `paired-session` and the work is fresh; otherwise default
+routing stays legacy.

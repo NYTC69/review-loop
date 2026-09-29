@@ -1,6 +1,6 @@
 ---
 name: paired-session
-description: Use only when the user explicitly asks for paired-session; this is the opt-in plan, implementation, independent-review, and delivery workflow. Generic review-loop requests use the legacy entry.
+description: Use in exactly two cases - the user explicitly asks for paired-session, or the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`; this is the opt-in plan, implementation, independent-review, and delivery workflow. Generic review-loop requests in every other case (key absent, invalid, legacy, or explicit legacy) use the legacy entry.
 ---
 
 # Paired-session workflow

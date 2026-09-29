@@ -2033,6 +2033,26 @@
         "path": "paired_session/docs/1d-entry-mapping.md",
         "needle": "`.agents/skills/paired-session`"
       }
+    ],
+    "paired_session_skill_configured_handoff_permitted": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`"
+      }
+    ],
+    "paired_session_skill_bare_request_prohibition_cases": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "(key absent, invalid, legacy, or"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "(key absent, invalid, legacy, or"
+      }
     ]
   }
 }
