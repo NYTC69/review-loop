@@ -68,7 +68,9 @@ which only prints a suggestion, the umbrella dispatches internally:
 **Entry routing (only when `entry` resolved to `paired-session`).** Only
 "No prior state" hands off: print `review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)`,
 invoke the `paired-session` skill with the work item, and end this workflow
-(no legacy session file, lock or stage). A paired-session probe/run HOLD is
+(no legacy session file, lock or stage). This routing is decided once, before
+Step 0.5; once a legacy session file or lock exists, a re-detection or user
+override never hands off. A paired-session probe/run HOLD is
 reported to the user and never falls back to legacy. Plan-exists, code-exists
 (including a dirty tree detected as implemented code) and an existing session
 (explicit resume) always stay legacy; print

@@ -1905,6 +1905,80 @@
         "path": "docs/protocol/execution.md",
         "needle": "acceptance criteria is not automatically CRITICAL. A material change to\nuser intent, observable behavior, safety, authorization, data integrity,\nor an explicit constraint"
       }
+    ],
+    "entry_implicit_legacy_notice": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+      }
+    ],
+    "entry_invalid_value_warning": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+      }
+    ],
+    "entry_unreadable_warning": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+      }
+    ],
+    "entry_experimental_routing_notice": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+      }
+    ],
+    "entry_non_fresh_state_warning": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry is paired-session but"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry is paired-session but"
+      }
+    ],
+    "entry_exact_values_only": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "exact values only"
+      },
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "exact values `legacy` and `paired-session` only"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "exact values `legacy` and `paired-session` are accepted"
+      }
+    ],
+    "legacy_command_ignores_entry": [
+      {
+        "path": "skills/legacy/SKILL.md",
+        "needle": "ignore the `entry` key"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "`/review-loop:legacy <work item>` ignores `entry`"
+      }
     ]
   }
 }

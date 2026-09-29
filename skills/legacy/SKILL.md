@@ -1,16 +1,20 @@
 ---
 name: legacy
 argument-hint: "<work item description> [--handsfree]"
+disable-model-invocation: true
 description: >
   Explicit control command: run the existing legacy review-loop workflow on a
   work item, ignoring the `entry` config key. Trigger only when the user names
-  `/review-loop:legacy` or explicitly asks for the legacy workflow.
+  `/review-loop:legacy`. Do not trigger on a bare review-loop request.
 ---
 
 # legacy — explicit legacy review-loop
 
-Run the `review-loop` skill (`skills/review-loop/SKILL.md`) unchanged. Load its
-protocol through the shared loading map, not a copy of the workflow:
+Run the `review-loop` skill unchanged. First Read
+`<support-root>/skills/review-loop/SKILL.md` and
+`<support-root>/docs/protocol/loading.md` in full, where `<support-root>` is
+this plugin/repository (not the task workspace). Load its protocol through the
+shared loading map, not a copy of the workflow:
 
 ```bash
 python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-review-loop
@@ -18,5 +22,5 @@ python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-r
 
 Follow that skill and every stage bundle it names exactly as if the user had
 invoked `/review-loop`, with two differences: ignore the `entry` key in
-`.review-loop/config.md` (never route to paired-session), and print no
-entry-routing or implicit-entry notice. All other config keys apply as usual.
+`.review-loop/config.md` (never route to paired-session), and do not read or
+validate `entry`, and print none of its notices. All other config keys apply as usual.

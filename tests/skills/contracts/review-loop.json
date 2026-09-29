@@ -3528,6 +3528,59 @@
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
       "needle": "apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock."
+    },
+    {
+      "id": "entry_implicit_legacy_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_implicit_legacy_notice"
+    },
+    {
+      "id": "entry_invalid_value_warning_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_invalid_value_warning"
+    },
+    {
+      "id": "entry_unreadable_warning_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_unreadable_warning"
+    },
+    {
+      "id": "entry_experimental_routing_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_experimental_routing_notice"
+    },
+    {
+      "id": "entry_non_fresh_state_warning_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_non_fresh_state_warning"
+    },
+    {
+      "id": "entry_exact_values_only_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_exact_values_only"
+    },
+    {
+      "id": "legacy_command_ignores_entry_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "legacy_command_ignores_entry"
+    },
+    {
+      "id": "legacy_skill_not_model_invocable",
+      "kind": "contains",
+      "path": "skills/legacy/SKILL.md",
+      "needle": "disable-model-invocation: true"
+    },
+    {
+      "id": "legacy_skill_reads_umbrella_skill_and_loading_map",
+      "kind": "contains",
+      "path": "skills/legacy/SKILL.md",
+      "needle": "`<support-root>/skills/review-loop/SKILL.md` and\n`<support-root>/docs/protocol/loading.md` in full"
+    },
+    {
+      "id": "entry_routing_decided_once_before_session_file",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "This routing is decided once, before\nStep 0.5; once a legacy session file or lock exists, a re-detection or user\noverride never hands off."
     }
   ]
 }
