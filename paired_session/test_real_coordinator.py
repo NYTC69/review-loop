@@ -6744,6 +6744,23 @@ sys.exit(result.returncode)
         self.assertEqual(result.returncode, 2)
         self.assertIn('reviewer flags do not match', result.stdout)
 
+    def test_skip_probe_requires_fake_harness_and_fake_cli_wrappers(self):
+        command = self.command('--skip-probe')
+        env = os.environ.copy(); env.pop('FAKE_CODEX_TEST_ROOT', None)
+        refused = subprocess.run(command, cwd=self.root, env=env, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('fake test harness', refused.stdout)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+        invalid = self.root / 'not-fake-codex'
+        invalid.write_text('#!/bin/sh\nexit 0\n'); invalid.chmod(0o755)
+        command[command.index('--codex-bin') + 1] = str(invalid)
+        refused = subprocess.run(command, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('fake test harness', refused.stdout)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
     def test_resume_refuses_when_permission_probe_is_missing_or_stale(self):
         for mode in ('missing', 'stale'):
             with self.subTest(mode=mode):
@@ -7284,21 +7301,91 @@ sys.exit(result.returncode)
     def test_uncertain_global_config_resume_cli_holds_without_traceback(self):
         config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
         args = rc.parser().parse_args(self.command()[2:]); co = rc.Coordinator(args)
+        probe_command = self.command(); probe_command[2] = 'permission-probe'
+        probe_result = subprocess.run(probe_command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(probe_result.returncode, 0, probe_result.stdout + probe_result.stderr)
+        co = rc.Coordinator(args)
         co.state['uncertain_active'] = {'sequence': 1, 'pid': 987654321, 'role': 'author',
             'vendor': 'codex', 'phase': 'EXEC', 'workspace': str(self.workspace),
             'global_codex_home': str(co.global_codex_home), 'global_config_home': str(co.global_config_home),
             'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}}
-        rc.atomic_json(self.run_dir / 'permission-probe.json', {'status': 'PASS',
-            'reviewer_flags_digest': co.reviewer_flags_digest(),
-            'author_flags_digest': co.author_flags_digest(),
-            'author_permission_probe': {'status': 'PASS'},
-            'global_config_changes': {'status': 'PASS'}})
-        co.save(); config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
+        co.save()
         command = self.command(); command[2] = 'resume'; command.append('--retry-uncertain')
+        config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
         result = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn('HOLD: global Codex config changed during uncertain turn', result.stdout)
         self.assertNotIn('Traceback', result.stderr)
+        config.write_bytes(original)
+
+    def test_retry_uncertain_checks_probe_before_global_config_recovery(self):
+        config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
+        args = rc.parser().parse_args(self.command()[2:]); co = rc.Coordinator(args)
+        co.state.update(status='HOLD', uncertain_active={'sequence': 1, 'pid': 987654321,
+            'role': 'author', 'vendor': 'codex', 'phase': 'EXEC', 'workspace': str(self.workspace),
+            'global_codex_home': str(co.global_codex_home), 'global_config_home': str(co.global_config_home),
+            'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}})
+        co.save()
+        rc.atomic_json(self.run_dir / 'permission-probe.json', {'status': 'PASS',
+            'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': 'stale',
+            'author_permission_probe': {'status': 'PASS'}, 'global_config_changes': {'status': 'PASS'}})
+        config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
+        command = self.command(); command[2] = 'resume'; command.append('--retry-uncertain')
+        probed = []; driven = []
+        original_probe = rc.Coordinator.probe_passed
+        def record_probe(coordinator):
+            probed.append(True)
+            return False, 'synthetic stale probe'
+        original_archive = rc.Coordinator.archive_abandoned_turn
+        def revert_then_archive(coordinator, receipt):
+            config.write_bytes(original)
+            original_archive(coordinator, receipt)
+        def drive(coordinator):
+            driven.append(True)
+            return 'DONE'
+        output = io.StringIO()
+        with patch.object(rc.Coordinator, 'probe_passed', record_probe), \
+                patch.object(rc.Coordinator, 'archive_abandoned_turn', revert_then_archive), \
+                patch.object(rc.Coordinator, 'drive', drive), patch('sys.stdout', output):
+            result = rc.main(command[2:])
+        self.assertTrue(probed)
+        self.assertEqual(result, 2)
+        self.assertIn('permission probe stale after uncertain turn', output.getvalue())
+        saved = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertIsNone(saved['uncertain_active'])
+        self.assertEqual(len(saved['abandoned_turns']), 1)
+        self.assertFalse(driven)
+        config.write_bytes(original)
+
+    def test_trust_ack_probe_expiry_clears_archived_uncertain_turn(self):
+        config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
+        co = self.coordinator(); before = hashlib.sha256(config.read_bytes()).hexdigest()
+        receipt = {'sequence': 1, 'pid': 987654321, 'role': 'author', 'vendor': 'codex',
+                   'phase': 'EXEC', 'workspace': str(self.workspace),
+                   'global_codex_home': str(co.global_codex_home),
+                   'global_config_home': str(co.global_config_home),
+                   'global_codex_before': {'codex_config': before}}
+        co.state.update(status='HOLD', hold_reason='global Codex config changed during uncertain turn',
+                        uncertain_active=receipt)
+        co.save(); co.args.action = 'resume'; co.args.acknowledge_codex_trust = self.run_dir.name
+        co.args.retry_uncertain = True; co._probe_gate_required = True
+        entry = ('\n[projects.' + json.dumps(str(self.workspace)) +
+                 ']\ntrust_level = "trusted"\n').encode()
+        config.write_bytes(original + entry)
+        probe_file = self.run_dir / 'permission-probe.json'
+        probe_file.write_text('{"status":"PASS"}\n')
+        original_archive = co.archive_abandoned_turn
+        def archive_and_delete_probe(turn):
+            original_archive(turn)
+            probe_file.unlink()
+        with patch('os.killpg', side_effect=ProcessLookupError), \
+                patch.object(co, 'archive_abandoned_turn', archive_and_delete_probe), \
+                patch.object(co, 'drive') as drive:
+            self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        drive.assert_not_called()
+        self.assertIsNone(co.state['uncertain_active'])
+        self.assertEqual(len(co.state['abandoned_turns']), 1)
+        self.assertIn('permission probe stale after uncertain turn', co.state['hold_reason'])
         config.write_bytes(original)
 
     def test_codex_turn_records_concurrent_claude_change_without_holding(self):

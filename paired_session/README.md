@@ -231,14 +231,17 @@ persist a trust entry for a new workspace. Only an exact insertion of
 boundary is attributed; the report warns `global config mutated by codex CLI
 trust persistence`. The file is **not** byte-identical in that case. Any other
 Codex change fails; Claude plugin `lastUpdated` is attributed separately.
-The coordinator never edits or restores the user's global config. Do not use
-`--skip-probe` for a real task; it exists for deterministic tests only.
+The coordinator never edits or restores the user's global config. `--skip-probe`
+is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider
+binaries are fake CLI wrappers. This is a misuse guard for tests, not a security boundary.
 Each Codex turn also records a before/after Codex-config comparison. A changed
 config during an uncertain turn HOLDs before replay. After inspecting the
 change, the operator can run `resume --acknowledge-codex-trust RUN_ID`; this
 records UID, time and before/after hashes and accepts only an exact new trusted
 entry for that turn's workspace. Other changes stay HOLD, and the coordinator
-never edits the config. Each Codex turn compares only Codex global files; each
+never edits the config. `resume --retry-uncertain` still checks the current
+permission-probe binding before replay; trust acknowledgement does not bypass it.
+Each Codex turn compares only Codex global files; each
 Claude turn compares only Claude global files. Cross-vendor changes are recorded
 in the turn receipt without HOLDing that turn.
 

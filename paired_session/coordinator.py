@@ -5067,7 +5067,6 @@ class Coordinator:
                 return self.hold('uncertain CLI process group is still alive; refusing concurrent replay')
         if uncertain:
             self.archive_abandoned_turn(uncertain)
-            if self.args.acknowledge_codex_trust and (self.run_dir / 'permission-probe.json').exists() and not self.probe_passed()[0]: return self.hold('permission probe stale after Codex trust acknowledgment; run permission-probe before continuing')
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
@@ -5078,6 +5077,10 @@ class Coordinator:
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
         self.save()
+        if uncertain and getattr(self, '_probe_gate_required', False):
+            passed, reason = self.probe_passed()
+            if not passed:
+                return self.hold('permission probe stale after uncertain turn: ' + reason)
         return self.drive()
 
     def write_usage(self) -> None:
@@ -5425,11 +5428,19 @@ def _execute_locked(args: argparse.Namespace) -> int:
         print(status + (' (acceptance pending)' if status == 'DONE' else
                         ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
         return 0 if status in ('DONE', 'ACCEPTED') else 2
-    if args.action in ('run', 'resume') and not args.skip_probe and not (args.action == 'resume' and args.retry_uncertain and (co.run_dir / 'permission-probe.json').exists() and (pending := co.state.get('uncertain_active')) and pending.get('vendor') == 'codex' and pending.get('global_codex_before', {}).get('codex_config') and global_config_snapshot(co.global_config_home, co.global_codex_home).get('codex_config', {}).get('sha256') != pending['global_codex_before']['codex_config']):
+    pending = co.state.get('uncertain_active') or {}
+    before_config = pending.get('global_codex_before', {}).get('codex_config')
+    changed_codex = (args.action == 'resume' and args.retry_uncertain and not args.polish
+                     and pending.get('vendor') == 'codex'
+                     and before_config and (co.run_dir / 'permission-probe.json').exists()
+                     and global_config_snapshot(co.global_config_home, co.global_codex_home).get(
+                         'codex_config', {}).get('sha256') != before_config)
+    if args.action in ('run', 'resume') and not args.skip_probe:
         passed, reason = co.probe_passed()
-        if not passed:
+        if not passed and not changed_codex:
             print('REFUSED: ' + reason + '; run permission-probe before continuing')
             return 2
+    co._probe_gate_required = not args.skip_probe
     if args.action == 'abort':
         if co.state.get('status') == 'ACCEPTED':
             print('ACCEPTED')
@@ -5459,6 +5470,9 @@ def main(argv=None) -> int:
     args = normalize_cli_paths(args)
     roots = (Path(args.workspace), Path(args.run_dir))
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
+    if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
+        print('REFUSED: --skip-probe is limited to the fake test harness')
+        return 2
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
