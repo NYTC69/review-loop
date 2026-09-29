@@ -4167,6 +4167,43 @@ sys.exit(result.returncode)
             co.fake_lifecycle_route(None, chain_only=True)
         self.assertNotIn('fake_route_consumed', co.state)
 
+    def test_fake_chain_only_continues_security_from_consumed_exec_receipt(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        revision = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        security = {'baseline': baseline, 'revision': revision,
+                    'review': lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                                           'observed_tools': ['read OID diff'], 'findings': []}}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True, security_context=security),
+                         'STOP_BEFORE_DELIVERY')
+        self.assertEqual(co.state['lifecycle']['receipts'][0]['approval_proof']['convergence_id'],
+                         co.state['fake_route_consumed'])
+        self.assertIsNotNone(co.state['fake_route_consumed'])
+
+    def test_fake_chain_only_continuation_rejects_legacy_exec_and_event_injection(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists()
+        self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
+        security = {'baseline': finish['baseline'], 'revision': finish['revision'],
+                    'review': lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                                           'observed_tools': ['read OID diff'], 'findings': []}}
+        with self.assertRaisesRegex(ValueError, 'consumed EXEC proof'):
+            co.fake_lifecycle_route(None, chain_only=True, security_context=security)
+
+    def test_fake_chain_only_rejects_public_stage_event_injection(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        chained = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(chained.fake_drive(), 'HOLD')
+        chained.fake_candidate_author_turn(chain_only=True)
+        with self.assertRaisesRegex(ValueError, 'router-owned'):
+            chained.fake_lifecycle_event('begin', {'stage': 'EXEC'})
+
     def test_fake_chain_only_author_checks_frozen_parent_before_dispatch(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)

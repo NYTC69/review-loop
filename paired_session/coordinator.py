@@ -1616,6 +1616,12 @@ class Coordinator:
             atomic_json(self.state_path, self.state)
 
     def fake_lifecycle_event(self, event, value):
+        if any(self.state.get(key) for key in ('fake_candidate_pending', 'fake_ingest_receipt',
+                                               'fake_candidate_chain', 'fake_route_consumed')):
+            raise ValueError('chain-only lifecycle events are router-owned')
+        self._fake_lifecycle_event(event, value)
+
+    def _fake_lifecycle_event(self, event, value):
         if not self._fake_lifecycle or 'lifecycle' not in self.state:
             raise ValueError('fake lifecycle state is unavailable')
         action = {'begin': lifecycle_spine.begin, 'receipt': lifecycle_spine.complete}.get(event)
@@ -1632,13 +1638,28 @@ class Coordinator:
                 raise ValueError('chain-only route requires fake providers')
             if outputs:
                 raise ValueError('chain-only route cannot accept caller output OIDs')
-            if approval is not None or self.state.get('fake_route_consumed'):
-                raise ValueError('chain-only EXEC route requires one unused persisted approval')
-            approval = self.fake_candidate_approval()
-            if not self.state['fake_ingest_receipt'].get('chain_only'):
-                raise ValueError('chain-only route requires a chain-only author ingest')
-            self.state['fake_route_consumed'] = approval['proof']['convergence_id']
-            self.save()
+            if approval is not None:
+                raise ValueError('chain-only route rejects caller approval')
+            if self.state['lifecycle']['stage'] == 'EXEC':
+                approval = self.fake_candidate_approval()
+                if not self.state['fake_ingest_receipt'].get('chain_only'):
+                    raise ValueError('chain-only route requires a chain-only ingest')
+                chain_id = approval['proof']['convergence_id']
+                if self.state.get('fake_route_consumed') == chain_id:
+                    raise ValueError('chain-only EXEC approval was already consumed')
+                self.state['fake_route_consumed'] = chain_id
+                self.save()
+            else:
+                if self.state['lifecycle']['stage'] == 'STOP_BEFORE_SECURITY' and security_context is None:
+                    raise ValueError('chain-only continuation needs SECURITY context or unused persisted approval')
+                prior = next((row for row in reversed(self.state['lifecycle']['receipts'])
+                              if row['stage'] == 'EXEC'), None)
+                proof = prior.get('approval_proof') if prior else None
+                if (not isinstance(proof, dict) or proof.get('fake_only') is not True or
+                        not self.state.get('fake_route_consumed') or
+                        not (self.state.get('fake_ingest_receipt') or {}).get('chain_only') or
+                        proof.get('convergence_id') != self.state['fake_route_consumed']):
+                    raise ValueError('chain-only continuation lacks consumed EXEC proof')
         else:
             chain_pending = self.state.get('fake_candidate_pending') or {}
             chain_ingest = self.state.get('fake_ingest_receipt') or {}
@@ -1649,6 +1670,7 @@ class Coordinator:
             if isinstance(proof, dict) and proof.get('fake_only'):
                 raise ValueError('fake chain proof requires chain-only route')
         outputs = outputs or {}
+        emit = self._fake_lifecycle_event if chain_only else self.fake_lifecycle_event
         start_epoch = self.state['lifecycle']['epoch']
         while True:
             life = self.state['lifecycle']
@@ -1826,7 +1848,7 @@ class Coordinator:
                               if row['stage'] == 'EXEC' and row['epoch'] == life['epoch']), None)
                 if not prior or not isinstance(prior.get('approval_proof'), dict):
                     raise ValueError('FINISH lacks persisted EXEC approval proof')
-            self.fake_lifecycle_event('begin', request)
+            emit('begin', request)
             output = outputs.get(stage, life['candidate_oid'])
             receipt = {**request, 'status': 'APPROVE' if stage == 'EXEC' else 'READY', 'output_oid': output}
             if stage == 'EXEC': receipt['approval_proof'] = approval.get('proof')
@@ -1932,7 +1954,7 @@ class Coordinator:
                         self.state['lifecycle']['awaiting_owner_reverify'] = {
                             **marker, 'repair_oid': after.tree_oid, 'request_id': request['request_id'],
                             'repair_digest': plan.digest}
-                    self.fake_lifecycle_event('receipt', receipt)
+                    emit('receipt', receipt)
                     continue
                 review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,
                                                      'run_id': self.run_dir.name, 'epoch': life['epoch'],
@@ -1990,7 +2012,7 @@ class Coordinator:
                     self.state['lifecycle'].pop('awaiting_owner_reverify')
                 receipt.update(output_oid=revision.tree_oid, security_review='APPROVE',
                                scanned_paths=paths, fake_only=True)
-            self.fake_lifecycle_event('receipt', receipt)
+            emit('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:
         proc = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.workspace,
@@ -4603,9 +4625,18 @@ class Coordinator:
             raise RuntimeError('fake approval lacks a clean receipt chain')
         life = state['lifecycle']
         if (state.get('status') != 'HOLD' or state.get('hold_reason') != PLAN_STOP_REASON or
-                life.get('pending') or life.get('candidate_oid') is not None or life.get('receipts') or
-                life.get('item_uuid') != state['item_uuid'] or state.get('fake_route_consumed')):
+                life.get('pending') or life.get('item_uuid') != state['item_uuid'] or
+                state.get('fake_route_consumed') == chain.get('id')):
             raise RuntimeError('fake approval lifecycle is not ready for chain-only routing')
+        if life['epoch'] == 0:
+            if life.get('candidate_oid') is not None or life.get('receipts'):
+                raise RuntimeError('fake approval initial lifecycle is not empty')
+        else:
+            prior = life['receipts'][-1] if life.get('receipts') else {}
+            if (life.get('candidate_oid') != chain['oid'] or prior.get('stage') not in ('FINISH', 'DOCS') or
+                    prior.get('output_oid') != chain['oid'] or
+                    ingest.get('source_writer_request_id') != prior.get('request_id')):
+                raise RuntimeError('fake approval has no current writer ingest')
         identity = [self.run_dir.name, state['item_uuid'], life['epoch']]
         if (list(chain['identity']) != identity or reviewed['run_id'] != identity[0] or
                 reviewed['item_uuid'] != identity[1] or reviewed['epoch'] != identity[2] or
