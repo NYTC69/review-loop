@@ -3462,6 +3462,18 @@
       "kind": "contains",
       "path": "tests/skills/smoke/README.md",
       "needle": "reported as `unverified`"
+    },
+    {
+      "id": "legacy_skill_ignores_entry_key",
+      "kind": "contains",
+      "path": "skills/legacy/SKILL.md",
+      "needle": "ignore the `entry` key in\n`.review-loop/config.md` (never route to paired-session)"
+    },
+    {
+      "id": "legacy_skill_reuses_review_loop_protocol_stage",
+      "kind": "contains",
+      "path": "skills/legacy/SKILL.md",
+      "needle": "--runtime claude --stage entry-review-loop"
     }
   ]
 }
