@@ -1671,6 +1671,8 @@ class Coordinator:
                 blob(marker['source_oid']) == blob(revision.tree_oid) or
                 blob(changed_docs['output_oid']) != blob(revision.tree_oid)):
             raise ValueError(fail)
+        if marker['owner'] == 'coordinator' and not self._coord_doc_blockers(marker['docs_file'], marker['owner_ids']):
+            raise ValueError(fail)
         if marker['owner'] == 'security-reviewer':
             owner = life.get('awaiting_owner_reverify') or {}
             if (owner.get('owner') != 'security-reviewer' or
@@ -1687,7 +1689,8 @@ class Coordinator:
         life = self.state['lifecycle']
         marker = life.get('reserved_docs_constraint') or {}
         source_owner = life.get('awaiting_owner_reverify') or {}
-        owned = (marker.get('owner') == 'coordinator' or
+        source_rows = self._coord_doc_blockers(marker.get('docs_file'), marker.get('owner_ids', ()))
+        owned = (marker.get('owner') == 'coordinator' and source_rows or
                  marker.get('owner') == source_owner.get('owner') == 'security-reviewer' and
                  tuple(marker.get('owner_ids', ())) == tuple(source_owner.get('finding_ids', ())))
         if (life['stage'] != 'SECURITY' or life['pending'] or not owned or
@@ -1745,10 +1748,12 @@ class Coordinator:
             life = self.state['lifecycle']
             stage = life['stage']
             owner_marker = life.get('awaiting_owner_reverify', {})
-            owner_waiting = (owner_marker.get('owner') == 'security-reviewer' and not any(
+            owner_waiting = (owner_marker.get('owner') == 'security-reviewer' and
+                             bool(owner_marker.get('finding_ids')) and not any(
                 row['id'] not in owner_marker['finding_ids'] for row in self.blocking_open_findings()))
+            blockers_allowed = owner_waiting or self._coordinator_reserved_waiting(life, stage, security_context)
             if stage == 'STOP_BEFORE_SECURITY' and security_context:
-                if self.blocking_open_findings() and not owner_waiting:
+                if self.blocking_open_findings() and not blockers_allowed:
                     raise ValueError('SECURITY has an upstream blocker')
                 self.state['lifecycle'] = {**life, 'stage': 'SECURITY'}
                 self.save()
@@ -1764,7 +1769,7 @@ class Coordinator:
             if (not replay_unfinished and
                     not life['pending'] and last.get('stage') == stage and
                     last.get('epoch') == life['epoch'] and last.get('candidate_oid') == life['candidate_oid']):
-                if stage == 'POLISH-Q' and self.blocking_open_findings() and not owner_waiting:
+                if stage == 'POLISH-Q' and self.blocking_open_findings() and not blockers_allowed:
                     raise ValueError('POLISH-Q has an open blocker')
                 self.state['lifecycle'] = lifecycle_spine.advance(life)
                 self.save()
@@ -1796,7 +1801,7 @@ class Coordinator:
                 raise ValueError('FINISH requires a candidate-bound dispatch context')
             if stage == 'POLISH-Q' and life['pending']:
                 raise ValueError('uncertain POLISH-Q request requires operator resolution')
-            if stage == 'POLISH-Q' and self.blocking_open_findings() and not owner_waiting:
+            if stage == 'POLISH-Q' and self.blocking_open_findings() and not blockers_allowed:
                 raise ValueError('POLISH-Q has an open blocker')
             if stage == 'POLISH-Q' and life.get('polish_calls', 0) >= budget_policy.BUDGET_CAPS['POLISH-Q'][0]:
                 raise ValueError('POLISH-Q specialist budget exhausted')
@@ -1812,7 +1817,7 @@ class Coordinator:
                         any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
                         self.state['invocations_used'] + len(names) > self.args.max_invocations):
                     raise ValueError('POLISH-Q specialist budget exhausted')
-            if stage == 'DOCS' and (life['pending'] or (self.blocking_open_findings() and not owner_waiting)):
+            if stage == 'DOCS' and (life['pending'] or (self.blocking_open_findings() and not blockers_allowed)):
                 raise ValueError('DOCS has an uncertain request or open blocker')
             if stage == 'DOCS' and not stub_mode and not docs_stub:
                 if not docs_context: raise ValueError('DOCS requires a candidate-bound fake writer')
@@ -1834,7 +1839,7 @@ class Coordinator:
             if stage == 'SECURITY':
                 if not security_context:
                     raise ValueError('SECURITY requires a candidate-bound fake reviewer')
-                if life['pending'] or (self.blocking_open_findings() and not owner_waiting):
+                if life['pending'] or (self.blocking_open_findings() and not blockers_allowed):
                     raise ValueError('SECURITY has an uncertain request or open blocker')
                 baseline, revision = security_context['baseline'], security_context['revision']
                 if (baseline.workspace != self.workspace or baseline.run_dir != self.run_dir or
@@ -1847,10 +1852,15 @@ class Coordinator:
                         if (kind := sensitive_policy.sensitive_path_category(path))}
                 if life.get('reserved_docs_constraint'):
                     self._verify_reserved_docs_replay(baseline, revision, hits)
+                    constraint = life['reserved_docs_constraint']
+                    if constraint['owner'] == 'coordinator':
+                        blockers_allowed = bool(self._close_reserved_docs(constraint['owner_ids'], life['epoch'] + 1))
                     self.state['lifecycle'].pop('reserved_docs_constraint')
                     self.save()
                 marker = life.get('awaiting_owner_reverify')
                 if marker and marker.get('owner') == 'security-reviewer':
+                    if owner_waiting and marker.get('check_failures', 0) >= 2:
+                        raise ValueError('owner check retry limit reached; abort')
                     if marker.get('role_manifest_sha256') != self.state['role_dispatch_manifest_sha256']:
                         raise ValueError('SECURITY reviewer owner identity changed')
                     if not marker.get('repair_oid') and not security_context.get('repair'):
@@ -1914,12 +1924,13 @@ class Coordinator:
                                 (owner_waiting and tuple(repair.get('owner_finding_ids', ())) !=
                                      tuple(marker.get('finding_ids', ()))) or not docs_path or
                                 tuple(repair['paths']) != (docs_path,) or repair['proposals'] or
-                                life.get('reserved_docs_constraint')):
+                                life.get('reserved_docs_constraint') or not blockers_allowed):
                             raise ValueError('reserved docs repair needs one frozen docs_file') from exc
                         constraint = {'id': str(uuid.uuid4()), 'source_oid': revision.tree_oid,
                                       'docs_file': docs_path, 'epoch': life['epoch'],
                                       'owner': 'security-reviewer' if owner_waiting else 'coordinator',
-                                      'owner_ids': tuple(marker['finding_ids']) if owner_waiting else (),
+                                      'owner_ids': tuple(marker['finding_ids']) if owner_waiting else tuple(
+                                          row['id'] for row in self._coord_doc_blockers(docs_path)),
                                       'receipt_count': len(life['receipts'])}
                         atomic_json(self.evidence / (constraint['id'] + '-reserved-docs.json'), constraint)
                         self.state['lifecycle']['reserved_docs_constraint'] = constraint
@@ -2068,8 +2079,15 @@ class Coordinator:
                             {row.get('id') for row in dispositions if isinstance(row, dict)} != frozen or
                             any(not isinstance(row, dict) or row.get('disposition') not in
                                 ('fixed', 'withdrawn', 'still_open') or not row.get('evidence')
-                                for row in dispositions)):
-                        raise ValueError('SECURITY owner disposition is missing or malformed')
+                                for row in dispositions) or
+                            review.get('status') != 'APPROVE' and any(
+                                row.get('disposition') in ('fixed', 'withdrawn') for row in dispositions)):
+                        marker = {**self.state['lifecycle'].get('awaiting_owner_reverify', marker),
+                                  'check_failures': marker.get('check_failures', 0) + 1}
+                        self.state['lifecycle'].update(awaiting_owner_reverify=marker, pending=None)
+                        self.save()
+                        raise ValueError('SECURITY owner disposition is missing; ' +
+                                         ('retry' if marker['check_failures'] < 2 else 'retry limit reached; abort'))
                     missing = self.apply_dispositions(dispositions, life['epoch'] + 1,
                                                       list(frozen), 'security-reviewer')
                     if missing:
@@ -2185,6 +2203,24 @@ class Coordinator:
                 if finding['severity'] in BLOCKING_REVIEW_SEVERITIES or
                 finding.get('security') or
                 (finding['source'] == 'adversarial-gate' and finding['severity'] in ('CRITICAL', 'HIGH'))]
+
+    def _coord_doc_blockers(self, docs_path, ids=None):
+        blockers = self.blocking_open_findings()
+        rows = [row for row in blockers if row['source'] == 'coordinator' and row['file'] == docs_path]
+        return rows if rows and rows == blockers and (ids is None or [r['id'] for r in rows] == list(ids)) else []
+
+    def _close_reserved_docs(self, ids, round_number):
+        changes = [{'id': item, 'disposition': 'fixed', 'evidence': 'reserved docs replay verified'} for item in ids]
+        self.apply_dispositions(changes, round_number, list(ids), 'coordinator')
+
+    def _coordinator_reserved_waiting(self, life, stage, security_context):
+        config = self.state['config']
+        path = Path(config['docs_file']).relative_to(self.workspace).as_posix() if config.get('docs_file') else None
+        repair = security_context.get('repair') if security_context else {}
+        return bool(self._coord_doc_blockers(path) and (
+            (life.get('reserved_docs_constraint') or {}).get('owner') == 'coordinator' or
+            stage in ('STOP_BEFORE_SECURITY', 'SECURITY') and
+            tuple(repair.get('paths', ())) == (path,) and not repair.get('proposals')))
 
     @staticmethod
     def normalize_plan_findings(findings: list[dict]) -> tuple[list[dict], int]:
@@ -4849,6 +4885,8 @@ class Coordinator:
         downstream = (constraint.get('owner') == owner.get('owner') == 'security-reviewer' and
                       set(constraint.get('owner_ids', ())) == {row['id'] for row in blockers} and
                       all(row['source'] == 'security-reviewer' for row in blockers))
+        source_rows = self._coord_doc_blockers(constraint.get('docs_file'), constraint.get('owner_ids', ()))
+        downstream = downstream or constraint.get('owner') == 'coordinator' and bool(source_rows)
         if (not all((ingest, test, reviewed, chain)) or state.get('fake_candidate_review_rejected') or
                 state.get('active') or state.get('uncertain_active') or (blockers and not downstream) or
                 state.get('fake_candidate_test_failed') or state.get('fake_candidate_test_pending') or

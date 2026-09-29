@@ -3152,6 +3152,15 @@ sys.exit(result.returncode)
                    'tested_oid': revision.tree_oid}
         return co, approved, context
 
+    def add_fake_coordinator_docs_blocker(self, co, approved=None, finish=None):
+        if approved is not None:
+            co.fake_lifecycle_route(approved, finish_context=finish, polish_stub=True,
+                                    docs_stub=True)
+        return co.record_findings('coordinator', 'SECURITY', co.state['lifecycle']['epoch'], [{
+            'severity': 'MAJOR', 'file': 'docs/guide.md',
+            'summary': 'reserved docs require owner replay',
+            'failure_scenario': 'unreviewed reserved document repair'}])
+
     def test_fake_lifecycle_specialist_budget_and_clean_approval(self):
         co, approved, finish = self.fake_lifecycle_ready_for_specialists()
         seen = []
@@ -3758,6 +3767,7 @@ sys.exit(result.returncode)
         subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        self.add_fake_coordinator_docs_blocker(co, approved, finish)
         repair = {'proposals': (), 'paths': ('docs/guide.md',),
                   'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
                   'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
@@ -3791,6 +3801,7 @@ sys.exit(result.returncode)
         co.fake_candidate_oid_review()
         self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
                          'STOP_BEFORE_SECURITY')
+        self.add_fake_coordinator_docs_blocker(co)
         baseline = ct.baseline_from_binding(ingest['baseline'])
         before = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
         repair = {'proposals': (), 'paths': ('docs/guide.md',),
@@ -3814,6 +3825,17 @@ sys.exit(result.returncode)
         self.assertEqual(tested['oid'], replay['output_oid'])
         self.assertEqual(co.state['fake_candidate_chain']['ingest_id'], replay['id'])
         self.assertEqual(co.state['fake_candidate_chain']['oid'], tested['oid'])
+        prior_ledger = json.loads(json.dumps(co.state['finding_ledger']))
+        prior_next_id = co.state['next_finding_id']
+        co.record_findings('coordinator', 'SECURITY', 2, [{
+            'severity': 'MAJOR', 'file': 'docs/guide.md',
+            'summary': 'source set changed before approval', 'failure_scenario': 'new blocker'}])
+        with self.assertRaisesRegex(RuntimeError, 'clean receipt chain'):
+            co.fake_lifecycle_route(None, stub_mode=True, chain_only=True)
+        self.assertIn('reserved_docs_constraint', co.state['lifecycle'])
+        co.state['finding_ledger'] = prior_ledger
+        co.state['next_finding_id'] = prior_next_id
+        co.write_ledger()
         self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
                          'STOP_BEFORE_SECURITY')
         revision = ct.CandidateRevision(replay['output_oid'], tuple(replay['manifest']), 0)
@@ -3823,6 +3845,79 @@ sys.exit(result.returncode)
                          security_context={'baseline': ct.baseline_from_binding(replay['baseline']),
                                            'revision': revision, 'review': review}),
                          'STOP_BEFORE_DELIVERY')
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+
+    def test_fake_reserved_docs_rejects_stale_blocker_allowance_after_replay(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+                                                   '--docs-file', 'docs/guide.md')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        self.add_fake_coordinator_docs_blocker(co)
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        before = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        repair = {'proposals': (), 'paths': ('docs/guide.md',),
+                  'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
+                  'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
+        with self.assertRaisesRegex(ValueError, 'replayed DOCS receipt and retest'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': baseline, 'revision': before,
+                                                      'repair': repair})
+        marker = co.state['lifecycle']['reserved_docs_constraint']
+        self.assertTrue(marker['owner_ids'])
+        co.fake_reserved_docs_begin_replay()
+        docs_baseline = ct.replace(baseline, authorized_prefixes=('sum_ints.py', 'docs/guide.md'))
+        def write_docs(root, path):
+            (root / path).write_text('# Repaired guide\n')
+        docs = {'baseline': docs_baseline, 'before': before,
+                'write': write_docs, 'test': lambda oid: oid}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True, docs_context=docs), 'EXEC')
+        replay = co.state['fake_ingest_receipt']
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        revision = ct.CandidateRevision(replay['output_oid'], tuple(replay['manifest']), 0)
+        with self.assertRaisesRegex(ValueError, 'one frozen docs_file'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': ct.baseline_from_binding(replay['baseline']),
+                                                      'revision': revision, 'repair': repair})
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+        self.assertEqual(co.blocking_open_findings(), [])
+
+    def test_fake_reserved_docs_refuses_empty_owner_set_before_marker(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+                                                   '--docs-file', 'docs/guide.md')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        co.state['lifecycle']['awaiting_owner_reverify'] = {
+            'owner': 'security-reviewer', 'finding_ids': (),
+            'role_manifest_sha256': co.state['role_dispatch_manifest_sha256']}
+        repair = {'proposals': (), 'paths': ('docs/guide.md',),
+                  'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
+                  'owner_finding_ids': (),
+                  'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
+        with self.assertRaisesRegex(ValueError, 'one frozen docs_file'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': ct.baseline_from_binding(ingest['baseline']),
+                                                      'revision': ct.CandidateRevision(
+                                                          ingest['output_oid'], tuple(ingest['manifest']), 0),
+                                                      'repair': repair})
         self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
 
     def test_fake_reviewer_owned_reserved_docs_keeps_finding_until_same_owner_review(self):
@@ -3889,6 +3984,14 @@ sys.exit(result.returncode)
                     'observed_tools': ['read final OID diff'], 'findings': [],
                     'dispositions': [{'id': frozen[0], 'disposition': 'fixed',
                                       'evidence': 'verified at final OID'}]}
+        malformed = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                                 'observed_tools': ['read final OID diff'], 'findings': []}
+        with self.assertRaisesRegex(ValueError, 'disposition is missing; retry'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                         security_context={'baseline': ct.baseline_from_binding(replay['baseline']),
+                                           'revision': after, 'review': malformed})
+        self.assertEqual(co.state['lifecycle']['awaiting_owner_reverify']['check_failures'], 1)
+        self.assertIsNone(co.state['lifecycle']['pending'])
         self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
                          security_context={'baseline': ct.baseline_from_binding(replay['baseline']),
                                            'revision': after, 'review': owner_review}),
@@ -3901,6 +4004,7 @@ sys.exit(result.returncode)
         subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        self.add_fake_coordinator_docs_blocker(co, approved, finish)
         repair = {'proposals': (), 'paths': ('docs/guide.md',),
                   'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
                   'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
@@ -3910,6 +4014,25 @@ sys.exit(result.returncode)
                                                       'revision': finish['revision'], 'repair': repair})
         marker = co.state['lifecycle']['reserved_docs_constraint']
         self.assertEqual(marker['receipt_count'], len(co.state['lifecycle']['receipts']))
+        owner_ids = marker['owner_ids']
+        marker['owner_ids'] = ()
+        with self.assertRaisesRegex(ValueError, 'reserved DOCS replay lacks coordinator-owned source'):
+            co.fake_reserved_docs_begin_replay()
+        marker['owner_ids'] = owner_ids
+        prior_ledger = json.loads(json.dumps(co.state['finding_ledger']))
+        prior_next_id = co.state['next_finding_id']
+        co.record_findings('coordinator', 'SECURITY', 2, [{
+            'severity': 'MAJOR', 'file': 'docs/guide.md',
+            'summary': 'unexpected additional source', 'failure_scenario': 'owner set changed'}])
+        with self.assertRaisesRegex(ValueError, 'reserved DOCS replay lacks coordinator-owned source'):
+            co.fake_reserved_docs_begin_replay()
+        with self.assertRaisesRegex(ValueError, 'replayed DOCS receipt and retest'):
+            co._verify_reserved_docs_replay(finish['baseline'], finish['revision'], {})
+        self.assertEqual(co.state['lifecycle']['reserved_docs_constraint'], marker)
+        self.assertEqual(co.state['lifecycle']['reserved_docs_constraint']['owner_ids'], marker['owner_ids'])
+        co.state['finding_ledger'] = prior_ledger
+        co.state['next_finding_id'] = prior_next_id
+        co.write_ledger()
         evidence = co.evidence / (marker['id'] + '-reserved-docs.json')
         evidence.write_text('{}')
         co.state['lifecycle']['epoch'] += 1
@@ -3929,6 +4052,7 @@ sys.exit(result.returncode)
         subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        self.add_fake_coordinator_docs_blocker(co, approved, finish)
         repair = {'proposals': (), 'paths': ('docs/guide.md',),
                   'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
                   'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
@@ -4020,6 +4144,10 @@ sys.exit(result.returncode)
         self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
 
     def test_fake_security_unneeded_repair_never_dispatches_writer(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
         co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
         repair = {'proposals': (), 'paths': ('tracked.txt',),
                   'allowed_paths': ('tracked.txt',), 'reserved_docs': (),
@@ -4028,6 +4156,75 @@ sys.exit(result.returncode)
             co.fake_lifecycle_route(approved, stub_mode=True,
                                     security_context={'baseline': finish['baseline'],
                                                       'revision': finish['revision'], 'repair': repair})
+        reserved = {**repair, 'paths': ('docs/guide.md',),
+                    'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',)}
+        with self.assertRaisesRegex(ValueError, 'one frozen docs_file'):
+            co.fake_lifecycle_route(approved, stub_mode=True,
+                                    security_context={'baseline': finish['baseline'],
+                                                      'revision': finish['revision'], 'repair': reserved})
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+
+    def test_fake_coordinator_docs_blocker_does_not_dispatch_polish(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        co.state['lifecycle']['stage'] = 'POLISH-Q'
+        self.add_fake_coordinator_docs_blocker(co)
+        calls = []
+        with self.assertRaisesRegex(ValueError, 'POLISH-Q has an open blocker'):
+            co.fake_lifecycle_route(approved, polish_context={'python-reviewer': lambda req: calls.append(req)})
+        self.assertEqual(calls, [])
+
+    def test_fake_coordinator_docs_blocker_does_not_dispatch_other_security_repair(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        (self.workspace / 'secret.key').write_text('fake secret\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'secret.key'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add security fixtures'], cwd=self.workspace, check=True)
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('secret.key',))
+        self.add_fake_coordinator_docs_blocker(co, approved, finish)
+        repair = {'proposals': (), 'paths': ('secret.key',), 'allowed_paths': ('secret.key',),
+                  'reserved_docs': (),
+                  'write': lambda root, paths: self.fail('unrelated SECURITY writer ran')}
+        with self.assertRaisesRegex(ValueError, 'SECURITY has an upstream blocker'):
+            co.fake_lifecycle_route(approved, security_context={
+                'baseline': finish['baseline'], 'revision': finish['revision'], 'repair': repair})
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+        self.assertEqual((finish['baseline'].root / 'secret.key').read_text(), 'fake secret\n')
+
+    def test_fake_reserved_docs_owner_check_has_bounded_retry(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(docs=True)
+        co.fake_lifecycle_route(approved, finish_context=finish, polish_stub=True, docs_stub=True)
+        revision, life = finish['revision'], co.state['lifecycle']
+        finding = co.record_findings('security-reviewer', 'SECURITY', 1, [{
+            'severity': 'CRITICAL', 'file': 'docs/guide.md',
+            'summary': 'reserved docs source', 'failure_scenario': 'unsafe doc'}])[0]
+        marker = {'owner': 'security-reviewer', 'source_oid': revision.tree_oid,
+                  'repair_oid': revision.tree_oid, 'request_id': 'fake-SECURITY-0-repair-source',
+                  'repair_digest': 'source-repair', 'finding_ids': (finding['id'],),
+                  'paths': ('docs/guide.md',),
+                  'role_manifest_sha256': co.state['role_dispatch_manifest_sha256']}
+        life['awaiting_owner_reverify'] = marker
+        life['receipts'].append({**{key: life[key] for key in
+                                   ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')},
+                                 'stage': 'SECURITY', 'candidate_oid': 'old-source-oid',
+                                 'request_id': marker['request_id'],
+                                 'output_oid': revision.tree_oid, 'security_repair': 'source-repair'})
+        calls = []
+        def malformed(request):
+            calls.append(request)
+            return {'status': 'REVISE', 'candidate_oid': request['candidate_oid'],
+                    'observed_tools': ['read current OID'], 'findings': [],
+                    'dispositions': [{'id': finding['id'], 'disposition': 'fixed',
+                                      'evidence': 'not approved'}]}
+        context = {'baseline': finish['baseline'], 'revision': revision, 'review': malformed}
+        for expected in ('disposition is missing; retry', 'disposition is missing; retry limit reached; abort'):
+            with self.assertRaisesRegex(ValueError, expected):
+                co.fake_lifecycle_route(approved, security_context=context)
+            self.assertIsNone(co.state['lifecycle']['pending'])
+        with self.assertRaisesRegex(ValueError, 'owner check retry limit reached; abort'):
+            co.fake_lifecycle_route(approved, security_context=context)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(co.state['finding_ledger'][0]['status'], 'open')
 
     def test_fake_security_caller_cannot_unreserve_frozen_docs_file(self):
         (self.workspace / 'docs').mkdir()
