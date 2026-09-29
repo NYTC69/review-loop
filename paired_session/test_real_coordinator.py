@@ -4129,6 +4129,87 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(RuntimeError, 'frozen parent'):
             co.fake_candidate_approval()
 
+    def test_fake_chain_only_router_consumes_persisted_approval_once(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        forged = co.fake_candidate_approval()
+        with self.assertRaisesRegex(ValueError, 'caller output OIDs'):
+            co.fake_lifecycle_route(None, outputs={'EXEC': 'f' * 40},
+                                    stub_mode=True, chain_only=True)
+        with self.assertRaisesRegex(ValueError, 'persisted chain'):
+            co.fake_lifecycle_route(forged, stub_mode=True)
+        forged['proof'].pop('fake_only')
+        with self.assertRaisesRegex(ValueError, 'persisted chain'):
+            co.fake_lifecycle_route(forged, stub_mode=True)
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        self.assertEqual(co.state['fake_route_consumed'], co.state['fake_candidate_chain']['id'])
+        with self.assertRaisesRegex(ValueError, 'unused persisted approval'):
+            co.fake_lifecycle_route(None, stub_mode=True, chain_only=True)
+
+    def test_fake_chain_only_router_rejects_unrelated_receipt_and_terminal_run(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        co.state['lifecycle']['item_uuid'] = 'other-item'
+        with self.assertRaisesRegex(RuntimeError, 'lifecycle'):
+            co.fake_lifecycle_route(None, chain_only=True)
+        co.state['lifecycle']['item_uuid'] = co.state['item_uuid']
+        co.state['status'] = 'ABORTED'
+        with self.assertRaisesRegex(RuntimeError, 'lifecycle'):
+            co.fake_lifecycle_route(None, chain_only=True)
+        self.assertNotIn('fake_route_consumed', co.state)
+
+    def test_fake_chain_only_author_checks_frozen_parent_before_dispatch(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        count = len(co.state['turns'])
+        subprocess.run(['git', 'commit', '--allow-empty', '-qm', 'new head after plan'],
+                       cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(RuntimeError, 'frozen parent before author dispatch'):
+            co.fake_candidate_author_turn(chain_only=True)
+        self.assertEqual(len(co.state['turns']), count)
+        self.assertNotIn('fake_candidate_pending', co.state)
+
+    def test_fake_chain_only_rejects_legacy_approval_before_and_after_rejection(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        life = co.state['lifecycle']
+        hand_built = {'status': 'APPROVE', 'epoch': life['epoch'], 'item_uuid': life['item_uuid'],
+                      'run_id': co.run_dir.name, 'parent': life['parent'],
+                      'candidate_oid': ingest['output_oid']}
+        with self.assertRaisesRegex(ValueError, 'persisted chain'):
+            co.fake_lifecycle_route(hand_built, stub_mode=True)
+        co.fake_candidate_oid_test()
+        with patch.dict(os.environ, {'FAKE_EXEC_MIXED_REVISE': '1'}):
+            with self.assertRaisesRegex(RuntimeError, 'OID reviewer did not approve'):
+                co.fake_candidate_oid_review()
+        with self.assertRaisesRegex(ValueError, 'persisted chain'):
+            co.fake_lifecycle_route(hand_built, stub_mode=True)
+        self.assertEqual(co.state['lifecycle']['stage'], 'EXEC')
+
+    def test_fake_chain_only_preserves_candidate_error_diagnostic(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        with patch.object(rc.candidate_tree, 'verify_candidate_revision',
+                          side_effect=ct.CandidateError('scratch root changed')):
+            with self.assertRaisesRegex(RuntimeError, 'candidate changed: scratch root changed'):
+                co.fake_candidate_approval()
+
     def test_fake_candidate_oid_review_rejects_reviewer_tree_mutation_before_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)

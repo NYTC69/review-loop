@@ -1625,8 +1625,29 @@ class Coordinator:
 
     def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
                              polish_context=None, polish_stub=False, docs_context=None, docs_stub=False,
-                             security_context=None):
+                             security_context=None, chain_only=False):
         if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
+        if chain_only:
+            if not lifecycle_spine.fake_dispatch_guard(self.args):
+                raise ValueError('chain-only route requires fake providers')
+            if outputs:
+                raise ValueError('chain-only route cannot accept caller output OIDs')
+            if approval is not None or self.state.get('fake_route_consumed'):
+                raise ValueError('chain-only EXEC route requires one unused persisted approval')
+            approval = self.fake_candidate_approval()
+            if not self.state['fake_ingest_receipt'].get('chain_only'):
+                raise ValueError('chain-only route requires a chain-only author ingest')
+            self.state['fake_route_consumed'] = approval['proof']['convergence_id']
+            self.save()
+        else:
+            chain_pending = self.state.get('fake_candidate_pending') or {}
+            chain_ingest = self.state.get('fake_ingest_receipt') or {}
+            if (chain_pending.get('chain_only') or chain_ingest.get('chain_only') or
+                    self.state.get('fake_candidate_chain') or self.state.get('fake_route_consumed')):
+                raise ValueError('persisted chain forbids a hand-built approval')
+            proof = approval.get('proof') if isinstance(approval, dict) else None
+            if isinstance(proof, dict) and proof.get('fake_only'):
+                raise ValueError('fake chain proof requires chain-only route')
         outputs = outputs or {}
         start_epoch = self.state['lifecycle']['epoch']
         while True:
@@ -4389,7 +4410,7 @@ class Coordinator:
         finally:
             self._fake_dispatching = False
 
-    def fake_candidate_author_turn(self) -> dict:
+    def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""
         if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
                 self.state['phase'] != 'EXEC' or self.state['next'] != 'author' or
@@ -4401,12 +4422,15 @@ class Coordinator:
         plan = (self.context / 'plan.md').read_bytes()
         baseline = candidate_tree.prepare_candidate_baseline(
             self.workspace, self.run_dir, self.run_dir.parent, self.run_dir.parent, ('sum_ints.py',))
+        if chain_only and baseline.parent_head != self.state['lifecycle']['parent']:
+            raise RuntimeError('fake candidate differs from frozen parent before author dispatch')
         request_id = str(uuid.uuid4())
         binding = {key: str(value) if isinstance(value, Path) else value
                    for key, value in vars(baseline).items()}
         self.state['fake_candidate_pending'] = {'request_id': request_id, 'baseline': binding,
             'plan_sha256': hashlib.sha256(plan).hexdigest(), 'epoch': self.state['lifecycle']['epoch'],
-            'sequence': self.state['sequence'] + 1, 'item_uuid': self.state['item_uuid']}
+            'sequence': self.state['sequence'] + 1, 'item_uuid': self.state['item_uuid'],
+            'chain_only': chain_only}
         self.state['sessions']['author'] = None
         self.state['started']['author'] = False
         self.save()
@@ -4430,7 +4454,7 @@ class Coordinator:
                    'input_oid': baseline.tree_oid, 'output_oid': revision.tree_oid,
                    'manifest_sha256': digest, 'manifest': revision.manifest,
                    'plan_sha256': hashlib.sha256(plan).hexdigest(),
-                   'root': str(baseline.root), 'baseline': binding,
+                   'root': str(baseline.root), 'baseline': binding, 'chain_only': chain_only,
                    'epoch': self.state['lifecycle']['epoch'], 'item_uuid': self.state['item_uuid']}
         atomic_json(self.evidence / (request_id + '-ingest.json'), receipt)
         self.state['fake_ingest_receipt'] = receipt
@@ -4560,6 +4584,8 @@ class Coordinator:
     def fake_candidate_approval(self) -> dict:
         try:
             return self._fake_candidate_approval()
+        except candidate_tree.CandidateError as exc:
+            raise RuntimeError(f'fake approval candidate changed: {exc}') from exc
         except (KeyError, TypeError, IndexError, OSError, ValueError) as exc:
             raise RuntimeError('fake approval receipt is missing or malformed') from exc
 
@@ -4572,13 +4598,19 @@ class Coordinator:
         if (not all((ingest, test, reviewed, chain)) or state.get('fake_candidate_review_rejected') or
                 state.get('active') or state.get('uncertain_active') or self.blocking_open_findings() or
                 state.get('fake_candidate_test_failed') or state.get('fake_candidate_test_pending') or
+                state.get('fake_candidate_pending') or
                 state.get('pending_reviewer_result_sequence') or test['returncode'] != 0):
             raise RuntimeError('fake approval lacks a clean receipt chain')
         life = state['lifecycle']
+        if (state.get('status') != 'HOLD' or state.get('hold_reason') != PLAN_STOP_REASON or
+                life.get('pending') or life.get('candidate_oid') is not None or life.get('receipts') or
+                life.get('item_uuid') != state['item_uuid'] or state.get('fake_route_consumed')):
+            raise RuntimeError('fake approval lifecycle is not ready for chain-only routing')
         identity = [self.run_dir.name, state['item_uuid'], life['epoch']]
         if (list(chain['identity']) != identity or reviewed['run_id'] != identity[0] or
                 reviewed['item_uuid'] != identity[1] or reviewed['epoch'] != identity[2] or
                 chain['ingest_id'] != ingest['id'] or chain['test_id'] != test['id'] or
+                test['ingest_id'] != ingest['id'] or
                 chain['review_id'] != reviewed['id'] or reviewed['ingest_id'] != ingest['id'] or
                 chain['oid'] != reviewed['oid'] or chain['oid'] != test['oid'] or
                 chain['oid'] != ingest['output_oid'] or chain['root'] != test['root'] or
@@ -4612,6 +4644,9 @@ class Coordinator:
             raise RuntimeError('fake approval inputs changed')
         if any(row['sequence'] > ingest['author_sequence'] and row['role'] == 'author'
                for row in state['turns']): raise RuntimeError('fake approval has a later author')
+        if any(row['sequence'] > ingest['author_sequence'] and row['role'] in
+               ('finisher', 'docs', 'security-writer') for row in state['turns']):
+            raise RuntimeError('fake approval has a later writer')
         baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
         revision = candidate_tree.CandidateRevision(chain['oid'], tuple(ingest['manifest']), 0)
         if baseline.parent_head != life['parent']:
