@@ -1671,7 +1671,14 @@ class Coordinator:
                 blob(marker['source_oid']) == blob(revision.tree_oid) or
                 blob(changed_docs['output_oid']) != blob(revision.tree_oid)):
             raise ValueError(fail)
-        if marker['owner'] != 'coordinator':
+        if marker['owner'] == 'security-reviewer':
+            owner = life.get('awaiting_owner_reverify') or {}
+            if (owner.get('owner') != 'security-reviewer' or
+                    tuple(owner.get('finding_ids', ())) != tuple(marker['owner_ids'])):
+                raise ValueError(fail)
+            owner.update(repair_oid=changed_docs['output_oid'], request_id=changed_docs['request_id'],
+                         reserved_docs_replay=True)
+        elif marker['owner'] != 'coordinator':
             raise ValueError(fail)
 
     def fake_reserved_docs_begin_replay(self):
@@ -1679,7 +1686,11 @@ class Coordinator:
             raise ValueError('reserved DOCS replay requires fake-only dispatch')
         life = self.state['lifecycle']
         marker = life.get('reserved_docs_constraint') or {}
-        if (life['stage'] != 'SECURITY' or life['pending'] or marker.get('owner') != 'coordinator' or
+        source_owner = life.get('awaiting_owner_reverify') or {}
+        owned = (marker.get('owner') == 'coordinator' or
+                 marker.get('owner') == source_owner.get('owner') == 'security-reviewer' and
+                 tuple(marker.get('owner_ids', ())) == tuple(source_owner.get('finding_ids', ())))
+        if (life['stage'] != 'SECURITY' or life['pending'] or not owned or
                 marker.get('source_oid') != life['candidate_oid']):
             raise ValueError('reserved DOCS replay lacks coordinator-owned source')
         self.state['lifecycle'] = {**life, 'stage': 'DOCS'}
@@ -1846,6 +1857,11 @@ class Coordinator:
                                    row.get('request_id') == marker.get('request_id') and
                                    row.get('output_oid') == marker['repair_oid'] and
                                    row.get('security_repair') == marker.get('repair_digest')]
+                        if not repairs and marker.get('reserved_docs_replay'):
+                            repairs = [i for i, row in enumerate(life['receipts'])
+                                       if row.get('stage') == 'DOCS' and
+                                       row.get('request_id') == marker['request_id'] and
+                                       row.get('output_oid') == marker['repair_oid']]
                         if len(repairs) != 1:
                             raise ValueError('SECURITY reviewer owner requires bound repair receipt')
                         replay_oid = marker['repair_oid']
@@ -1890,13 +1906,16 @@ class Coordinator:
                             self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
                             allowed, reserved, paths, repair.get('consent'))
                     except security_repair_policy.ReservedDocsRepair as exc:
-                        if (hits or owner_waiting or not docs_path or
+                        if (hits or (not owner_waiting and repair.get('owner_finding_ids')) or
+                                (owner_waiting and tuple(repair.get('owner_finding_ids', ())) !=
+                                     tuple(marker.get('finding_ids', ()))) or not docs_path or
                                 tuple(repair['paths']) != (docs_path,) or repair['proposals'] or
                                 life.get('reserved_docs_constraint')):
                             raise ValueError('reserved docs repair needs one frozen docs_file') from exc
                         constraint = {'id': str(uuid.uuid4()), 'source_oid': revision.tree_oid,
                                       'docs_file': docs_path, 'epoch': life['epoch'],
-                                      'owner': 'coordinator',
+                                      'owner': 'security-reviewer' if owner_waiting else 'coordinator',
+                                      'owner_ids': tuple(marker['finding_ids']) if owner_waiting else (),
                                       'receipt_count': len(life['receipts'])}
                         atomic_json(self.evidence / (constraint['id'] + '-reserved-docs.json'), constraint)
                         self.state['lifecycle']['reserved_docs_constraint'] = constraint
@@ -4718,13 +4737,19 @@ class Coordinator:
         state = self.state
         ingest, test = state.get('fake_ingest_receipt'), state.get('fake_candidate_test')
         reviewed, chain = state.get('fake_candidate_review'), state.get('fake_candidate_chain')
+        life = state['lifecycle']
+        blockers = self.blocking_open_findings()
+        owner = life.get('awaiting_owner_reverify') or {}
+        constraint = life.get('reserved_docs_constraint') or {}
+        downstream = (constraint.get('owner') == owner.get('owner') == 'security-reviewer' and
+                      set(constraint.get('owner_ids', ())) == {row['id'] for row in blockers} and
+                      all(row['source'] == 'security-reviewer' for row in blockers))
         if (not all((ingest, test, reviewed, chain)) or state.get('fake_candidate_review_rejected') or
-                state.get('active') or state.get('uncertain_active') or self.blocking_open_findings() or
+                state.get('active') or state.get('uncertain_active') or (blockers and not downstream) or
                 state.get('fake_candidate_test_failed') or state.get('fake_candidate_test_pending') or
                 state.get('fake_candidate_pending') or
                 state.get('pending_reviewer_result_sequence') or test['returncode'] != 0):
             raise RuntimeError('fake approval lacks a clean receipt chain')
-        life = state['lifecycle']
         if (state.get('status') != 'HOLD' or state.get('hold_reason') != PLAN_STOP_REASON or
                 life.get('pending') or life.get('item_uuid') != state['item_uuid'] or
                 state.get('fake_route_consumed') == chain.get('id')):
@@ -4790,6 +4815,7 @@ class Coordinator:
                   'phase': 'EXEC'}
         source = {'fake_only': True, 'ingest_id': ingest['id'], 'test_id': test['id']}
         proof = {**fields, **source, 'blocking_findings': [],
+                 'downstream_open_findings': tuple(row['id'] for row in blockers),
                  'reviewer': {**fields, **source, 'role': 'reviewer', 'status': 'APPROVE',
                               'receipt_id': reviewed['id'], 'sequence': reviewed['sequence']},
                  'gate': {**fields, **source, 'role': 'gate', 'verdict': 'approve',

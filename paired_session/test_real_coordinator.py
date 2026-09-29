@@ -3576,6 +3576,31 @@ sys.exit(result.returncode)
         self.assertIn('awaiting_owner_reverify', co.state['lifecycle'])
         self.assertNotEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    def test_fake_security_ignore_owner_reaches_delivery_only_after_byte_audit(self):
+        co, approved, finish = self.fake_lifecycle_ready_for_specialists(
+            docs=True, security_paths=('.gitignore',))
+        def write(root, paths):
+            with (root / '.gitignore').open('a') as output:
+                output.write('*.pem\n')
+        repair = {'proposals': (('Keys & certificates', '*.pem', ()),), 'paths': (),
+                  'allowed_paths': ('.gitignore',), 'reserved_docs': (), 'write': write}
+        self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True,
+                         security_context={'baseline': finish['baseline'],
+                                           'revision': finish['revision'], 'repair': repair}), 'EXEC')
+        marker = co.state['lifecycle']['awaiting_owner_reverify']
+        self.assertEqual(marker['owners'], ('ignore',))
+        after = ct.ingest_candidate_revision(finish['baseline'])
+        life = co.state['lifecycle']
+        next_approval = {'status': 'APPROVE', 'epoch': life['epoch'],
+                         'item_uuid': life['item_uuid'], 'run_id': self.run_dir.name,
+                         'parent': life['parent'], 'candidate_oid': after.tree_oid}
+        review = lambda req: {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                              'observed_tools': ['read final OID diff'], 'findings': []}
+        self.assertEqual(co.fake_lifecycle_route(next_approval, stub_mode=True,
+                         security_context={'baseline': finish['baseline'], 'revision': after,
+                                           'review': review}), 'STOP_BEFORE_DELIVERY')
+        self.assertNotIn('awaiting_owner_reverify', co.state['lifecycle'])
+
     def test_fake_security_reserved_docs_constraint_never_dispatches_security_writer(self):
         (self.workspace / 'docs').mkdir()
         (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
@@ -3647,6 +3672,78 @@ sys.exit(result.returncode)
                                            'revision': revision, 'review': review}),
                          'STOP_BEFORE_DELIVERY')
         self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+
+    def test_fake_reviewer_owned_reserved_docs_keeps_finding_until_same_owner_review(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
+        subprocess.run(['git', 'add', 'docs/guide.md'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'add guide'], cwd=self.workspace, check=True)
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+                                                   '--docs-file', 'docs/guide.md')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        ingest = co.fake_candidate_author_turn(chain_only=True)
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        before = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+        def critical(req):
+            return {'status': 'REVISE', 'candidate_oid': req['candidate_oid'],
+                    'observed_tools': ['read OID diff'],
+                    'findings': [{'severity': 'CRITICAL', 'file': 'docs/guide.md',
+                                  'summary': 'unsafe guide', 'failure_scenario': 'reachable'}]}
+        with self.assertRaisesRegex(ValueError, 'did not approve'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': baseline, 'revision': before,
+                                                      'review': critical})
+        frozen = co.state['lifecycle']['awaiting_owner_reverify']['finding_ids']
+        repair = {'proposals': (), 'paths': ('docs/guide.md',),
+                  'allowed_paths': ('docs/guide.md',), 'reserved_docs': ('docs/guide.md',),
+                  'owner_finding_ids': frozen,
+                  'write': lambda root, paths: self.fail('SECURITY writer touched reserved docs')}
+        with self.assertRaisesRegex(ValueError, 'one frozen docs_file'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': baseline, 'revision': before,
+                                                      'repair': {**repair, 'owner_finding_ids': ('F999',)}})
+        self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
+        with self.assertRaisesRegex(ValueError, 'replayed DOCS receipt and retest'):
+            co.fake_lifecycle_route(None, chain_only=True,
+                                    security_context={'baseline': baseline, 'revision': before,
+                                                      'repair': repair})
+        self.assertEqual(co.state['lifecycle']['reserved_docs_constraint']['owner_ids'], frozen)
+        co.fake_reserved_docs_begin_replay()
+        docs_baseline = ct.replace(baseline, authorized_prefixes=('sum_ints.py', 'docs/guide.md'))
+        def write_docs(root, path):
+            (root / path).write_text('# Repaired guide\n')
+        docs = {'baseline': docs_baseline, 'before': before, 'write': write_docs,
+                'test': lambda oid: oid}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True, docs_context=docs), 'EXEC')
+        replay = co.fake_reserved_docs_writer_ingest()
+        co.fake_candidate_oid_test()
+        co.fake_candidate_oid_review()
+        prior_ledger = json.loads(json.dumps(co.state['finding_ledger']))
+        co.record_findings('specialist:other', 'POLISH-Q', 99,
+                           [{'severity': 'MAJOR', 'file': 'tracked.txt',
+                             'summary': 'foreign blocker', 'failure_scenario': 'reachable'}])
+        with self.assertRaisesRegex(RuntimeError, 'clean receipt chain'):
+            co.fake_candidate_approval()
+        co.state['finding_ledger'] = prior_ledger
+        self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True),
+                         'STOP_BEFORE_SECURITY')
+        self.assertEqual(tuple(row['id'] for row in co.blocking_open_findings()), frozen)
+        after = ct.CandidateRevision(replay['output_oid'], tuple(replay['manifest']), 0)
+        def owner_review(req):
+            return {'status': 'APPROVE', 'candidate_oid': req['candidate_oid'],
+                    'observed_tools': ['read final OID diff'], 'findings': [],
+                    'dispositions': [{'id': frozen[0], 'disposition': 'fixed',
+                                      'evidence': 'verified at final OID'}]}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
+                         security_context={'baseline': ct.baseline_from_binding(replay['baseline']),
+                                           'revision': after, 'review': owner_review}),
+                         'STOP_BEFORE_DELIVERY')
+        self.assertEqual(co.state['finding_ledger'][0]['status'], 'fixed')
 
     def test_fake_reserved_docs_replay_needs_marker_evidence_and_current_oid_test(self):
         (self.workspace / 'docs').mkdir()
