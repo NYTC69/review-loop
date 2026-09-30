@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### paired-session opt-in entry (experimental, legacy stays the default)
+
+由 Sonnet 5.5 实现、Opus 5.5 审查；未发布，未升版本。迁移指南见 `docs/paired-session-migration.md`。
+
+- **doc**：`paired_session/docs/1d-entry-mapping.md` 记录 `/review-loop` → paired-session 的入口设计（S1、S2、S4、S5：opt-in 开关、显式 legacy 控制、模式与配置键映射、放量门槛）。
+- **feat**：新增 `/review-loop:legacy` 控制技能，忽略 `entry` 键、强制走 legacy 流程（`disable-model-invocation: true`）。
+- **feat**：`.review-loop/config.md` 新增可选 `entry: legacy|paired-session`（默认 legacy）；仅全新工作项被路由，plan/代码/已有 session 仍走 legacy；非法值、重复键、读取失败均回落 legacy 并给出提示。
+- **feat**：隐式入口和路由时分别打印一行提示（含 experimental 提示）；路由在创建 session 文件/锁之前一次性决定。
+- **feat**：Codex 侧 `review-loop` 入口同样识别 `entry`，显式 legacy 控制为自然语言 "use the legacy review-loop workflow"。
+- **doc**：新增 `paired_session/docs/1c-safety-controls.md`，32 行安全控制清单（代码锚点、对应测试、状态、残余风险）；这是清单，不是 1C 关闭声明，1C 仍 OPEN。
+- **test**：新增 `paired_session/test_safety_controls.py`（provider hook 禁用与凭据 deny、invocation cap），均经变异验证；lint 新增并登记 `entry` / `legacy` 相关断言。
+- **注意**：`lifecycle_mode=on` 仍被真实 CLI 拒绝，APPROVE 之后（FINISH 起）的阶段仅 fake-CLI；M4/M6 未完成。
+
 ## 2026-09-27
 
 ### v2.8.10 第一批自查（W01/W06/W07/W12/W13）与第二批交付控制（W02/W04/W05）：交付身份、只读审查、调用边界、用量账本、原生回归与交付门禁

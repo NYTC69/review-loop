@@ -1,6 +1,6 @@
 ---
 name: paired-session
-description: Use only when the user explicitly asks for paired-session; this is the opt-in plan, implementation, independent-review, and delivery workflow. Generic review-loop requests use the legacy entry.
+description: Use in exactly two cases - the user explicitly asks for paired-session, or the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`; this is the opt-in plan, implementation, independent-review, and delivery workflow. Generic review-loop requests in every other case (key absent, invalid, legacy, or explicit legacy) use the legacy entry.
 ---
 
 # Paired-session workflow
@@ -81,4 +81,6 @@ invoke the legacy review-loop workflow for this task.
    authorization from DONE.
 
 The coordinator owns reviewer dispatch and limits. This skill is the explicit
-paired-session entry until the migration batch changes default routing.
+paired-session entry and the review-loop handoff target only when the config
+key `entry` is exactly `paired-session` and the work is fresh; otherwise default
+routing stays legacy.

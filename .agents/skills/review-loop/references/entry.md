@@ -12,6 +12,23 @@ Use the corresponding plan/execute entry procedures under the same session,
 with entry_point: review-loop. Do not launch nested skill sessions.
 Before any creation or resume read, acquire the shared single-writer lock.
 
+Resolve `entry` (exact values `legacy` and `paired-session` only) from
+`.review-loop/config.md` once, before allocating a UUID or acquiring the lock:
+- The user explicitly asks for the legacy workflow (for example "use the
+  legacy review-loop workflow"): ignore `entry`, do not read or validate it, and
+  print none of its notices.
+- Absent: legacy. Print once: `review-loop: legacy workflow via implicit entry; set "entry: paired-session" in .review-loop/config.md to opt in, or ask for "the legacy review-loop workflow" explicitly`
+- Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
+- Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
+- `paired-session`: only fresh work (no existing plan, code target or session) hands off. Print `review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)`,
+  invoke the Codex `paired-session` skill (`.agents/skills/paired-session`) with
+  the work item, and end this workflow (no legacy session file, lock or stage).
+  A paired-session probe/run HOLD is reported and never falls back to legacy.
+  Plan-exists, code-exists and explicit resume always stay legacy; print
+  `review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`.
+  Decided once, before session creation; once a legacy session file or lock
+  exists, a re-detection or user override never hands off.
+
 ## Initialize / route
 For fresh work use the plan initialization, work-item parsing and Step 1.6
 historical-context retrieval from .agents/skills/plan/references/entry.md.

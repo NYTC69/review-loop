@@ -15,6 +15,12 @@ executor_model: inherit         # shared Claude/plugin executor override; "" and
 # codex_reviewer_backend: claude_cli  # "claude_cli" | "codex" ; set "codex" only for explicit local-Codex review opt-in
 # codex_reviewer_model: ""            # model override for the local Codex reviewer when codex_reviewer_backend: codex
 # codex_executor_model: ""            # shared key remains `executor_model`; this is reserved/ignored in Stage 1
+# Entry for fresh `/review-loop <work item>` (Claude) or the review-loop skill (Codex); experimental, default legacy.
+# "legacy" | "paired-session" (exact values only; anything else falls back to legacy with a warning).
+# Only fresh work is routed; plan-exists, code-exists and resume stay legacy. `/review-loop:legacy` ignores this key.
+# Absent key = implicit legacy entry, which prints a one-line notice. Codex honors this key the same way;
+# its explicit legacy control is the request "use the legacy review-loop workflow".
+# entry: legacy
 soft_limit_plan: 3              # after N rounds, ask user to continue if CRITICALs remain
 soft_limit_exec: 3
 auto_commit: false
