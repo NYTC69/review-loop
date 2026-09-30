@@ -2,6 +2,7 @@ import hashlib, json, os
 from datetime import datetime
 from importlib import import_module
 qe = import_module(('paired_session.' if __package__ else '') + 'q_evidence')
+seal = import_module(('paired_session.' if __package__ else '') + 'delivery_seal')
 def commit_environment(co, root):
     stamp = '@' + str(int(co.state['started_at'])) + ' +0000'
     return qe.ct._git_env(GIT_DIR=str(root.git_dir), PATH=co.state['operator_programs']['path_env'],
@@ -15,6 +16,7 @@ def prepare(co, c1, day, observed_test, atomic_json):
                 'fake lifecycle has reviewed EXEC; router binding is pending'))):
         raise ValueError('delivery preparation refuses this HOLD/state; abort or start a new run')
     bundle, root, revision = qe.review_bundle(co, c1, day, observed_test)
+    publication_seal = seal.verify(co, root, bundle['source']['proposal'])
     env = commit_environment(co, root)
     message = ('paired-session close ' + co.state['item_uuid'] + '\n').encode()
     c2 = qe.ct._git(['commit-tree', '--no-gpg-sign', revision.tree_oid, '-p', c1, '-m', message.decode()], env=env)
@@ -22,7 +24,8 @@ def prepare(co, c1, day, observed_test, atomic_json):
     live = co.operator_intent('accept', None, None)
     live = json.loads(json.dumps({k: v for k, v in live.items() if k not in ('state_sha256', 'digest')}))
     intent = {**live, **bundle['source']['proposal'], 'author': 'operator', 'day': day, 'ref': root.parent_ref,
-              'c2': c2, 'c2_sha256': hashlib.sha256(raw).hexdigest(), 'status': 'PREPARED',
+              'publication_seal': publication_seal, 'c2': c2, 'c2_sha256': hashlib.sha256(raw).hexdigest(),
+              'status': 'PREPARED',
               'bundle_sha256': hashlib.sha256(json.dumps(bundle, sort_keys=True).encode()).hexdigest()}
     intent['digest'] = hashlib.sha256(json.dumps(intent, sort_keys=True).encode()).hexdigest()
     path = co.evidence / 'delivery-intent.json'

@@ -36,7 +36,7 @@ try:
     from paired_session import closeout_policy
     from paired_session import q_proposal
     from paired_session import q_evidence
-    from paired_session import delivery_intent
+    from paired_session import delivery_intent, delivery_seal
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     import closeout_policy
     import q_proposal
     import q_evidence
-    import delivery_intent
+    import delivery_intent, delivery_seal
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -4648,6 +4648,7 @@ class Coordinator:
             if self.state['invocations_used'] + 8 >= self.args.max_invocations:
                 raise ValueError('Q reservation leaves no P budget; abort and start a new run '
                                  'with larger --max-invocations')
+            delivery_seal.freeze(self, atomic_json)
             self.state['closeout_item'] = frozen
             self.state['q_reserved'] = 8
         if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:

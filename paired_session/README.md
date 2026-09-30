@@ -436,3 +436,5 @@ Preparation permits only the normal fake-router HOLD (or existing DONE/ACCEPTED)
 other HOLDs/terminal states refuse. Delivery accept requires DONE/PENDING before
 rechecking intent. Fake delivery rejection is explicitly refused until P'/Q'
 recovery is wired; use abort/new run or an explicit scope-change instead.
+
+Fake delivery seals Git hook/config inventory before PLAN and binds it into the operator intent. Active hooks refuse until the hook runner exists. C1 has a fixed coordinator author, committer, start time and item message; delivery refuses metadata or inventory drift. Real lifecycle remains disabled.

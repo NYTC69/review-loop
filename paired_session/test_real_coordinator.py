@@ -3509,11 +3509,7 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
                          security_context={'baseline': baseline, 'revision': revision, 'review': security}),
                          'STOP_BEFORE_DELIVERY')
-        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_AUTHOR_NAME='Fixture',
-                         GIT_AUTHOR_EMAIL='fixture@example.test', GIT_COMMITTER_NAME='Fixture',
-                         GIT_COMMITTER_EMAIL='fixture@example.test')
-        c1 = ct._git_bytes(['commit-tree', revision.tree_oid, '-p', baseline.parent_head],
-                            env=env, input_bytes=b'Unpublished fixture C1\n').decode().strip()
+        c1 = rc.delivery_seal.c1(co, baseline, revision)
         state = rc.copy.deepcopy(co.state)
         index = baseline.index.read_bytes()
         result = co.fake_materialize_q(c1, '2026-09-30')
@@ -3996,6 +3992,67 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_delivery_seal_rejected_closeout_leaves_no_state_or_evidence(self):
+        self.test_closeout_freeze_refuses_stale_lifecycle_and_backlog_writer_grant()
+        for run in self.root.glob('closeout-*'):
+            self.assertFalse((run / 'evidence/delivery-seal.json').exists())
+        result = subprocess.run([sys.executable, str(MODULE_PATH), '--help'],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_delivery_seal_binds_c1_metadata_and_hook_inventory(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        bundle, root, revision = rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        proposal = bundle['source']['proposal']
+        seal = rc.delivery_seal.verify(co, root, proposal)
+        self.assertEqual(seal, json.loads((co.evidence / 'delivery-seal.json').read_text()))
+        env = rc.delivery_seal.environment(co, root)
+        raw = ct._git_bytes(['cat-file', 'commit', c1], env=env)
+        for label, altered in [
+                ('author', raw.replace(b'author paired-session ', b'author forged ')),
+                ('committer', raw.replace(b'committer paired-session ', b'committer forged ')),
+                ('message', raw + b'unsigned extra message\n'),
+                ('date', raw.replace(seal['date'][1:].encode(), b'1 +0000')),
+                ('encoding', raw.replace(b'\n\n', b'\nencoding ISO-8859-1\n\n', 1))]:
+            with self.subTest(metadata=label):
+                oid = ct._git_bytes(['hash-object', '-w', '-t', 'commit', '--stdin'],
+                                    env=env, input_bytes=altered).decode().strip()
+                changed = {**proposal, 'c1': oid, 'c1_sha256': hashlib.sha256(altered).hexdigest()}
+                with self.assertRaisesRegex(ValueError, 'metadata/tree/parent'):
+                    rc.delivery_seal.verify(co, root, changed)
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(intent['publication_seal'], seal)
+        hook = self.workspace / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 0\n')
+        hook.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            rc.delivery_seal.verify(co, root, proposal)
+        hook.unlink()
+        subprocess.run(['git', 'config', 'core.filemode', 'false'], cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            rc.delivery_seal.verify(co, root, proposal)
+
+    def test_delivery_seal_refuses_active_hooks_and_non_fake_freeze(self):
+        co = self.coordinator()
+        with self.assertRaisesRegex(ValueError, 'fake-only'):
+            rc.delivery_seal.freeze(co, rc.atomic_json)
+        co._fake_lifecycle = True
+        hook = self.workspace / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 0\n')
+        hook.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'runner not implemented'):
+            rc.delivery_seal.freeze(co, rc.atomic_json)
+        self.assertNotIn('publication_seal', co.state)
+        hook.unlink()
+        rc.delivery_seal.freeze(co, rc.atomic_json)
+        saved = rc.copy.deepcopy(co.state['publication_seal'])
+        (co.evidence / 'delivery-seal.json').write_text('{}')
+        root = type('Root', (), {'git_dir': self.workspace / '.git'})()
+        with self.assertRaisesRegex(ValueError, 'protected evidence'):
+            rc.delivery_seal.verify(co, root, {})
+        self.assertEqual(co.state['publication_seal'], saved)
 
     def test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
