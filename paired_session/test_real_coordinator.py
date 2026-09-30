@@ -6761,6 +6761,27 @@ sys.exit(result.returncode)
         self.assertIn('fake test harness', refused.stdout)
         self.assertFalse((self.run_dir / 'state.json').exists())
 
+    def test_claude_author_requires_fake_harness(self):
+        command = self.command('--author-vendor', 'claude')
+        env = os.environ.copy(); env.pop('FAKE_CODEX_TEST_ROOT', None)
+        refused = subprocess.run(command, cwd=self.root, env=env, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('Claude author is limited to the fake test harness', refused.stdout)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
+    def test_saved_claude_author_run_is_refused_outside_fake_harness(self):
+        self.coordinator('--author-vendor', 'claude')
+        before = json.loads((self.run_dir / 'state.json').read_text())['status']
+        command = self.command('--text', 'Recheck this detail.')
+        command[2] = 'reject'
+        env = os.environ.copy(); env.pop('FAKE_CODEX_TEST_ROOT', None)
+        refused = subprocess.run(command, cwd=self.root, env=env, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('Claude author is limited to the fake test harness', refused.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], before)
+
     def test_resume_refuses_when_permission_probe_is_missing_or_stale(self):
         for mode in ('missing', 'stale'):
             with self.subTest(mode=mode):

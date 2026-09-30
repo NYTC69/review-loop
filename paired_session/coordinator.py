@@ -5397,6 +5397,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
     co = Coordinator(args)
+    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):  # restored from state
+        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
+        return 2
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -5472,6 +5475,9 @@ def main(argv=None) -> int:
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
     if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
         print('REFUSED: --skip-probe is limited to the fake test harness')
+        return 2
+    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):
+        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
         return 2
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
