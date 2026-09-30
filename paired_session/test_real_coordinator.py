@@ -20,6 +20,7 @@ from unittest.mock import patch
 from paired_session import candidate_tree as ct
 from paired_session import delivery_journal as dj
 from paired_session import delivery_publish as dp
+from paired_session import delivery_recovery_state as drs
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -3994,6 +3995,64 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_recovery_state_accepts_preimport_scratch_q_objects(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        original = ct._git_bytes
+        def fail_import(args, **kwargs):
+            if args[0] == 'index-pack':
+                raise OSError('before import')
+            return original(args, **kwargs)
+        with patch.object(ct, '_git_bytes', side_effect=fail_import):
+            self.assertEqual(dp.publish(co, rc.observed_test_succeeded, rc.atomic_json), 'HOLD')
+        row, root, revision, live, index, lock, maps = drs.inspect(co)
+        self.assertEqual(ct._git(['rev-parse', 'HEAD'], env=live), row['intent']['parent'])
+        self.assertEqual(row['phase'], 'PREPARED')
+        self.assertIn('sum_ints.py', maps[1])
+        with self.assertRaises(ct.CandidateError):
+            ct._tree_entries(live, row['intent']['q_oid'])
+
+    def test_recovery_state_accepts_q_new_files_before_live_index_replace(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        original = ct._git
+        def fail_after_checkout(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[0] == 'read-tree' and '-u' in args:
+                raise OSError('after checkout')
+            return result
+        with patch.object(ct, '_git', side_effect=fail_after_checkout):
+            self.assertEqual(dp.publish(co, rc.observed_test_succeeded, rc.atomic_json), 'HOLD')
+        row, root, revision, live, index, lock, maps = drs.inspect(co)
+        self.assertEqual(row['phase'], 'PUBLISHED')
+        self.assertIn('sum_ints.py', ct._git(['ls-files', '--others', '--exclude-standard'], env=live))
+        self.assertEqual((self.workspace / 'sum_ints.py').read_bytes(), (root.root / 'sum_ints.py').read_bytes())
+
+    def test_recovery_state_accepts_known_parent_or_q_and_rejects_foreign_bytes(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        state = co.state_path.read_bytes()
+        row, root, revision, live, index, lock, maps = drs.inspect(co)
+        self.assertEqual(row['phase'], 'PREPARED')
+        self.assertEqual(ct._git(['rev-parse', 'HEAD'], env=live), row['intent']['c2'])
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertEqual(co.state_path.read_bytes(), state)
+        path = self.workspace / 'tracked.txt'
+        saved = path.read_bytes()
+        path.write_bytes(b'foreign bytes')
+        with self.assertRaisesRegex(ValueError, 'foreign recovery bytes'):
+            drs.inspect(co)
+        path.write_bytes(saved)
+        attrs = self.workspace / '.git/info/attributes'
+        attrs.write_text('*.txt text\n')
+        with self.assertRaisesRegex(ValueError, 'attributes/filter unsupported'):
+            drs.inspect(co)
+        attrs.unlink()
+        co.state['publication_hold'] = 'other-run'
+        with self.assertRaisesRegex(ValueError, 'matching attributed acceptance'):
+            drs.inspect(co)
+        self.assertEqual(co.state_path.read_bytes(), state)
 
     def test_publication_hold_quarantines_all_operator_paths_without_state_write(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
