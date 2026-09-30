@@ -31,7 +31,8 @@ class CodexContractTests(unittest.TestCase):
     def write_probe(self, co, status):
         """A record probe_passed() accepts for the CURRENT fake codex version (digests bind the version)."""
         (co.run_dir / 'permission-probe.json').write_text(json.dumps({
-            'status': status, 'reviewer_flags_digest': co.reviewer_flags_digest(),
+            'status': status, 'reviewer_flags': co.reviewer_flags(),
+            'reviewer_flags_digest': co.reviewer_flags_digest(),
             'author_flags_digest': co.author_flags_digest(),
             'author_permission_probe': {'status': status, 'd1a_model_verdict': 'UNKNOWN',
                                         'd1b_synthetic_verdict': 'PASS'},
@@ -260,7 +261,8 @@ class RoleModelTests(unittest.TestCase):
     def args(self, *extra, action='run'):
         h = self.h
         argv = [action, '--workspace', str(h.workspace), '--workitem', str(h.workitem),
-                '--run-dir', str(h.run_dir), *extra]
+                '--run-dir', str(h.run_dir), '--codex-bin', str(h.fake_codex_cli()),
+                '--claude-bin', str(h.fake_claude_cli()), *extra]
         return rc.configure_parser(rc.parser(), argv).parse_args(argv)
 
     def resolved(self, *extra):
@@ -281,6 +283,9 @@ class RoleModelTests(unittest.TestCase):
 
     def state(self):
         return json.loads((self.h.run_dir / 'state.json').read_text())
+
+    def state_at(self, run_dir):
+        return json.loads((run_dir / 'state.json').read_text())
 
     def restored(self, *extra, action='accept', explicit=()):
         args = self.args(*extra, action=action)
@@ -403,7 +408,8 @@ class RoleModelTests(unittest.TestCase):
         same = self.main('note', '--gate-model', 'gpt-6.1-sol', '--text', 'x')     # repeating it is no switch
         self.assertNotIn('role models are fixed', same.stdout)
         self.write_profile({'allowed_models': {'codex': ['gpt-6-luna'], 'claude': ['claude-opus-5-5']}})
-        self.assertIn('not in allowed_models', self.main('note', '--text', 'x').stdout)    # saved models re-checked
+        # P0-1b A1: a policy this run never had cannot be added on restore (was: saved models re-checked).
+        self.assertIn('role policy is fixed for this run', self.main('note', '--text', 'x').stdout)
         (self.h.workspace / '.review-loop' / 'paired-session.json').unlink()
         for flag, value in (('--gate-vendor', 'claude'), ('--gate-model', 'claude-opus-5-5'),
                             ('--reviewer-model', 'claude-opus-5-5')):
@@ -457,13 +463,127 @@ class RoleModelTests(unittest.TestCase):
 
     def test_an_author_writable_profile_cannot_select_role_vendors_or_models(self):
         for key, value in (('gate_vendor', 'codex'), ('reviewer_model', 'gpt-6-luna'),
-                           ('allowed_models', {'codex': ['gpt-6-luna']}), ('gate_model', 'gpt-6-luna')):
+                           ('allowed_models', {'codex': ['gpt-6-luna']}), ('gate_model', 'gpt-6-luna'),
+                           ('author_model', 'gpt-6.1-sol')):
             with self.subTest(key=key):
                 self.write_profile({key: value})
                 programs, issue = rc.program_snapshot(
                     self.h.workspace, self.h.run_dir, self.h.run_dir / 'author-tmp',
                     self.h.fake_codex_cli(), self.h.fake_claude_cli(), rc.DEFAULT_GATE_PROMPT, None)
                 self.assertIn('workspace profile cannot select operator programs: ' + key, issue)
+
+
+    # ---- P0-1b: allowlist persistence, gate permission surface, resume, profile ----
+    ALLOWED = {'codex': ['gpt-6-luna', 'gpt-6.1-sol'], 'claude': ['claude-opus-5-5']}
+
+    def allowlist_run(self, allowed=None, *extra):
+        path = self.h.root / 'operator-policy.json'          # outside the workspace: operator-owned
+        path.write_text(json.dumps({'allowed_models': allowed or self.ALLOWED}))
+        rc.Coordinator(self.args('--config', str(path), *extra))
+        return path
+
+    def test_the_allowlist_is_saved_and_enforced_after_every_restore(self):
+        path = self.allowlist_run()
+        self.assertEqual(self.state()['config']['allowed_models'], self.ALLOWED)
+        for action in ('accept', 'reject', 'note', 'resume', 'run'):
+            with self.subTest(action=action):
+                self.assertEqual(self.restored(action=action).allowed_models, self.ALLOWED)   # no --config given
+        state = self.state()                     # a saved model outside the saved policy never dispatches
+        state['config']['gate_model'] = 'gpt-9'
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        for action in ('note', 'reject'):
+            self.assertIn('gate_model gpt-9 is not in allowed_models',
+                          self.main(action, '--text', 'x').stdout)
+        with self.assertRaisesRegex(ValueError, 'gate_model gpt-9 is not in allowed_models'):
+            self.restored(action='resume')
+        state['config']['gate_model'] = 'claude-opus-5-5'
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        other = self.h.root / 'other-policy.json'
+        other.write_text(json.dumps({'allowed_models': {'codex': ['gpt-6-luna'], 'claude': ['claude-opus-5-5']}}))
+        for action in ('accept', 'note', 'resume'):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'role policy is fixed'):
+                self.restored('--config', str(other), action=action)
+        self.assertEqual(self.restored('--config', str(path)).allowed_models, self.ALLOWED)   # same one is fine
+
+    def test_a_saved_run_without_allowed_models_means_no_allowlist(self):
+        self.h.coordinator()
+        state = self.state()
+        state['config'].pop('allowed_models')
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        self.assertIsNone(self.restored(action='resume').allowed_models)
+        self.assertIsNone(self.restored().allowed_models)
+
+    def test_the_scope_change_successor_inherits_the_allowlist(self):
+        self.allowlist_run()
+        self.assertIn('Start:', self.main('note', '--scope-change', '--text', 'narrow it').stdout)
+        config = json.loads((self.h.run_dir / 'evidence' / 'successor-config.json').read_text())
+        self.assertEqual(config['allowed_models'], self.ALLOWED)
+        target = self.h.run_dir.with_name(self.h.run_dir.name + '-successor')
+        successor = ['--workitem', str(self.h.run_dir / 'evidence' / 'successor-workitem.md'),
+                     '--run-dir', str(target), '--supersedes', str(self.h.run_dir)]
+        other = self.h.root / 'other-successor-policy.json'
+        other.write_text(json.dumps({'allowed_models': {'codex': ['gpt-6-luna'], 'claude': ['claude-opus-5-5']}}))
+        for extra in ([], ['--config', str(other)]):        # no config, or another allowlist: not this run's successor
+            with self.subTest(extra=extra):
+                self.assertIn('successor spec or parent state differs', self.main('run', *successor, *extra).stdout)
+                self.assertFalse((target / 'state.json').exists())
+        kept = self.main('run', *successor, '--config', str(self.h.run_dir / 'evidence' / 'successor-config.json'))
+        self.assertNotIn('successor spec or parent state differs', kept.stdout)
+        self.assertEqual(self.state_at(target)['config']['allowed_models'], self.ALLOWED)
+
+    def test_a_plain_resume_of_a_non_default_model_run_works(self):
+        self.h.coordinator('--gate-model', 'gpt-6.1-sol', '--reviewer-model', 'claude-sonnet-5-5')
+        for action in ('resume', 'run'):
+            a = self.restored(action=action)
+            self.assertEqual((a.gate_model, a.reviewer_model), ('gpt-6.1-sol', 'claude-sonnet-5-5'))
+        with self.assertRaisesRegex(ValueError, 'role models are fixed for this run: gate_model'):
+            self.restored('--gate-model', 'claude-opus-5-5', action='resume', explicit={'gate_model'})
+        # An allowlist naming only the saved models must not trip over the CLI defaults on a plain resume.
+        self.h.run_dir = self.h.root / 'allow-resume'
+        policy = self.allowlist_run({'codex': ['gpt-6.1-sol'], 'claude': ['claude-sonnet-5-5']}, '--author-model',
+                           'gpt-6.1-sol', '--reviewer-model', 'claude-sonnet-5-5', '--gate-model', 'claude-sonnet-5-5')
+        resumed = self.main('resume', '--config', str(policy)).stdout
+        for text in ('allowed_models', 'role models are fixed', 'role policy is fixed'):
+            self.assertNotIn(text, resumed)
+
+    def test_a_gate_vendor_that_differs_from_the_reviewer_is_refused_before_state(self):
+        def cli(*flags):
+            self.h.run_dir = self.h.root / ('gate-' + '-'.join(flags).replace('-', ''))
+            with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+                return self.main('run', *flags), self.h.run_dir
+        refused, run_dir = cli('--gate-vendor', 'codex')          # codex author, claude reviewer
+        self.assertIn('REFUSED: gate vendor codex differs from reviewer vendor claude; '
+                      'its read-only surface is not covered by permission-probe', refused.stdout)
+        self.assertFalse(run_dir.exists())
+        for flags in ([], ['--reviewer-vendor', 'codex', '--gate-vendor', 'codex'],
+                      ['--reviewer-vendor', 'claude', '--gate-vendor', 'claude']):
+            with self.subTest(flags=flags):
+                a = self.resolved(*flags)
+                self.assertIsNone(rc.gate_surface_issue(a))      # default codex author + claude/claude gate
+        a = self.resolved(*BUG_REPORT_FLAGS)
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            self.assertIsNone(rc.gate_surface_issue(a))          # bug-report: gate == reviewer == codex
+            a = self.resolved('--author-vendor', 'claude')        # claude author default: claude reviewer, codex gate
+            self.assertIn('not covered by permission-probe', rc.gate_surface_issue(a))
+        self.assertIsNone(rc.gate_surface_issue(self.resolved('--author-vendor', 'claude')))   # fake harness
+        # a restore is refused as well (saved run whose gate differs from its reviewer)
+        self.h.run_dir = self.h.root / 'gate-saved'
+        self.h.coordinator('--gate-vendor', 'codex')
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            self.assertIn('not covered by permission-probe', self.main('reject', '--text', 'x').stdout)
+
+    def test_probe_passed_binds_the_probed_reviewer_vendor_to_the_gate_vendor(self):
+        co = self.h.coordinator()
+        report = {'status': 'PASS', 'reviewer_flags': co.reviewer_flags(),
+                  'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(),
+                  'author_permission_probe': {'status': 'PASS', 'd1a_model_verdict': 'UNKNOWN',
+                                              'd1b_synthetic_verdict': 'PASS'},
+                  'global_config_changes': {'status': 'PASS'}}
+        (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            self.assertEqual(co.probe_passed(), (True, ''))
+            co.args.gate_vendor = 'codex'                       # reviewer surface probed was claude
+            self.assertEqual(co.probe_passed(), (False, 'permission probe reviewer vendor is not the gate vendor'))
 
 
 if __name__ == '__main__':

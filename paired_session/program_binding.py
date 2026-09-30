@@ -1,7 +1,7 @@
 import hashlib, json, os, shutil
 from pathlib import Path
 _PROFILE_PROGRAM_KEYS = ('codex_bin claude_bin gate_prompt reviewer_command test_command shadow adversarial_gate '
-                         'author_vendor reviewer_vendor gate_vendor reviewer_model gate_model gate_effort '
+                         'author_vendor author_model reviewer_vendor gate_vendor reviewer_model gate_model gate_effort '
                          'author_subagents allowed_models').split()
 def safe_path(value, roots):
     paths = (Path(p).resolve() for p in value.split(os.pathsep) if p and os.path.isabs(p))

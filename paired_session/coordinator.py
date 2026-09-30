@@ -1118,10 +1118,7 @@ class Coordinator:
             if self.args.action in ('accept', 'reject', 'note'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
-                saved = {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), **self.state['config']}
-                for key in getattr(self.args, 'explicit_role_flags', ()):
-                    if getattr(self.args, key) != saved[key]:
-                        raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
+                saved = self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ()))
                 for key, value in saved.items():
                     if key == 'gate_prompt' and str(value).startswith('<bundled-default>:'):
                         self.args.gate_prompt = str(DEFAULT_GATE_PROMPT)
@@ -1211,6 +1208,7 @@ class Coordinator:
                         not old.get('base_commit') or old.get('base_commit_backfilled') or
                         old.get('scope_chain_depth', 0) >= 1 or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
                         spec['run_dir'] != str(self.run_dir) or spec['workspace'] != str(self.workspace) or
+                        frozen_config.get('allowed_models') != old['config'].get('allowed_models') or
                         spec['original_hash'] != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest() or
                         spec.get('config_sha256') != hashlib.sha256((parent / 'evidence/successor-config.json').read_bytes()).hexdigest() or
                         old.get('successor_spec_sha256') != hashlib.sha256((parent / 'evidence/successor-spec.json').read_bytes()).hexdigest()):
@@ -1282,6 +1280,20 @@ class Coordinator:
                     counted_sequences.add(sequence)
         return used
 
+    def _restore_role_policy(self, explicit) -> dict:
+        """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
+        saved = {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), **self.state['config']}
+        for key in explicit:
+            if getattr(self.args, key) != saved[key]:
+                raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
+        policy = saved.get('allowed_models')
+        if getattr(self.args, 'allowed_models', None) not in (None, policy):
+            raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
+        self.args.allowed_models = policy
+        for key in ROLE_DESTS:
+            setattr(self.args, key, saved[key])
+        return saved
+
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
@@ -1289,7 +1301,7 @@ class Coordinator:
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish')
+                'skip_globs', 'skip_quality_polish', 'allowed_models')
         config = {key: getattr(self.args, key) for key in keys}
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
@@ -1583,6 +1595,9 @@ class Coordinator:
             return False, 'permission probe author permission status is not current'
         if report.get('global_config_changes', {}).get('status') != 'PASS':
             return False, 'permission probe global config changes were not fully attributed'
+        if (report.get('reviewer_flags', {}).get('reviewer_vendor') != self.args.gate_vendor
+                and not lifecycle_spine.fake_dispatch_guard(self.args)):
+            return False, 'permission probe reviewer vendor is not the gate vendor'
         return True, ''
 
     def _validate_resume_args(self) -> None:
@@ -1617,6 +1632,8 @@ class Coordinator:
             requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 requested_exec_timeout, self.args.timeout)
+        self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
+        validate_role_models(self.args)
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
@@ -1636,9 +1653,6 @@ class Coordinator:
             if current != value:
                 raise ValueError(('role models are fixed for this run: ' if key in ROLE_DESTS else
                                   'resume configuration differs: ') + key)
-        if 'gate_vendor' not in self.state['config'] and (
-                self.args.gate_vendor != old_gate_vendor(self.state['config']['author_vendor'])):
-            raise ValueError('role models are fixed for this run: gate_vendor')
 
     def save(self) -> None:
         with self._save_lock:
@@ -5275,13 +5289,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--supersedes', help='resolved parent run dir for a scope-change successor')
     p.add_argument('--config', help='JSON profile; defaults to <workspace>/.review-loop/paired-session.json')
     p.add_argument('--author-vendor', choices=['codex', 'claude'], default='codex')
-    p.add_argument('--author-model', help='defaults to the vendor-pinned ADR-8 model')
+    p.add_argument('--author-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--author-effort', default='medium')
     p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
-    p.add_argument('--reviewer-model', help='defaults to the vendor-pinned ADR-8 model')
+    p.add_argument('--reviewer-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--reviewer-effort', default='medium')
     p.add_argument('--gate-vendor', choices=['codex', 'claude'], help='defaults to the vendor opposite the author')
-    p.add_argument('--gate-model', help='defaults to the vendor-pinned ADR-8 model')
+    p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
@@ -5349,7 +5363,7 @@ def old_gate_vendor(author_vendor: str) -> str:
 
 
 def restores_run(args: argparse.Namespace) -> bool:
-    return args.action in ('accept', 'reject', 'note') and (Path(args.run_dir) / 'state.json').exists()
+    return args.action in ('accept', 'reject', 'note', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -5380,6 +5394,12 @@ def validate_role_models(args: argparse.Namespace) -> None:
             raise ValueError(f'{key} is not a well-formed model id: {model!r}')
         if allowed is not None and model not in allowed.get(vendor, []):
             raise ValueError(f'{key} {model} is not in allowed_models for the {vendor} role')
+
+
+def gate_surface_issue(args: argparse.Namespace):
+    if args.gate_vendor != args.reviewer_vendor and not lifecycle_spine.fake_dispatch_guard(args):
+        return (f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; '
+                'its read-only surface is not covered by permission-probe')
 
 
 def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.ArgumentParser:
@@ -5478,6 +5498,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.accept()
         print(status)
         return 0
+    if args.action != 'abort' and (issue := gate_surface_issue(args)):
+        print('REFUSED: ' + issue)
+        return 2
     if (args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
@@ -5562,6 +5585,9 @@ def main(argv=None) -> int:
         return 2
     if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
+        return 2
+    if not restores_run(args) and (issue := gate_surface_issue(args)):
+        print('REFUSED: ' + issue)
         return 2
     if args.polish and args.action != 'resume':
         parser().error('--polish is only valid with resume')
