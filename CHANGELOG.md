@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2026-09-30
 
-### paired-session opt-in entry (experimental, legacy stays the default)
+### v2.9.0 预览版：paired-session 可选入口（实验性，默认仍是 legacy）
+
+- **发布范围**：合并 paired-session 分支（A 道，至 `13c04f2`）与 B 道（至 `9e5395a`）。真实 CLI 支持 permission probe → PLAN 审查 → EXEC 与审查 → adversarial gate → DONE → accept/reject；APPROVE 之后的生命周期（FINISH、quality polish、DOCS、SECURITY、DELIVERY、CLOSE）仍只在 fake harness 中可用，真实 CLI 拒绝 `--lifecycle-mode on`。完整 PLAN→close 的 M4 E2E 改为 v2.10.0 的门槛。
+- **fix**：预览版在真实 CLI 上拒绝 Claude author（`--author-vendor claude`），包括从已保存 run 恢复的配置；原因是 Claude author 的原生 Write/Edit 没有路径限制（1C 3b）。默认 author 仍是 Codex。由 gpt-6.1-sol 跨厂商发版审查发现，两轮修复。
+- **已知限制**：operator reject 之后同一棵树的再放行加固（第 12 批）尚未合入；1C 安全清单仍 OPEN；M6 受控真实运行尚未完成。
+
+#### 分支内容（原 Unreleased）
 
 由 Sonnet 5.5 实现、Opus 5.5 审查；未发布，未升版本。迁移指南见 `docs/paired-session-migration.md`。
 
