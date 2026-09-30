@@ -208,7 +208,7 @@ class CodexContractTests(unittest.TestCase):
         self.assertIn('unverified codex sandbox contract', refused.stdout)
         self.assertIsNone(self.recorded_override())
         self.assertEqual(rc.OPERATOR_ONLY_DESTS,
-                         {'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'reason'})
+                         {'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})   # P0-4 adds accept_probe_skip
 
     def test_operator_only_keys_are_refused_in_a_config_file(self):
         config = self.h.workspace / '.review-loop' / 'paired-session.json'
@@ -1236,9 +1236,10 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         co, out = self.probe()
         argv = co.state['turns'][-1]['command']
         deny_write = json.loads(argv[argv.index('--settings') + 1])['sandbox']['filesystem']['denyWrite']
-        self.assertEqual(deny_write, [str(co.run_dir), out['rules']['probe_context']])
+        cache = str(Path.home().resolve() / '.cache' / 'review-loop' / 'probe-pass')                # P0-4 V4 adds the cache root to the author denyWrite
+        self.assertEqual(deny_write, [str(co.run_dir), cache, out['rules']['probe_context']])
         real = co._claude_sandbox_settings('author')['sandbox']['filesystem']['denyWrite']
-        self.assertEqual(real, [str(co.run_dir)])                                                    # the real context sits under run_dir: unchanged
+        self.assertEqual(real, [str(co.run_dir), cache])                                             # the real context sits under run_dir: unchanged
         self.assertTrue(co.context.is_relative_to(co.run_dir))
 
     def test_bash_default_fields_are_tolerated_but_dangerously_disable_sandbox_true_is_not(self):    # P0-3d G3
@@ -1490,6 +1491,476 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(self.probe({'silent_write': ['{parent}/shared-run/state.json']})[1]['status'], 'PASS')   # another run's churn
         _, out = self.fail_reason({'silent_write': ['{parent}/keep.txt']})
         self.assertTrue(any(t.endswith('keep.txt') for t in out['model_escape_failed_targets']), out)
+
+
+class ProbeSkipTests(unittest.TestCase):
+    """P0-4: skipping the permission-probe needs an operator acceptance or a verified reuse of an earlier PASS."""
+
+    def setUp(self):
+        self.h = trc.RealCoordinatorTests()
+        self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        self.addCleanup(self.h.tearDown)
+        self.claude_version = 'claude 1.0'
+        seam = patch.object(rc, 'claude_cli_version', side_effect=lambda binary: self.claude_version)
+        seam.start()
+        self.addCleanup(seam.stop)
+        self.cache = self.h.test_home / '.cache' / 'review-loop' / 'probe-pass'
+
+    def co(self, *extra):
+        return self.h.coordinator(*extra, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+                                  '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+
+    def cli(self, action, *extra):
+        """In-process main() with the fake-harness bypass off, as on a real operator machine."""
+        command = self.h.command(*extra)
+        command[2] = action
+        out = io.StringIO()
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), contextlib.redirect_stdout(out), \
+                patch.object(rc.Coordinator, 'drive', return_value='DONE'), patch.object(rc.Coordinator, 'resume', return_value='DONE'):
+            code = rc.main(command[2:])
+        return types.SimpleNamespace(returncode=code, stdout=out.getvalue())
+
+    def state(self):
+        path = self.h.run_dir / 'state.json'
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def probe(self, co, author=None):
+        """A real-mode (non-fake-harness) permission_probe; `author` replaces the author half's verdict."""
+        ctx = patch.object(co, '_author_permission_probe', return_value=author) if author else contextlib.nullcontext()
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), ctx:
+            co.permission_probe()
+        return json.loads((co.run_dir / 'permission-probe.json').read_text())
+
+    def entries(self):
+        return sorted(self.cache.glob('*.json')) if self.cache.exists() else []
+
+    def forget_report(self, co):
+        """The later run: the earlier PASS report is gone, only the cache holds it."""
+        (co.run_dir / 'permission-probe.json').unlink()
+
+    def seed(self, *extra):
+        co = self.co(*extra)
+        self.assertEqual(self.probe(co)['status'], 'PASS')
+        (entry,) = self.entries()
+        self.forget_report(co)
+        return co, entry
+
+    def reuse(self, co):
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), contextlib.redirect_stdout(io.StringIO()):
+            return co._probe_cache_reuse()
+
+    def set_entry(self, path, **changes):
+        data = json.loads(path.read_text())
+        data.update(changes)
+        path.write_text(json.dumps(data))
+
+    # ---- V1 / V2: the skip flags -------------------------------------------------------------------------
+
+    def test_a_real_cli_run_without_a_probe_or_flags_is_refused_and_skip_probe_stays_fake_only(self):
+        refused = self.cli('run')
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('permission-probe.json is missing', refused.stdout)
+        self.assertIn('run permission-probe before continuing', refused.stdout)
+        self.assertIn('probe cache: no entry', refused.stdout)                      # the failed check is named, not ignored
+        skipped = self.cli('run', '--skip-probe')
+        self.assertEqual((skipped.returncode, skipped.stdout.strip()), (2, 'REFUSED: --skip-probe is limited to the fake test harness'))
+        self.assertFalse(self.cache.exists())
+
+    def test_accept_probe_skip_needs_a_reason_and_is_recorded_with_actor_reason_time_and_both_digests(self):
+        for extra in (['--accept-probe-skip'], ['--accept-probe-skip', '--reason', '  ']):
+            with self.subTest(extra=extra):
+                result = self.cli('run', *extra)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('needs --reason', result.stdout)
+        self.assertIn('needs --reason and run, resume or reject', self.cli('permission-probe', '--accept-probe-skip', '--reason', 'x').stdout)
+        self.assertNotIn('probe_skip_override', self.state())
+        ok = self.cli('run', '--accept-probe-skip', '--reason', 'probe ran elsewhere')
+        self.assertEqual((ok.returncode, ok.stdout.count('DONE')), (0, 1), ok.stdout)
+        self.assertIn('probe skipped by operator acceptance', ok.stdout)
+        record = self.state()['probe_skip_override']
+        co = self.co()
+        self.assertEqual((record['actor'], record['reason']), ('operator', 'probe ran elsewhere'))
+        self.assertRegex(record['time'], STAMP)
+        self.assertEqual((record['reviewer_flags_digest'], record['author_flags_digest']), (co.reviewer_flags_digest(), co.author_flags_digest()))
+        later = self.cli('resume')                                                   # the record, not the flag, is what a later command honours
+        self.assertEqual(later.returncode, 0, later.stdout)
+        self.assertIn('probe skipped by operator acceptance', later.stdout)
+        self.assertFalse(self.cache.exists())
+
+    def test_the_acceptance_shares_one_reason_with_the_codex_accept_and_is_recorded_for_both(self):
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
+            result = self.cli('run', '--accept-unverified-codex-cli', '--accept-probe-skip', '--reason', 'both')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        state = self.state()
+        self.assertEqual((state['codex_cli_override']['reason'], state['probe_skip_override']['reason']), ('both', 'both'))
+
+    def test_the_acceptance_cannot_come_from_saved_state_or_config(self):
+        self.assertIn('accept_probe_skip', rc.OPERATOR_ONLY_DESTS)
+        co = self.co()
+        state = self.state()
+        state['config'].update({'accept_probe_skip': True, 'reason': 'injected'})
+        (co.run_dir / 'state.json').write_text(json.dumps(state))
+        refused = self.cli('reject', '--text', 'x')
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('permission-probe.json is missing', refused.stdout)
+        self.assertNotIn('probe_skip_override', self.state())
+        for record in ({'actor': 'author', 'reason': 'x'}, {'actor': 'operator', 'reason': 'x'}):      # a record without this run's digests
+            with self.subTest(record=record):
+                co.state['probe_skip_override'] = {**record, 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': '0' * 64}
+                self.assertFalse(co._probe_skip_accepted())
+        co.state['probe_skip_override'] = {'actor': 'author', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(),
+                                           'author_flags_digest': co.author_flags_digest()}
+        self.assertFalse(co._probe_skip_accepted())                                   # right digests, wrong actor
+        config = self.h.workspace / '.review-loop' / 'paired-session.json'
+        config.parent.mkdir()
+        config.write_text(json.dumps({'accept_probe_skip': True}))
+        self.assertIn('unsupported paired-session config keys', self.cli('run').stdout)
+
+    def test_a_digest_change_voids_the_acceptance_for_good(self):
+        co = self.co()
+        record = {'actor': 'operator', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest()}
+        co.state['probe_skip_override'] = dict(record)
+        self.assertTrue(co._probe_skip_accepted())
+        original = co.args.reviewer_effort
+        co.args.reviewer_effort = 'high'                                             # reviewer digest changes
+        self.assertFalse(co._probe_skip_accepted())
+        voided = co.state['probe_skip_override']['voided']
+        self.assertEqual(voided['digests_seen']['reviewer_flags_digest'], co.reviewer_flags_digest())
+        self.assertRegex(voided['time'], STAMP)
+        co.args.reviewer_effort = original                                            # ... and changes back
+        self.assertFalse(co._probe_skip_accepted())
+        self.assertEqual(co.state['probe_skip_override']['voided'], voided)
+        self.assertEqual(self.state()['probe_skip_override']['voided'], voided)       # persisted
+        self.assertEqual(self.cli('resume').returncode, 2)
+        # the author digest voids it too
+        co2 = self.co()
+        co2.state['probe_skip_override'] = dict(record)
+        co2.args.author_effort = 'high'
+        self.assertFalse(co2._probe_skip_accepted())
+        self.assertIn('voided', co2.state['probe_skip_override'])
+        co2.args.author_effort = 'low'
+        self.assertFalse(co2._probe_skip_accepted())
+
+    def test_the_acceptance_does_not_bypass_the_codex_contract_or_the_claude_author_gate(self):
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
+            refused = self.cli('run', '--accept-probe-skip', '--reason', 'r')
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn('unverified codex sandbox contract', refused.stdout)
+            self.assertFalse(self.cli('resume').returncode == 0)
+        claude = [*BUG_REPORT_FLAGS]
+        self.h.run_dir = self.h.root / 'claude-fresh'
+        fresh = self.cli('run', *claude, '--accept-probe-skip', '--reason', 'r')
+        self.assertEqual(fresh.returncode, 2)
+        self.assertIn(REFUSAL, fresh.stdout)
+        self.h.run_dir = self.h.root / 'claude-run'
+        self.co(*claude)
+        restored = self.cli('resume', *claude, '--accept-probe-skip', '--reason', 'r')
+        self.assertEqual(restored.returncode, 2)
+        self.assertIn(REFUSAL, restored.stdout)
+
+    # ---- V0: an aborted re-probe ----------------------------------------------------------------------------
+
+    def test_an_aborted_reprobe_never_leaves_the_old_pass_valid(self):
+        for name, error in (('ctrl-c', KeyboardInterrupt()), ('crash', RuntimeError('boom'))):
+            with self.subTest(abort=name):
+                self.h.run_dir = self.h.root / ('run-' + name)
+                co = self.co()
+                self.assertEqual(self.probe(co)['status'], 'PASS')
+                self.assertTrue(co.probe_passed()[0])
+                self.assertIn('permission_probe', co.state)
+                target = patch.object(co, 'invoke', side_effect=error) if name == 'ctrl-c' else \
+                    patch.object(rc, 'attribute_global_config_changes', side_effect=error)
+                with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), target, \
+                        self.assertRaises(type(error)):
+                    co.permission_probe()
+                self.assertFalse(co.probe_passed()[0])
+                self.assertNotIn('permission_probe', co.state)
+                self.assertTrue((co.run_dir / 'permission-probe.superseded.json').is_file())
+                self.assertIn('permission_probe_superseded', json.loads((co.run_dir / 'state.json').read_text()))
+                if name == 'ctrl-c':
+                    self.assertEqual(self.probe(co)['status'], 'PASS')                # a completed probe writes the new binding
+                    self.assertTrue(co.probe_passed()[0])
+
+    def test_an_aborted_or_failed_reprobe_is_never_papered_over_by_the_cache(self):          # P0-4 R1 C1
+        for name in ('aborted', 'failed'):
+            with self.subTest(reprobe=name):
+                self.h.run_dir = self.h.root / ('run-' + name)
+                co = self.co()
+                self.assertEqual(self.probe(co)['status'], 'PASS')
+                (entry,) = self.entries()
+                if name == 'aborted':
+                    with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                            patch.object(co, 'invoke', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                        co.permission_probe()
+                    self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+                else:
+                    failed = self.probe(co, {'status': 'FAIL', 'reason': 'x'})
+                    self.assertEqual(failed['status'], 'FAIL')
+                    before = (co.run_dir / 'permission-probe.json').read_bytes()
+                result = self.cli('resume')
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertNotIn('probe reused', result.stdout)
+                self.assertIn('did not complete' if name == 'aborted' else 'already has a report', result.stdout)
+                if name == 'aborted':
+                    self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+                else:
+                    self.assertEqual((co.run_dir / 'permission-probe.json').read_bytes(), before)    # the FAIL evidence is intact
+                entry.unlink()
+
+    def test_a_reprobe_voids_a_persisted_acceptance(self):                                     # P0-4 R1 M1
+        self.assertEqual(self.cli('run', '--accept-probe-skip', '--reason', 'probe ran elsewhere').returncode, 0)
+        self.assertEqual(self.cli('resume').returncode, 0)                                    # the record is honoured until new evidence
+        failed = self.probe(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(failed['status'], 'FAIL')
+        voided = self.state()['probe_skip_override']['voided']
+        self.assertEqual(voided['reason'], 'permission-probe re-run')
+        self.assertRegex(voided['time'], STAMP)
+        result = self.cli('resume')
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertNotIn('probe skipped', result.stdout)
+
+    def test_a_workspace_overlapping_the_cache_root_disables_the_cache(self):                  # P0-4 R1 MD2
+        co = self.co()
+        self.assertIsNotNone(co._probe_cache_key())
+        for workspace in (self.cache, self.cache.parent, self.cache / 'ws', self.h.test_home / '.cache'):
+            with self.subTest(workspace=str(workspace)), patch.object(co, 'workspace', workspace):
+                self.assertIsNone(co._probe_cache_key())
+        with patch.object(co, 'workspace', self.cache.parent), self.assertRaises(RuntimeError):
+            co._probe_cache_write({}, 'x')
+        self.assertFalse(self.cache.exists())
+
+    def test_the_cache_is_never_consulted_inside_permission_probe(self):
+        co = self.co()
+        with patch.object(co, '_probe_cache_reuse', side_effect=AssertionError('consulted')):
+            self.assertEqual(self.probe(co)['status'], 'PASS')
+
+    # ---- V3: the automatic probe-pass cache -------------------------------------------------------------------
+
+    def test_a_pass_probe_writes_a_private_atomic_cache_entry(self):
+        co = self.co()
+        report = self.probe(co)
+        (entry,) = self.entries()
+        self.assertEqual(self.cache, Path.home() / '.cache' / 'review-loop' / 'probe-pass')
+        self.assertEqual((self.cache.stat().st_mode & 0o777, entry.stat().st_mode & 0o777), (0o700, 0o600))
+        self.assertEqual(list(self.cache.glob('*.tmp*')), [])
+        data = json.loads(entry.read_text())
+        key, inputs = co._probe_cache_key()
+        self.assertEqual((data['key'], data['key_inputs'], entry.name), (key, inputs, key + '.json'))
+        self.assertEqual(inputs, {'surface_version': rc.PROBE_SURFACE_VERSION, 'reviewer_flags_digest': co.reviewer_flags_digest(),
+                                  'author_flags_digest': co.author_flags_digest(), 'claude_versions': ['claude 1.0']})
+        self.assertEqual(data['report'], report)
+        self.assertEqual(data['run_dir'], str(co.run_dir))
+        self.assertEqual(data['source_report_sha256'], hashlib.sha256((co.run_dir / 'permission-probe.json').read_bytes()).hexdigest())
+        self.assertRegex(data['time'], STAMP)
+
+    def test_only_an_exact_pass_is_cached(self):
+        author = {'PASS_RESIDUAL_RISK': {'status': 'PASS_RESIDUAL_RISK', 'd1a_model_verdict': 'UNKNOWN', 'd1b_synthetic_verdict': 'PASS',
+                                         'residual_risk': 'x'},
+                  'UNKNOWN': {'status': 'UNKNOWN'}, 'FAIL': {'status': 'FAIL', 'reason': 'x'}}
+        for status, verdict in author.items():
+            with self.subTest(status=status):
+                self.h.run_dir = self.h.root / ('run-' + status)
+                report = self.probe(self.co(), verdict)
+                self.assertEqual(report['status'], status)
+                self.assertEqual(self.entries(), [])
+        self.assertFalse(self.cache.exists())
+
+    def test_a_cache_write_failure_is_a_warning_and_never_changes_the_verdict(self):
+        co = self.co()
+        with patch.object(co, '_probe_cache_write', side_effect=OSError('disk full')):
+            report = self.probe(co)
+        self.assertEqual(report['status'], 'PASS')
+        self.assertIn('probe-pass cache not written: disk full', report['warning'])
+        self.assertTrue(co.probe_passed()[0])
+        self.assertEqual(self.entries(), [])
+        self.cache.parent.mkdir(parents=True)                                        # a symlinked cache dir is never written through
+        outside = self.h.root / 'elsewhere'
+        outside.mkdir()
+        self.cache.symlink_to(outside)
+        self.h.run_dir = self.h.root / 'run-link'
+        report = self.probe(self.co())
+        self.assertEqual(report['status'], 'PASS')
+        self.assertIn('symlinked cache path', report['warning'])
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_later_run_with_the_same_key_reuses_the_pass_automatically_and_records_it(self):
+        co, entry = self.seed()
+        self.assertFalse(co.probe_passed()[0])
+        result = self.cli('resume')                                                   # the whole CLI gate, same run dir
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('probe reused from ' + str(entry), result.stdout)
+        report = json.loads((co.run_dir / 'permission-probe.json').read_text())
+        used = report['reused_from']
+        self.assertEqual((used['cache_path'], used['cache_sha256'], used['source_run_dir']),
+                         (str(entry), hashlib.sha256(entry.read_bytes()).hexdigest(), str(co.run_dir)))
+        self.assertEqual(used['original_time'], json.loads(entry.read_text())['time'])
+        self.assertRegex(used['reuse_time'], STAMP)
+        self.assertEqual(self.state()['permission_probe']['sha256'], hashlib.sha256((co.run_dir / 'permission-probe.json').read_bytes()).hexdigest())
+        self.assertTrue(self.co().probe_passed()[0])
+
+    def test_reuse_from_another_run_dir_is_adopted_only_when_probe_passed_accepts_it(self):
+        first, entry = self.seed()
+        self.h.run_dir = self.h.root / 'second'
+        second = self.co()
+        self.assertNotEqual(second.reviewer_flags_digest(), first.reviewer_flags_digest())     # the digests bind run_dir today
+        self.assertEqual(self.reuse(second)[0], False)
+        self.assertIn('no entry', self.reuse(second)[1])
+        self.assertFalse((second.run_dir / 'permission-probe.json').exists())
+        with patch.object(second, 'reviewer_flags_digest', return_value=first.reviewer_flags_digest()), \
+                patch.object(second, 'author_flags_digest', return_value=first.author_flags_digest()):
+            self.assertEqual(self.reuse(second)[0], True)
+            self.assertEqual(json.loads((second.run_dir / 'permission-probe.json').read_text())['reused_from']['source_run_dir'], str(first.run_dir))
+        # a report that probe_passed() rejects for this run is not adopted and leaves no file behind
+        third_dir = self.h.root / 'third'
+        self.h.run_dir = third_dir
+        third = self.co()
+        self.set_entry(entry, report={**json.loads(entry.read_text())['report'], 'global_config_changes': {'status': 'FAIL'}})
+        with patch.object(third, 'reviewer_flags_digest', return_value=first.reviewer_flags_digest()), \
+                patch.object(third, 'author_flags_digest', return_value=first.author_flags_digest()):
+            ok, why = self.reuse(third)
+        self.assertFalse(ok)
+        self.assertIn('does not pass for this run', why)
+        self.assertFalse((third_dir / 'permission-probe.json').exists())
+        self.assertIsNone(third.state.get('permission_probe'))
+
+    def test_no_reuse_when_the_flags_or_versions_differ(self):
+        changes = {
+            'model': lambda co: setattr(co.args, 'reviewer_model', 'claude-sonnet-5-5'),
+            'author-model': lambda co: setattr(co.args, 'author_model', 'gpt-6.1-sol'),
+            'vendor': lambda co: setattr(co.args, 'reviewer_vendor', 'codex'),
+            'codex-cli-version': lambda co: setattr(co, '_codex_cli_version', lambda: OTHER),
+            'claude-version': lambda co: setattr(self, 'claude_version', 'claude 1.1'),
+        }
+        for name, change in changes.items():
+            with self.subTest(change=name):
+                self.h.run_dir = self.h.root / ('run-' + name)
+                co, entry = self.seed()
+                self.assertTrue(self.reuse(co)[0])                                     # control: the unchanged key hits
+                self.forget_report(co)
+                change(co)
+                ok, why = self.reuse(co)
+                self.assertFalse(ok, why)
+                self.assertIn('probe cache:', why)
+                self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+                self.claude_version = 'claude 1.0'
+                for old in self.entries(): old.unlink()
+
+    def test_a_claude_version_is_part_of_the_key_only_when_a_role_is_claude(self):
+        co = self.co()
+        self.assertEqual(co._probe_cache_key()[1]['claude_versions'], ['claude 1.0'])
+        with patch.object(co.args, 'reviewer_vendor', 'codex'), patch.object(co.args, 'gate_vendor', 'codex'):
+            self.assertEqual(co._probe_cache_key()[1]['claude_versions'], [])
+        self.claude_version = 'UNAVAILABLE'
+        self.assertIsNone(co._probe_cache_key())                                       # never a key with an unknown Claude version
+
+    def test_a_tampered_entry_whose_recorded_key_inputs_differ_is_not_reused(self):
+        co, entry = self.seed()
+        data = json.loads(entry.read_text())
+        self.set_entry(entry, key_inputs={**data['key_inputs'], 'claude_versions': ['claude 9']})
+        ok, why = self.reuse(co)
+        self.assertEqual((ok, why), (False, 'probe cache: recorded key inputs differ'))
+        self.set_entry(entry, key_inputs=data['key_inputs'], key='0' * 64)
+        self.assertEqual(self.reuse(co)[1], 'probe cache: recorded key inputs differ')
+        self.set_entry(entry, key=data['key'])
+        self.assertTrue(self.reuse(co)[0])
+
+    def test_a_symlinked_file_or_cache_directory_is_not_reused(self):
+        co, entry = self.seed()
+        real = self.h.root / 'real-entry.json'
+        shutil.copy(entry, real)
+        entry.unlink()
+        entry.symlink_to(real)
+        self.assertEqual(self.reuse(co), (False, 'probe cache: symlinked entry or directory'))
+        entry.unlink()
+        shutil.copy(real, entry)
+        self.assertTrue(self.reuse(co)[0])                                             # control
+        self.forget_report(co)
+        moved = self.h.root / 'moved-cache'
+        self.cache.rename(moved)
+        self.cache.symlink_to(moved)
+        self.assertEqual(self.reuse(co), (False, 'probe cache: symlinked entry or directory'))
+        self.cache.unlink()
+        self.cache.parent.rename(self.h.root / 'moved-parent')
+        self.cache.parent.symlink_to(self.h.root / 'moved-parent')                     # an ancestor below ~ is a symlink
+        self.assertEqual(self.reuse(co), (False, 'probe cache: symlinked entry or directory'))
+
+    def test_a_group_or_world_writable_or_foreign_entry_is_not_reused(self):
+        co, entry = self.seed()
+        for mode in (0o620, 0o602, 0o666, 0o660):
+            with self.subTest(mode=oct(mode)):
+                entry.chmod(mode)
+                self.assertIn('private regular file', self.reuse(co)[1])
+        entry.chmod(0o644)                                                              # readable by others is not writable by them
+        self.assertTrue(self.reuse(co)[0])
+        self.forget_report(co)
+        entry.chmod(0o600)
+        with patch.object(rc.os, 'getuid', return_value=os.getuid() + 1):
+            self.assertIn('private regular file', self.reuse(co)[1])
+        fifo = self.cache / ('f' * 64 + '.json')
+        os.mkfifo(fifo)                                                                 # not a regular file: never opened
+        with patch.object(co, '_probe_cache_key', return_value=('f' * 64, {})):
+            self.assertIn('private regular file', self.reuse(co)[1])
+
+    def test_an_entry_older_than_seven_days_is_not_reused(self):
+        co, entry = self.seed()
+        stamp = lambda age: time.strftime(rc.UTC_FORMAT, time.gmtime(time.time() - age))
+        self.set_entry(entry, time=stamp(7 * 86400 + 120))
+        self.assertEqual(self.reuse(co), (False, 'probe cache: entry is older than 7 days'))
+        self.set_entry(entry, time=stamp(6 * 86400))
+        self.assertTrue(self.reuse(co)[0])
+        self.forget_report(co)
+        self.set_entry(entry, time=stamp(-3600))                                        # a future time is not fresh either
+        self.assertFalse(self.reuse(co)[0])
+        self.set_entry(entry, time='not a time')
+        self.assertIn('unreadable', self.reuse(co)[1])
+
+    def test_a_missing_or_garbled_entry_is_a_named_miss(self):
+        co = self.co()
+        self.assertEqual(self.reuse(co), (False, 'probe cache: no entry for these flags and versions'))
+        self.assertFalse(self.cache.exists())                                           # a miss creates nothing
+        co, entry = self.seed()
+        entry.write_text('{not json')
+        self.assertIn('unreadable', self.reuse(co)[1])
+
+    def test_the_fake_harness_never_creates_reads_or_writes_the_real_cache(self):
+        co = self.co()
+        self.assertTrue(co.permission_probe())                                            # the genuine fake-harness guard is active
+        report = json.loads((co.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual(report['status'], 'PASS')
+        self.assertNotIn('warning', report)
+        self.assertFalse((self.h.test_home / '.cache').exists())
+        co2, entry = self.seed()                                                         # a valid entry exists; the fake gate ignores it
+        with patch.object(co2, '_probe_cache_reuse', side_effect=AssertionError('read')):
+            self.assertEqual(co2.probe_gate()[0], False)
+        self.assertFalse((co2.run_dir / 'permission-probe.json').exists())
+
+    # ---- V4: no role can write the cache ---------------------------------------------------------------------
+
+    def test_the_claude_author_argv_denies_the_cache_root_for_edit_and_bash(self):
+        co = self.co(*BUG_REPORT_FLAGS)
+        schema = self.h.root / 'schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        argv = co.command('author', schema, False)
+        root = self.cache.resolve()
+        rule = 'Edit(//' + root.as_posix().lstrip('/') + '/**)'
+        self.assertIn(rule, ClaudeAuthorTests.author_deny(argv))
+        settings = json.loads(argv[argv.index('--settings') + 1])
+        self.assertIn(str(root), settings['sandbox']['filesystem']['denyWrite'])
+        self.assertTrue(any(ClaudeAuthorTests.denied(r, root / 'x.json') for r in ClaudeAuthorTests.author_deny(argv)))
+        self.assertIn(rule, co.author_flags()['claude_author_edit_rules'][1])
+        self.assertNotIn(rule, argv[argv.index('--allowedTools') + 1])
+        reviewer = co._claude_command('reviewer', schema, False)                          # read-only roles stay as they are
+        self.assertNotIn(str(root), reviewer[reviewer.index('--settings') + 1])
+
+    def test_the_codex_author_sandbox_cannot_write_the_cache_root(self):
+        co = self.co()
+        roots = co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots']
+        self.assertEqual(roots, [str(co.author_temp_dir)])
+        for root in roots:
+            self.assertFalse(Path(root).resolve().is_relative_to(self.cache.resolve()))
+            self.assertFalse(self.cache.resolve().is_relative_to(Path(root).resolve()))
+        self.assertNotIn('probe-pass', ' '.join(co._codex_sandbox_profile_args()))
 
 
 if __name__ == '__main__':

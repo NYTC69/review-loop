@@ -8,6 +8,7 @@ shadow and adversarial reviewers are always fresh.
 from __future__ import annotations
 
 import argparse
+import calendar
 import copy
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -62,7 +63,12 @@ def plugin_version() -> str:   # review-loop's own version, read at run time: a 
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
 # Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
 VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
-OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'reason'})  # command line only, plus any accept_*
+OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
+UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
+def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
+def claude_cli_version(binary: str) -> str:
+    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip() or 'UNAVAILABLE'
+    except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -1568,7 +1574,7 @@ class Coordinator:
                              'or hold rule metacharacters')
         rule = lambda path, tail: f'Edit(//{path.as_posix().lstrip("/")}{tail})'
         # No '//parent/*' sibling deny: gitignore-style matching could cover the workspace itself; siblings are not allowed anyway.
-        return [rule(workspace, '/**')], [rule(context, '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]
+        return [rule(workspace, '/**')], [rule(context, '/**'), rule(home / '.cache' / 'review-loop' / 'probe-pass', '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]   # P0-4 V4
 
     def _claude_sandbox_settings(self, role: str) -> dict:
         """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
@@ -1601,7 +1607,8 @@ class Coordinator:
                     'files': [{'path': path, 'mode': 'deny'} for path in credential_paths],
                 },
                 'filesystem': {
-                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else [])
+                    'denyWrite': [str(self.run_dir), *([str(Path.home().resolve() / '.cache' / 'review-loop' / 'probe-pass')] if role == 'author' else [])]   # P0-4 V4: the probe-pass cache
+                                 + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else [])
                                  + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else []),   # the probe's context; the real one is under run_dir
                 },
             },
@@ -1647,6 +1654,59 @@ class Coordinator:
                 and not lifecycle_spine.fake_dispatch_guard(self.args)):
             return False, 'permission probe reviewer vendor is not the gate vendor'
         return True, ''
+
+    def _probe_skip_accepted(self) -> bool:   # P0-4 V2: the flag is command-line only; the recorded acceptance is honoured until a digest changes or a probe re-runs
+        acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest()}
+        if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
+            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen}; self.save()
+        return acc.get('actor') == 'operator' and not acc.get('voided') and all(acc.get(k) == v for k, v in seen.items())
+
+    def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
+        root, ws = probe_cache_root().resolve(), self.workspace.resolve()
+        if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
+        versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
+        if 'UNAVAILABLE' in versions: return None
+        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'claude_versions': versions}
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
+
+    def _probe_cache_write(self, report: dict, report_sha256: str) -> None:   # the caller turns any failure into a report warning, never a verdict change
+        key, inputs, root = *(self._probe_cache_key() or (None, None)), probe_cache_root()
+        if key is None or any(p.is_symlink() for p in (root.parent.parent, root.parent, root)):
+            raise RuntimeError('no cache key (Claude version or program state unavailable) or a symlinked cache path')
+        os.makedirs(root, mode=0o700, exist_ok=True); (temp := root / f'{key}.json.tmp').unlink(missing_ok=True)
+        os.close(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))   # atomic_json rewrites this file, which keeps 0600
+        atomic_json(root / f'{key}.json', {'key': key, 'key_inputs': inputs, 'run_dir': str(self.run_dir), 'source_report_sha256': report_sha256, 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'report': report})
+
+    def _probe_cache_reuse(self) -> tuple[bool, str]:   # P0-4 V3: adopt an earlier PASS for this exact key after the checks; else name the failed one
+        keyed, root = self._probe_cache_key(), probe_cache_root()
+        if keyed is None: return False, 'probe cache: no key (Claude version or program state unavailable)'
+        (key, inputs), path = keyed, root / f'{keyed[0]}.json'
+        if any(p.is_symlink() for p in (root.parent.parent, root.parent, root, path)): return False, 'probe cache: symlinked entry or directory'
+        try: info = path.lstat()
+        except OSError: return False, 'probe cache: no entry for these flags and versions'
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            return False, 'probe cache: entry is not a private regular file owned by this user'
+        try: raw = path.read_bytes(); entry = json.loads(raw); report = entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT))
+        except (OSError, ValueError, KeyError, TypeError): return False, 'probe cache: entry is unreadable'
+        if entry.get('key') != key or entry.get('key_inputs') != inputs: return False, 'probe cache: recorded key inputs differ'
+        if not 0 <= age <= 7 * 86400: return False, 'probe cache: entry is older than 7 days'
+        if 'permission_probe_superseded' in self.state and not self.state.get('permission_probe'): return False, 'probe cache: the last permission-probe did not complete'
+        if (target := self.run_dir / 'permission-probe.json').exists(): return False, 'probe cache: this run already has a report that does not pass'
+        prior = self.state.get('permission_probe')
+        atomic_json(target, {**report, 'reused_from': {'cache_path': str(path), 'cache_sha256': hashlib.sha256(raw).hexdigest(), 'source_run_dir': entry.get('run_dir'), 'original_time': entry['time'], 'reuse_time': time.strftime(UTC_FORMAT, time.gmtime())}})
+        self.state['permission_probe'] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'turn': report.get('probe_turn')}
+        passed, why = self.probe_passed()
+        if passed: self.save(); print(f'probe reused from {path} (PASS of {entry["time"]} in {entry.get("run_dir")})'); return True, ''
+        self.state['permission_probe'] = prior; target.unlink()      # not adopted
+        return False, 'probe cache: entry does not pass for this run: ' + why
+
+    def probe_gate(self) -> tuple[bool, str]:   # run/resume/reject: a passing report, an accepted skip or a verified cache reuse (noted on stdout)
+        passed, reason = self.probe_passed()
+        if passed: return True, ''
+        if self._probe_skip_accepted(): print('probe skipped by operator acceptance (--accept-probe-skip)'); return True, ''
+        if lifecycle_spine.fake_dispatch_guard(self.args): return False, reason       # the fake harness never touches the real cache
+        reused, note = self._probe_cache_reuse()
+        return (True, '') if reused else (False, reason + '; ' + note)
 
     def _validate_resume_args(self) -> None:
         if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
@@ -4491,6 +4551,10 @@ class Coordinator:
                      'uncertain in-flight CLI turn')):
                 self.state['hold_reason'] = 'permission probe retry cleared; permission probe is pending'
             self.save()
+        report_file = self.run_dir / 'permission-probe.json'      # P0-4 V0: an aborted re-probe must not leave the old PASS valid
+        if report_file.exists(): os.replace(report_file, report_file.with_name('permission-probe.superseded.json'))
+        self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
+        (self.state.get('probe_skip_override') or {}).setdefault('voided', {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reason': 'permission-probe re-run'}); self.save()
         snapshot, _ = git_snapshot(self.workspace)
         global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         allowed_command = self.args.test_command.strip()
@@ -4725,6 +4789,9 @@ class Coordinator:
         trust_warning = '; '.join(report['global_config_changes'].get('warnings', []))
         if trust_warning:
             trust_warning += ': ' + ', '.join(path for row in report['global_config_changes']['expected_changes'] if row['file'] == 'codex_config' for path in row['workspaces']); report['warning'] = trust_warning
+        if report['status'] == 'PASS' and not author_probe.get('model_escape_failed_targets') and not lifecycle_spine.fake_dispatch_guard(self.args):    # P0-4 V3: never PASS_RESIDUAL_RISK / UNKNOWN
+            try: self._probe_cache_write(report, hashlib.sha256((json.dumps(report, indent=2, ensure_ascii=False) + '\n').encode()).hexdigest())
+            except Exception as exc: report['warning'] = (report.get('warning', '') + '; ' if report.get('warning') else '') + f'probe-pass cache not written: {exc}'
         atomic_json(self.run_dir / 'permission-probe.json', report)
         self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
         if author_probe.get('model_escape_failed_targets'):
@@ -5493,7 +5560,10 @@ def parser() -> argparse.ArgumentParser:
                         'with run, resume or reject). Persisted and re-applied on restore until the author flags change. '
                         'The Edit path boundary is not yet verified against symlink or hardlink redirection created '
                         'inside the workspace (P0-3b probes it)')
-    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version or Claude author')
+    p.add_argument('--accept-probe-skip', action='store_true',
+                   help='operator acceptance: run/resume/reject without a passing permission-probe.json (needs --reason); voided for good '
+                        'when a flags digest changes; the Codex CLI contract and Claude author gate still apply')
+    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version, Claude author or probe skip')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
@@ -5675,9 +5745,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
         if not (verified := co.codex_contract_verified())[0]:
             print('REFUSED: ' + verified[1])
             return 2
+    if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
+        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest()}; co.save()
     if args.action == 'reject':
         if not args.skip_probe:
-            passed, reason = co.probe_passed()
+            passed, reason = co.probe_gate()
             if not passed:
                 print('REFUSED: ' + reason + '; run permission-probe before continuing')
                 return 2
@@ -5695,11 +5767,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
                      and global_config_snapshot(co.global_config_home, co.global_codex_home).get(
                          'codex_config', {}).get('sha256') != before_config)
     if args.action in ('run', 'resume') and not args.skip_probe:
-        passed, reason = co.probe_passed()
+        passed, reason = co.probe_gate()
         if not passed and not changed_codex:
             print('REFUSED: ' + reason + '; run permission-probe before continuing')
             return 2
-    co._probe_gate_required = not args.skip_probe
+    co._probe_gate_required = not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
         if co.state.get('status') == 'ACCEPTED':
             print('ACCEPTED')
@@ -5737,9 +5809,9 @@ def main(argv=None) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
-    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author
+    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
     if bool(accepts) != bool((args.reason or '').strip()) or (accepts and args.action not in ('run', 'resume', 'reject')):
-        print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author needs --reason and run, resume or reject')
+        print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip needs --reason and run, resume or reject')
         return 2
     try:
         resolve_role_model_defaults(args)
