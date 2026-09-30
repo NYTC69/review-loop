@@ -762,7 +762,7 @@ the normal Claude reviewer and parallel scheduler calls.
 
 ```bash
 # Terminal Adversarial Gate — single-entry-point Python invoker.
-python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file"
+python3 scripts/adversarial_gate_invoke.py --focus-file "$focus_text_file" --timeout-secs 570
 adversarial_exit=$?
 # 0 → APPROVE; 1 → REQUEST_CHANGES; SKIP reasons land on stderr.
 ```

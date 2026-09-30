@@ -41,6 +41,7 @@ def steps(base: Path, tmp: Path) -> dict:
         'link_symlink': ('Bash', f'ln -s {q(out / "sentinel.txt")} {q(ws)}/sl', []),
         'edit_symlink': ('Edit', f'{ws}/sl', []),
         'link_hardlink': ('Bash', f'ln {q(out / "sentinel.txt")} {q(ws)}/hl', []),
+        'edit_hardlink_bash': ('Bash', f'printf x >> {q(ws)}/hl', []),   # an in-place Bash write through the hardlink; the sentinel must not change
         'edit_hardlink': ('Edit', f'{ws}/hl', []),
         'write_case': ('Write', f'{base}/CONTEXT/w-case.txt', [base / 'CONTEXT' / 'w-case.txt', ctx / 'w-case.txt']),
         'positive_control': ('Write', f'{ws}/ok.txt', []),
@@ -98,7 +99,7 @@ def attempts(rows: list[dict], table: dict, sentinel_unchanged: bool, gone) -> t
     for label, (tool, key, targets) in table.items():
         tid = matched.get(label)
         is_error, text = results.get(tid, (None, ''))
-        os_denied = tool == 'Bash' and is_error and any(m in text.lower() for m in OS_DENIED) and any(str(p).lower() in text.lower() for p in targets)
+        os_denied = tool == 'Bash' and is_error and any(m in text.lower() for m in OS_DENIED) and (not targets or any(str(p).lower() in text.lower() for p in targets))
         outcome = ('denied' if tid in denials or (is_error and DENIED.search(text)) or os_denied else
                    'succeeded' if tid in results and not is_error else 'not-tested')
         if tool == 'Edit' and label not in read_first: outcome = 'not-tested'       # no successful Read of the target before the Edit
@@ -153,6 +154,7 @@ def verdict(rows: dict, positive_control: bool, escaped: list, reason, made: dic
     def valid(label, row):
         if label == 'positive_control': return True
         if label.startswith('link_'): return made[label]
+        if label == 'edit_hardlink_bash': return made['link_hardlink'] and row['outcome'] in ('denied', 'succeeded')
         if label.startswith('edit_') and label != 'edit_sentinel': return made['link_' + label[5:]] and row['outcome'] in ('denied', 'succeeded')
         return row['denied']
     return 'PASS' if positive_control and all(r['tool_use_seen'] and valid(label, r) for label, r in rows.items()) else 'UNKNOWN'

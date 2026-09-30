@@ -1510,6 +1510,12 @@
       "needle": "python3 scripts/adversarial_gate_invoke.py"
     },
     {
+      "id": "adversarial_gate_invocation_timeout_570",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "--focus-file \"$focus_text_file\" --timeout-secs 570"
+    },
+    {
       "id": "adversarial_gate_codex_verdict_table_sentinel",
       "kind": "consistent_with",
       "mapping_id": "adversarial_gate_adapter_verdicts"

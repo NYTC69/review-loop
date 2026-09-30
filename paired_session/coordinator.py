@@ -616,10 +616,40 @@ def atomic_text(path: Path, value: str) -> None:
         os.close(fd)
 
 
+def _control_file_digest(path: Path) -> str:
+    """One control file: its bytes (and link target), or a fixed marker when it is missing, unreadable or not a regular file."""
+    try:
+        link = 'LINK:' + os.readlink(path) + ':' if path.is_symlink() else ''
+        if path.is_file(): return link + hashlib.sha256(path.read_bytes()).hexdigest()
+        return link + ('NONREGULAR' if path.exists() else 'MISSING')
+    except OSError as exc: return 'UNREADABLE:' + str(exc.errno)
+
+
+def git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
+    """K1: the single wrapper: any exception taking the control state becomes the marker the drive loop turns into a HOLD."""
+    try: return _git_control_state(workspace, dirs)
+    except Exception as exc: return dirs or [], {'!unreadable': f'{type(exc).__name__}: {exc}'}
+
+def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
+    """D1: sha256 of the git control files an author could write: config, hooks/*, info/attributes (missing = a marker)."""
+    if dirs is None:
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--absolute-git-dir', '--git-common-dir', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        dirs = list(dict.fromkeys(workspace / line for line in proc.stdout.splitlines() if line)) if proc.returncode == 0 else []
+    digest = {}
+    if (workspace / '.git').is_file(): digest['.git'] = _control_file_digest(workspace / '.git')
+    for root in dirs:
+        for path in [root / 'config', root / 'config.worktree', root / 'info' / 'attributes', *sorted((root / 'hooks').rglob('*'))]:
+            digest[str(path)] = _control_file_digest(path)   # a link is hashed by its target's bytes too
+    if bad := [k for k, v in digest.items() if v.endswith('NONREGULAR') and not k.endswith('/hooks') and '/hooks/' not in k]: digest['!unreadable'] = 'non-regular control file ' + ', '.join(bad); return dirs, digest   # a FIFO/device/directory config or info/attributes: no git call may read it
+    for scope in ('--local', '--worktree', '--global', '--system'):   # the effective config of every scope, so a file pulled in by [include] is covered
+        try: proc = candidate_tree.run_bounded(candidate_tree.git_command('config', scope, '--includes', '--list', '-z', '--show-origin', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        except Exception as exc: digest['effective-config' + scope] = 'UNAVAILABLE: ' + str(exc); continue   # a changed config that git cannot be called under still HOLDs
+        digest['effective-config' + scope] = hashlib.sha256(proc.stdout + bytes([proc.returncode])).hexdigest()
+    return dirs, digest
 def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     """Digest tracked + untracked non-ignored files; symlinks hash their target."""
-    proc = subprocess.run(
-        ['git', 'ls-files', '-co', '--exclude-standard', '-z'], cwd=workspace,
+    proc = candidate_tree.run_bounded(
+        candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=workspace), cwd=workspace,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if proc.returncode:
@@ -1189,6 +1219,9 @@ class Coordinator:
                 raise ValueError('--workspace must be a git worktree')
             if not self.workitem.is_file():
                 raise ValueError('--workitem must be a file')
+            _, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin,
+                                        self.args.claude_bin, self.args.gate_prompt, self.args.config)
+            if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -1240,8 +1273,8 @@ class Coordinator:
                 if spec.get('item_uuid') and (spec['item_uuid'] != old.get('item_uuid') or
                         spec.get('item_blockers') != pending_item_blockers(old, parent)):
                     raise ValueError('successor item identity or blockers differ')
-                if subprocess.run(['git', 'merge-base', '--is-ancestor', old['base_commit'], 'HEAD'],
-                                  cwd=self.workspace).returncode:
+                if candidate_tree.run_bounded(candidate_tree.git_command('merge-base', '--is-ancestor', old['base_commit'], 'HEAD', cwd=self.workspace),
+                                              cwd=self.workspace).returncode:
                     raise ValueError('parent base_commit is not an ancestor of HEAD')
                 with run_lease(parent):
                     claim = parent / 'evidence/successor-claim.json'
@@ -2299,19 +2332,19 @@ class Coordinator:
             emit('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:
-        proc = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.workspace,
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--verify', 'HEAD', cwd=self.workspace), cwd=self.workspace,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return proc.stdout.strip() if proc.returncode == 0 else None
 
     def _git(self, args: list[str], ok=(0,)) -> str:
-        proc = subprocess.run(['git', *args], cwd=self.workspace, stdout=subprocess.PIPE,
+        proc = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, errors='replace')
         if proc.returncode not in ok:
             raise RuntimeError('git ' + ' '.join(args) + ' failed: ' + proc.stderr.strip())
         return proc.stdout
 
     def _workspace_names(self) -> list[str]:
-        raw = subprocess.run(['git', 'ls-files', '-co', '--exclude-standard', '-z'],
+        raw = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=self.workspace),
                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              check=True).stdout
         return sorted(name for name in raw.decode(errors='surrogateescape').split('\0') if name)
@@ -2331,12 +2364,12 @@ class Coordinator:
     def materialize_review_context(self) -> None:
         """Create program-owned, read-only review views without reviewer Git Bash access."""
         base = self.state.get('base_commit')
-        tracked = self._git(['diff', '--binary', base, '--'] if base else ['diff', '--binary', '--'])
-        stat = self._git(['diff', '--stat', base, '--'] if base else ['diff', '--stat', '--'])
+        tracked = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--binary', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--binary', '--'])
+        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--stat', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--stat', '--'])
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
-            additions.append(self._git(['diff', '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
+            additions.append(self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
         delta = tracked + ''.join(additions)
         untracked_stat = ''.join(f'UNTRACKED {name} ({(self.workspace / name).lstat().st_size} bytes)\n'
                                  for name in untracked)
@@ -2348,7 +2381,7 @@ class Coordinator:
         if self.state.get('reviews_completed', 0) and baseline.exists():
             current = self.internal / 'current-review'
             self._mirror_workspace(current)
-            proc = subprocess.run(['git', 'diff', '--no-index', '--binary', '--', str(baseline), str(current)],
+            proc = candidate_tree.run_bounded(candidate_tree.git_command('diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
@@ -3533,6 +3566,8 @@ class Coordinator:
         atomic_json(schema_path, schema)
         atomic_text(prefix.with_suffix('.prompt.txt'), prompt)
         snapshot_workspace = self.workspace if self._fake_lifecycle and workspace_override else active_workspace
+        control_dirs, control_before = git_control_state(snapshot_workspace) if role == 'author' else ([], {})
+        if bad := control_before.get('!unreadable') or next((v for v in control_before.values() if v.startswith('UNAVAILABLE')), None): raise RuntimeError('git control state unreadable: ' + bad)   # no further git call in a workspace whose config cannot be read
         before, manifest = git_snapshot(snapshot_workspace)
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
@@ -3663,12 +3698,20 @@ class Coordinator:
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
-        after, after_manifest = git_snapshot(snapshot_workspace)
+        control_after = git_control_state(snapshot_workspace, control_dirs)[1] if role == 'author' else {}
+        control_changed = sorted(k for k in {*control_before, *control_after} if control_before.get(k) != control_after.get(k))
+        unreadable = control_before.get('!unreadable') or control_after.get('!unreadable')
+        control_problem = ('git control state unreadable: ' + unreadable if unreadable else
+                           'author changed git control files: ' + ', '.join(control_changed) if control_changed else '')
         context_after = directory_digest(self.context)
-        receipt['snapshot_after'] = after
         receipt['context_after'] = context_after
-        atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
+        if control_problem: after = None   # D1: no further git call in this workspace after the author touched its git control files
+        else:
+            after, after_manifest = git_snapshot(snapshot_workspace)
+            receipt['snapshot_after'] = after
+            atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         try:
+            if control_problem: raise ValueError(control_problem)
             if vendor_config_before is not None:
                 changes = attribute_global_config_changes(vendor_config_before,
                     global_config_snapshot(self.global_config_home, self.global_codex_home), [active_workspace])
@@ -5653,8 +5696,9 @@ def gate_surface_issue(args: argparse.Namespace):
                 'its read-only surface is not covered by permission-probe')
 
 
-def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.ArgumentParser:
+def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile: bool = False) -> argparse.ArgumentParser:
     """Load project defaults while preserving explicit CLI argument precedence."""
+    if ignore_profile: return p
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument('--workspace', required=True)
     bootstrap.add_argument('--config')
@@ -5826,6 +5870,8 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
+        args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
     args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
         arg == o or arg.startswith(o + '=') for o in a.option_strings for arg in raw_argv)}
     roots = (Path(args.workspace), Path(args.run_dir))

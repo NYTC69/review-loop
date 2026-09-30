@@ -3,12 +3,16 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
+try:
+    from paired_session.candidate_tree import GIT_NO_EXEC
+except ImportError:
+    from candidate_tree import GIT_NO_EXEC
 def _raise(error):
     raise error
 def _git(root, *args):
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
-               '-C', str(root), *args]
+    command = ['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=/dev/null', '-C', str(root), *args]   # ls-files / rev-parse run no clean filter
+    env['GIT_ATTR_NOSYSTEM'] = '1'
     result = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE)
     if result.returncode or result.stderr:
