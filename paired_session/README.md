@@ -378,3 +378,11 @@ Workspace/index drift, ambiguous items and symlink paths refuse before PLAN.
 The run records the exact HEAD, BACKLOG blob and hashes of the view and adapter.
 This admission does not close an item: Q construction, fresh Q checks and DELIVERY
 remain required. Real lifecycle entry remains disabled.
+
+`closeout_adapter.close_blob` produces an **unreviewed Q proposal** from the exact
+frozen BACKLOG bytes, a C1 object ID and closing date. It moves only the selected
+item and its children, restores an empty source sentinel, updates Last updated
+and retains the newest five Done blocks. It writes no file and supplies no
+approval. Q still needs isolated materialization and fresh review/test/SECURITY
+receipts before accept or delivery. Closeout intake is write-once at a fresh
+lifecycle parent, and BACKLOG is excluded from the declared writer grants.

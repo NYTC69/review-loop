@@ -51,6 +51,8 @@ class CloseoutPolicyTests(unittest.TestCase):
         self.assertEqual(result['backlog_sha256'], hashlib.sha256(before).hexdigest())
         self.assertEqual(result['view_sha256'], hashlib.sha256(self.view.read_bytes()).hexdigest())
         self.assertEqual(result['adapter_sha256'], hashlib.sha256(Path(cp.__file__).read_bytes()).hexdigest())
+        self.assertEqual(result['close_adapter_sha256'],
+                         hashlib.sha256(Path(cp.adapter.__file__).read_bytes()).hexdigest())
         self.assertEqual(self.backlog.read_bytes(), before)
         self.assertEqual(self.git('status', '--porcelain'), '')
 
@@ -94,6 +96,13 @@ class CloseoutPolicyTests(unittest.TestCase):
         for value in (None, {}, {'items': []}, {'source_path': str(self.backlog), 'generated_at': 'bad'}):
             self.view.write_text(json.dumps(value))
             with self.subTest(value=value), self.assertRaises(ValueError):
+                cp.freeze_item(self.workspace, 1)
+
+    def test_valid_source_and_timestamp_with_malformed_items_refuse(self):
+        for items in (None, {}, ['bad'], [None], [{'id': True, 'section': 'P1', 'title_span': 'Fix sums'}]):
+            self.data['items'] = items
+            self.write_view()
+            with self.subTest(items=items), self.assertRaises(ValueError):
                 cp.freeze_item(self.workspace, 1)
 
     def test_old_future_and_naive_view_timestamps_refuse(self):

@@ -4621,7 +4621,16 @@ class Coordinator:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise RuntimeError('fake lifecycle refuses a non-fake provider')
         if backlog_item is not None:
-            self.state['closeout_item'] = closeout_policy.freeze_item(self.workspace, backlog_item)
+            life = self.state['lifecycle']
+            if self.state.get('closeout_item') or life != lifecycle_spine.initial(life['item_uuid'], life['parent']):
+                raise ValueError('closeout item freeze requires a fresh lifecycle and is write-once')
+            if any(p.casefold() == str(self.workspace / 'BACKLOG.md').casefold()
+                   for p in self.state['config']['docs_allowlist']):
+                raise ValueError('BACKLOG must be outside writer grants')
+            frozen = closeout_policy.freeze_item(self.workspace, backlog_item)
+            if frozen['head'] != life['parent']:
+                raise ValueError('closeout item HEAD differs from frozen lifecycle parent')
+            self.state['closeout_item'] = frozen
         if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:
             return self.state['status']
         self.fake_candidate_author_turn(chain_only=True)

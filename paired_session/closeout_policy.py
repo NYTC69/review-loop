@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 from importlib import import_module
 ct = import_module("paired_session.candidate_tree" if __package__ else "candidate_tree")
+adapter = import_module("paired_session.closeout_adapter" if __package__ else "closeout_adapter")
 def freeze_item(workspace, item_id):
     workspace = Path(workspace).resolve()
     backlog, view_path = workspace / 'BACKLOG.md', workspace / '.compass/backlog-last-view.json'
@@ -51,4 +52,5 @@ def freeze_item(workspace, item_id):
     return {'item_id': item_id, 'section': matches[0][0], 'line': matches[0][1], 'title': matches[0][2],
             'head': head, 'backlog_blob': blob, 'backlog_sha256': hashlib.sha256(raw).hexdigest(),
             'view_sha256': hashlib.sha256(view_raw).hexdigest(), 'view_timestamp': view['generated_at'],
+            'close_adapter_sha256': hashlib.sha256(Path(adapter.__file__).read_bytes()).hexdigest(),
             'adapter_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}

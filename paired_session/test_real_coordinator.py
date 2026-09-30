@@ -3466,6 +3466,29 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
 
+    def test_closeout_freeze_refuses_stale_lifecycle_and_backlog_writer_grant(self):
+        for kind in ('prior-freeze', 'prior-stage', 'writer-file', 'writer-allowlist', 'parent-drift'):
+            with self.subTest(kind=kind):
+                run = self.root / ('closeout-' + kind)
+                command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe')
+                command[command.index('--run-dir') + 1] = str(run)
+                if kind.startswith('writer'):
+                    command += ['--docs-file' if kind == 'writer-file' else '--docs-allowlist', 'BACKLOG.md']
+                co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+                if kind == 'prior-freeze':
+                    co.state['closeout_item'] = {'original': True}
+                elif kind == 'prior-stage':
+                    co.state['lifecycle']['stage'] = 'FINISH'
+                before = json.loads(json.dumps(co.state))
+                frozen = {'head': 'different-parent'}
+                with patch.object(rc.closeout_policy, 'freeze_item', return_value=frozen) as freeze:
+                    with self.assertRaises(ValueError):
+                        co.fake_lifecycle_drive(backlog_item=1)
+                self.assertEqual(co.state, before)
+                self.assertEqual(co.state['sequence'], 0)
+                if kind != 'parent-drift':
+                    freeze.assert_not_called()
+
     def test_fake_drive_freezes_operator_closeout_item_before_candidate_author(self):
         docs = self.workspace / 'docs' / 'guide.md'
         docs.parent.mkdir()
