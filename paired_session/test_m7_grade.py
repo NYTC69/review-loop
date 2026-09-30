@@ -21,7 +21,7 @@ def ok(*findings):
 
 
 def key(*blockers, split='synthetic'):
-    return {'split': split, 'blockers': [{'category': 'logic', **b} for b in blockers]}
+    return {'split': split, 'blockers': [{'category': 'logic', **b} for b in blockers], **({} if blockers else {'clean': True})}
 
 
 def blocker(file='a.py', start=10, **extra):
@@ -32,14 +32,30 @@ def manifest(tol=2, arms=('x',)):
     return json.dumps({'line_tolerance': tol, 'arms': list(arms)}).encode()
 
 
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def bind(res, keys, man=None, over=None):
+    """Add the freeze bindings (cases, keys_sha256) to a manifest; re-bind RESULT only if it was bound to it."""
+    man = man or manifest()
+    body = json.loads(man)
+    body.setdefault('cases', [c['id'] for c in res['cases']])
+    body.setdefault('keys_sha256', sha(json.dumps(keys).encode()))
+    new = json.dumps({**body, **(over or {})}).encode()
+    return new, (dict(res, manifest_sha256=sha(new)) if res['manifest_sha256'] == sha(man) else res)
+
+
 def result(*cases, man=None):
     man = man or manifest()
     return {'manifest_sha256': hashlib.sha256(man).hexdigest(), 'cases': [{'id': c, 'status': s} for c, s in cases]}
 
 
 class M7GradeTest(unittest.TestCase):
-    def grade(self, res, recs, keys, voided=None, man=None):
-        return m7_grade.grade(man or manifest(), res, {'voided': voided or {}, 'arms': {'x': recs}}, keys)
+    def grade(self, res, recs, keys, voided=None, man=None, over=None, seen=None):
+        man, res = bind(res, keys, man, over)
+        seen = keys if seen is None else seen  # the keys the grader actually reads (may differ from the frozen ones)
+        return m7_grade.grade(man, res, {'voided': voided or {}, 'arms': {'x': recs}}, seen, json.dumps(seen).encode())
 
     def arm(self, *args, **kw):
         return self.grade(*args, **kw)['arms']['x']
@@ -142,7 +158,7 @@ class M7GradeTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.arm(res, {'c01': ok()}, {})  # counted case without key
         with self.assertRaises(SystemExit):
-            self.arm(res, {'c01': ok()}, {'c01': {'blockers': []}})  # key without split
+            self.arm(res, {'c01': ok()}, {'c01': {'blockers': [], 'clean': True}})  # key without split
         with self.assertRaises(SystemExit):
             self.arm(res, {'c02': ok()}, keys)  # arm record for an unknown case id
         with self.assertRaises(SystemExit):
@@ -164,13 +180,56 @@ class M7GradeTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.arm(result(('c01', 'ok'), man=man), {}, keys, man=man)
 
+    def abort(self, reason, *args, **kw):
+        with self.assertRaisesRegex(SystemExit, reason):
+            self.grade(*args, **kw)
+
+    def test_g1_keys_must_match_frozen_hash(self):
+        res, keys = result(('c01', 'ok')), {'c01': key(blocker())}
+        self.abort('keys_sha256', res, {}, keys, seen={'c01': key()})  # a different KEYS.json than the frozen one
+        self.abort('keys_sha256', res, {}, keys, over={'keys_sha256': 'f' * 64})
+        man, bound = bind(res, keys)
+        with self.assertRaisesRegex(SystemExit, 'keys_sha256'):  # no key bytes handed over
+            m7_grade.grade(man, bound, {'arms': {'x': {}}}, keys)
+        with self.assertRaisesRegex(SystemExit, 'keys_sha256'):  # parsed keys differ from the hashed bytes
+            m7_grade.grade(man, bound, {'arms': {'x': {}}}, {'c01': key()}, json.dumps(keys).encode())
+
+    def test_g2_case_set_is_bound_to_manifest(self):
+        res, keys = result(('c01', 'ok'), ('c02', 'ok')), {'c01': key(blocker()), 'c02': key(blocker())}
+        for cases in (['c01', 'c02', 'c02'], ['c01'], ['c01', 'c02', 'c03'], 'c01', None):
+            self.abort('manifest cases', res, {}, keys, over={'cases': cases})
+        self.abort('manifest cases', res, {}, {'c01': key(blocker())})  # c02 has no key entry
+        objs = [{'id': 'c01', 'base': 'b', 'diff_path': 'd', 'diff_sha256': 'h', 'key_path': 'k'}, {'id': 'c02'}]
+        self.assertEqual(self.arm(res, {}, keys, over={'cases': objs})['cases'], 2)  # m7_corpus.py manifest format
+        self.abort('manifest cases', res, {}, keys, over={'cases': objs[:1]})
+        self.abort('manifest cases', res, {}, keys, over={'cases': [{'id': 'c01'}, {'id': 'c01'}, {}]})
+
+    def test_g3_clean_flag_must_be_explicit(self):
+        res = result(('c01', 'ok'))
+        for bad in ({'split': 'synthetic', 'blockers': []}, {**key(), 'clean': False}, {**key(blocker()), 'clean': True}):
+            self.abort('clean', res, {}, {'c01': bad})
+
+    def test_g4_ranges_must_be_ordered_integers(self):
+        for bad in (blocker(start=True), blocker(start='10'), blocker(start=10.0), blocker(end=9), blocker(end=None),
+                    blocker(end=True), blocker(end=11.5)):
+            self.abort('start/end', result(('c01', 'ok')), {}, {'c01': key(bad)})
+
+    def test_valid_bundle_grades_as_before(self):
+        keys = {'c01': key(blocker(end=12), split='archived'), 'c02': key()}
+        recs = {'c01': ok(finding(line=14)), 'c02': ok()}
+        arm = self.arm(result(('c01', 'ok'), ('c02', 'ok')), recs, keys)
+        self.assertEqual((arm['cases'], arm['key_blockers'], arm['hits'], arm['recall'], arm['fp_blockers']), (2, 1, 1, 1.0, 0))
+        self.assertEqual((arm['clean_case_fp_blockers'], arm['clean_case_arm_failures'], arm['arm_failures_counted_as_miss']), (0, 0, 0))
+        self.assertEqual(arm['per_blocker'], [dict(case='c01', split='archived', category='logic', file='a.py', start=10, hit=True, hit_sec=True)])
+
     def test_cli_writes_json_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
-            (p / 'm.json').write_bytes(manifest())
-            (p / 'r.json').write_text(json.dumps(result(('c01', 'ok'))))
+            man, res = bind(result(('c01', 'ok')), {'c01': key(blocker())})
+            (p / 'm.json').write_bytes(man)
+            (p / 'r.json').write_text(json.dumps(res))
             (p / 'f.json').write_text(json.dumps({'arms': {'x': {'c01': ok(finding())}}}))
-            (p / 'k.json').write_text(json.dumps({'c01': key(blocker())}))
+            (p / 'k.json').write_bytes(json.dumps({'c01': key(blocker())}).encode())
             args = [str(p / n) for n in ('m.json', 'r.json', 'f.json', 'k.json', 'out')]
             subprocess.run([sys.executable, str(SCRIPT), *args], check=True)
             self.assertEqual(json.loads((p / 'out.json').read_text())['arms']['x']['hits'], 1)

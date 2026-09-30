@@ -2,12 +2,16 @@
 """M7 grader: pair first-review findings to answer-key blockers, score per arm (design D-a/D-d, Metrics).
 
 Usage: m7_grade.py MANIFEST.json RESULT.json FINDINGS.json KEYS.json OUT_PREFIX  (writes OUT_PREFIX.json/.md)
-MANIFEST.json: {"line_tolerance": N (int >= 0, design leaves N open), "arms": [names]}; its SHA-256 must equal
-  RESULT.json["manifest_sha256"] (m7_corpus.py result), so N and the arm list cannot change after the freeze.
+MANIFEST.json: {"line_tolerance": N (int >= 0, design leaves N open), "arms": [names], "cases": [every frozen case
+  id], "keys_sha256": hex SHA-256 of the exact KEYS.json bytes}; its SHA-256 must equal RESULT.json["manifest_sha256"]
+  (m7_corpus.py result), so N, the arm list, the case list and the keys cannot change after the freeze. The grader
+  aborts unless the KEYS.json bytes match keys_sha256, "cases" has no duplicates and equals the RESULT.json case ids,
+  and every case id has a key.
 FINDINGS.json: {"voided": {cid: reason}, "arms": {arm: {cid: {"status": "ok"|"failed", "findings": [
   {"file", "line", "blocking": bool, "text", "security_only"?: bool}]}}}}; a counted case missing from an arm is
   an arm failure. KEYS.json (outside the repo): {cid: {"split": "archived"|"synthetic", "blockers": [{"file",
-  "start", "end"?, "category"}]}}; [] blockers marks a clean case.
+  "start", "end"?, "category"}], "clean"?: true}}; a key with [] blockers must carry "clean": true and a key with
+  blockers must not (an empty list alone is never clean); start/end must be int (not bool) with end >= start.
 Pairing (fail closed): same file, integer line within [start - N, end + N]; maximum one-to-one matching, so the
 score does not depend on finding order. A scored finding (blocking or security_only) with a non-integer line, a
 non-bool flag, or both flags aborts the run: design line 22 makes line null, so such input needs a decision, not a
@@ -57,7 +61,27 @@ def stats(items):
     return dict(key_blockers=n, hits=h, recall=rate(h, n), hits_with_security_only=s, recall_with_security_only=rate(s, n))
 
 
-def grade(manifest_bytes, result, findings, keys):
+def check_keys(manifest, status, keys, keys_bytes):  # G1-G4: the keys are frozen, complete and well-formed
+    ids = manifest.get("cases")
+    if isinstance(ids, list):  # m7_corpus.py manifests list case objects {"id", ...}; bare id strings also work
+        ids = [c.get("id") if isinstance(c, dict) else c for c in ids]
+    frozen = keys_bytes is not None and hashlib.sha256(keys_bytes).hexdigest() == manifest.get("keys_sha256")
+    if not frozen or json.loads(keys_bytes) != keys:
+        raise SystemExit("KEYS.json bytes do not match manifest keys_sha256")
+    if not isinstance(ids, list) or not all(type(i) is str for i in ids) or len(set(ids)) != len(ids) \
+            or set(ids) != set(status) or not set(ids) <= set(keys):
+        raise SystemExit("manifest cases: duplicate, not equal to the RESULT case ids, or a case has no key entry")
+    for c in ids:
+        k = keys[c]
+        bl = k.get("blockers") if isinstance(k, dict) else None
+        if not isinstance(bl, list) or (k.get("clean") is True) != (not bl):
+            raise SystemExit(f"case {c}: empty blockers need clean=true, and blockers exclude clean=true")
+        if not all(isinstance(b, dict) and type(b.get("start")) is int and type(b.get("end", b["start"])) is int
+                   and b.get("end", b["start"]) >= b["start"] for b in bl):
+            raise SystemExit(f"case {c}: blocker start/end must be int with end >= start")
+
+
+def grade(manifest_bytes, result, findings, keys, keys_bytes=None):
     manifest, voided, tol = json.loads(manifest_bytes), findings.get("voided", {}), json.loads(manifest_bytes).get("line_tolerance")
     status = {c["id"]: c["status"] for c in result["cases"]}
     if hashlib.sha256(manifest_bytes).hexdigest() != result.get("manifest_sha256") or type(tol) is not int or tol < 0 or len(status) != len(result["cases"]):
@@ -65,6 +89,7 @@ def grade(manifest_bytes, result, findings, keys):
     if set(status.values()) - {"ok", "excluded"} or not manifest.get("arms") or len(set(voided) | {c for c, v in status.items() if v == "excluded"}) > 4 or set(voided) - set(status) or set(findings["arms"]) != set(manifest.get("arms", [])) \
             or any(set(r) - set(status) for r in findings["arms"].values()) or not all(str(r).startswith(("D-b1:", "infra:")) for r in voided.values()) or sum(str(r).startswith("infra:") for r in voided.values()) > 2:
         raise SystemExit("unknown status, voided id, arm set or case id in an arm record, voided reason not D-b1:/infra:, more than 2 infra, or more than 4 voided+excluded cases (design lines 13, 29, 39)")
+    check_keys(manifest, status, keys, keys_bytes)
     counted = sorted(c for c, s in status.items() if s == "ok" and c not in voided)
     if any(keys.get(c, {}).get("split") not in ("archived", "synthetic") or "blockers" not in keys[c] for c in counted):
         raise SystemExit("answer key (split, blockers) missing for a counted case")
@@ -88,6 +113,8 @@ def table(rep):
 
 
 if __name__ == "__main__":
-    rep = grade(Path(sys.argv[1]).read_bytes(), *(json.loads(Path(p).read_text()) for p in sys.argv[2:5]))
+    kb = Path(sys.argv[4]).read_bytes()
+    docs = [json.loads(Path(p).read_text()) for p in sys.argv[2:4]]
+    rep = grade(Path(sys.argv[1]).read_bytes(), *docs, json.loads(kb), kb)
     Path(sys.argv[5] + ".json").write_text(json.dumps(rep, indent=2) + "\n")
     Path(sys.argv[5] + ".md").write_text(table(rep))
