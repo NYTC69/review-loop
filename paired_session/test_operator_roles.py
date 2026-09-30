@@ -906,21 +906,26 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.fake = self.h.root / 'fake-author-claude'
         self.fake.write_text(FAKE_AUTHOR.replace('#!PYTHON', '#!' + sys.executable).replace('LABELS', repr(LABELS)))
         self.fake.chmod(0o755)
+        env = patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': '{}'})     # its name matches the secret-name regex, so it feeds the sandbox settings
+        env.start()
+        self.addCleanup(env.stop)
 
-    def co(self):
+    def co(self, *extra):
         return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
-                                  '--gate-effort', 'low', '--test-command', 'python3 -m unittest', '--claude-bin', str(self.fake))
+                                  '--gate-effort', 'low', '--test-command', 'python3 -m unittest', '--claude-bin', str(self.fake), *extra)
 
     def probe(self, scenario=None, co=None):
         co = co or self.co()
         with patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': json.dumps(scenario or {})}):
             return co, co._author_permission_probe()
 
-    def write_report(self, co, author_probe, status='PASS'):
-        (co.run_dir / 'permission-probe.json').write_text(json.dumps({
+    def write_report(self, co, author_probe, status='PASS', record=True):
+        path = co.run_dir / 'permission-probe.json'
+        path.write_text(json.dumps({
             'status': status, 'reviewer_flags': co.reviewer_flags(), 'reviewer_flags_digest': co.reviewer_flags_digest(),
             'author_flags_digest': co.author_flags_digest(), 'author_permission_probe': author_probe,
             'global_config_changes': {'status': 'PASS'}}))
+        if record: co.state['permission_probe'] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'turn': 1}   # as permission_probe does
 
     def test_pass_when_every_attempt_is_denied_targets_are_absent_and_the_control_is_present(self):
         co, out = self.probe()
@@ -1131,6 +1136,57 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             code = rc.main(command[2:])
         self.assertEqual(code, 2, out.getvalue())
         self.assertRegex(out.getvalue(), r'REFUSED: .*home dir')
+
+    def test_a_pass_under_a_narrower_subagent_surface_does_not_authorize_a_wider_one(self):         # P0-3c F2
+        for probed, real in (('off', 'on'), ('on', 'off')):
+            with self.subTest(probed=probed, real=real):
+                co = self.co()
+                co.args.author_subagents = probed
+                co, out = self.probe(co=co)
+                self.assertEqual(out['status'], 'PASS', out)
+                self.write_report(co, out)
+                self.assertEqual(co.probe_passed(), (True, ''))
+                co.args.author_subagents = real
+                self.assertEqual(co.author_flags()['author_subagents'], real)
+                self.assertFalse(co._claude_probe_rules_match(out))
+                self.assertFalse(co.probe_passed()[0])
+
+    def test_every_part_of_the_probed_author_surface_is_bound(self):                                 # P0-3c F2
+        co, out = self.probe()
+        surface = out['rules']['surface']
+        self.assertEqual(set(surface), {'tools', 'allowed_tools', 'disallowed_tools', 'permission_mode', 'settings'})
+        self.assertEqual(co.author_flags()['claude_author_surface'].keys(), surface.keys())
+        self.assertTrue(co._claude_probe_rules_match(out))
+        edits = {'tools': 'Read,Bash,Edit,Write,WebFetch', 'allowed_tools': surface['allowed_tools'] + ',WebFetch',
+                 'disallowed_tools': surface['disallowed_tools'][:1], 'permission_mode': 'bypassPermissions',
+                 'settings': surface['settings'].replace('"enabled":true', '"enabled":false')}
+        for key, value in edits.items():
+            with self.subTest(changed=key):
+                self.assertNotEqual(value, surface[key])
+                self.assertFalse(co._claude_probe_rules_match({**out, 'rules': {**out['rules'], 'surface': {**surface, key: value}}}))
+        self.assertFalse(co._claude_probe_rules_match({**out, 'rules': {k: v for k, v in out['rules'].items() if k != 'surface'}}))
+
+    def test_a_hand_written_or_swapped_report_does_not_authorize_a_claude_author(self):              # P0-3c F6
+        co, out = self.probe()
+        self.write_report(co, out, record=False)
+        self.assertEqual(co.probe_passed(), (False, 'permission-probe.json is not the report this run recorded'))   # no state record
+        self.write_report(co, out)
+        self.assertEqual(co.probe_passed(), (True, ''))
+        path = co.run_dir / 'permission-probe.json'
+        path.write_text(path.read_text().replace('"PASS"', '"PASS" ', 1))                              # same content, swapped bytes
+        self.assertFalse(co.probe_passed()[0])
+        self.write_report(co, out)
+        co.state['permission_probe']['sha256'] = '0' * 64                                               # a stale or forged record
+        self.assertFalse(co.probe_passed()[0])
+
+    def test_permission_probe_records_the_report_hash_and_turn_in_state(self):                       # P0-3c F6
+        co = self.co()
+        canned = {'answer': {}, 'snapshot': rc.git_snapshot(co.workspace)[0]}
+        with patch.object(co, 'invoke', return_value=canned), patch.object(co, 'render'), \
+                patch.object(co, '_author_permission_probe', return_value={'status': 'FAIL', 'reason': 'x'}):
+            self.assertFalse(co.permission_probe())
+        raw = (co.run_dir / 'permission-probe.json').read_bytes()
+        self.assertEqual(co.state['permission_probe'], {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': co.state['sequence'] + 1})
 
 
 if __name__ == '__main__':

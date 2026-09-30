@@ -1448,6 +1448,8 @@ class Coordinator:
             })
         else:
             flags.update({'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
+                          'author_subagents': self.args.author_subagents,
+                          'claude_author_surface': cap.surface(self._claude_command('author', cap.NO_SCHEMA, True)),
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
                           'non_bash_run_state_edit_access': 'denied by Edit/Write path rules'})
         return flags
@@ -1616,9 +1618,13 @@ class Coordinator:
         if not path.exists():
             return False, 'permission-probe.json is missing'
         try:
-            report = json.loads(path.read_text())
+            raw = path.read_bytes()
+            report = json.loads(raw)
         except (OSError, json.JSONDecodeError):
             return False, 'permission-probe.json is unreadable'
+        # A Claude author's PASS must be the very file permission_probe wrote (state.json shares run_dir's write protection).
+        if self.args.author_vendor == 'claude' and self.state.get('permission_probe', {}).get('sha256') != hashlib.sha256(raw).hexdigest():
+            return False, 'permission-probe.json is not the report this run recorded'
         if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'):
             return False, 'permission probe status is not PASS'
         if report.get('reviewer_flags_digest') != self.reviewer_flags_digest():
@@ -4157,7 +4163,8 @@ class Coordinator:
     def _claude_probe_rules_match(self, probe: dict) -> bool:
         allow, deny = self._claude_author_edit_rules()
         settings_deny = self._claude_sandbox_settings('author')['permissions']['deny']
-        return cap.rules_match(probe, allow, deny, settings_deny, self.workspace.resolve(), self.context.resolve())
+        return cap.rules_match(probe, allow, deny, settings_deny, self.workspace.resolve(), self.context.resolve(),
+                               self.author_flags()['claude_author_surface'], self.args.author_subagents)
 
     def _claude_author_probe(self) -> dict:
         """P0-3b: one real Claude author turn in a probe-owned tree; filesystem evidence decides (1C row 3b)."""
@@ -4678,6 +4685,7 @@ class Coordinator:
         if trust_warning:
             trust_warning += ': ' + ', '.join(path for row in report['global_config_changes']['expected_changes'] if row['file'] == 'codex_config' for path in row['workspaces']); report['warning'] = trust_warning
         atomic_json(self.run_dir / 'permission-probe.json', report)
+        self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
         if author_probe.get('model_escape_failed_targets'):
             self.hold('1C FAIL: escape write observed at ' + ', '.join(author_probe['model_escape_failed_targets'])); return False
         self.state['residual_risk'] = report.get('residual_risk')

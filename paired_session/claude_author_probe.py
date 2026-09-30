@@ -9,8 +9,10 @@ import json
 import os
 import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
 PROBE = 'claude-author-filesystem-v1'
+NO_SCHEMA = SimpleNamespace(read_text=lambda: '{}')   # lets the coordinator build an author argv just to read its surface
 
 
 def steps(base: Path, tmp: Path) -> dict:
@@ -73,22 +75,35 @@ def verdict(rows: dict, positive_control: bool, escaped: list, reason) -> str:
     return 'PASS' if positive_control and all(r['tool_use_seen'] for r in rows.values()) and all(r['denied'] for r in negatives) else 'UNKNOWN'
 
 
+def surface(argv: list[str]) -> dict:
+    """The exact author permission surface of an argv: every flag that grants or limits a tool."""
+    flag = lambda name: [argv[i + 1] for i, v in enumerate(argv) if v == name]
+    return {'tools': flag('--tools')[0], 'allowed_tools': flag('--allowedTools')[0], 'disallowed_tools': flag('--disallowedTools'),
+            'permission_mode': flag('--permission-mode')[0], 'settings': flag('--settings')[0]}
+
+
 def rules_used(argv: list[str], ws: Path, ctx: Path) -> dict:
     """The exact Edit allow/deny lists the probed argv carried, plus the probe paths to substitute back."""
     edit = lambda rules: [r for r in rules if r.startswith('Edit(')]
     return {'allow': edit(argv[argv.index('--allowedTools') + 1].split(',')),
             'deny': edit(argv[i + 1] for i, v in enumerate(argv) if v == '--disallowedTools'),
             'settings_deny': json.loads(argv[argv.index('--settings') + 1])['permissions']['deny'],
-            'probe_workspace': str(ws), 'probe_context': str(ctx)}
+            'probe_workspace': str(ws), 'probe_context': str(ctx), 'surface': surface(argv)}
 
 
-def rules_match(probe: dict, allow: list, deny: list, settings_deny: list, ws: Path, ctx: Path) -> bool:
-    """The probed rules, with the probe paths substituted back, equal the real author rules."""
+def rules_match(probe: dict, allow: list, deny: list, settings_deny: list, ws: Path, ctx: Path, real: dict, subagents: str) -> bool:
+    """The probed rules and whole permission surface, with the probe paths substituted back, equal the real author's."""
     rule = lambda path: 'Edit(//' + Path(path).as_posix().lstrip('/') + '/**)'
     swap = lambda rules, old, new: [rule(new) if r == rule(old) else r for r in rules]
     try:
         rules = probe['rules']
+        pairs = [('//' + Path(old).as_posix().lstrip('/'), '//' + new.as_posix().lstrip('/'))
+                 for old, new in ((rules['probe_workspace'], ws), (rules['probe_context'], ctx))]
+        def back(value):
+            if isinstance(value, str): return value.replace(pairs[0][0], pairs[0][1]).replace(pairs[1][0], pairs[1][1])
+            return [back(v) for v in value] if isinstance(value, list) else {k: back(v) for k, v in value.items()}
         return (probe.get('probe') == PROBE and swap(rules['allow'], rules['probe_workspace'], ws) == allow
-                and swap(rules['deny'], rules['probe_context'], ctx) == deny and rules['settings_deny'] == settings_deny)
-    except (KeyError, TypeError):
+                and swap(rules['deny'], rules['probe_context'], ctx) == deny and rules['settings_deny'] == settings_deny
+                and back(rules['surface']) == real and ('Agent' in rules['surface']['tools'].split(',')) == (subagents == 'on'))
+    except (KeyError, TypeError, AttributeError, IndexError):
         return False
