@@ -21,6 +21,7 @@ from paired_session import candidate_tree as ct
 from paired_session import delivery_journal as dj
 from paired_session import delivery_publish as dp
 from paired_session import delivery_recovery_state as drs
+from paired_session import delivery_recovery_lock as drl
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -3995,6 +3996,57 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        saved = co.state_path.read_bytes()
+        with self.assertRaises(FileNotFoundError):
+            with drl.locked(co, rc.atomic_json):
+                self.fail('missing journal admitted')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.state['status'], 'ACCEPTED')
+        dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        co.state['publication_hold'] = 'different-run'
+        co.save()
+        saved = co.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'matching attributed acceptance'):
+            with drl.locked(co, rc.atomic_json):
+                self.fail('mismatched digest admitted')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.state['publication_hold'], 'different-run')
+
+    def test_recovery_lock_is_journal_bound_and_retained_until_completion(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        with drl.locked(co, rc.atomic_json) as context:
+            row, root, revision, live, index, lock, maps = context
+            self.assertTrue(lock.exists())
+            self.assertEqual(row['lock']['ino'], lock.stat().st_ino)
+            self.assertEqual(row['lock']['pid'], os.getpid())
+            self.assertEqual(json.loads((co.evidence / 'delivery-publication.json').read_text()), row)
+            self.assertEqual(lock.read_text(), row['lock']['nonce'])
+        self.assertTrue(lock.exists())
+        with drl.locked(co, rc.atomic_json):
+            self.assertTrue(lock.exists())
+        self.assertTrue(lock.exists())
+        with self.assertRaisesRegex(ValueError, 'state changed'):
+            with drl.locked(co, rc.atomic_json) as context:
+                context[0]['phase'] = 'RECONCILED'
+                co.state['publication_complete'] = context[0]['intent']['digest']
+                raise OSError('completion not saved')
+        self.assertTrue(lock.exists())
+        self.assertNotIn('publication_complete', json.loads(co.state_path.read_text()))
+        co.state = json.loads(co.state_path.read_text())
+        lock.write_text('foreign lock')
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        row['lock']['ino'] += 1
+        rc.atomic_json(co.evidence / 'delivery-publication.json', row)
+        with self.assertRaisesRegex(ValueError, 'unattributed index lock'):
+            with drl.locked(co, rc.atomic_json):
+                self.fail('foreign lock adopted')
+        self.assertEqual(lock.read_text(), 'foreign lock')
+        self.assertEqual(co.state['status'], 'HOLD')
 
     def test_recovery_state_accepts_preimport_scratch_q_objects(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
