@@ -2867,12 +2867,6 @@ class Coordinator:
                '-c', f'model_reasoning_effort="{effort}"',
                '-c', 'approval_policy="never"', '-c', 'features.hooks=false']
         if role == 'author':
-            # Single choke point for every real Codex author dispatch (run, resume, reject, drive); the
-            # permission-probe action only gathers the evidence that verifies a version, so it is exempt.
-            if (self.args.author_vendor == 'codex' and self.args.action != 'permission-probe'
-                    and not lifecycle_spine.fake_dispatch_guard(self.args)
-                    and not (ok := self.codex_contract_verified())[0]):
-                raise ValueError(ok[1])
             cmd += self._author_sandbox_config_args()
         else:
             cmd += ['-c', 'sandbox_mode="read-only"']
@@ -4596,6 +4590,11 @@ class Coordinator:
     def drive(self) -> str:
         if self._fake_lifecycle:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
+        # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
+        # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
+        if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+                and not (ok := self.codex_contract_verified())[0]:
+            raise ValueError(ok[1])
         return self._drive_loop()
 
     def fake_drive(self) -> str:

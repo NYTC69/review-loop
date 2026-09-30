@@ -122,15 +122,21 @@ class CodexContractTests(unittest.TestCase):
                 patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
             co = self.co()
             schema = self.h.root / 'schema.json'
-            with self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
-                co._codex_command('author', schema, True)
-            with self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
-                co.command('author', schema, True)
-            with self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
-                co.drive()                            # not via run/resume/reject
+            # Every real author turn runs inside _drive_loop (author_turn / polish_author_turn), which only
+            # drive() enters; resume / resume_polish / reject re-enter through drive(). Refuse before any turn.
+            with patch.object(co, '_drive_loop', side_effect=AssertionError('dispatched')) as loop:
+                for entry in (co.drive, co.resume):
+                    with self.subTest(entry=entry.__name__), \
+                            self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
+                        entry()                       # drive() directly, not via run/resume/reject
+                with patch.object(co, '_codex_cli_version', return_value='UNAVAILABLE'), \
+                        self.assertRaisesRegex(ValueError, 'UNAVAILABLE'):
+                    co.drive()
+                loop.assert_not_called()
+                self.write_probe(co, 'PASS')
+                with self.assertRaisesRegex(AssertionError, 'dispatched'):
+                    co.drive()                        # contract holds: drive() reaches the turn loop
             self.assertIn('exec', co._codex_command('reviewer', schema, True))   # other roles unaffected
-            self.write_probe(co, 'PASS')
-            self.assertIn('exec', co._codex_command('author', schema, True))
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):             # fake harness unchanged
             self.assertIn('exec', self.co()._codex_command('author', schema, True))
 
