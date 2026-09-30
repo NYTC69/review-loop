@@ -1949,3 +1949,9 @@ def test_cleanup_failure_overrides_adapter_approve(tmp_path, monkeypatch, capsys
     assert "adversarial-gate: REQUEST_CHANGES" in captured.out
     assert "[CRITICAL]" in captured.out
     assert "config-restore failed: boom" in captured.out
+
+
+def test_timeout_secs_default_leaves_room_under_the_600s_host_cap():
+    """PR1 F5: reviewer-runtime.md wants timeout + 15 s < 600 s; the default (and the execution.md call site) is 570."""
+    assert 'add_argument("--timeout-secs", type=float, default=570.0)' in INVOKER.read_text()
+    assert '--timeout-secs 570' in (REPO_ROOT / "docs" / "protocol" / "execution.md").read_text()

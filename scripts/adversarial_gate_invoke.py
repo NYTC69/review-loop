@@ -835,7 +835,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--focus-file", required=True,
                         help="path to focus text describing this round")
     parser.add_argument("--review-target-desc", default="working-tree changes")
-    parser.add_argument("--timeout-secs", type=float, default=600.0)
+    parser.add_argument("--timeout-secs", type=float, default=570.0)
     parser.add_argument("--dry-run", action="store_true",
                         help="resolve path and print argv; no spawn")
     args = parser.parse_args(argv)

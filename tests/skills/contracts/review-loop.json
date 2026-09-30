@@ -6,7 +6,7 @@
       "id": "codex_reviewer_wrapper_runtime_dispatch",
       "kind": "contains",
       "path": "docs/protocol/reviewer-runtime.md",
-      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 600"
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 570"
     },
     {
       "id": "codex_reviewer_wrapper_planning_dispatch",
@@ -1508,6 +1508,12 @@
       "kind": "contains",
       "path": "docs/protocol/execution.md",
       "needle": "python3 scripts/adversarial_gate_invoke.py"
+    },
+    {
+      "id": "adversarial_gate_invocation_timeout_570",
+      "kind": "contains",
+      "path": "docs/protocol/execution.md",
+      "needle": "--focus-file \"$focus_text_file\" --timeout-secs 570"
     },
     {
       "id": "adversarial_gate_codex_verdict_table_sentinel",
@@ -3678,6 +3684,60 @@
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
       "needle": "key `entry` is exactly `paired-session` and the work is fresh"
+    },
+    {
+      "id": "cross_vendor_review_section_heading",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "## Cross-vendor review"
+    },
+    {
+      "id": "cross_vendor_review_config_key_values",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Config key `cross_vendor_review`: `auto` (default) or `off`."
+    },
+    {
+      "id": "cross_vendor_review_unavailable_visible_record",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "`cross-vendor review: unavailable (<reason>)`"
+    },
+    {
+      "id": "cross_vendor_review_invalid_blocks_delivery",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "`cross-vendor review: invalid (<reason>)`"
+    },
+    {
+      "id": "cross_vendor_review_at_most_once_per_convergence",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "At most once per convergence: the pass never reruns for the same convergence."
+    },
+    {
+      "id": "loader_call_standalone_bash_rule",
+      "kind": "contains",
+      "path": "docs/protocol/loading.md",
+      "needle": "Every `read_protocol.py` call is its own Bash command"
+    },
+    {
+      "id": "reviewer_launcher_never_end_turn_while_running",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Never end the turn while a reviewer launcher is running"
+    },
+    {
+      "id": "reviewer_launcher_poll_same_turn",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "poll it within the same turn until it exits"
+    },
+    {
+      "id": "project_config_reviewer_model_owner_default",
+      "kind": "contains",
+      "path": ".review-loop/config.md",
+      "needle": "reviewer_model: \"gpt-6.1-sol\""
     }
   ]
 }

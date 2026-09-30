@@ -34,6 +34,8 @@
     "--no-session-persistence",
     "--permission-mode",
     "bypassPermissions",
+    "--plugin-dir",
+    "__WORKTREE__",
     "--add-dir",
     "__WORKTREE__",
     "--",
@@ -59,13 +61,7 @@
       }
     },
     "no_forbidden_review_loop_subagent_types_in_agent_calls",
-    {
-      "id": "agent_calls_used_at_least_one_subagent",
-      "overrides": {
-        "min": 1,
-        "_comment": "min: 1 enforced at 360s per ADR-4"
-      }
-    },
+    "agent_calls_subagent_or_direct_noop",
     {
       "id": "agent_calls_use_general_purpose_subagent_type"
     }

@@ -53,4 +53,8 @@ skip_quality_polish: false
 #   - "docs/protocol/**"
 #   - "tests/skills/contracts/**"
 
+# Cross-vendor review: when the final execution review is same-vendor as the author, run one extra review with the
+# other vendor's CLI before delivery. "auto" (default) | "off" (records `cross-vendor review: off (config)`).
+# cross_vendor_review: auto
+
 # context_persist_threshold: 25   # trigger planning.md §3.5 persist when context_pct >= N; default 70

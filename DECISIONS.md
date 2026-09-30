@@ -122,3 +122,14 @@ entry; never edit history.
 - **Decision**: 采用 (B)。Codex author、reviewer、shadow、gate 的默认值与 enforcement 均固定为 gpt-6-luna；Claude 角色仍固定为 claude-opus-5-5。Yuan 2026-09-27 D9 决定。
 - **Consequences**: ADR-7 (sol) 期间记录的运行与 ADR-8 期间的运行不可直接比较；M6 复查使用 ADR-8 模型。R21-1 的 D1(b) 合成权限证据与模型无关，继续有效。旧 DONE 且未 accept 的 run 通过 reject 重新派发时仍会使用冻结模型；该已知路径记录在 BACKLOG.md，修复前不能声称历史 run 的每条再派发路径均已切到 ADR-8。
 - **Supersedes**: ADR-7
+
+---
+
+### ADR-9: paired-session role models are operator-configured
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: poker-news-bot 于 2026-09-30 提交 bug 报告（`~/3Cats/poker-news-bot/.compass/results/2026-09-24_ab_pipeline/review_loop_290_bug_report.md`）：v2.9.0 的真实 CLI 路径把各角色模型按厂商写死（ADR-5/ADR-8：codex=gpt-6-luna，claude=claude-opus-5-5），并强制 gate 厂商与 author 相反，导致 `--reviewer-model gpt-6.1-sol --gate-model gpt-6.1-sol` 与“Claude author + Codex reviewer + Codex gate”无法配置；每次新模型发布都要改代码。Yuan 于 2026-09-30 13:15 JST 批准 P0 计划：“三件都同意，按计划推进 P0.”，其中包括 supersede ADR-8。
+- **Options considered**: (A) 保持 ADR-8 的模型 pin，每次换模型开新 ADR 并发版；(B) 模型与 gate 厂商由运营者配置，pin 只保留为默认值，用可选 allowlist 和运行时身份检查兜底。
+- **Decision**: 采用 (B)。(M1) 默认值不变：未显式指定模型的角色取厂商默认（claude→claude-opus-5-5，codex→gpt-6-luna）；gate 厂商默认取 author 的相反厂商。(M2) 新增 `--gate-vendor {codex,claude}`，可在 paired-session.json 配置；所有 gate 厂商推导点使用解析后的 `args.gate_vendor`；允许与 reviewer 同厂商。(M3) `validate_role_models` 不再 pin 模型，只要求：每个角色的模型 id 形如 `^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$`；若配置了可选键 `allowed_models`（`{"codex": [...], "claude": [...]}`，字符串列表），则每个角色的模型必须在该角色厂商的列表中，格式错误的 allowlist 被拒绝，未设置即无 allowlist。(M4) CLI 上报的模型与该角色配置的模型不一致（`model_identity == MISMATCH`）时，run 进入 HOLD，原因含 “model identity mismatch”；未上报仍只记录为 UNREPORTED，不算错误。(M5) run state 记录每个角色解析后的厂商和模型（新增 `gate_vendor`）；run/resume/accept/reject/note 恢复时以保存值为准，显式给出不同的厂商或模型标志会被拒绝（“role models are fixed for this run”）；没有 `gate_vendor` 的旧 state 按旧规则推导。owner 2026-09-30 批准。
+- **Consequences**: ADR-8 的模型 pin 失效，但其默认值保留。benchmark/M7 的可比性改由“每次运行在 state 与 usage ledger 中记录各角色模型，benchmark 运行通过配置固定模型”维持；不同配置下的运行不可直接比较。Claude author 拒绝（1C row 3b）不在本 ADR 范围内，由 P0-3 处理。ADR-5 中“按厂商固定模型”的强制部分同样由本 ADR 取代，其默认模型值保留。
+- **Supersedes**: ADR-8

@@ -20,6 +20,8 @@ shared loading map, not a copy of the workflow:
 python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-review-loop
 ```
 
+Run every loader call as its own Bash command, never chained (rule in `docs/protocol/loading.md`).
+
 Follow that skill and every stage bundle it names exactly as if the user had
 invoked `/review-loop`, with two differences: ignore the `entry` key in
 `.review-loop/config.md` (never route to paired-session), and do not read or

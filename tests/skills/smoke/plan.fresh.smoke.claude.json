@@ -30,6 +30,8 @@
     "--no-session-persistence",
     "--permission-mode",
     "bypassPermissions",
+    "--plugin-dir",
+    "__WORKTREE__",
     "--add-dir",
     "__WORKTREE__",
     "--",

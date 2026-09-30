@@ -3315,15 +3315,13 @@ sys.exit(result.returncode)
         self.assertEqual((swapped.author_model, swapped.reviewer_model, swapped.gate_model),
                          ('claude-opus-5-5', 'gpt-6-luna', 'gpt-6-luna'))
 
-    def test_adr8_refuses_explicit_legacy_codex_author_model(self):
-        with patch('sys.stdout', new=io.StringIO()) as output:
-            result = rc.main(['run', '--workspace', str(self.workspace),
-                '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--author-model', 'gpt-6-sol'])
-        self.assertEqual(result, 2)
-        self.assertIn('author_model must be gpt-6-luna', output.getvalue())
-        self.assertIn('ADR-8', output.getvalue())
-        self.assertFalse((self.run_dir / 'state.json').exists())
+    def test_adr9_accepts_explicit_non_default_codex_author_model(self):
+        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
+            '--author-model', 'gpt-6-sol'])
+        rc.resolve_role_model_defaults(args)
+        rc.validate_role_models(args)
+        self.assertEqual(args.author_model, 'gpt-6-sol')
 
     def test_example_config_uses_adr8_pins(self):
         example = json.loads(Path(__file__).with_name('paired-session-config.example.json').read_text())
@@ -3345,13 +3343,14 @@ sys.exit(result.returncode)
             'author_vendor': 'codex', 'author_model': 'gpt-6-luna',
             'reviewer_vendor': 'claude', 'reviewer_model': 'claude-opus-5-5',
             'gate_model': 'claude-opus-5-5', 'test_command': 'python3 -m unittest',
+            'allowed_models': {'codex': ['gpt-6-luna'], 'claude': ['claude-opus-5-5']},
         }))
         with patch('sys.stdout', new=io.StringIO()) as output:
             result = rc.main(['run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                 '--author-vendor', 'claude'])
         self.assertEqual(result, 2)
-        self.assertIn('author_model must be claude-opus-5-5', output.getvalue())
+        self.assertIn('author_model gpt-6-luna is not in allowed_models for the claude role', output.getvalue())
         self.assertFalse(self.run_dir.exists())
 
     def test_project_json_config_rejects_unknown_keys(self):
@@ -7384,8 +7383,12 @@ sys.exit(result.returncode)
             with self.subTest(name=name):
                 self.run_dir = self.root / ('model-' + name)
                 result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', env=env)
-                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertEqual(result.returncode, 2 if expected == 'MISMATCH' else 0,
+                                 result.stderr + result.stdout)
                 state = json.loads((self.run_dir / 'state.json').read_text())
+                if expected == 'MISMATCH':
+                    self.assertEqual(state['status'], 'HOLD')
+                    self.assertIn('model identity mismatch', state['hold_reason'])
                 receipts = [row for row in state['turns'] if row['vendor'] == vendor]
                 self.assertTrue(receipts)
                 self.assertTrue(all(row['model_identity'] == expected for row in receipts))

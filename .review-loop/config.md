@@ -1,1 +1,1 @@
-reviewer_model: "gpt-5.6-sol"
+reviewer_model: "gpt-6.1-sol"

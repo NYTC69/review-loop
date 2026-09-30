@@ -37,8 +37,8 @@ unique across concurrent reviewers. Resolve launcher paths against the support
 repository and keep cwd in the task workspace:
 
 ```
-python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 600
-python3 <support-root>/scripts/run_codex_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 600
+python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 570
+python3 <support-root>/scripts/run_codex_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 570
 ```
 
 For the Codex default model, omit `--model`. This means the native CLI built-in
@@ -48,7 +48,11 @@ aliases defined only in user config are therefore not inherited; select a model
 supported by the clean CLI context or use another configured reviewer backend.
 A different positive timeout may be chosen explicitly for a large task; no
 unlimited wait. A host command timeout must exceed `--timeout-seconds` by
-~15 s of cleanup grace; otherwise run the launcher in the background and poll. Claude supports
+~15 s of cleanup grace. Never end the turn while a reviewer launcher is running; in
+`claude -p`/headless mode a background task is killed when the turn ends. Prefer the
+foreground with a host timeout greater than `--timeout-seconds` + 15 s (choose
+`--timeout-seconds` so that fits the host cap, e.g. 570 under a 600 s cap). If the
+launcher must be backgrounded, poll it within the same turn until it exits. Claude supports
 Read/Grep/Glob only, with hooks, plugins, skills and external MCP customizations
 disabled. Codex starts in an empty temporary cwd with user config and execpolicy
 rules ignored, hooks/plugins/apps disabled, and a read-only shell sandbox. The
@@ -105,3 +109,46 @@ snapshots or overlapping `modelUsage` and `usage` counters manually. See
 
 Parallel dispatch uses the same launchers and permission boundary. Arbitrary
 extra CLI arguments cannot override isolation, model or result paths.
+
+## Cross-vendor review
+
+Author vendor is the runtime that wrote the change (Claude runtime: claude; Codex runtime: codex). Reviewer vendor is
+the launcher actually used, fallbacks included (`run_codex_reviewer.py`: codex; `run_claude_reviewer.py`: claude).
+Equal is same-vendor: Claude `reviewer: subagent` and Codex `codex_reviewer_backend: codex`.
+
+Config key `cross_vendor_review`: `auto` (default) or `off`. Any other value fails closed: checked at the run's
+first reviewer dispatch, it stops the run with a config error naming the key. No pass runs and nothing is delivered.
+
+Each execution convergence needs one visible `cross-vendor review:` record in the session file and the delivery summary.
+One line per pass in `## Review History`, followed by the list of its blocking findings:
+`cross-vendor review: <verdict|unavailable|invalid|off> (R<n>, <reviewer vendor/model>, <convergence id or tree fingerprint>)`.
+The latest record for the current convergence governs. A convergence ends only when a fix round actually changed files;
+revoking `exec` or starting a replay alone never invalidates a blocking record, so abort/resume cannot rerun the pass.
+Severities are the shared schema's (reviewer-output.md): a blocking finding is `[CRITICAL]`, `[MINOR]` is advisory.
+
+- Final execution review already cross-vendor: `cross-vendor review: not needed (cross-vendor final review)`.
+- Same-vendor and `off`: `cross-vendor review: off (config)`.
+- Same-vendor and `auto`: run ONE extra report-only review with the other vendor's launcher, after the last
+  execution-round APPROVE and after Step 3.4 if it runs, before Step 3.5 and any `--stop-after before-polish` exit.
+  Same launcher contract, isolation, schema and triage gates; `--stage execution --role cross-vendor-reviewer`.
+  Record `cross-vendor review: <VERDICT> (...)`.
+- Model is the other backend's own key: codex uses `reviewer_model` only when it names a Codex model, else
+  `codex_reviewer_model`, else the Codex default; claude uses `reviewer_model` > `judgment_model` > the Claude
+  runtime default (`claude-sonnet-4-6` on the Codex runtime, Claude CLI default on the Claude runtime).
+- At most once per convergence: the pass never reruns for the same convergence. It reruns only after a reopened
+  round that changed files, and that round starts a new convergence.
+- A `[CRITICAL]` blocks delivery and reopens a normal execution fix round, which counts toward `soft_limit_exec`.
+  It also revokes any already-minted `exec`: treat it as REQUEST_CHANGES at reviewer-only fast-replay
+  (session-file.md §Reviewer-only fast-replay, outcome 4: clear `completed_stages`, replay from `exec`).
+  On resume, re-derive the block from the latest record and its findings, not from `delivery_blocked_by`.
+  `[MINOR]` findings are recorded as advisories.
+- `unavailable` only when the CLI is not installed or the launcher failed before producing any output
+  (`no-cli`, `launcher-failed`): delivery is not blocked; record `cross-vendor review: unavailable (<reason>)`.
+  This is a review result, not an optional integration.
+- `invalid`: a result that fails schema, rubric or `tool_uses: 0` gets the existing retry of its launcher
+  (runtime-codex.md §Reviewer dispatch: the Claude launcher gets no schema retry; the Codex launcher one correction
+  retry; `tool_uses: 0` one retry per Invocation above). If still invalid, delivery is BLOCKED with
+  `cross-vendor review: invalid (<reason>)` and the orchestrator reports it to the user. Never `unavailable`.
+- Before `delivery_gate.py`, check the latest record for the current convergence. (a) None: load `execution-review`
+  and dispatch the first pass. (b) Unresolved `[CRITICAL]`: do NOT rerun the pass; reopen a normal execution fix round.
+  (c) `invalid`: stay blocked and report. Then retry the gate.

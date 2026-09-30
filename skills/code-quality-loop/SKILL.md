@@ -82,7 +82,7 @@ role, round, and retry. Resolve the launcher against the support repository and
 keep cwd in the task workspace:
 
 ```sh
-python3 <support-root>/scripts/run_claude_reviewer.py --session-id <invocation_slot> --parent-session-id <session_id> --model <resolved-model> --stage polish --role <agent-name> --timeout-seconds 600
+python3 <support-root>/scripts/run_claude_reviewer.py --session-id <invocation_slot> --parent-session-id <session_id> --model <resolved-model> --stage polish --role <agent-name> --timeout-seconds 570
 ```
 
 Preserve the judgment/cheap model tiers and dispatch anchors below. Inventory

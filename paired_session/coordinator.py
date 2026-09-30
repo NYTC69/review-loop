@@ -8,6 +8,7 @@ shadow and adversarial reviewers are always fresh.
 from __future__ import annotations
 
 import argparse
+import calendar
 import copy
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -36,6 +37,7 @@ try:
     from paired_session import closeout_policy
     from paired_session import q_proposal
     from paired_session import q_evidence
+    from paired_session import claude_author_probe as cap
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -49,6 +51,7 @@ except ModuleNotFoundError:
     import closeout_policy
     import q_proposal
     import q_evidence
+    import claude_author_probe as cap
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -61,6 +64,30 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 PROBE_SURFACE_VERSION = 9
+def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
+    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
+    except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
+# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
+VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
+OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
+UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
+def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
+def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # P0-4b H2: fd walk from ~ (O_NOFOLLOW each step); every check is on the fd that is read
+    fds, home = [], Path.home()
+    try:
+        fds.append(os.open(home, os.O_RDONLY | os.O_DIRECTORY))
+        for part in root.relative_to(home).parts: fds.append(os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fds[-1]))
+        fds.append(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[-1]))   # non-blocking: a FIFO is refused, never waited on
+        for fd, kind in ((fds[-2], stat.S_ISDIR), (fds[-1], stat.S_ISREG)):
+            if not kind((info := os.fstat(fd)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise OSError(errno.EPERM, 'entry is not a private regular file owned by this user in a private directory')
+        if info.st_size > limit: raise OSError(errno.EFBIG, 'entry is larger than 1 MiB')
+        with os.fdopen(os.dup(fds[-1]), 'rb') as handle: return handle.read(limit)
+    finally:
+        for fd in fds: os.close(fd)
+def claude_cli_version(binary: str) -> str:
+    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip() or 'UNAVAILABLE'
+    except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -595,10 +622,40 @@ def atomic_text(path: Path, value: str) -> None:
         os.close(fd)
 
 
+def _control_file_digest(path: Path) -> str:
+    """One control file: its bytes (and link target), or a fixed marker when it is missing, unreadable or not a regular file."""
+    try:
+        link = 'LINK:' + os.readlink(path) + ':' if path.is_symlink() else ''
+        if path.is_file(): return link + hashlib.sha256(path.read_bytes()).hexdigest()
+        return link + ('NONREGULAR' if path.exists() else 'MISSING')
+    except OSError as exc: return 'UNREADABLE:' + str(exc.errno)
+
+
+def git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
+    """K1: the single wrapper: any exception taking the control state becomes the marker the drive loop turns into a HOLD."""
+    try: return _git_control_state(workspace, dirs)
+    except Exception as exc: return dirs or [], {'!unreadable': f'{type(exc).__name__}: {exc}'}
+
+def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
+    """D1: sha256 of the git control files an author could write: config, hooks/*, info/attributes (missing = a marker)."""
+    if dirs is None:
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--absolute-git-dir', '--git-common-dir', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        dirs = list(dict.fromkeys(workspace / line for line in proc.stdout.splitlines() if line)) if proc.returncode == 0 else []
+    digest = {}
+    if (workspace / '.git').is_file(): digest['.git'] = _control_file_digest(workspace / '.git')
+    for root in dirs:
+        for path in [root / 'config', root / 'config.worktree', root / 'info' / 'attributes', *sorted((root / 'hooks').rglob('*'))]:
+            digest[str(path)] = _control_file_digest(path)   # a link is hashed by its target's bytes too
+    if bad := [k for k, v in digest.items() if v.endswith('NONREGULAR') and not k.endswith('/hooks') and '/hooks/' not in k]: digest['!unreadable'] = 'non-regular control file ' + ', '.join(bad); return dirs, digest   # a FIFO/device/directory config or info/attributes: no git call may read it
+    for scope in ('--local', '--worktree', '--global', '--system'):   # the effective config of every scope, so a file pulled in by [include] is covered
+        try: proc = candidate_tree.run_bounded(candidate_tree.git_command('config', scope, '--includes', '--list', '-z', '--show-origin', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        except Exception as exc: digest['effective-config' + scope] = 'UNAVAILABLE: ' + str(exc); continue   # a changed config that git cannot be called under still HOLDs
+        digest['effective-config' + scope] = hashlib.sha256(proc.stdout + bytes([proc.returncode])).hexdigest()
+    return dirs, digest
 def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     """Digest tracked + untracked non-ignored files; symlinks hash their target."""
-    proc = subprocess.run(
-        ['git', 'ls-files', '-co', '--exclude-standard', '-z'], cwd=workspace,
+    proc = candidate_tree.run_bounded(
+        candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=workspace), cwd=workspace,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if proc.returncode:
@@ -1057,7 +1114,7 @@ def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
-        validate_role_models(args)
+        if not restores_run(args): validate_role_models(args)
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -1123,14 +1180,16 @@ class Coordinator:
             if self.args.action in ('accept', 'reject', 'note'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
-                for key, value in self.state['config'].items():
+                saved = self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ()))
+                for key, value in saved.items():
                     if key == 'gate_prompt' and str(value).startswith('<bundled-default>:'):
                         self.args.gate_prompt = str(DEFAULT_GATE_PROMPT)
-                    elif hasattr(self.args, key):
+                    elif hasattr(self.args, key) and not (key in OPERATOR_ONLY_DESTS or key.startswith('accept_')):
                         setattr(self.args, key, value)
                 self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                     self.state['config'].get('exec_turn_timeout'),
                     self.state['config'].get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
+                validate_role_models(self.args)
             else:
                 self._validate_resume_args()
             scope_request = args.action in ('note', 'reject') and getattr(args, 'scope_change', False)
@@ -1168,6 +1227,9 @@ class Coordinator:
                 raise ValueError('--workspace must be a git worktree')
             if not self.workitem.is_file():
                 raise ValueError('--workitem must be a file')
+            _, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin,
+                                        self.args.claude_bin, self.args.gate_prompt, self.args.config)
+            if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -1211,6 +1273,7 @@ class Coordinator:
                         not old.get('base_commit') or old.get('base_commit_backfilled') or
                         old.get('scope_chain_depth', 0) >= 1 or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
                         spec['run_dir'] != str(self.run_dir) or spec['workspace'] != str(self.workspace) or
+                        frozen_config.get('allowed_models') != old['config'].get('allowed_models') or
                         spec['original_hash'] != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest() or
                         spec.get('config_sha256') != hashlib.sha256((parent / 'evidence/successor-config.json').read_bytes()).hexdigest() or
                         old.get('successor_spec_sha256') != hashlib.sha256((parent / 'evidence/successor-spec.json').read_bytes()).hexdigest()):
@@ -1218,8 +1281,8 @@ class Coordinator:
                 if spec.get('item_uuid') and (spec['item_uuid'] != old.get('item_uuid') or
                         spec.get('item_blockers') != pending_item_blockers(old, parent)):
                     raise ValueError('successor item identity or blockers differ')
-                if subprocess.run(['git', 'merge-base', '--is-ancestor', old['base_commit'], 'HEAD'],
-                                  cwd=self.workspace).returncode:
+                if candidate_tree.run_bounded(candidate_tree.git_command('merge-base', '--is-ancestor', old['base_commit'], 'HEAD', cwd=self.workspace),
+                                              cwd=self.workspace).returncode:
                     raise ValueError('parent base_commit is not an ancestor of HEAD')
                 with run_lease(parent):
                     claim = parent / 'evidence/successor-claim.json'
@@ -1282,14 +1345,28 @@ class Coordinator:
                     counted_sequences.add(sequence)
         return used
 
+    def _restore_role_policy(self, explicit) -> dict:
+        """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
+        saved = {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), **self.state['config']}
+        for key in explicit:
+            if getattr(self.args, key) != saved[key]:
+                raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
+        policy = saved.get('allowed_models')
+        if getattr(self.args, 'allowed_models', None) not in (None, policy):
+            raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
+        self.args.allowed_models = policy
+        for key in ROLE_DESTS:
+            setattr(self.args, key, saved[key])
+        return saved
+
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
-                'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
+                'gate_vendor', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish')
+                'skip_globs', 'skip_quality_polish', 'allowed_models')
         config = {key: getattr(self.args, key) for key in keys}
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
@@ -1433,7 +1510,9 @@ class Coordinator:
                 'codex_config_sha256': self._codex_policy_digest(),
             })
         else:
-            flags.update({'permission_mode': 'acceptEdits',
+            flags.update({'plugin_version': plugin_version(), 'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
+                          'author_subagents': self.args.author_subagents,
+                          'claude_author_surface': cap.surface(self._claude_command('author', cap.NO_SCHEMA, True)),
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
                           'non_bash_run_state_edit_access': 'denied by Edit/Write path rules'})
         return flags
@@ -1480,9 +1559,45 @@ class Coordinator:
     def _author_environment(self) -> dict:
         return {**os.environ, 'TMPDIR': str(self.author_temp_dir)}
 
+    def codex_contract_verified(self) -> tuple[bool, str]:
+        """Verified set, or this run's full probe_passed() record / operator override for the installed version."""
+        version = self._codex_cli_version()
+        override = self.state.get('codex_cli_override') or {}
+        if version != 'UNAVAILABLE' and override.get('version') not in (None, version) and not override.get('voided'):
+            override['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'version_seen': version}
+            self.save()
+        if version in VERIFIED_CODEX_CLI_VERSIONS: return True, ''
+        if version == 'UNAVAILABLE':
+            return False, 'codex-cli version is UNAVAILABLE (binary unreadable); re-run permission-probe'
+        if override.get('version') == version and override.get('actor') == 'operator' and not override.get('voided'):
+            return True, ''
+        if self.probe_passed()[0]: return True, ''
+        voided = f'; the operator override for {override["version"]} is void' if override.get('voided') else ''
+        return False, (f'unverified codex sandbox contract: {version}{voided}; run permission-probe on this version '
+                       'or pass --accept-unverified-codex-cli --reason TEXT')
+
+    def claude_author_verified(self) -> tuple[bool, str]:
+        """A Claude author dispatches only on a Claude author probe PASS (P0-3b) or a current operator opt-in."""
+        digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
+        if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
+            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest}
+            self.save()
+        if optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided'):
+            return True, ''
+        try:
+            probed = json.loads((self.run_dir / 'permission-probe.json').read_text()).get(
+                'author_permission_probe', {}).get('claude_author_status') == 'PASS'
+        except (OSError, ValueError, AttributeError):
+            probed = False
+        if probed and self.probe_passed()[0]: return True, ''
+        voided = '; the earlier operator opt-in is void (author flags changed)' if optin.get('voided') else ''
+        return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
+                       'author permission-probe passes (P0-3b) or the operator opts in with `run '
+                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided)
+
     def _codex_sandbox_profile_args(self) -> list[str]:
-        if self._codex_cli_version() != 'codex-cli 0.157.0':
-            raise ValueError('unsupported codex sandbox contract; expected codex-cli 0.157.0')
+        if not (verified := self.codex_contract_verified())[0]:
+            raise ValueError(verified[1])
         policy = self._author_sandbox_overrides()
         if (policy['sandbox'] != 'workspace-write' or policy['sandbox_workspace_write.network_access'] is not False
                 or policy['sandbox_workspace_write.exclude_tmpdir_env_var'] is not False
@@ -1499,6 +1614,21 @@ class Coordinator:
     def reviewer_flags_digest(self) -> str:
         raw = json.dumps(self.reviewer_flags(), sort_keys=True, separators=(',', ':')).encode()
         return hashlib.sha256(raw).hexdigest()
+
+    def _claude_author_edit_rules(self, workspace: Optional[Path] = None) -> tuple[list[str], list[str]]:
+        """Path-scoped Edit rules for the Claude author (they cover Write too): only the effective workspace is editable."""
+        workspace, context = Path(workspace or self.workspace).resolve(), self.context.resolve()
+        home = Path.home().resolve()
+        homes = [home / name for name in ('.claude', '.codex', '.ssh', '.aws')]
+        roots = [context, self.run_dir.resolve(), *homes]
+        if (re.search(r'[*?\[\]{}(),]', str(workspace)) or workspace in context.parents or workspace in (home, *home.parents)
+                or any(root == workspace or root in workspace.parents for root in roots)):
+            raise ValueError('the workspace must not be the filesystem root, the home dir or an ancestor of it, hold the context dir, '
+                             'sit inside the context, run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), '
+                             'or hold rule metacharacters')
+        rule = lambda path, tail: f'Edit(//{path.as_posix().lstrip("/")}{tail})'
+        # No '//parent/*' sibling deny: gitignore-style matching could cover the workspace itself; siblings are not allowed anyway.
+        return [rule(workspace, '/**')], [rule(context, '/**'), rule(home / '.cache' / 'review-loop' / 'probe-pass', '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]   # P0-4 V4
 
     def _claude_sandbox_settings(self, role: str) -> dict:
         """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
@@ -1531,7 +1661,9 @@ class Coordinator:
                     'files': [{'path': path, 'mode': 'deny'} for path in credential_paths],
                 },
                 'filesystem': {
-                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else []),
+                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else [])
+                                 + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else [])   # the probe's context; the real one is under run_dir
+                                 + ([str(probe_cache_root())] if role == 'author' and ((r := probe_cache_root().resolve()) == (w := self.workspace.resolve()) or r in w.parents or w in r.parents) else []),   # P0-4b: an overlapping workspace would make the cwd-bound Bash sandbox cover the cache
                 },
             },
             'permissions': {
@@ -1551,9 +1683,13 @@ class Coordinator:
         if not path.exists():
             return False, 'permission-probe.json is missing'
         try:
-            report = json.loads(path.read_text())
+            raw = path.read_bytes()
+            report = json.loads(raw)
         except (OSError, json.JSONDecodeError):
             return False, 'permission-probe.json is unreadable'
+        # A Claude author's PASS must be the very file permission_probe wrote (state.json shares run_dir's write protection).
+        if self.args.author_vendor == 'claude' and self.state.get('permission_probe') != {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}:
+            return False, 'permission-probe.json is not the report this run recorded'
         if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'):
             return False, 'permission probe status is not PASS'
         if report.get('reviewer_flags_digest') != self.reviewer_flags_digest():
@@ -1561,12 +1697,81 @@ class Coordinator:
         if report.get('author_flags_digest') != self.author_flags_digest():
             return False, 'permission probe author flags do not match this run'
         author_probe = report.get('author_permission_probe', {})
-        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'NOT-APPLICABLE'
+        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'PASS'
+        if self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
+            return False, 'permission probe Claude author rules do not match this run'
         if author_probe.get('status') != expected_author_status or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
             return False, 'permission probe author permission status is not current'
         if report.get('global_config_changes', {}).get('status') != 'PASS':
             return False, 'permission probe global config changes were not fully attributed'
+        if (report.get('reviewer_flags', {}).get('reviewer_vendor') != self.args.gate_vendor
+                and not lifecycle_spine.fake_dispatch_guard(self.args)):
+            return False, 'permission probe reviewer vendor is not the gate vendor'
         return True, ''
+
+    def _probe_skip_accepted(self) -> bool:   # P0-4 V2: the flag is command-line only; the recorded acceptance is honoured until a digest changes or a probe re-runs
+        acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest()}
+        if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
+            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen}; self.save()
+        return acc.get('actor') == 'operator' and not acc.get('voided') and all(acc.get(k) == v for k, v in seen.items())
+
+    def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
+        root, ws = probe_cache_root().resolve(), self.workspace.resolve()
+        if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
+        versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
+        if 'UNAVAILABLE' in versions: return None
+        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'claude_versions': versions}
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
+
+    def _probe_cache_write(self, report: dict, report_sha256: str) -> None:   # the caller turns any failure into a report warning, never a verdict change
+        key, inputs, root = *(self._probe_cache_key() or (None, None)), probe_cache_root()
+        if key is None or any(p.is_symlink() for p in (root.parent.parent, root.parent, root)):
+            raise RuntimeError('no cache key (Claude version or program state unavailable) or a symlinked cache path')
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        if not stat.S_ISDIR((info := os.lstat(root)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022: raise RuntimeError('cache root is not a private directory')   # P0-4b H2
+        (temp := root / f'{key}.json.tmp').unlink(missing_ok=True)
+        os.close(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))   # atomic_json rewrites this file, which keeps 0600
+        atomic_json(root / f'{key}.json', {'key': key, 'key_inputs': inputs, 'run_dir': str(self.run_dir), 'source_report_sha256': report_sha256, 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'report': report})
+
+    def _probe_cache_reuse(self) -> tuple[bool, str]:   # P0-4 V3: adopt an earlier PASS for this exact key after the checks; else name the failed one
+        keyed, root = self._probe_cache_key(), probe_cache_root()
+        if keyed is None: return False, 'probe cache: no key (Claude version or program state unavailable)'
+        (key, inputs), path = keyed, root / f'{keyed[0]}.json'
+        if any(p.is_symlink() for p in (root.parent.parent, root.parent, root, path)): return False, 'probe cache: symlinked entry or directory'
+        try: raw = read_cache_entry(root, path.name)
+        except OSError as exc: return False, 'probe cache: ' + ('no entry for these flags and versions' if exc.errno == errno.ENOENT else 'symlinked entry or directory' if exc.errno in (errno.ELOOP, errno.ENOTDIR) else exc.strerror)
+        try: entry = json.loads(raw); report = entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT)); json.dumps(entry, ensure_ascii=False).encode()   # the last: a lone surrogate would fail atomic_json's write
+        except (ValueError, KeyError, TypeError, RecursionError): return False, 'probe cache: entry is unreadable'
+        if not isinstance(report, dict): return False, 'probe cache: entry is malformed (report is not an object)'   # P0-4b H4
+        if entry.get('key') != key or entry.get('key_inputs') != inputs: return False, 'probe cache: recorded key inputs differ'
+        if not 0 <= age <= 7 * 86400: return False, 'probe cache: entry is older than 7 days'
+        if 'permission_probe_superseded' in self.state and not self.state.get('permission_probe'): return False, 'probe cache: the last permission-probe did not complete'
+        if (target := self.run_dir / 'permission-probe.json').exists(): return False, 'probe cache: this run already has a report that does not pass'
+        if self.state.get('permission_probe'): return False, 'probe cache: this run has already probed; the cache never revives an older PASS'   # P0-4b H3
+        prior = self.state.get('permission_probe')
+        atomic_json(target, {**report, 'reused_from': {'cache_path': str(path), 'cache_sha256': hashlib.sha256(raw).hexdigest(), 'source_run_dir': entry.get('run_dir'), 'original_time': entry['time'], 'reuse_time': time.strftime(UTC_FORMAT, time.gmtime())}})
+        self.state['permission_probe'] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'turn': report.get('probe_turn')}
+        try: passed, why = self.probe_passed()
+        except Exception as exc: passed, why = False, f'malformed report ({type(exc).__name__})'   # P0-4b H4: a wrongly typed field is a miss
+        if passed: self.save(); print(f'probe reused from {path} (PASS of {entry["time"]} in {entry.get("run_dir")})'); return True, ''
+        self.state['permission_probe'] = prior; target.unlink()      # not adopted
+        return False, 'probe cache: entry does not pass for this run: ' + why
+
+    def _probe_negative_status(self) -> str:   # P0-4b H1: status of this run's current, bound report when it is not a PASS, else ''
+        try:
+            raw = (self.run_dir / 'permission-probe.json').read_bytes(); report = json.loads(raw)
+            current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
+                       and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest())
+            return str(report.get('status')) if current and report.get('status') != 'PASS' else ''
+        except (OSError, ValueError, AttributeError): return ''
+
+    def probe_gate(self) -> tuple[bool, str]:   # run/resume/reject: a passing report, an accepted skip or a verified cache reuse (noted on stdout)
+        passed, reason = self.probe_passed()
+        if passed: return True, ''
+        if self._probe_skip_accepted(): print('probe skipped by operator acceptance (--accept-probe-skip)'); return True, ''
+        if lifecycle_spine.fake_dispatch_guard(self.args): return False, reason       # the fake harness never touches the real cache
+        reused, note = self._probe_cache_reuse()
+        return (True, '') if reused else (False, reason + '; ' + note)
 
     def _validate_resume_args(self) -> None:
         if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
@@ -1600,6 +1805,8 @@ class Coordinator:
             requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 requested_exec_timeout, self.args.timeout)
+        self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
+        validate_role_models(self.args)
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
@@ -1617,7 +1824,8 @@ class Coordinator:
                 self.hold(reason)
                 raise RuntimeError(reason)
             if current != value:
-                raise ValueError('resume configuration differs: ' + key)
+                raise ValueError(('role models are fixed for this run: ' if key in ROLE_DESTS else
+                                  'resume configuration differs: ') + key)
 
     def save(self) -> None:
         with self._save_lock:
@@ -2137,19 +2345,19 @@ class Coordinator:
             emit('receipt', receipt)
 
     def _head_commit(self) -> Optional[str]:
-        proc = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.workspace,
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--verify', 'HEAD', cwd=self.workspace), cwd=self.workspace,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return proc.stdout.strip() if proc.returncode == 0 else None
 
     def _git(self, args: list[str], ok=(0,)) -> str:
-        proc = subprocess.run(['git', *args], cwd=self.workspace, stdout=subprocess.PIPE,
+        proc = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, errors='replace')
         if proc.returncode not in ok:
             raise RuntimeError('git ' + ' '.join(args) + ' failed: ' + proc.stderr.strip())
         return proc.stdout
 
     def _workspace_names(self) -> list[str]:
-        raw = subprocess.run(['git', 'ls-files', '-co', '--exclude-standard', '-z'],
+        raw = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=self.workspace),
                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              check=True).stdout
         return sorted(name for name in raw.decode(errors='surrogateescape').split('\0') if name)
@@ -2169,12 +2377,12 @@ class Coordinator:
     def materialize_review_context(self) -> None:
         """Create program-owned, read-only review views without reviewer Git Bash access."""
         base = self.state.get('base_commit')
-        tracked = self._git(['diff', '--binary', base, '--'] if base else ['diff', '--binary', '--'])
-        stat = self._git(['diff', '--stat', base, '--'] if base else ['diff', '--stat', '--'])
+        tracked = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--binary', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--binary', '--'])
+        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--stat', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--stat', '--'])
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
-            additions.append(self._git(['diff', '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
+            additions.append(self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
         delta = tracked + ''.join(additions)
         untracked_stat = ''.join(f'UNTRACKED {name} ({(self.workspace / name).lstat().st_size} bytes)\n'
                                  for name in untracked)
@@ -2186,7 +2394,7 @@ class Coordinator:
         if self.state.get('reviews_completed', 0) and baseline.exists():
             current = self.internal / 'current-review'
             self._mirror_workspace(current)
-            proc = subprocess.run(['git', 'diff', '--no-index', '--binary', '--', str(baseline), str(current)],
+            proc = candidate_tree.run_bounded(candidate_tree.git_command('diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
@@ -2833,7 +3041,7 @@ class Coordinator:
             return self.args.author_vendor
         if role in ('reviewer', 'shadow', 'probe'):
             return self.args.reviewer_vendor
-        return 'claude' if self.args.author_vendor == 'codex' else 'codex'
+        return self.args.gate_vendor
 
     def _rotate_failed_first_claude_session(self, role: str, vendor: str, fresh: bool) -> None:
         """Do not reuse a Claude session id after an unaccepted first turn."""
@@ -2848,7 +3056,7 @@ class Coordinator:
             return self.args.reviewer_model, self.args.reviewer_effort
         return self.args.gate_model, self.args.gate_effort
 
-    def _claude_command(self, role: str, schema_path: Path, fresh: bool) -> list[str]:
+    def _claude_command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
         model, effort = self._model_effort(role)
         cmd = [self.args.claude_bin, '-p', '--model', model, '--effort', effort,
                '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
@@ -2863,8 +3071,12 @@ class Coordinator:
             # that may already edit and run Bash. Read-only roles keep it denied.
             subagents = self.args.author_subagents == 'on'
             tools = 'Read,Grep,Glob,Bash,Edit,Write' + (',Agent' if subagents else '')
-            cmd += ['--permission-mode', 'acceptEdits', '--tools', tools, '--allowedTools', tools,
+            allow, deny = self._claude_author_edit_rules(workspace)
+            allowed = 'Read,Grep,Glob,Bash' + (',Agent' if subagents else '') + ',' + ','.join(allow)
+            cmd += ['--permission-mode', 'acceptEdits', '--tools', tools, '--allowedTools', allowed,
                     '--disallowedTools', 'NotebookEdit' if subagents else 'NotebookEdit,Agent']
+            for rule in deny:  # separate arguments, as for the reviewer's Bash rules; the first --disallowedTools is unchanged
+                cmd += ['--disallowedTools', rule]
         else:
             exact_commands = self.reviewer_commands()
             if role == 'probe' and self._probe_sandbox_commands:
@@ -2899,9 +3111,9 @@ class Coordinator:
             cmd += ['resume', self.state['sessions'][role]]
         return cmd + ['-']
 
-    def command(self, role: str, schema_path: Path, fresh: bool) -> list[str]:
+    def command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
         vendor = self._role_vendor(role)
-        return (self._claude_command(role, schema_path, fresh) if vendor == 'claude'
+        return (self._claude_command(role, schema_path, fresh, workspace) if vendor == 'claude'
                 else self._codex_command(role, schema_path, fresh))
 
     def _author_prompt(self) -> str:
@@ -3419,10 +3631,12 @@ class Coordinator:
         atomic_json(schema_path, schema)
         atomic_text(prefix.with_suffix('.prompt.txt'), prompt)
         snapshot_workspace = self.workspace if self._fake_lifecycle and workspace_override else active_workspace
+        control_dirs, control_before = git_control_state(snapshot_workspace) if role == 'author' else ([], {})
+        if bad := control_before.get('!unreadable') or next((v for v in control_before.values() if v.startswith('UNAVAILABLE')), None): raise RuntimeError('git control state unreadable: ' + bad)   # no further git call in a workspace whose config cannot be read
         before, manifest = git_snapshot(snapshot_workspace)
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
-        command = self.command(role, schema_path, fresh)
+        command = self.command(role, schema_path, fresh, active_workspace)
         command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
         now = time.time()
         receipt = {'sequence': seq, 'role': role, 'phase': phase, 'vendor': self._role_vendor(role),
@@ -3549,12 +3763,20 @@ class Coordinator:
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
-        after, after_manifest = git_snapshot(snapshot_workspace)
+        control_after = git_control_state(snapshot_workspace, control_dirs)[1] if role == 'author' else {}
+        control_changed = sorted(k for k in {*control_before, *control_after} if control_before.get(k) != control_after.get(k))
+        unreadable = control_before.get('!unreadable') or control_after.get('!unreadable')
+        control_problem = ('git control state unreadable: ' + unreadable if unreadable else
+                           'author changed git control files: ' + ', '.join(control_changed) if control_changed else '')
         context_after = directory_digest(self.context)
-        receipt['snapshot_after'] = after
         receipt['context_after'] = context_after
-        atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
+        if control_problem: after = None   # D1: no further git call in this workspace after the author touched its git control files
+        else:
+            after, after_manifest = git_snapshot(snapshot_workspace)
+            receipt['snapshot_after'] = after
+            atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         try:
+            if control_problem: raise ValueError(control_problem)
             if vendor_config_before is not None:
                 changes = attribute_global_config_changes(vendor_config_before,
                     global_config_snapshot(self.global_config_home, self.global_codex_home), [active_workspace])
@@ -3613,6 +3835,9 @@ class Coordinator:
                 raise ValueError(f'{role} mutated workspace')
             if role != 'author':
                 answer['reviewed_snapshot'] = before
+            if receipt['model_identity'] == 'MISMATCH':
+                raise ValueError(f'model identity mismatch: {role} configured {receipt["model"]}, '
+                                 f'CLI reported {reported_model}')
             approves_exec = (phase in ('EXEC', 'POLISH') and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'approve')))
@@ -4133,7 +4358,103 @@ class Coordinator:
                              else 'FAIL')
         return outcome
 
+    def _claude_probe_rules_match(self, probe: dict) -> bool:
+        allow, deny = self._claude_author_edit_rules()
+        settings_deny = self._claude_sandbox_settings('author')['permissions']['deny']
+        return cap.rules_match(probe, allow, deny, settings_deny, self.workspace.resolve(), self.context.resolve(),
+                               self.author_flags()['claude_author_surface'])
+
+    def _claude_author_probe(self) -> dict:
+        """P0-3b: one real Claude author turn in a probe-owned tree; filesystem evidence decides (1C row 3b)."""
+        out = {'status': 'FAIL', 'probe': cap.PROBE, 'attempts': {}, 'positive_control': False, 'rules': None,
+               'claude_version': 'UNAVAILABLE', 'model_escape_failed_targets': [], 'process_group': None}
+        real_context, base, tmp, dirs, gone = self.context, None, None, [], lambda p: not (p.exists() or p.is_symlink())
+        try:
+            # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
+            base = Path(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir.parent)).resolve()
+            ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
+            for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
+            (ws / 'tracked.txt').write_text('probe baseline\n')
+            for git in (['init', '-q'], ['add', 'tracked.txt'], ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', 'commit', '-qm', 'probe']):
+                subprocess.run(['git', *git], cwd=ws, check=True)
+            sentinel, before = outside / 'sentinel.txt', b'sentinel-original\n'
+            sentinel.write_bytes(before)
+            sentinel_ino, skip = sentinel.stat().st_ino, {base, self.run_dir.resolve()}
+            os.symlink(outside, ws / 'escape-link')
+            tmp = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
+            if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
+            table = cap.steps(base, tmp)
+            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip), None, None, self.state['sequence']
+            self.context = ctx                 # the argv's --add-dir, context deny rules and denyWrite bind to the probe context
+            try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
+            except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
+            finally: self.context = real_context
+            turn = self.state['turns'][-1] if self.state['turns'] else {}
+            pid = turn.get('pid') if turn.get('phase') == 'AUTHOR_PERMISSION_PROBE' and turn.get('sequence', 0) > seq0 else None   # never a stale turn's pid
+            if type(pid) is int and pid > 1:          # the author's process group must be gone before any evidence is read (as the Codex probe)
+                try: retry_killpg_eperm(pid)
+                except ProcessLookupError: out['process_group'] = 'exited'
+                except OSError as exc: raise RuntimeError('author probe process group cannot be verified stopped') from exc
+                else:
+                    out['process_group'], reason = 'alive-after-turn', reason or 'author process group still alive after the turn'
+                    try: os.killpg(pid, signal.SIGKILL)
+                    except OSError: pass
+                    time.sleep(0.2)
+            elif result: raise RuntimeError('author probe process group is unverifiable')
+            first = cap.listing(base, base.parent, skip)
+            time.sleep(cap.SETTLE_SECONDS)
+            second = cap.listing(base, base.parent, skip)
+            rows = []
+            if result:
+                argv = self.state['turns'][-1]['command']
+                out['rules'] = cap.rules_used(argv, ws, ctx)
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10).stdout.strip() or 'UNAVAILABLE'
+                except (OSError, subprocess.SubprocessError): pass
+                rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
+            got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
+            unchanged = got == (before, sentinel_ino)
+            if got is None: reason = reason or 'sentinel-replaced'
+            out['attempts'], unexpected = cap.attempts(rows, table, unchanged, gone)
+            made = out['links_made'] = cap.links_made(out['attempts'], ws, sentinel_ino)
+            out['positive_control'] = (ws / 'ok.txt').is_file() and out['attempts']['positive_control']['tool_use_seen']
+            escaped = [str(p) for label, (_, _, targets) in table.items() if label != 'positive_control' for p in targets if not gone(p)]
+            allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')}      # the positive control and the prescribed link creations
+            escaped += [k for k in baseline.keys() | first.keys() | second.keys()
+                        if k not in allowed and not baseline.get(k) == first.get(k) == second.get(k)] + ([] if unchanged else [str(sentinel)])
+            if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
+            if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
+            out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
+            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made)
+            if reason: out['reason'] = reason
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
+            out.update(status='FAIL', reason=type(exc).__name__ + ': ' + str(exc))
+        finally:
+            self.context = real_context
+            tampered = []                         # a probe-made dir that is no longer a real dir was swapped by the author
+            for d in ([base] if base else []) + dirs:
+                try: real = stat.S_ISDIR(os.lstat(d).st_mode)
+                except OSError: real = False
+                if not real: tampered.append(str(d))
+            clean = out['cleanup'] = {'found': [], 'cleaned': [], 'remaining': [], 'errors': [], 'tree_tampered': tampered}
+            if tmp is not None and os.path.lexists(tmp):      # never follow: only a regular file or a symlink itself is unlinked
+                clean['found'].append(str(tmp))
+                try:
+                    if not (stat.S_ISREG(os.lstat(tmp).st_mode) or os.path.islink(tmp)): raise OSError('not a file or symlink')
+                    os.unlink(tmp)
+                    clean['cleaned'].append(str(tmp))
+                except OSError as exc: clean['errors'].append({'path': str(tmp), 'error': type(exc).__name__})
+                if os.path.lexists(tmp): clean['remaining'].append(str(tmp))
+            if base is not None:                  # fd-based rmtree removes a swapped-in symlink itself, never what it points to
+                if getattr(shutil.rmtree, 'avoids_symlink_attacks', False): shutil.rmtree(base, ignore_errors=True)
+                else: clean['errors'].append({'path': str(base), 'error': 'rmtree-not-symlink-safe'})
+            clean['base_removed'] = base is None or not os.path.lexists(base)
+            if tampered or clean['remaining'] or clean['errors'] or not clean['base_removed']: out['status'] = 'FAIL'
+        out['claude_author_status'] = out['status']
+        return out
+
     def _author_permission_probe(self) -> dict:
+        if self.args.author_vendor == 'claude':
+            return self._claude_author_probe()
         if self.args.author_vendor != 'codex':
             return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
         capability = self.codex_capabilities()
@@ -4364,6 +4685,10 @@ class Coordinator:
                      'uncertain in-flight CLI turn')):
                 self.state['hold_reason'] = 'permission probe retry cleared; permission probe is pending'
             self.save()
+        report_file = self.run_dir / 'permission-probe.json'      # P0-4 V0: an aborted re-probe must not leave the old PASS valid
+        if report_file.exists(): os.replace(report_file, report_file.with_name('permission-probe.superseded.json'))
+        self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
+        (self.state.get('probe_skip_override') or {}).setdefault('voided', {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reason': 'permission-probe re-run'}); self.save()
         snapshot, _ = git_snapshot(self.workspace)
         global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         allowed_command = self.args.test_command.strip()
@@ -4414,7 +4739,7 @@ class Coordinator:
                        'If using code-mode, each cell must be exactly: const r = await tools.exec_command('
                        '{"cmd":"<one literal command>","workdir":' + json.dumps(str(self.workspace)) +
                        '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output.')
-        base_report = {'status': 'FAIL', 'reviewer_flags': self.reviewer_flags(),
+        base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'reviewer_flags': self.reviewer_flags(),
                        'reviewer_flags_digest': self.reviewer_flags_digest(),
                        'author_flags': self.author_flags(),
                        'author_flags_digest': self.author_flags_digest(),
@@ -4475,6 +4800,7 @@ class Coordinator:
             if sandbox_probe_paths:
                 report['failure_reasons'].append('claude-sandbox-write-not-denied-or-not-observed')
             atomic_json(self.run_dir / 'permission-probe.json', report)
+            self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
             self.state['hold_reason'] = 'permission probe failed; inspect permission-probe.json'
             self.save()
             self.write_usage()
@@ -4597,7 +4923,11 @@ class Coordinator:
         trust_warning = '; '.join(report['global_config_changes'].get('warnings', []))
         if trust_warning:
             trust_warning += ': ' + ', '.join(path for row in report['global_config_changes']['expected_changes'] if row['file'] == 'codex_config' for path in row['workspaces']); report['warning'] = trust_warning
+        if report['status'] == 'PASS' and not author_probe.get('model_escape_failed_targets') and not lifecycle_spine.fake_dispatch_guard(self.args):    # P0-4 V3: never PASS_RESIDUAL_RISK / UNKNOWN
+            try: self._probe_cache_write(report, hashlib.sha256((json.dumps(report, indent=2, ensure_ascii=False) + '\n').encode()).hexdigest())
+            except Exception as exc: report['warning'] = (report.get('warning', '') + '; ' if report.get('warning') else '') + f'probe-pass cache not written: {exc}'
         atomic_json(self.run_dir / 'permission-probe.json', report)
+        self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
         if author_probe.get('model_escape_failed_targets'):
             self.hold('1C FAIL: escape write observed at ' + ', '.join(author_probe['model_escape_failed_targets'])); return False
         self.state['residual_risk'] = report.get('residual_risk')
@@ -4611,6 +4941,14 @@ class Coordinator:
     def drive(self) -> str:
         if self._fake_lifecycle:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
+        # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
+        # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
+        if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+                and not (ok := self.codex_contract_verified())[0]:
+            raise ValueError(ok[1])
+        if self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+                and not (ok := self.claude_author_verified())[0]:
+            raise ValueError(ok[1])
         return self._drive_loop()
 
     def fake_drive(self) -> str:
@@ -5487,12 +5825,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--supersedes', help='resolved parent run dir for a scope-change successor')
     p.add_argument('--config', help='JSON profile; defaults to <workspace>/.review-loop/paired-session.json')
     p.add_argument('--author-vendor', choices=['codex', 'claude'], default='codex')
-    p.add_argument('--author-model', help='defaults to the vendor-pinned ADR-8 model')
+    p.add_argument('--author-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--author-effort', default='medium')
     p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
-    p.add_argument('--reviewer-model', help='defaults to the vendor-pinned ADR-8 model')
+    p.add_argument('--reviewer-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--reviewer-effort', default='medium')
-    p.add_argument('--gate-model', help='defaults to the vendor-pinned ADR-8 model')
+    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help='defaults to the vendor opposite the author')
+    p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
@@ -5531,34 +5870,56 @@ def parser() -> argparse.ArgumentParser:
                    help='with resume, run only the one-time polish round on an older DONE run')
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
+    p.add_argument('--accept-unverified-codex-cli', action='store_true',
+                   help='operator override: run a Codex author on an unverified codex-cli version (needs --reason)')
+    p.add_argument('--accept-unverified-claude-author', action='store_true',
+                   help='operator opt-in: run a Claude author with path-scoped Edit rules but no probe PASS (needs --reason; '
+                        'with run, resume or reject). Persisted and re-applied on restore until the author flags change. '
+                        'The Edit path boundary is not yet verified against symlink or hardlink redirection created '
+                        'inside the workspace (P0-3b probes it)')
+    p.add_argument('--accept-probe-skip', action='store_true',
+                   help='operator acceptance: run/resume/reject without a passing permission-probe.json (needs --reason); voided for good '
+                        'when a flags digest changes; the Codex CLI contract and Claude author gate still apply')
+    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version, Claude author or probe skip; also the reason for accept --override-rejection')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
-    p.add_argument('--reason', help='attributed reason for an operator rejection override')
     p.add_argument('--expect', help='operator intent digest required by accept/reject')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
+    p.set_defaults(allowed_models=None)
     return p
 
 
 CONFIGURABLE_DESTS = {
     'author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
-    'reviewer_model', 'reviewer_effort', 'gate_model', 'gate_effort', 'shadow',
-    'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
+    'reviewer_model', 'reviewer_effort', 'gate_vendor', 'gate_model', 'gate_effort', 'shadow',
+    'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish',
 }
 
 
+ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_model', 'gate_vendor', 'gate_model')
+MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
+
+
+def old_gate_vendor(author_vendor: str) -> str:
+    return 'claude' if author_vendor == 'codex' else 'codex'
+
+
+def restores_run(args: argparse.Namespace) -> bool:
+    return args.action in ('accept', 'reject', 'note', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
+
+
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
     model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
-    role_vendors = {
-        'author_model': args.author_vendor,
-        'reviewer_model': args.reviewer_vendor,
-        'gate_model': 'claude' if args.author_vendor == 'codex' else 'codex',
-    }
+    if getattr(args, 'gate_vendor', None) is None:
+        args.gate_vendor = old_gate_vendor(args.author_vendor)
+    role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
+                    'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
         if getattr(args, key) is None:
             setattr(args, key, model_for_vendor[vendor])
@@ -5566,22 +5927,31 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def validate_role_models(args: argparse.Namespace) -> None:
-    """Enforce the currently accepted ADR-5 vendor/model pairing before a run."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
-    role_vendors = {
-        'author_model': args.author_vendor,
-        'reviewer_model': args.reviewer_vendor,
-        'gate_model': 'claude' if args.author_vendor == 'codex' else 'codex',
-    }
+    """ADR-9: each role needs a well-formed model id, listed in allowed_models when that key is set."""
+    allowed = getattr(args, 'allowed_models', None)
+    if allowed is not None and not (
+            isinstance(allowed, dict) and set(allowed) <= {'codex', 'claude'} and all(
+                isinstance(v, list) and all(isinstance(m, str) for m in v) for v in allowed.values())):
+        raise ValueError('allowed_models must be an object {"codex": [...], "claude": [...]} of string lists')
+    role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
+                    'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
-        expected = model_for_vendor[vendor]
-        actual = getattr(args, key)
-        if actual != expected:
-            raise ValueError(f'{key} must be {expected} for the {vendor} role under ADR-8; got {actual}')
+        model = getattr(args, key)
+        if not isinstance(model, str) or not MODEL_ID_RE.fullmatch(model):
+            raise ValueError(f'{key} is not a well-formed model id: {model!r}')
+        if allowed is not None and model not in allowed.get(vendor, []):
+            raise ValueError(f'{key} {model} is not in allowed_models for the {vendor} role')
 
 
-def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.ArgumentParser:
+def gate_surface_issue(args: argparse.Namespace):
+    if args.gate_vendor != args.reviewer_vendor and not lifecycle_spine.fake_dispatch_guard(args):
+        return (f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; '
+                'its read-only surface is not covered by permission-probe')
+
+
+def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile: bool = False) -> argparse.ArgumentParser:
     """Load project defaults while preserving explicit CLI argument precedence."""
+    if ignore_profile: return p
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument('--workspace', required=True)
     bootstrap.add_argument('--config')
@@ -5601,7 +5971,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.Ar
         raise ValueError(f'cannot read paired-session config {config_path}: {exc}') from exc
     if not isinstance(values, dict):
         raise ValueError('paired-session config must be a JSON object')
-    unknown = set(values) - CONFIGURABLE_DESTS
+    unknown = (set(values) - CONFIGURABLE_DESTS) | {k for k in values if k in OPERATOR_ONLY_DESTS or k.startswith('accept_')}
     if unknown:
         raise ValueError('unsupported paired-session config keys: ' + ', '.join(sorted(unknown)))
     explicit = set()
@@ -5613,6 +5983,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.Ar
     actions = {action.dest: action for action in p._actions}
     for key, value in values.items():
         if key in explicit:
+            continue
+        if key == 'allowed_models':
+            p.set_defaults(allowed_models=value)
             continue
         action = actions[key]
         if action.dest in ('reviewer_command', 'docs_allowlist', 'skip_globs'):
@@ -5654,9 +6027,16 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
-    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):  # restored from state
-        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
-        return 2
+    if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
+            and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
+        if args.accept_unverified_claude_author:
+            co.state['claude_author_override'] = {
+                'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
+                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+            co.save()
+        if not (claude_ok := co.claude_author_verified())[0]:
+            print('REFUSED: ' + claude_ok[1])
+            return 2
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -5676,9 +6056,27 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.accept()
         print(status)
         return 0
+    if args.action != 'abort' and (issue := gate_surface_issue(args)):
+        print('REFUSED: ' + issue)
+        return 2
+    if (args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+            and not lifecycle_spine.fake_dispatch_guard(args)):
+        if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
+            co.state['codex_cli_override'] = {
+                'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
+                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+            co.save()
+        if not (verified := co.codex_contract_verified())[0]:
+            print('REFUSED: ' + verified[1])
+            return 2
+    if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
+        if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
+            print(f'REFUSED: the current permission probe is {negative}; fix the cause and re-run permission-probe')
+            return 2
+        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest()}; co.save()
     if args.action == 'reject':
         if not args.skip_probe:
-            passed, reason = co.probe_passed()
+            passed, reason = co.probe_gate()
             if not passed:
                 print('REFUSED: ' + reason + '; run permission-probe before continuing')
                 return 2
@@ -5696,11 +6094,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
                      and global_config_snapshot(co.global_config_home, co.global_codex_home).get(
                          'codex_config', {}).get('sha256') != before_config)
     if args.action in ('run', 'resume') and not args.skip_probe:
-        passed, reason = co.probe_passed()
+        passed, reason = co.probe_gate()
         if not passed and not changed_codex:
             print('REFUSED: ' + reason + '; run permission-probe before continuing')
             return 2
-    co._probe_gate_required = not args.skip_probe
+    co._probe_gate_required = not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
         if co.state.get('status') == 'ACCEPTED':
             print('ACCEPTED')
@@ -5728,6 +6126,10 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
+        args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
+    args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
+        arg == o or arg.startswith(o + '=') for o in a.option_strings for arg in raw_argv)}
     roots = (Path(args.workspace), Path(args.run_dir))
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
     if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
@@ -5736,14 +6138,25 @@ def main(argv=None) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
+    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
+    if bool(accepts) != bool((args.reason or '').strip()) and not (args.override_rejection and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):
+        print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip needs --reason and run, resume or reject')
+        return 2
     try:
         resolve_role_model_defaults(args)
-        validate_role_models(args)
+        if not restores_run(args): validate_role_models(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
-    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):
-        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
+    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
+            and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
+            and not restores_run(args):
+        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
+              'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
+              '--reason TEXT` (permission-probe does not take the flag)')
+        return 2
+    if not restores_run(args) and (issue := gate_surface_issue(args)):
+        print('REFUSED: ' + issue)
         return 2
     if args.polish and args.action != 'resume':
         parser().error('--polish is only valid with resume')

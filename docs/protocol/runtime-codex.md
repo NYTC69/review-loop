@@ -71,6 +71,7 @@
 - `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 - `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 - `codex_reviewer_model` applies only to the local Codex reviewer path.
+- `cross_vendor_review` is `auto` (default) or `off`; see reviewer-runtime.md §Cross-vendor review.
 - `executor_model` is ignored by the Codex runtime in Stage 1.
 - `codex_executor_model` is reserved only and ignored in Stage 1.
 - Local Codex Stage 1 agents are all `judgment` tier. If a tier is omitted,
