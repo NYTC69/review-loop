@@ -1236,11 +1236,17 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         co, out = self.probe()
         argv = co.state['turns'][-1]['command']
         deny_write = json.loads(argv[argv.index('--settings') + 1])['sandbox']['filesystem']['denyWrite']
-        cache = str(Path.home().resolve() / '.cache' / 'review-loop' / 'probe-pass')                # P0-4 V4 adds the cache root to the author denyWrite
-        self.assertEqual(deny_write, [str(co.run_dir), cache, out['rules']['probe_context']])
+        self.assertEqual(deny_write, [str(co.run_dir), out['rules']['probe_context']])
         real = co._claude_sandbox_settings('author')['sandbox']['filesystem']['denyWrite']
-        self.assertEqual(real, [str(co.run_dir), cache])                                             # the real context sits under run_dir: unchanged
+        self.assertEqual(real, [str(co.run_dir)])                                                    # the real context sits under run_dir: unchanged
         self.assertTrue(co.context.is_relative_to(co.run_dir))
+
+    def test_the_author_bash_sandbox_does_not_list_the_cache_root(self):                            # P0-4b H0: the Edit deny rule guards it; the Bash sandbox is cwd-bound
+        co = self.co()
+        for role in ('author', 'probe'):
+            fs = co._claude_sandbox_settings(role)['sandbox']['filesystem']
+            self.assertNotIn('probe-pass', json.dumps(fs), (role, fs))
+            self.assertFalse(any('probe-pass' in str(p) for k, v in fs.items() if k.startswith('allow') for p in v), fs)
 
     def test_bash_default_fields_are_tolerated_but_dangerously_disable_sandbox_true_is_not(self):    # P0-3d G3
         table = cap.steps(Path('/b'), Path('/t'))
@@ -1538,6 +1544,8 @@ class ProbeSkipTests(unittest.TestCase):
     def forget_report(self, co):
         """The later run: the earlier PASS report is gone, only the cache holds it."""
         (co.run_dir / 'permission-probe.json').unlink()
+        for key in ('permission_probe', 'permission_probe_superseded'): co.state.pop(key, None)     # P0-4b H3: a run that has probed never consults the cache
+        co.save()
 
     def seed(self, *extra):
         co = self.co(*extra)
@@ -1729,6 +1737,15 @@ class ProbeSkipTests(unittest.TestCase):
         with patch.object(co, 'workspace', self.cache.parent), self.assertRaises(RuntimeError):
             co._probe_cache_write({}, 'x')
         self.assertFalse(self.cache.exists())
+
+    def test_an_overlapping_workspace_puts_the_cache_root_in_the_author_bash_denywrite(self):        # P0-4b R1 MD-1
+        co = self.co()
+        deny = lambda: co._claude_sandbox_settings('author')['sandbox']['filesystem']['denyWrite']
+        self.assertNotIn(str(self.cache), deny())
+        for workspace in (self.cache, self.cache.parent, self.cache / 'ws', self.h.test_home / '.cache'):
+            with self.subTest(workspace=str(workspace)), patch.object(co, 'workspace', workspace):
+                self.assertIn(str(self.cache.resolve()), deny())
+                self.assertNotIn(str(self.cache.resolve()), co._claude_sandbox_settings('probe')['sandbox']['filesystem']['denyWrite'])
 
     def test_the_cache_is_never_consulted_inside_permission_probe(self):
         co = self.co()
@@ -1946,7 +1963,7 @@ class ProbeSkipTests(unittest.TestCase):
         rule = 'Edit(//' + root.as_posix().lstrip('/') + '/**)'
         self.assertIn(rule, ClaudeAuthorTests.author_deny(argv))
         settings = json.loads(argv[argv.index('--settings') + 1])
-        self.assertIn(str(root), settings['sandbox']['filesystem']['denyWrite'])
+        self.assertFalse([p for k, v in settings['sandbox']['filesystem'].items() if k.startswith('allow') for p in v if str(root) in str(p)])   # P0-4b H0: the Bash sandbox never allows it (denyWrite stays P0-3d)
         self.assertTrue(any(ClaudeAuthorTests.denied(r, root / 'x.json') for r in ClaudeAuthorTests.author_deny(argv)))
         self.assertIn(rule, co.author_flags()['claude_author_edit_rules'][1])
         self.assertNotIn(rule, argv[argv.index('--allowedTools') + 1])
@@ -1961,6 +1978,117 @@ class ProbeSkipTests(unittest.TestCase):
             self.assertFalse(Path(root).resolve().is_relative_to(self.cache.resolve()))
             self.assertFalse(self.cache.resolve().is_relative_to(Path(root).resolve()))
         self.assertNotIn('probe-pass', ' '.join(co._codex_sandbox_profile_args()))
+
+    # ---- P0-4b: H1 negative evidence, H2 fd-based cache read, H3 no revival, H4 malformed entries --------------------
+
+    def test_the_acceptance_never_overrides_a_current_negative_probe(self):                  # H1
+        verdicts = {'FAIL': {'status': 'FAIL', 'reason': 'escape write observed: forbidden-probe'}, 'UNKNOWN': {'status': 'UNKNOWN'},
+                    'PASS_RESIDUAL_RISK': {'status': 'PASS_RESIDUAL_RISK', 'd1a_model_verdict': 'UNKNOWN', 'd1b_synthetic_verdict': 'PASS', 'residual_risk': 'x'}}
+        for status, verdict in verdicts.items():
+            with self.subTest(status=status):
+                self.h.run_dir = self.h.root / ('neg-' + status)
+                self.assertEqual(self.probe(self.co(), verdict)['status'], status)
+                result = self.cli('run', '--accept-probe-skip', '--reason', 'r')
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(f'REFUSED: the current permission probe is {status}; fix the cause and re-run permission-probe', result.stdout)
+                self.assertNotIn('probe_skip_override', self.state())                          # the acceptance was not recorded
+        self.h.run_dir = self.h.root / 'neg-none'                                                 # no report: the acceptance is allowed
+        self.assertEqual(self.cli('run', '--accept-probe-skip', '--reason', 'r').returncode, 0)
+
+    def test_a_stale_or_unbound_negative_report_does_not_block_the_acceptance(self):         # H1
+        co = self.co()
+        self.assertEqual(self.probe(co, {'status': 'FAIL', 'reason': 'x'})['status'], 'FAIL')
+        self.assertEqual(co._probe_negative_status(), 'FAIL')
+        path = co.run_dir / 'permission-probe.json'
+        report = json.loads(path.read_text())
+        path.write_text(json.dumps({**report, 'author_flags_digest': '0' * 64}))                # stale digest and a report the state never recorded
+        self.assertEqual(co._probe_negative_status(), '')
+        co.state['permission_probe'] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'turn': report.get('probe_turn')}
+        self.assertEqual(co._probe_negative_status(), '')                                        # bound, but its digest is not this run's
+        path.write_text('[1]')
+        self.assertEqual(co._probe_negative_status(), '')                                        # garbage is not evidence
+        path.write_text('{not json')                                                             # (probe_passed itself crashes on a non-object report: pre-existing, out of scope)
+        self.assertEqual(self.cli('run', '--accept-probe-skip', '--reason', 'r').returncode, 0)
+
+    def test_a_group_writable_cache_root_is_a_miss_and_is_never_written(self):               # H2
+        co, entry = self.seed()
+        self.cache.chmod(0o770)
+        ok, why = self.reuse(co)
+        self.assertFalse(ok)
+        self.assertIn('private regular file', why)
+        self.cache.chmod(0o777)
+        self.h.run_dir = self.h.root / 'loose'
+        report = self.probe(self.co())
+        self.assertIn('cache root is not a private directory', report['warning'])
+        self.assertEqual(self.entries(), [entry])                                                 # nothing new written
+        self.cache.chmod(0o700)
+        self.assertTrue(self.reuse(co)[0])                                                        # control
+
+    def test_the_entry_is_read_from_the_walked_fd_so_a_swapped_symlink_or_oversize_file_is_a_miss(self):   # H2
+        co, entry = self.seed()
+        real = self.h.root / 'real-entry.json'
+        shutil.copy(entry, real)
+        entry.unlink()
+        entry.symlink_to(real)                                                                    # swapped in after the lstat-style checks
+        with patch.object(rc.Path, 'is_symlink', return_value=False):
+            self.assertEqual(self.reuse(co), (False, 'probe cache: symlinked entry or directory'))
+        with self.assertRaises(OSError):
+            rc.read_cache_entry(self.cache, entry.name)
+        entry.unlink()
+        shutil.copy(real, entry)
+        entry.chmod(0o600)
+        self.assertEqual(rc.read_cache_entry(self.cache, entry.name), real.read_bytes())
+        entry.write_bytes(entry.read_bytes() + b' ' * (1 << 20))                                  # larger than 1 MiB
+        self.assertEqual(self.reuse(co), (False, 'probe cache: entry is larger than 1 MiB'))
+        shutil.copy(real, entry)
+        self.cache.rename(self.h.root / 'moved')                                                  # the root itself swapped for a symlink
+        self.cache.symlink_to(self.h.root / 'moved')
+        with patch.object(rc.Path, 'is_symlink', return_value=False):
+            self.assertEqual(self.reuse(co), (False, 'probe cache: symlinked entry or directory'))
+
+    def test_the_cache_never_revives_an_old_pass_in_a_run_that_has_already_probed(self):     # H3
+        co = self.co()
+        self.assertEqual(self.probe(co)['status'], 'PASS')
+        self.assertEqual(self.probe(co, {'status': 'FAIL', 'reason': 'x'})['status'], 'FAIL')
+        (co.run_dir / 'permission-probe.json').unlink()                                           # the operator deletes the FAIL file by hand
+        ok, why = self.reuse(co)
+        self.assertFalse(ok)
+        self.assertIn('already probed', why)
+        self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+        result = self.cli('resume')
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertNotIn('probe reused', result.stdout)
+
+    def test_a_malformed_cache_entry_is_a_named_miss_and_never_an_exception(self):           # H4
+        co, entry = self.seed()
+        good = json.loads(entry.read_text())
+        for name, change in {'null': {'report': None}, 'string': {'report': 'PASS'}, 'list': {'report': [1]},
+                             'time-int': {'time': 5}, 'author-probe-int': {'report': {**good['report'], 'author_permission_probe': 5}},
+                             'config-int': {'report': {**good['report'], 'global_config_changes': 5}}}.items():
+            with self.subTest(entry=name):
+                self.set_entry(entry, **change)
+                ok, why = self.reuse(co)
+                self.assertFalse(ok)
+                self.assertIn('probe cache:', why)
+                self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+                self.assertIsNone(co.state.get('permission_probe'))
+                self.set_entry(entry, report=good['report'], time=good['time'])
+        entry.write_text('[1]')
+        self.assertIn('unreadable', self.reuse(co)[1])
+        entry.write_text('"str"')
+        self.assertIn('unreadable', self.reuse(co)[1])
+        for bad in ({**good, 'report': {**good['report'], 'reason': '\ud800'}}, {**good, 'run_dir': '\ud800'}):   # R2: a lone surrogate fails the UTF-8 write
+            self.set_entry_from(entry, bad)
+            self.assertIn('unreadable', self.reuse(co)[1])
+            self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+            self.assertEqual(list(self.cache.glob('*.tmp*')) + list(co.run_dir.glob('*.tmp*')), [])
+        entry.write_text('[' * 200000 + ']' * 200000)                                             # R1 MD-2: nesting deep enough for RecursionError
+        self.assertIn('unreadable', self.reuse(co)[1])
+        self.set_entry_from(entry, good)
+        self.assertTrue(self.reuse(co)[0])                                                        # control
+
+    def set_entry_from(self, path, data):
+        path.write_text(json.dumps(data))
 
 
 if __name__ == '__main__':

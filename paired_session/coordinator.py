@@ -66,6 +66,19 @@ VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
 OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
 UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
+def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # P0-4b H2: fd walk from ~ (O_NOFOLLOW each step); every check is on the fd that is read
+    fds, home = [], Path.home()
+    try:
+        fds.append(os.open(home, os.O_RDONLY | os.O_DIRECTORY))
+        for part in root.relative_to(home).parts: fds.append(os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fds[-1]))
+        fds.append(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[-1]))   # non-blocking: a FIFO is refused, never waited on
+        for fd, kind in ((fds[-2], stat.S_ISDIR), (fds[-1], stat.S_ISREG)):
+            if not kind((info := os.fstat(fd)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise OSError(errno.EPERM, 'entry is not a private regular file owned by this user in a private directory')
+        if info.st_size > limit: raise OSError(errno.EFBIG, 'entry is larger than 1 MiB')
+        with os.fdopen(os.dup(fds[-1]), 'rb') as handle: return handle.read(limit)
+    finally:
+        for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
     try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip() or 'UNAVAILABLE'
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
@@ -1607,9 +1620,9 @@ class Coordinator:
                     'files': [{'path': path, 'mode': 'deny'} for path in credential_paths],
                 },
                 'filesystem': {
-                    'denyWrite': [str(self.run_dir), *([str(Path.home().resolve() / '.cache' / 'review-loop' / 'probe-pass')] if role == 'author' else [])]   # P0-4 V4: the probe-pass cache
-                                 + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else [])
-                                 + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else []),   # the probe's context; the real one is under run_dir
+                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else [])
+                                 + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else [])   # the probe's context; the real one is under run_dir
+                                 + ([str(probe_cache_root())] if role == 'author' and ((r := probe_cache_root().resolve()) == (w := self.workspace.resolve()) or r in w.parents or w in r.parents) else []),   # P0-4b: an overlapping workspace would make the cwd-bound Bash sandbox cover the cache
                 },
             },
             'permissions': {
@@ -1673,7 +1686,9 @@ class Coordinator:
         key, inputs, root = *(self._probe_cache_key() or (None, None)), probe_cache_root()
         if key is None or any(p.is_symlink() for p in (root.parent.parent, root.parent, root)):
             raise RuntimeError('no cache key (Claude version or program state unavailable) or a symlinked cache path')
-        os.makedirs(root, mode=0o700, exist_ok=True); (temp := root / f'{key}.json.tmp').unlink(missing_ok=True)
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        if not stat.S_ISDIR((info := os.lstat(root)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022: raise RuntimeError('cache root is not a private directory')   # P0-4b H2
+        (temp := root / f'{key}.json.tmp').unlink(missing_ok=True)
         os.close(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))   # atomic_json rewrites this file, which keeps 0600
         atomic_json(root / f'{key}.json', {'key': key, 'key_inputs': inputs, 'run_dir': str(self.run_dir), 'source_report_sha256': report_sha256, 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'report': report})
 
@@ -1682,23 +1697,32 @@ class Coordinator:
         if keyed is None: return False, 'probe cache: no key (Claude version or program state unavailable)'
         (key, inputs), path = keyed, root / f'{keyed[0]}.json'
         if any(p.is_symlink() for p in (root.parent.parent, root.parent, root, path)): return False, 'probe cache: symlinked entry or directory'
-        try: info = path.lstat()
-        except OSError: return False, 'probe cache: no entry for these flags and versions'
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
-            return False, 'probe cache: entry is not a private regular file owned by this user'
-        try: raw = path.read_bytes(); entry = json.loads(raw); report = entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT))
-        except (OSError, ValueError, KeyError, TypeError): return False, 'probe cache: entry is unreadable'
+        try: raw = read_cache_entry(root, path.name)
+        except OSError as exc: return False, 'probe cache: ' + ('no entry for these flags and versions' if exc.errno == errno.ENOENT else 'symlinked entry or directory' if exc.errno in (errno.ELOOP, errno.ENOTDIR) else exc.strerror)
+        try: entry = json.loads(raw); report = entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT)); json.dumps(entry, ensure_ascii=False).encode()   # the last: a lone surrogate would fail atomic_json's write
+        except (ValueError, KeyError, TypeError, RecursionError): return False, 'probe cache: entry is unreadable'
+        if not isinstance(report, dict): return False, 'probe cache: entry is malformed (report is not an object)'   # P0-4b H4
         if entry.get('key') != key or entry.get('key_inputs') != inputs: return False, 'probe cache: recorded key inputs differ'
         if not 0 <= age <= 7 * 86400: return False, 'probe cache: entry is older than 7 days'
         if 'permission_probe_superseded' in self.state and not self.state.get('permission_probe'): return False, 'probe cache: the last permission-probe did not complete'
         if (target := self.run_dir / 'permission-probe.json').exists(): return False, 'probe cache: this run already has a report that does not pass'
+        if self.state.get('permission_probe'): return False, 'probe cache: this run has already probed; the cache never revives an older PASS'   # P0-4b H3
         prior = self.state.get('permission_probe')
         atomic_json(target, {**report, 'reused_from': {'cache_path': str(path), 'cache_sha256': hashlib.sha256(raw).hexdigest(), 'source_run_dir': entry.get('run_dir'), 'original_time': entry['time'], 'reuse_time': time.strftime(UTC_FORMAT, time.gmtime())}})
         self.state['permission_probe'] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'turn': report.get('probe_turn')}
-        passed, why = self.probe_passed()
+        try: passed, why = self.probe_passed()
+        except Exception as exc: passed, why = False, f'malformed report ({type(exc).__name__})'   # P0-4b H4: a wrongly typed field is a miss
         if passed: self.save(); print(f'probe reused from {path} (PASS of {entry["time"]} in {entry.get("run_dir")})'); return True, ''
         self.state['permission_probe'] = prior; target.unlink()      # not adopted
         return False, 'probe cache: entry does not pass for this run: ' + why
+
+    def _probe_negative_status(self) -> str:   # P0-4b H1: status of this run's current, bound report when it is not a PASS, else ''
+        try:
+            raw = (self.run_dir / 'permission-probe.json').read_bytes(); report = json.loads(raw)
+            current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
+                       and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest())
+            return str(report.get('status')) if current and report.get('status') != 'PASS' else ''
+        except (OSError, ValueError, AttributeError): return ''
 
     def probe_gate(self) -> tuple[bool, str]:   # run/resume/reject: a passing report, an accepted skip or a verified cache reuse (noted on stdout)
         passed, reason = self.probe_passed()
@@ -5746,6 +5770,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
             print('REFUSED: ' + verified[1])
             return 2
     if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
+        if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
+            print(f'REFUSED: the current permission probe is {negative}; fix the cause and re-run permission-probe')
+            return 2
         co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest()}; co.save()
     if args.action == 'reject':
         if not args.skip_probe:
