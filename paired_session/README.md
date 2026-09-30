@@ -426,3 +426,13 @@ Q source and bundle advisories stay OPEN in the finding ledger before acceptance
 The fake DELIVERY intake re-reads protected Q bundle and provider turn receipts,
 current program hashes, source tests, Q tree and P no-op receipts before any
 Git write. A pending, relabeled, later-turn or failed-test proof refuses intake.
+
+Fake delivery prepares a deterministic unpublished C2 (parent C1, tree Q),
+with signing/hooks disabled, and an intent digest binding objects, Q proofs,
+HEAD/index/live snapshot and operator provenance. `accept --expect` must match
+that digest; this acceptance publishes no ref. CAS/reconciliation is a later step.
+
+Preparation permits only the normal fake-router HOLD (or existing DONE/ACCEPTED);
+other HOLDs/terminal states refuse. Delivery accept requires DONE/PENDING before
+rechecking intent. Fake delivery rejection is explicitly refused until P'/Q'
+recovery is wired; use abort/new run or an explicit scope-change instead.

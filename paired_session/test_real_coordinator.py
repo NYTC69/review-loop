@@ -3997,6 +3997,111 @@ sys.exit(result.returncode)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    def test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        head = co._head_commit()
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        again = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(intent, again)
+        self.assertEqual(co._head_commit(), head)
+        self.assertEqual(co.state['status'], 'DONE')
+        root = ct.baseline_from_binding(co.state['fake_ingest_receipt']['baseline'])
+        raw = ct._git_bytes(['cat-file', 'commit', intent['c2']], env=ct._git_env(GIT_DIR=str(root.git_dir)))
+        self.assertIn(('tree ' + intent['q_oid'] + '\n').encode(), raw)
+        self.assertIn(('parent ' + c1 + '\n').encode(), raw)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), intent['c2_sha256'])
+        for expected in (None, 'stale'):
+            with self.subTest(expected=expected):
+                co.args.expect = expected
+                with self.assertRaisesRegex(ValueError, 'current intent digest'):
+                    co.accept()
+                self.assertNotIn('fake_delivery_acceptance', co.state)
+        co.args.expect = intent['digest']
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        record = co.state['fake_delivery_acceptance']
+        self.assertEqual(record['author'], 'operator')
+        self.assertEqual(record['uid'], os.getuid())
+        self.assertEqual(record['intent_digest'], intent['digest'])
+        self.assertEqual(record['q_oid'], intent['q_oid'])
+        self.assertIn(record, co.state['events'])
+        events = len(co.state['events'])
+        self.assertEqual(rc.delivery_intent.prepare(
+            co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json), intent)
+        self.assertEqual(co.state['status'], 'ACCEPTED')
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        self.assertEqual(len(co.state['events']), events)
+        self.assertEqual(co._head_commit(), head)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_delivery_intent_refuses_drift_and_unreviewed_bundle(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        saved = rc.copy.deepcopy(co.state)
+        for case in ('unreviewed', 'pending', 'live-work', 'intent-file', 'intent-state', 'q-root'):
+            with self.subTest(case=case):
+                co.state = rc.copy.deepcopy(saved)
+                path = co.evidence / 'delivery-intent.json'
+                if path.exists():
+                    path.unlink()
+                changed = self.workspace / 'tracked.txt'
+                raw = changed.read_bytes()
+                q_root = Path(co.state['fake_q_review']['root']) / 'tracked.txt'
+                q_raw = q_root.read_bytes()
+                if case == 'unreviewed':
+                    co.state['fake_q_bundle']['status'] = 'UNREVIEWED'
+                elif case == 'pending':
+                    co.state['fake_q_bundle_pending'] = {'interrupted': True}
+                elif case == 'live-work':
+                    changed.write_bytes(raw + b'user change\n')
+                elif case == 'intent-file':
+                    path.write_text('{}')
+                elif case == 'intent-state':
+                    co.state['fake_delivery_intent'] = {'relabel': True}
+                else:
+                    q_root.write_bytes(q_raw + b'post-security change\n')
+                try:
+                    with self.assertRaises(ValueError):
+                        rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+                finally:
+                    changed.write_bytes(raw)
+                    q_root.write_bytes(q_raw)
+                self.assertNotIn('fake_delivery_acceptance', co.state)
+                self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_delivery_abort_never_revives_on_prepare_or_accept(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        co.hold('aborted by operator')
+        held = rc.copy.deepcopy(co.state)
+        for expected in (None, 'stale', intent['digest']):
+            with self.subTest(expected=expected):
+                co.args.expect = expected
+                with self.assertRaisesRegex(ValueError, 'DONE/PENDING'):
+                    co.accept()
+                self.assertEqual(co.state, held)
+        with self.assertRaisesRegex(ValueError, 'refuses this HOLD'):
+            rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(co.state, held)
+        co.state['fake_delivery_intent'] = None
+        with self.assertRaisesRegex(ValueError, 'refuses this HOLD'):
+            rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(co.state['status'], 'HOLD')
+
+    def test_fake_delivery_reject_refuses_without_entering_legacy_recovery(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        co.args.expect = intent['digest']
+        state = rc.copy.deepcopy(co.state)
+        with patch.object(co, 'invoke', side_effect=AssertionError('must not dispatch')):
+            with self.assertRaisesRegex(ValueError, 'abort/new run or use --scope-change'):
+                co.reject('Needs repair', None)
+        self.assertEqual(co.state, state)
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertNotIn('pending_rejection_id', co.state)
+
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()
         state = rc.copy.deepcopy(co.state)

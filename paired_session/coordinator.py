@@ -36,6 +36,7 @@ try:
     from paired_session import closeout_policy
     from paired_session import q_proposal
     from paired_session import q_evidence
+    from paired_session import delivery_intent
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -49,6 +50,7 @@ except ModuleNotFoundError:
     import closeout_policy
     import q_proposal
     import q_evidence
+    import delivery_intent
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -2609,6 +2611,8 @@ class Coordinator:
     def accept(self) -> str:
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
+        if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
+            return delivery_intent.accept(self, observed_test_succeeded, atomic_json)
         if self.state.get('status') != 'DONE' and not (
                 self.state.get('status') == 'HOLD' and
                 (self.state.get('terminal_hold_kind') == 'rejection_limit' or self.args.override_rejection)):
@@ -2668,6 +2672,8 @@ class Coordinator:
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
+        if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
+            raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
         if bool(text) == bool(file):
