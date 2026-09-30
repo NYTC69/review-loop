@@ -5476,9 +5476,6 @@ def main(argv=None) -> int:
     if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
         print('REFUSED: --skip-probe is limited to the fake test harness')
         return 2
-    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):
-        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
-        return 2
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
@@ -5487,6 +5484,9 @@ def main(argv=None) -> int:
         validate_role_models(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
+        return 2
+    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):
+        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
         return 2
     if args.polish and args.action != 'resume':
         parser().error('--polish is only valid with resume')
