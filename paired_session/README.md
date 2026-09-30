@@ -279,10 +279,47 @@ bin/paired-session reject --workspace /path/to/worktree \
   --text 'Please address this in-scope acceptance feedback'
 ```
 
+Before accepting or rejecting, request an operator intent for the exact action.
+It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
+index, state and rejection text hashes; accept refuses a changed approved tree,
+and the mutation rechecks the intent under both leases. `resume --polish` also
+refuses when the workspace no longer matches the snapshot approved at DONE.
+
+```sh
+bin/paired-session accept --intent-only --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN"
+bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --expect <digest>
+bin/paired-session reject --intent-only --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --text 'Recheck this detail.'
+bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --text 'Recheck this detail.' --expect <digest>
+```
+
+Runs created without the acceptance snapshot and rejected-digest fields refuse
+mutating commands: `run was created by an older paired-session build; start a new run`.
+`status` reads such a run without migrating or modifying its state. Snapshots keep
+counting tracked and untracked non-ignored files; stale refusals report both path
+counts and tell the operator to restore the approved tree or start a new run.
+
+Operator rejection, including the tree held at the rejection limit, permanently
+records that tree's digest. An unchanged author answer enters `HOLD rejected-tree`
+before review. Status includes the author's rationale, truncated to 2,000 characters,
+and a pointer to that author receipt. The operator may add `note` guidance, change
+the workspace and resume a new author ingest, or explicitly rule on the exact held tree:
+
+```sh
+bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
+  --override-rejection --reason 'I inspected the author rationale and accept this tree.'
+```
+
+The override requires `HOLD rejected-tree`, a non-empty reason and an unchanged
+held snapshot. It records operator UID/time, reason, digest and rationale pointer
+in state, events and acceptance evidence. Both leases and role run-dir write denials
+apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
+still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
+no receipt follows plain resume; a fresh author ingest is required for rejected trees.
+
 An idle `HOLD` run waiting for its next author turn accepts an in-scope
 clarification with `note --text '...'` or `note --file /path/to/note`. It reaches
 that author turn on `resume`; a newer note replaces a pending one. Notes are
-refused while waiting for a reviewer/gate, after the rejection cap, and on a
+refused while waiting for a reviewer/gate and on a
 DONE run (use `reject`). The note cannot authorize new scope. For a scope
 change, use `note --scope-change --text/--file` on an idle active or ordinary
 HOLD run, or `reject --scope-change` before accepting a DONE run (also allowed

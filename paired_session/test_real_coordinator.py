@@ -760,6 +760,7 @@ class RealCoordinatorTests(unittest.TestCase):
         co = rc.Coordinator(rc.parser().parse_args(command[2:]))
         self.assertIsNone(co._program_state()[1])
         co.state.update(status='DONE', acceptance_state='PENDING', phase='EXEC')
+        co.state['approved_snapshot'] = rc.git_snapshot(co.workspace)[0]
         co.save()
         Path(co.args.codex_bin).unlink()
         command[2] = 'permission-probe'
@@ -768,6 +769,12 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertIn('FAIL', probe.stdout)
         self.assertEqual(json.loads(co.state_path.read_text())['status'], 'DONE')
         command[2] = 'accept'
+        command.append('--intent-only')
+        intent = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(intent.returncode, 0, intent.stdout + intent.stderr)
+        command.remove('--intent-only')
+        command[2] = 'accept'
+        command.extend(['--expect', json.loads(intent.stdout)['digest']])
         accepted = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertIn('ACCEPTED', accepted.stdout)
@@ -1010,10 +1017,23 @@ sys.exit(result.returncode)
         return subprocess.run(command, cwd=self.root, env=merged,
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    def run_operator_action(self, action, *extra):
+    def run_operator_action(self, action, *extra, env=None):
         command = self.command(*extra)
         command[2] = action
         command.append('--skip-probe')
+        if action in ('accept', 'reject') and '--scope-change' not in extra:
+            intent = command.copy(); intent.append('--intent-only')
+            issued = subprocess.run(intent, cwd=self.root, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if issued.returncode:
+                return issued
+            command.extend(['--expect', json.loads(issued.stdout)['digest']])
+        return subprocess.run(command, cwd=self.root, env={**os.environ, **(env or {})}, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def issue_operator_intent(self, action, *extra):
+        command = self.command(*extra); command[2] = action
+        command.extend(['--intent-only', '--skip-probe'])
         return subprocess.run(command, cwd=self.root, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -1246,6 +1266,11 @@ sys.exit(result.returncode)
         config_dir = self.workspace / '.review-loop'
         config_dir.mkdir(exist_ok=True)
         (config_dir / 'paired-session.json').write_text(json.dumps({'exec_turn_timeout': 20000}))
+        refused = self.run_operator_action('reject', '--text', 'Adjust the output.',
+                                           '--exec-turn-timeout', '99999')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('stale', refused.stdout)
+        (config_dir / 'paired-session.json').unlink()
         rejected = self.run_operator_action('reject', '--text', 'Adjust the output.',
                                             '--exec-turn-timeout', '99999')
         self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
@@ -1255,6 +1280,29 @@ sys.exit(result.returncode)
                         row.get('rejection_id') == 'R001']
         self.assertTrue(author_execs, rejected.stdout + rejected.stderr)
         self.assertEqual(author_execs[0]['timeout_seconds'], 9000)
+
+    def test_reject_ignores_project_exec_timeout_on_approved_config_tree(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir(exist_ok=True)
+        config = config_dir / 'paired-session.json'
+        config.write_text(json.dumps({'exec_turn_timeout': 12000}))
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state['config'].pop('exec_turn_timeout')
+        state['config']['timeout'] = 9000
+        path.write_text(json.dumps(state))
+        rejected = self.run_operator_action('reject', '--text', 'Adjust the output.',
+                                            '--exec-turn-timeout', '99999')
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        saved = json.loads(path.read_text())
+        authors = [r for r in saved['turns'] if r.get('rejection_id') == 'R001'
+                   and r.get('role') == 'author' and r.get('phase') == 'EXEC']
+        self.assertTrue(authors, rejected.stdout + rejected.stderr)
+        self.assertEqual(authors[0]['timeout_seconds'], 9000)
+        self.assertEqual(json.loads(config.read_text())['exec_turn_timeout'], 12000)
 
     def test_legacy_resume_allows_only_bounded_exec_timeout_raise(self):
         co = self.coordinator('--timeout', '31')
@@ -1289,6 +1337,133 @@ sys.exit(result.returncode)
                 with self.assertRaisesRegex(ValueError, 'between 1 and 14400'):
                     rc.Coordinator(args)
 
+    def test_old_acceptance_format_refuses_all_mutations_but_status_is_read_only(self):
+        co = self.coordinator()
+        for missing in ('approved_snapshot', 'rejected_digests'):
+            with self.subTest(missing=missing):
+                old = dict(co.state)
+                old.pop(missing)
+                co.state_path.write_text(json.dumps(old))
+                before = co.state_path.read_bytes()
+                for action, extra in [('resume', []), ('resume', ['--polish']),
+                        ('resume', ['--retry-uncertain']), ('accept', []), ('reject', []),
+                        ('note', []), ('note', ['--scope-change']), ('abort', [])]:
+                    result = self.run_operator_action(action, *extra)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                    self.assertEqual(co.state_path.read_bytes(), before)
+                result = self.run_operator_action('status')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout), old)
+                self.assertEqual(co.state_path.read_bytes(), before)
+
+    def test_rejected_tree_rationale_and_attributed_operator_override(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1', 'FAKE_AUTHOR_RATIONALE': 'why ' * 800}):
+            self.assertEqual(co.resume(), 'HOLD')
+        held = co.state['rejected_tree_hold']
+        self.assertEqual(len(held['rationale']), 2000)
+        self.assertEqual(held['rationale'], ('why ' * 800)[:2000])
+        self.assertEqual(co.state['next'], 'author')
+        self.assertIsNone(co.state['pending_author_result_sequence'])
+        self.assertEqual(co.state['turns'][-1]['role'], 'author')
+        for way in ('note', 'change the workspace', 'accept --override-rejection'):
+            self.assertIn(way, co.state['hold_reason'])
+        status = self.run_operator_action('status')
+        self.assertEqual(json.loads(status.stdout)['rejected_tree_hold'], held)
+        co.args.override_rejection = True
+        co.args.reason = ''
+        with self.assertRaisesRegex(ValueError, 'non-empty'):
+            co.accept()
+        co.args.reason = 'I inspected the author rationale and explicitly accept this exact tree.'
+        co.state['uncertain_active'] = {'role': 'reviewer', 'pid': 42424242}
+        with self.assertRaisesRegex(ValueError, 'override requires'):
+            co.accept()
+        co.state.pop('uncertain_active')
+        changed = self.workspace / 'changed-after-hold.txt'
+        changed.write_text('not the held tree')
+        with self.assertRaisesRegex(ValueError, 'unchanged held tree'):
+            co.accept()
+        changed.unlink()
+        co.state['status'] = 'ACTIVE'
+        with self.assertRaisesRegex(ValueError, 'DONE'):
+            co.accept()
+        co.state['status'] = 'HOLD'
+        co.save()
+        result = self.run_operator_action('accept', '--override-rejection', '--reason', co.args.reason)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads(co.state_path.read_text())
+        record = state['acceptance']
+        self.assertEqual(state['status'], 'ACCEPTED')
+        self.assertTrue(record['override_rejection'])
+        self.assertEqual(record['author'], 'operator')
+        self.assertEqual(record['reason'], co.args.reason)
+        self.assertEqual(record['intent']['uid'], os.getuid())
+        self.assertEqual(record['intent']['tree_sha256'], held['tree_sha256'])
+        self.assertEqual(record['rationale'], held['rationale_evidence'])
+        self.assertEqual(state['events'][-1], record)
+        self.assertTrue(record['timestamp'])
+
+    def test_override_uses_both_leases_and_retains_role_run_dir_protections(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        command = self.command()[2:]
+        command[0] = 'accept'
+        command.extend(['--override-rejection', '--reason', 'operator ruling', '--skip-probe'])
+        before = co.state_path.read_bytes()
+        for lease in (rc.run_lease(co.run_dir), rc.workspace_lease(co.workspace, co.run_dir)):
+            with lease:
+                result = self.run_operator_action('accept', '--override-rejection', '--reason', 'operator ruling')
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(co.state_path.read_bytes(), before)
+        self.assertNotIn(str(co.run_dir), co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots'])
+        for role in ('author', 'reviewer'):
+            self.assertIn(str(co.run_dir), co._claude_sandbox_settings(role)['sandbox']['filesystem']['denyWrite'])
+
+    def test_uncertain_reviewer_on_rejected_tree_archives_before_operator_ruling(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        co.state.update(next='reviewer', uncertain_active={
+            'role': 'reviewer', 'vendor': 'claude', 'pid': 42424242, 'sequence': 99})
+        co.save()
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+            with patch.object(co, 'archive_abandoned_turn') as archive, patch.object(co, 'drive') as drive:
+                with self.assertRaisesRegex(ValueError, 'rejected-tree'):
+                    co.resume(retry_uncertain=True)
+                archive.assert_called_once()
+                drive.assert_not_called()
+        self.assertIsNone(co.state.get('uncertain_active'))
+        self.assertEqual(co.state['next'], 'author')
+        co.args.override_rejection = True
+        co.args.reason = 'Explicit ruling after the child stopped.'
+        self.assertEqual(co.accept(), 'ACCEPTED')
+
+    def test_accepted_fast_path_precedes_tree_checks_in_all_resume_forms(self):
+        co = self.coordinator()
+        co.done()
+        co.args.expect = co.operator_intent('accept', None, None)['digest']
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        (self.workspace / 'after-accept.txt').write_text('operator owns subsequent work')
+        before = co.state_path.read_bytes()
+        self.assertEqual(co.resume(), 'ACCEPTED')
+        self.assertEqual(co.resume(retry_uncertain=True), 'ACCEPTED')
+        self.assertEqual(co.resume_polish(), 'ACCEPTED')
+        self.assertEqual(co.state_path.read_bytes(), before)
+
+    def test_active_done_stale_resume_names_tracked_and_untracked_drift(self):
+        co = self.coordinator()
+        co.done()
+        (self.workspace / 'tracked.txt').write_text('changed')
+        (self.workspace / 'new.txt').write_text('untracked')
+        co.state.update(status='ACTIVE', next='reviewer')
+        co.save()
+        with patch.object(co, 'invoke') as invoke:
+            with self.assertRaisesRegex(ValueError, '1 tracked, 1 untracked'):
+                co.resume()
+            invoke.assert_not_called()
+
     def test_done_requires_explicit_accept_and_accept_is_idempotent(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                          '--polish-round', 'off')
@@ -1314,13 +1489,432 @@ sys.exit(result.returncode)
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertIn('ACCEPTED', resumed.stdout)
 
+    def test_operator_intent_stale_tree_refuses_accept_and_records_provenance(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        invalid = self.command('--shadow', 'off', '--adversarial-gate', 'off',
+                               '--polish-round', 'off', '--skip-probe'); invalid[2] = 'abort'
+        invalid.append('--intent-only')
+        refused = subprocess.run(invalid, cwd=self.root, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('intent action must be accept or reject', refused.stdout)
+        issued = self.issue_operator_intent('accept')
+        self.assertEqual(issued.returncode, 0, issued.stdout + issued.stderr)
+        missing = self.command('--skip-probe'); missing[2] = 'accept'
+        refused = subprocess.run(missing, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('intent is stale or missing', refused.stdout)
+        (self.workspace / 'intent-drift.txt').write_text('new workspace content')
+        command = self.command('--expect', json.loads(issued.stdout)['digest'], '--skip-probe')
+        command[2] = 'accept'
+        refused = subprocess.run(command, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('stale', refused.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'DONE')
+        fresh = self.issue_operator_intent('accept')
+        self.assertEqual(fresh.returncode, 2)
+        self.assertIn('stale', fresh.stdout)
+        (self.workspace / 'intent-drift.txt').unlink()
+        accepted = self.run_operator_action('accept')
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        record = json.loads((self.run_dir / 'state.json').read_text())['acceptance']
+        self.assertEqual(record['intent']['uid'], os.getuid())
+        self.assertEqual(record['intent']['action'], 'accept')
+        self.assertEqual(record['intent']['workspace'], str(self.workspace))
+        self.assertEqual(record['intent']['run_id'], str(self.run_dir))
+        self.assertEqual(record['intent']['tree_sha256'],
+                         json.loads((self.run_dir / 'state.json').read_text())['approved_snapshot'])
+        self.assertEqual(len(record['intent']['head']), 40)
+        self.assertEqual(len(record['intent']['index_sha256']), 64)
+        self.assertEqual(len(record['intent']['tree_sha256']), 64)
+
+    def test_rejection_limit_polish_cannot_rebind_changed_held_tree(self):
+        co = self.rejected_done_coordinator()
+        co.hold('rejected-tree', terminal_kind='rejection_limit')
+        held = dict(co.state['rejected_tree_hold'])
+        sequence = co.state['sequence']
+        (self.workspace / 'unreviewed.txt').write_text('not the rejected tree')
+        polished = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(polished.returncode, 2, polished.stdout + polished.stderr)
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['rejected_tree_hold'], held)
+        self.assertEqual(saved['sequence'], sequence)
+        refused = self.run_operator_action('accept', '--override-rejection', '--reason', 'operator ruling')
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn('unchanged held tree', refused.stdout)
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'HOLD')
+
+    def test_run_cannot_review_stale_pending_done_tree(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        before = json.loads(path.read_text())
+        (self.workspace / 'after-done.txt').write_text('unreviewed workspace content')
+        for role in ('reviewer', 'gate'):
+            with self.subTest(role=role):
+                pending = dict(before, status='ACTIVE', next=role, active=None)
+                path.write_text(json.dumps(pending))
+                refused = self.run_operator_action('run', '--shadow', 'off',
+                                                   '--adversarial-gate', 'off', '--polish-round', 'off')
+                self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                self.assertIn('stale:', refused.stdout)
+                saved = json.loads(path.read_text())
+                self.assertEqual(saved['sequence'], before['sequence'])
+                self.assertEqual(saved['approved_snapshot'], before['approved_snapshot'])
+
+    def test_resume_polish_cannot_reapprove_a_changed_done_tree(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        resumed = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('stale:', resumed.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'DONE')
+        intent = self.issue_operator_intent('accept')
+        self.assertEqual(intent.returncode, 2)
+        self.assertIn('stale', intent.stdout)
+
+    def test_resume_after_stale_polish_hold_cannot_reapprove_changed_tree(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        resumed = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(before['status'], 'DONE')
+        ordinary = self.run_operator_action('resume')
+        self.assertEqual(ordinary.returncode, 2)
+        after = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(after['status'], 'DONE')
+        self.assertEqual(after['approved_snapshot'], before['approved_snapshot'])
+        self.assertEqual(after['sequence'], before['sequence'])
+
+    def test_polish_hold_after_author_write_remains_resumable(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        flags = ('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
+        (self.workspace / 'polish-output.txt').write_text('polish author output')
+        co.state.update(status='HOLD', next='reviewer', hold_reason='polish reviewer failed')
+        co.state['polish'].update(active=True, completed=False)
+        co.save()
+        with patch.object(co, 'drive', return_value='HOLD') as drive:
+            self.assertEqual(co.resume(), 'HOLD')
+        drive.assert_called_once_with()
+
+    def test_abort_after_changed_done_tree_cannot_reapprove_it(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        approved = json.loads((self.run_dir / 'state.json').read_text())['approved_snapshot']
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        flags = ('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        aborted = self.run_operator_action('abort', *flags)
+        self.assertEqual(aborted.returncode, 2)
+        resumed = self.run_operator_action('resume', *flags)
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('stale', resumed.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['approved_snapshot'], approved)
+
+    def test_reject_intent_requires_the_approved_snapshot(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        intent = self.issue_operator_intent('reject', '--text', 'please revise')
+        self.assertEqual(intent.returncode, 2)
+        self.assertIn('stale', intent.stdout)
+
+    def test_rejected_author_failure_can_resume_author_without_reviewing_same_tree(self):
+        co = self.rejected_done_coordinator()
+        co.state.update(status='HOLD', next='author', hold_reason='author dispatch failed')
+        co.save()
+        with patch.object(co, 'author_turn', side_effect=RuntimeError('author retry failed')) as author:
+            self.assertEqual(co.resume(), 'HOLD')
+        author.assert_called_once_with()
+        self.assertEqual(co.state['next'], 'author')
+        self.assertEqual(co.state['hold_reason'], 'author retry failed')
+
+    def test_changed_done_tree_cannot_be_accepted_after_resume(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        resumed = self.run_operator_action('resume', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        after = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(after['status'], 'DONE')
+        self.assertEqual(after['approved_snapshot'], before['approved_snapshot'])
+        self.assertEqual(after['sequence'], before['sequence'])
+        intent = self.issue_operator_intent('accept')
+        self.assertEqual(intent.returncode, 2)
+        self.assertIn('stale', intent.stdout)
+
+    def rejected_done_coordinator(self):
+        (self.workspace / 'sum_ints.py').write_text(
+            'def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+            '        raise TypeError("ints only")\n    return sum(values)\n')
+        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                              '--polish-round', 'off')
+        digest, snapshot = rc.git_snapshot(co.workspace)
+        co.state.update(status='DONE', acceptance_state='PENDING',
+                        approved_snapshot=digest, rejections=[])
+        co.save()
+        proof = co.operator_intent('reject', 'please revise', None)
+        co.args.expect = proof['digest']
+        self.assertEqual(co.reject('please revise', None), 'ACTIVE')
+        saved = json.loads(co.state_path.read_text())['rejections'][0]['intent']
+        self.assertEqual(saved['tree_sha256'], digest)
+        self.assertEqual(saved['tree_snapshot'], snapshot)
+        return co
+
+    def test_rejected_tree_blocks_plain_resume(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        state = json.loads(co.state_path.read_text())
+        self.assertIn('rejected-tree', state['hold_reason'])
+        self.assertEqual(state['turns'][-1]['role'], 'author')
+
+    def test_rejected_same_tree_hold_can_retry_author_ingest(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        before = len(co.state['turns'])
+        with patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'}):
+            self.assertEqual(co.resume(), 'DONE')
+        new_author = next(row for row in co.state['turns'][before:] if row['role'] == 'author')
+        prompt = (co.evidence / f"{new_author['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn('## Operator rejection for current EXEC scope', prompt)
+        self.assertTrue(co.state['turns'][before]['snapshot_after'] !=
+                        co.state['rejections'][0]['intent']['tree_sha256'])
+
+    def test_note_and_same_tree_hold_allow_a_fresh_rejected_author_ingest(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        note = self.run_operator_action('note', '--text', 'Please recheck the rejection.',
+                                        '--shadow', 'off', '--adversarial-gate', 'off',
+                                        '--polish-round', 'off')
+        self.assertEqual(note.returncode, 0, note.stdout + note.stderr)
+        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                              '--polish-round', 'off')
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        state = json.loads(co.state_path.read_text())
+        self.assertIsNone(state['pending_author_result_sequence'])
+        self.assertEqual(state['operator_notes'][0]['status'], 'delivered')
+        before = len(state['turns'])
+        self.assertEqual(co.resume(), 'DONE')
+        self.assertGreater(len(co.state['turns']), before)
+
+    def test_legacy_done_without_approved_snapshot_can_resume_and_accept(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_done_abort_hold_can_resume(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_done_abort_author_write_then_hold_remains_resumable(self):
+        completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+                              '--author-effort', 'low', '--reviewer-effort', 'low',
+                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        co.state.update(status='HOLD', acceptance_state='PENDING',
+                        hold_reason='aborted by operator', next='author')
+        co.save()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': '1'}):
+            with patch.object(co, 'reviewer_turn', side_effect=RuntimeError('reviewer interrupted')):
+                self.assertEqual(co.resume(), 'HOLD')
+        self.assertEqual(co.state['acceptance_state'], 'IN_PROGRESS')
+        self.assertNotEqual(rc.git_snapshot(self.workspace)[0], co.state['approved_snapshot'])
+        self.assertEqual(co.resume(), 'DONE')
+
+    def test_done_abort_author_hold_after_write_remains_resumable(self):
+        completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+                              '--author-effort', 'low', '--reviewer-effort', 'low',
+                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        co.state.update(status='HOLD', acceptance_state='PENDING',
+                        hold_reason='aborted by operator', next='author')
+        co.save()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': '1',
+                                     'FAKE_AUTHOR_HOLD_AFTER_WRITE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        self.assertEqual(co.state['acceptance_state'], 'IN_PROGRESS')
+        self.assertNotEqual(rc.git_snapshot(self.workspace)[0], co.state['approved_snapshot'])
+        self.assertEqual(co.resume(), 'DONE')
+
+    def test_legacy_partial_author_tree_can_resume_as_author(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_hold_skips_final_error_receipt_during_snapshot_recovery(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_rejection_limit_hold_can_accept_without_snapshot(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_rejected_author_crash_can_retry_uncertain_author(self):
+        co = self.rejected_done_coordinator()
+        co.state.update(status='HOLD', next='author', hold_reason='uncertain author turn',
+                        uncertain_active={'role': 'author', 'vendor': 'codex',
+                                          'pid': 42424242, 'sequence': 99})
+        co.save()
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+            with patch.object(co, 'archive_abandoned_turn') as archive:
+                with patch.object(co, 'drive', return_value='ACTIVE') as drive:
+                    self.assertEqual(co.resume(retry_uncertain=True), 'ACTIVE')
+        archive.assert_called_once()
+        drive.assert_called_once_with()
+
+    def test_rejected_author_crash_can_retry_directly(self):
+        co = self.rejected_done_coordinator()
+        co.state.update(status='ACTIVE', next='author', active={'role': 'author',
+                        'vendor': 'codex', 'pid': 42424242, 'sequence': 99}, uncertain_active=None)
+        co.save()
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+            with patch.object(co, 'archive_abandoned_turn') as archive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'DONE')
+        archive.assert_called_once()
+        self.assertEqual(co.state['turns'][-1]['role'], 'gate')
+        self.assertEqual(co.state['turns'][-2]['role'], 'reviewer')
+
+    def test_rejected_tree_blocks_resume_polish(self):
+        co = self.rejected_done_coordinator()
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            co.resume_polish()
+
+    def test_rejected_tree_blocks_retry_uncertain(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        self.assertEqual(co.state['turns'][-1]['role'], 'author')
+        self.assertIn('rejected-tree', co.state['hold_reason'])
+
+    def test_rejected_tree_blocks_accept_and_new_accept_intent(self):
+        co = self.rejected_done_coordinator()
+        co.state['status'] = 'DONE'
+        co.save()
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            co.accept()
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            co.operator_intent('accept', None, None)
+
+    def test_new_author_tree_differs_from_rejected_tree(self):
+        co = self.rejected_done_coordinator()
+        (self.workspace / 'new-author-output.txt').write_text('new ingest')
+        self.assertFalse(co.rejected_tree())
+
+    def test_operator_intent_records_reject_payload_and_sandbox_cannot_write_run_dir(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        source = self.root / 'operator-feedback.md'
+        source.write_text('Recheck the accepted OID.\n')
+        rejected = self.run_operator_action('reject', '--file', str(source),
+                                             env={'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'})
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        record = json.loads((self.run_dir / 'state.json').read_text())['rejections'][0]
+        self.assertEqual(record['intent']['uid'], os.getuid())
+        self.assertEqual(record['intent']['action'], 'reject')
+        self.assertEqual(record['source'], str(source.resolve()))
+        self.assertEqual(record['intent']['payload_sha256'], record['sha256'])
+        self.run_dir = self.root / 'operator-sandbox-policy-run'
+        co = self.coordinator('--author-effort', 'low', '--reviewer-effort', 'low',
+                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        self.assertNotIn(str(self.run_dir), co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots'])
+        for role in ('author', 'reviewer'):
+            self.assertIn(str(self.run_dir),
+                          co._claude_sandbox_settings(role)['sandbox']['filesystem']['denyWrite'])
+
+    def test_operator_intent_requires_an_existing_matching_run(self):
+        result = self.issue_operator_intent('accept')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('requires an existing coordinator run', result.stdout)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
     def test_reject_reopens_exec_through_review_and_gate_before_accept(self):
         completed = self.run_coordinator('--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         before = json.loads((self.run_dir / 'state.json').read_text())
         sequence_before = before['sequence']
         feedback = 'Please handle the in-scope edge case before acceptance.'
-        rejected = self.run_operator_action('reject', '--text', feedback, '--polish-round', 'off')
+        rejected = self.run_operator_action('reject', '--text', feedback, '--polish-round', 'off',
+                                             env={'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'})
         self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'DONE')
@@ -1387,6 +1981,8 @@ sys.exit(result.returncode)
         self.assertEqual(polished.returncode, 2)
         self.assertIn('accept or abort', polished.stdout)
         accepted = self.run_operator_action('accept')
+        self.assertEqual(accepted.returncode, 2, accepted.stdout + accepted.stderr)
+        accepted = self.run_operator_action('accept', '--override-rejection', '--reason', 'Reviewed author rationale.')
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertEqual(json.loads(path.read_text())['status'], 'ACCEPTED')
         self.run_dir = self.root / 'active-non-done-run'
@@ -1768,6 +2364,8 @@ sys.exit(result.returncode)
         command[2] = 'reject'
         args = rc.parser().parse_args(command[2:])
         co = rc.Coordinator(args)
+        intent = co.operator_intent('reject', 'recheck the in-scope detail', None)
+        co.args.expect = intent['digest']
         self.assertEqual(co.reject('recheck the in-scope detail', None), 'ACTIVE')
         self.assertEqual(len(co.state['rejections']), 1)
         self.assertEqual(co.resume(), 'DONE')
@@ -1786,6 +2384,11 @@ sys.exit(result.returncode)
         reject_cmd = self.command('--text', feedback, '--polish-round', 'off')
         reject_cmd[2] = 'reject'
         reject_cmd.append('--skip-probe')
+        intent_cmd = reject_cmd.copy(); intent_cmd.append('--intent-only')
+        intent = subprocess.run(intent_cmd, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(intent.returncode, 0, intent.stdout + intent.stderr)
+        reject_cmd.extend(['--expect', json.loads(intent.stdout)['digest']])
         limited = subprocess.run(reject_cmd, cwd=self.root,
             env={**os.environ, 'FAKE_RATE_LIMIT': '1'}, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)

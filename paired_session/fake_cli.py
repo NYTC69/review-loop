@@ -195,14 +195,22 @@ def main():
             body = 'Updated the configured documentation file.'
         else:
             module = Path.cwd() / 'sum_ints.py'
-            if os.environ.get('FAKE_DOC_DELTA'):
-                (Path.cwd() / 'CLAUDE.md').write_text('Directory: sum_ints.py\n')
-            if 'intentionally omit bool rejection' in prompt or 'No delivered review' in prompt:
-                module.write_text('def sum_ints(values):\n    if not all(isinstance(x, int) for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
-            else:
-                module.write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
+            if not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE'):
+                if os.environ.get('FAKE_DOC_DELTA'):
+                    (Path.cwd() / 'CLAUDE.md').write_text('Directory: sum_ints.py\n')
+                if 'intentionally omit bool rejection' in prompt or 'No delivered review' in prompt:
+                    module.write_text('def sum_ints(values):\n    if not all(isinstance(x, int) for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
+                else:
+                    module.write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
+            if ('## Operator rejection for current EXEC scope' in prompt and
+                    not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE')):
+                module.write_text(module.read_text() + '# rejection applied\n')
+            if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
+                module.write_text(module.read_text() + '# resumed author output\n')
             body = 'Implemented sum_ints and ran fake checks.'
-        answer = {'status': 'READY', 'body': body}
+        answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
+        if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
+            answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
     elif prompt.startswith('You are an adversarial reviewer'):
         configured_test = prompt.split(
             'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]

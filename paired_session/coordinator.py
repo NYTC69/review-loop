@@ -1082,6 +1082,8 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
+            if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
+                raise ValueError('run was created by an older paired-session build; start a new run')
             if self.state.get('config', {}).get('lifecycle_mode') == 'on' and not self._fake_lifecycle:
                 raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
             self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
@@ -1187,7 +1189,7 @@ class Coordinator:
                 'item_uuid': str(uuid.uuid4()), 'item_blockers': [], 'item_blockers_complete': True,
                 'review_verdicts': [],
                 'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
-                'acceptance_state': 'IN_PROGRESS',
+                'acceptance_state': 'IN_PROGRESS', 'approved_snapshot': None, 'rejected_digests': [],
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
@@ -2446,6 +2448,14 @@ class Coordinator:
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
         if self.state.get('status') in ('ACCEPTED', 'ABORTED'):
             return self.state['status']
+        if reason == 'rejected-tree':
+            author = next((r for r in reversed(self.state['turns']) if r.get('role') == 'author'), {})
+            self.state['rejected_tree_hold'] = {'tree_sha256': git_snapshot(self.workspace)[0],
+                'rationale': str(author.get('answer', {}).get('body', ''))[:2000],
+                'rationale_evidence': {'run_dir': str(self.run_dir), 'turn_sequence': author.get('sequence')}}
+            self.state.update(next='author', pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
+            reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
+            if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
@@ -2467,9 +2477,7 @@ class Coordinator:
 
     def rejection_limit_hold(self) -> str:
         maximum = self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
-        self.state['hold_reason'] = f'post-DONE rejection limit reached ({maximum}); accept or abort'
-        self.save()
-        return 'HOLD'
+        return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
 
     def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
         intent = self.state.get('scope_change_intent')
@@ -2543,7 +2551,7 @@ class Coordinator:
     def note(self, text: Optional[str], file: Optional[str]) -> str:
         if self.state['status'] != 'HOLD':
             raise ValueError('note requires a HOLD run; DONE uses reject')
-        if self.state.get('terminal_hold_kind') == 'rejection_limit':
+        if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
             raise ValueError('rejection limit: accept, abort or use --scope-change')
         if self.state.get('next') != 'author':
             raise ValueError(f"run is waiting for {self.state.get('next')}; resume first, or use --scope-change (not yet available; abort + new run)")
@@ -2583,18 +2591,23 @@ class Coordinator:
                'status': 'pending', 'replaces_id': previous['id'] if previous else None,
                'replaces_sha256': previous['sha256'] if previous else None}
         notes.append(row); self.state['pending_operator_note_id'] = note_id
+        self.state.pop('terminal_hold_kind', None)
         self.save(); self.write_comparison()
         return note_id
 
     def accept(self) -> str:
-        if self.state.get('status') == 'ACCEPTED':
+        if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
         if self.state.get('status') != 'DONE' and not (
                 self.state.get('status') == 'HOLD' and
-                self.state.get('terminal_hold_kind') == 'rejection_limit'):
+                (self.state.get('terminal_hold_kind') == 'rejection_limit' or self.args.override_rejection)):
             raise ValueError('accept requires a DONE run')
         record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
+              'intent': self.operator_intent('accept', None, None, self.args.expect, not self.args.override_rejection),
                   'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
+        record.update(reason=self.args.reason, override_rejection=self.args.override_rejection,
+                      rationale=self.state.get('rejected_tree_hold', {}).get('rationale_evidence'))
+        self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -2607,11 +2620,48 @@ class Coordinator:
         self.write_comparison()
         return 'ACCEPTED'
 
+    def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
+        if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
+        payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
+        index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
+        tree_sha, tree_snapshot = git_snapshot(self.workspace)
+        data = {'action': action, 'uid': os.getuid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
+                'workspace': str(self.workspace), 'workitem': str(self.workitem), 'head': self._head_commit(),
+                'tree_sha256': tree_sha, 'workitem_sha256': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
+                'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
+                'state_sha256': hashlib.sha256(json.dumps(self.state, sort_keys=True).encode()).hexdigest(),
+                'payload_sha256': hashlib.sha256(payload).hexdigest()}
+        data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        override = self.args.override_rejection
+        if override and (action != 'accept' or not (self.args.reason or '').strip() or
+                self.state['status'] != 'HOLD' or not self.state.get('hold_reason', '').startswith('rejected-tree') or
+                self.state.get('active') or self.state.get('uncertain_active') or
+                tree_sha != self.state.get('rejected_tree_hold', {}).get('tree_sha256')):
+            raise ValueError('override requires HOLD rejected-tree, unchanged held tree, and non-empty --reason')
+        if not override: self.refuse_rejected_tree(stale_done=True)
+        if required and (not expected or expected != data['digest']): raise ValueError('intent is stale or missing')
+        return {**data, 'tree_snapshot': tree_snapshot}
+    def rejected_tree(self, digest: Optional[str] = None) -> bool:
+        return (git_snapshot(self.workspace)[0] if digest is None else digest) in self.state['rejected_digests']
+    def refuse_rejected_tree(self, stale_done: bool = False, allow_author: bool = False) -> None:
+        digest, manifest = git_snapshot(self.workspace)
+        if allow_author and not self.rejected_tree(digest): self.state.pop('terminal_hold_kind', None)
+        if not allow_author and self.rejected_tree(digest):
+            self.hold('rejected-tree', terminal_kind=self.state.get('terminal_hold_kind'))
+            raise ValueError(self.state['hold_reason'])
+        if (stale_done and not allow_author and self.state.get('acceptance_state') == 'PENDING'
+                and not self.state['polish']['active'] and self.state['approved_snapshot'] != digest):
+            old, new = dict(self.state.get('approved_manifest', [])), dict(manifest)
+            changed = {k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
+            tracked = set(subprocess.check_output(['git', 'ls-files', '-z'], cwd=self.workspace).decode().split('\0'))
+            raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
+                             'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
+        intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
         if file:
             feedback = Path(file).expanduser().read_text()
             source = str(Path(file).expanduser().resolve())
@@ -2622,12 +2672,13 @@ class Coordinator:
             raise ValueError('rejection note must not be empty')
         rejections = self.state.setdefault('rejections', [])
         maximum = self.state.setdefault('max_rejections', DEFAULT_MAX_REJECTIONS)
+        self.state['rejected_digests'].append(intent['tree_sha256'])
         if len(rejections) >= maximum:
-            return self.hold(f'post-DONE rejection limit reached ({maximum}); accept or abort',
-                             terminal_kind='rejection_limit')
+            return self.hold('rejected-tree', terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
         record = {'id': rejection_id, 'author': 'operator',
                   'timestamp': datetime.now().astimezone().isoformat(), 'target_phase': 'EXEC',
+                  'intent': intent,
                   'sha256': hashlib.sha256(feedback.encode('utf-8')).hexdigest(),
                   'source': source, 'text': feedback, 'status': 'pending'}
         evidence_path = self.evidence / f'rejection-{rejection_id}.json'
@@ -2688,6 +2739,7 @@ class Coordinator:
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
+        self.state['approved_snapshot'], self.state['approved_manifest'] = git_snapshot(self.workspace)
         self.set_effective_verdict('APPROVE')
         self.state['status'] = 'DONE'
         self.state['acceptance_state'] = 'PENDING'
@@ -2744,8 +2796,10 @@ class Coordinator:
         self.write_ledger()
 
     def resume_polish(self) -> str:
+        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
             return self.rejection_limit_hold()
+        self.refuse_rejected_tree(stale_done=True)
         if self.state.get('active'):
             return self.hold('uncertain in-flight CLI turn; inspect evidence before resume --polish')
         if self.state['status'] != 'DONE':
@@ -3605,6 +3659,7 @@ class Coordinator:
         if self.state['polish']['active']:
             self.polish_author_turn()
             return
+        if self.state.get('acceptance_state') == 'PENDING': self.state['acceptance_state'] = 'IN_PROGRESS'
         phase = self.state['phase']
         pending = self.state.get('pending_author_result_sequence')
         receipt = next((row for row in self.state['turns'] if row['sequence'] == pending), None)
@@ -3619,6 +3674,7 @@ class Coordinator:
         rejection = next((row for row in self.state.get('rejections', [])
                           if row.get('id') == self.state.get('pending_rejection_id') and
                           row.get('status') != 'delivered'), None)
+        if self.rejected_tree(result['snapshot']): return self.hold('rejected-tree')
         if rejection:
             rejection.update(status='delivered', delivered_sequence=result['sequence'],
                              delivered_phase=phase)
@@ -5005,6 +5061,7 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         while self.state['status'] == 'ACTIVE':
+            if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
             try:
                 if self.state['next'] == 'author':
                     self.author_turn()
@@ -5020,6 +5077,9 @@ class Coordinator:
 
     def resume(self, retry_uncertain=False) -> str:
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
+        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
+        self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
+                                  bool(self.state.get('uncertain_active') or self.state.get('active')))
         if self.args.acknowledge_codex_trust:
             if self.args.acknowledge_codex_trust != self.run_dir.name or not self.state.get('uncertain_active') or not self.state.get('hold_reason', '').startswith('global Codex config changed during uncertain turn'):
                 raise ValueError('trust acknowledgment requires the named run and a prior uncertain trust HOLD')
@@ -5074,6 +5134,7 @@ class Coordinator:
         self.state['hold_reason'] = ''
         self.state['active'] = None
         self.state['uncertain_active'] = None
+        self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
         self.save()
@@ -5230,7 +5291,7 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note'])
+                                      'accept', 'reject', 'note', 'status'])
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -5283,6 +5344,10 @@ def parser() -> argparse.ArgumentParser:
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
+    p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
+    p.add_argument('--reason', help='attributed reason for an operator rejection override')
+    p.add_argument('--expect', help='operator intent digest required by accept/reject')
+    p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
     return p
 
@@ -5396,7 +5461,10 @@ def normalize_cli_paths(args: argparse.Namespace) -> argparse.Namespace:
 def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
+    if args.action == 'status':
+        return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
+    if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -5509,7 +5577,7 @@ def main(argv=None) -> int:
             return 2
     try:
         with run_lease(Path(args.run_dir)):
-            if args.action in ('run', 'resume', 'permission-probe', 'reject', 'note'):
+            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)
