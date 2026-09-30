@@ -3547,6 +3547,7 @@ sys.exit(result.returncode)
         with patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F001'}]):
             with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
                 co.fake_materialize_q(c1, '2026-09-30')
+        self.q_test_fixture = (co, c1, rc.copy.deepcopy(co.state))
         reviewed = co.fake_q_review(c1, '2026-09-30')
         self.assertEqual(reviewed['status'], 'UNREVIEWED')
         self.assertEqual(reviewed['oid'], result['q_oid'])
@@ -3559,6 +3560,85 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
         with self.assertRaisesRegex(ValueError, 'pending or completed'):
             co.fake_q_review(c1, '2026-09-30')
+
+        self.assertNotIn('pending_reviewer_result_sequence', co.state)
+        self.assertEqual(co.state['q_reserved'], 6)
+        self.assertEqual(turn['phase'], 'Q')
+
+    def test_fake_q_empty_approval_cannot_create_review_receipt(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        old = next(t for t in co.state['turns'] if t['role'] == 'reviewer')
+        old['observed_commands'] = []
+        with patch.object(co, 'invoke', return_value={'sequence': old['sequence'],
+                         'answer': {'status': 'APPROVE', 'full_review': []}}):
+            with self.assertRaisesRegex(ValueError, 'reviewer did not approve'):
+                co.fake_q_review(c1, '2026-09-30')
+        self.assertIn('fake_q_pending', co.state)
+        self.assertNotIn('fake_q_review', co.state)
+        self.assertFalse(co._fake_dispatching)
+
+    def test_fake_q_reservation_refuses_p_dispatch_and_stage_begin(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        co.args.max_invocations = co.state['invocations_used'] + co.state['q_reserved']
+        sequence = co.state['sequence']
+        co._fake_dispatching = True
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'invocation limit'):
+                co.invoke('reviewer', 'EXEC', 'Role: reviewer, fresh.', rc.review_schema(), fresh=True)
+        finally:
+            co._fake_dispatching = False
+        self.assertEqual(co.state['sequence'], sequence)
+        with self.assertRaisesRegex(ValueError, 'P budget exhausted before stage begin'):
+            co._fake_lifecycle_event('begin', {})
+        self.assertIsNone(co.state['lifecycle']['pending'])
+
+    def test_fake_q_retry_fits_reserved_two_slots_and_missing_tools_refuses(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        used = co.state['invocations_used']
+        co.args.max_invocations = used + 8
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            co.fake_q_review(c1, '2026-09-30')
+        self.assertEqual(co.state['invocations_used'], used + 2)
+        self.assertEqual(co.state['q_reserved'], 6)
+        co.state = rc.copy.deepcopy(before)
+        with patch.dict(os.environ, {'FAKE_MISSING_OBSERVED': '1'}):
+            with self.assertRaisesRegex(ValueError, 'reviewer did not approve'):
+                co.fake_q_review(c1, '2026-09-30')
+        self.assertNotIn('fake_q_review', co.state)
+        self.assertIn('fake_q_pending', co.state)
+
+    def test_fake_q_freeze_refuses_insufficient_budget_before_plan(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+                 '--skip-probe', '--run-dir', str(self.root / 'small-budget'), '--max-invocations', '8',
+                 '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        with self.assertRaisesRegex(ValueError, 'Q reservation leaves no P budget'):
+            co.fake_lifecycle_drive(backlog_item=1)
+        self.assertEqual(co.state['turns'], [])
+        self.assertNotIn('closeout_item', co.state)
+        self.assertNotIn('q_reserved', co.state)
+
+    def test_fake_q_reserved_polish_preflight_rejects_short_retry_budget_before_begin(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        co.state['lifecycle']['stage'] = 'POLISH-Q'
+        co.args.max_invocations = co.state['invocations_used'] + co.state['q_reserved'] + 2
+        sequence = co.state['sequence']
+        callback = unittest.mock.Mock(side_effect=AssertionError('preflight must not dispatch'))
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            with self.assertRaisesRegex(ValueError, 'POLISH-Q specialist budget exhausted'):
+                co.fake_lifecycle_route(None, chain_only=True, polish_context={'python-reviewer': callback})
+        callback.assert_not_called()
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertEqual(co.state['sequence'], sequence)
 
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()

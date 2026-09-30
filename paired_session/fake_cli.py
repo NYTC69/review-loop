@@ -251,7 +251,8 @@ def main():
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')
         revise = 'Exercise rule: return REVISE' in prompt and 'Role: reviewer,' in prompt
-        phase = ('SECURITY' if 'Phase: SECURITY' in prompt else
+        phase = ('Q' if 'Phase: Q.' in prompt else
+                 'SECURITY' if 'Phase: SECURITY' in prompt else
                  'POLISH' if 'Phase: POLISH' in prompt else
                  'EXEC' if 'Phase: EXEC' in prompt else 'PLAN')
         configured_test = ('Run this test command exactly as written in one Bash call: '
@@ -331,7 +332,7 @@ def main():
         answer = {'status': 'REVISE' if revise else 'APPROVE',
                   'full_review': findings,
                   'self_run_evidence': ([{'command': configured_test or 'python3 -m unittest'}]
-                                        if phase in ('EXEC', 'SECURITY') else [])}
+                                        if phase in ('EXEC', 'SECURITY', 'Q') else [])}
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):

@@ -1632,6 +1632,10 @@ class Coordinator:
             raise ValueError('fake lifecycle state is unavailable')
         action = {'begin': lifecycle_spine.begin, 'receipt': lifecycle_spine.complete}.get(event)
         if action is None: raise ValueError('unknown fake lifecycle event')
+        if (event == 'begin' and self.state.get('q_reserved') and
+                self.state['invocations_used'] + self.state['q_reserved'] + 2 > self.args.max_invocations):
+            raise ValueError('P budget exhausted before stage begin; abort and start a new run '
+                             'with larger --max-invocations')
         self.state['lifecycle'] = action(self.state['lifecycle'], value)
         self.save()
 
@@ -1821,7 +1825,8 @@ class Coordinator:
                     raise ValueError('invalid specialist owner')
                 if (used + len(names) > budget_policy.BUDGET_CAPS['POLISH-Q'][0] or
                         any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
-                        self.state['invocations_used'] + len(names) > self.args.max_invocations):
+                        self.state['invocations_used'] + len(names) * (3 if self.state.get('q_reserved') else 1) +
+                        self.state.get('q_reserved', 0) > self.args.max_invocations):
                     raise ValueError('POLISH-Q specialist budget exhausted')
             if stage == 'DOCS' and (life['pending'] or (self.blocking_open_findings() and not blockers_allowed)):
                 raise ValueError('DOCS has an uncertain request or open blocker')
@@ -3401,7 +3406,7 @@ class Coordinator:
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
-        if self.state['invocations_used'] >= self.args.max_invocations:
+        if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
         timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
                            else self.args.timeout)
@@ -4632,7 +4637,11 @@ class Coordinator:
             frozen = closeout_policy.freeze_item(self.workspace, backlog_item)
             if frozen['head'] != life['parent']:
                 raise ValueError('closeout item HEAD differs from frozen lifecycle parent')
+            if self.state['invocations_used'] + 8 >= self.args.max_invocations:
+                raise ValueError('Q reservation leaves no P budget; abort and start a new run '
+                                 'with larger --max-invocations')
             self.state['closeout_item'] = frozen
+            self.state['q_reserved'] = 8
         if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:
             return self.state['status']
         self.fake_candidate_author_turn(chain_only=True)
@@ -4691,8 +4700,9 @@ class Coordinator:
 
     def fake_q_review(self, c1, day):
         proposal = self.fake_materialize_q(c1, day)
-        if self.state.get('fake_q_pending') or self.state.get('fake_q_review'):
-            raise ValueError('Q review already pending or completed; abort or resume its recovery')
+        if (self.state.get('fake_q_pending') or self.state.get('fake_q_review') or
+                self.state.get('pending_reviewer_result_sequence') or self.state.get('q_reserved') != 8):
+            raise ValueError('Q review pending or completed, or unreserved; abort and start a new run')
         ingest = self.state['fake_ingest_receipt']
         baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
         env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
@@ -4724,17 +4734,20 @@ class Coordinator:
                    'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
         atomic_json(self.evidence / (test_id + '-q-test.json'), receipt)
         if test.returncode:
-            raise ValueError('Q tests failed; abort or repair P and re-review')
+            raise ValueError('Q tests failed; abort and start a new run')
         self._fake_dispatching = True
         try:
-            result = self.invoke('reviewer', 'EXEC',
-                                 f'Role: reviewer, fresh. Phase: EXEC. Candidate Q OID: {oid}.\n'
+            self.state['q_reserved'] -= 2
+            result = self.invoke('reviewer', 'Q',
+                                 f'Role: reviewer, fresh. Phase: Q. Candidate Q OID: {oid}.\n'
                                  f'Run this test command exactly as written in one Bash call: {self.args.test_command}',
                                  review_schema(), fresh=True, workspace_override=checkout.root)
             candidate_tree.verify_candidate_revision(checkout, revision)
             turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
-            if turn.get('error') or result['answer']['status'] != 'APPROVE' or result['answer']['full_review']:
-                raise ValueError('Q reviewer did not approve; abort or repair P')
+            if (turn.get('error') or not any(observed_test_succeeded(c, self.args.test_command)
+                    for c in turn.get('observed_commands', [])) or
+                    result['answer']['status'] != 'APPROVE' or result['answer']['full_review']):
+                raise ValueError('Q reviewer did not approve; abort and start a new run')
             reviewed = {**receipt, 'review_id': str(uuid.uuid4()), 'sequence': result['sequence'],
                         'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index)}
             atomic_json(self.evidence / (reviewed['review_id'] + '-q-review.json'), reviewed)
@@ -4743,6 +4756,7 @@ class Coordinator:
             return reviewed
         finally:
             self._fake_dispatching = False
+            self.state.pop('pending_reviewer_result_sequence', None)
             self.save()
     def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""
