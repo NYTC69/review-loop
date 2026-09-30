@@ -33,6 +33,9 @@ from typing import Optional
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
+    from paired_session import closeout_policy
+    from paired_session import q_proposal
+    from paired_session import q_evidence
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -43,6 +46,9 @@ try:
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
+    import closeout_policy
+    import q_proposal
+    import q_evidence
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -1082,6 +1088,8 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
+            if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
+                raise ValueError('run was created by an older paired-session build; start a new run')
             if self.state.get('config', {}).get('lifecycle_mode') == 'on' and not self._fake_lifecycle:
                 raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
             self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
@@ -1187,7 +1195,7 @@ class Coordinator:
                 'item_uuid': str(uuid.uuid4()), 'item_blockers': [], 'item_blockers_complete': True,
                 'review_verdicts': [],
                 'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
-                'acceptance_state': 'IN_PROGRESS',
+                'acceptance_state': 'IN_PROGRESS', 'approved_snapshot': None, 'rejected_digests': [],
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
@@ -1626,6 +1634,10 @@ class Coordinator:
             raise ValueError('fake lifecycle state is unavailable')
         action = {'begin': lifecycle_spine.begin, 'receipt': lifecycle_spine.complete}.get(event)
         if action is None: raise ValueError('unknown fake lifecycle event')
+        if (event == 'begin' and self.state.get('q_reserved') and
+                self.state['invocations_used'] + self.state['q_reserved'] + 2 > self.args.max_invocations):
+            raise ValueError('P budget exhausted before stage begin; abort and start a new run '
+                             'with larger --max-invocations')
         self.state['lifecycle'] = action(self.state['lifecycle'], value)
         self.save()
 
@@ -1815,7 +1827,8 @@ class Coordinator:
                     raise ValueError('invalid specialist owner')
                 if (used + len(names) > budget_policy.BUDGET_CAPS['POLISH-Q'][0] or
                         any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
-                        self.state['invocations_used'] + len(names) > self.args.max_invocations):
+                        self.state['invocations_used'] + len(names) * (3 if self.state.get('q_reserved') else 1) +
+                        self.state.get('q_reserved', 0) > self.args.max_invocations):
                     raise ValueError('POLISH-Q specialist budget exhausted')
             if stage == 'DOCS' and (life['pending'] or (self.blocking_open_findings() and not blockers_allowed)):
                 raise ValueError('DOCS has an uncertain request or open blocker')
@@ -2446,6 +2459,14 @@ class Coordinator:
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
         if self.state.get('status') in ('ACCEPTED', 'ABORTED'):
             return self.state['status']
+        if reason == 'rejected-tree':
+            author = next((r for r in reversed(self.state['turns']) if r.get('role') == 'author'), {})
+            self.state['rejected_tree_hold'] = {'tree_sha256': git_snapshot(self.workspace)[0],
+                'rationale': str(author.get('answer', {}).get('body', ''))[:2000],
+                'rationale_evidence': {'run_dir': str(self.run_dir), 'turn_sequence': author.get('sequence')}}
+            self.state.update(next='author', pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
+            reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
+            if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
@@ -2467,9 +2488,7 @@ class Coordinator:
 
     def rejection_limit_hold(self) -> str:
         maximum = self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
-        self.state['hold_reason'] = f'post-DONE rejection limit reached ({maximum}); accept or abort'
-        self.save()
-        return 'HOLD'
+        return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
 
     def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
         intent = self.state.get('scope_change_intent')
@@ -2543,7 +2562,7 @@ class Coordinator:
     def note(self, text: Optional[str], file: Optional[str]) -> str:
         if self.state['status'] != 'HOLD':
             raise ValueError('note requires a HOLD run; DONE uses reject')
-        if self.state.get('terminal_hold_kind') == 'rejection_limit':
+        if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
             raise ValueError('rejection limit: accept, abort or use --scope-change')
         if self.state.get('next') != 'author':
             raise ValueError(f"run is waiting for {self.state.get('next')}; resume first, or use --scope-change (not yet available; abort + new run)")
@@ -2583,18 +2602,23 @@ class Coordinator:
                'status': 'pending', 'replaces_id': previous['id'] if previous else None,
                'replaces_sha256': previous['sha256'] if previous else None}
         notes.append(row); self.state['pending_operator_note_id'] = note_id
+        self.state.pop('terminal_hold_kind', None)
         self.save(); self.write_comparison()
         return note_id
 
     def accept(self) -> str:
-        if self.state.get('status') == 'ACCEPTED':
+        if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
         if self.state.get('status') != 'DONE' and not (
                 self.state.get('status') == 'HOLD' and
-                self.state.get('terminal_hold_kind') == 'rejection_limit'):
+                (self.state.get('terminal_hold_kind') == 'rejection_limit' or self.args.override_rejection)):
             raise ValueError('accept requires a DONE run')
         record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
+              'intent': self.operator_intent('accept', None, None, self.args.expect, not self.args.override_rejection),
                   'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
+        record.update(reason=self.args.reason, override_rejection=self.args.override_rejection,
+                      rationale=self.state.get('rejected_tree_hold', {}).get('rationale_evidence'))
+        self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -2607,11 +2631,48 @@ class Coordinator:
         self.write_comparison()
         return 'ACCEPTED'
 
+    def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
+        if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
+        payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
+        index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
+        tree_sha, tree_snapshot = git_snapshot(self.workspace)
+        data = {'action': action, 'uid': os.getuid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
+                'workspace': str(self.workspace), 'workitem': str(self.workitem), 'head': self._head_commit(),
+                'tree_sha256': tree_sha, 'workitem_sha256': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
+                'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
+                'state_sha256': hashlib.sha256(json.dumps(self.state, sort_keys=True).encode()).hexdigest(),
+                'payload_sha256': hashlib.sha256(payload).hexdigest()}
+        data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        override = self.args.override_rejection
+        if override and (action != 'accept' or not (self.args.reason or '').strip() or
+                self.state['status'] != 'HOLD' or not self.state.get('hold_reason', '').startswith('rejected-tree') or
+                self.state.get('active') or self.state.get('uncertain_active') or
+                tree_sha != self.state.get('rejected_tree_hold', {}).get('tree_sha256')):
+            raise ValueError('override requires HOLD rejected-tree, unchanged held tree, and non-empty --reason')
+        if not override: self.refuse_rejected_tree(stale_done=True)
+        if required and (not expected or expected != data['digest']): raise ValueError('intent is stale or missing')
+        return {**data, 'tree_snapshot': tree_snapshot}
+    def rejected_tree(self, digest: Optional[str] = None) -> bool:
+        return (git_snapshot(self.workspace)[0] if digest is None else digest) in self.state['rejected_digests']
+    def refuse_rejected_tree(self, stale_done: bool = False, allow_author: bool = False) -> None:
+        digest, manifest = git_snapshot(self.workspace)
+        if allow_author and not self.rejected_tree(digest): self.state.pop('terminal_hold_kind', None)
+        if not allow_author and self.rejected_tree(digest):
+            self.hold('rejected-tree', terminal_kind=self.state.get('terminal_hold_kind'))
+            raise ValueError(self.state['hold_reason'])
+        if (stale_done and not allow_author and self.state.get('acceptance_state') == 'PENDING'
+                and not self.state['polish']['active'] and self.state['approved_snapshot'] != digest):
+            old, new = dict(self.state.get('approved_manifest', [])), dict(manifest)
+            changed = {k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
+            tracked = set(subprocess.check_output(['git', 'ls-files', '-z'], cwd=self.workspace).decode().split('\0'))
+            raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
+                             'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
+        intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
         if file:
             feedback = Path(file).expanduser().read_text()
             source = str(Path(file).expanduser().resolve())
@@ -2622,12 +2683,13 @@ class Coordinator:
             raise ValueError('rejection note must not be empty')
         rejections = self.state.setdefault('rejections', [])
         maximum = self.state.setdefault('max_rejections', DEFAULT_MAX_REJECTIONS)
+        self.state['rejected_digests'].append(intent['tree_sha256'])
         if len(rejections) >= maximum:
-            return self.hold(f'post-DONE rejection limit reached ({maximum}); accept or abort',
-                             terminal_kind='rejection_limit')
+            return self.hold('rejected-tree', terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
         record = {'id': rejection_id, 'author': 'operator',
                   'timestamp': datetime.now().astimezone().isoformat(), 'target_phase': 'EXEC',
+                  'intent': intent,
                   'sha256': hashlib.sha256(feedback.encode('utf-8')).hexdigest(),
                   'source': source, 'text': feedback, 'status': 'pending'}
         evidence_path = self.evidence / f'rejection-{rejection_id}.json'
@@ -2688,6 +2750,7 @@ class Coordinator:
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
+        self.state['approved_snapshot'], self.state['approved_manifest'] = git_snapshot(self.workspace)
         self.set_effective_verdict('APPROVE')
         self.state['status'] = 'DONE'
         self.state['acceptance_state'] = 'PENDING'
@@ -2744,8 +2807,10 @@ class Coordinator:
         self.write_ledger()
 
     def resume_polish(self) -> str:
+        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
             return self.rejection_limit_hold()
+        self.refuse_rejected_tree(stale_done=True)
         if self.state.get('active'):
             return self.hold('uncertain in-flight CLI turn; inspect evidence before resume --polish')
         if self.state['status'] != 'DONE':
@@ -3343,7 +3408,7 @@ class Coordinator:
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
-        if self.state['invocations_used'] >= self.args.max_invocations:
+        if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
         timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
                            else self.args.timeout)
@@ -3605,6 +3670,7 @@ class Coordinator:
         if self.state['polish']['active']:
             self.polish_author_turn()
             return
+        if self.state.get('acceptance_state') == 'PENDING': self.state['acceptance_state'] = 'IN_PROGRESS'
         phase = self.state['phase']
         pending = self.state.get('pending_author_result_sequence')
         receipt = next((row for row in self.state['turns'] if row['sequence'] == pending), None)
@@ -3619,6 +3685,7 @@ class Coordinator:
         rejection = next((row for row in self.state.get('rejections', [])
                           if row.get('id') == self.state.get('pending_rejection_id') and
                           row.get('status') != 'delivered'), None)
+        if self.rejected_tree(result['snapshot']): return self.hold('rejected-tree')
         if rejection:
             rejection.update(status='delivered', delivered_sequence=result['sequence'],
                              delivered_phase=phase)
@@ -4559,9 +4626,24 @@ class Coordinator:
         finally:
             self._fake_dispatching = False
 
-    def fake_lifecycle_drive(self) -> str:
+    def fake_lifecycle_drive(self, backlog_item=None) -> str:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise RuntimeError('fake lifecycle refuses a non-fake provider')
+        if backlog_item is not None:
+            life = self.state['lifecycle']
+            if self.state.get('closeout_item') or life != lifecycle_spine.initial(life['item_uuid'], life['parent']):
+                raise ValueError('closeout item freeze requires a fresh lifecycle and is write-once')
+            if any(p.casefold() == str(self.workspace / 'BACKLOG.md').casefold()
+                   for p in self.state['config']['docs_allowlist']):
+                raise ValueError('BACKLOG must be outside writer grants')
+            frozen = closeout_policy.freeze_item(self.workspace, backlog_item)
+            if frozen['head'] != life['parent']:
+                raise ValueError('closeout item HEAD differs from frozen lifecycle parent')
+            if self.state['invocations_used'] + 8 >= self.args.max_invocations:
+                raise ValueError('Q reservation leaves no P budget; abort and start a new run '
+                                 'with larger --max-invocations')
+            self.state['closeout_item'] = frozen
+            self.state['q_reserved'] = 8
         if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:
             return self.state['status']
         self.fake_candidate_author_turn(chain_only=True)
@@ -4601,6 +4683,169 @@ class Coordinator:
                 docs_context=docs_context, chain_only=True)
             if route != 'EXEC': return route
         return 'HOLD'
+
+    def fake_materialize_q(self, c1, day):
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise ValueError('Q objects are fake-only and never authorize delivery')
+        life = self.state['lifecycle']
+        proof = life['receipts'][-1] if life['receipts'] else {}
+        if (life['stage'] != 'STOP_BEFORE_DELIVERY' or life['pending'] or self.state.get('active') or
+                self.state.get('uncertain_active') or proof.get('stage') != 'SECURITY' or
+                proof.get('status') != 'READY' or proof.get('security_review') != 'APPROVE' or
+                proof.get('output_oid') != life['candidate_oid'] or
+                not self.state.get('closeout_item') or self.blocking_open_findings()):
+            raise ValueError('Q needs current SECURITY pass and frozen item; resolve blockers or abort')
+        ingest = self.state['fake_ingest_receipt']
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        revision = candidate_tree.CandidateRevision(life['candidate_oid'], tuple(ingest['manifest']), 0)
+        return q_proposal.materialize(baseline, revision, self.state['closeout_item'], c1, day)
+
+    def q_review_verdict(self, answer):
+        if answer.get('status') == 'APPROVE' and answer.get('full_review') == []:
+            return 'APPROVE'
+        if (answer.get('status') in ('APPROVE', 'REVISE') and
+                self.findings_are_advisory(answer.get('full_review', []))):
+            return 'APPROVE_WITH_ADVISORY'
+        return None
+
+    def q_proof(self, turn, oid):
+        answer, role = turn['answer'], turn['role']
+        findings = answer.get('findings', []) if role == 'gate' else answer.get('full_review', [])
+        effective = self.q_review_verdict(answer) if role == 'reviewer' else None
+        if (role == 'gate' and answer.get('verdict') in ('approve', 'needs-attention') and
+                (answer['verdict'] == 'approve' or findings) and
+                all(f.get('severity') == 'low' and not f.get('security') for f in findings)):
+            effective = 'APPROVE_WITH_ADVISORY' if findings else 'APPROVE'
+        if not effective:
+            raise ValueError('Q verdict is blocking or empty; abort and start a new run')
+        return {'role': role, 'phase': turn['phase'], 'sequence': turn['sequence'], 'oid': oid,
+                'raw_verdict': answer.get('status', answer.get('verdict')), 'effective_verdict': effective,
+                'advisories': copy.deepcopy(findings)}
+
+    def fake_q_review(self, c1, day):
+        proposal = self.fake_materialize_q(c1, day)
+        if (self.state.get('fake_q_pending') or self.state.get('fake_q_review') or
+                self.state.get('pending_reviewer_result_sequence') or self.state.get('q_reserved') != 8):
+            raise ValueError('Q review pending or completed, or unreserved; abort and start a new run')
+        ingest = self.state['fake_ingest_receipt']
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+        oid = proposal['q_oid']
+        revision = candidate_tree.CandidateRevision(
+            oid, candidate_tree._manifest(env, baseline.tree_oid, oid), 0)
+        baseline = candidate_tree.replace(baseline, authorized_prefixes=(*baseline.authorized_prefixes, 'BACKLOG.md'))
+        candidate_tree._git(['update-ref', 'refs/paired-session/candidates/' + oid, oid], env=env)
+        checkout = candidate_tree.rebuild_candidate_from_oid(baseline, revision)
+        command = shlex.split(self.args.test_command)
+        if not command or Path(command[0]).name == 'env':
+            raise ValueError('Q test requires a direct executable')
+        executable = Path(resolve_test_executable(checkout.root, self.args.test_command)).resolve()
+        if any(root == executable or root in executable.parents for root in (self.workspace, self.run_dir)):
+            raise ValueError('Q test executable is under writable operator roots')
+        command[0] = str(executable)
+        test_id = str(uuid.uuid4())
+        pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
+                   'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
+                   'review_after_sequence': self.state['sequence'], 'binding_sha256': q_evidence.binding(self)}
+        self.state['fake_q_pending'] = pending
+        self.save()
+        test = subprocess.run(command, cwd=checkout.root, timeout=self.args.timeout, capture_output=True,
+                              env={'PATH': os.defpath, 'HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
+                                   'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'})
+        candidate_tree.verify_candidate_revision(checkout, revision)
+        receipt = {**pending, 'oid': oid, 'command': command, 'returncode': test.returncode,
+                   'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
+                   'stderr_sha256': hashlib.sha256(test.stderr).hexdigest(),
+                   'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
+        atomic_json(self.evidence / (test_id + '-q-test.json'), receipt)
+        if test.returncode:
+            raise ValueError('Q tests failed; abort and start a new run')
+        self._fake_dispatching = True
+        try:
+            self.state['q_reserved'] -= 2
+            result = self.invoke('reviewer', 'Q',
+                                 f'Role: reviewer, fresh. Phase: Q. Candidate Q OID: {oid}.\n'
+                                 f'Run this test command exactly as written in one Bash call: {self.args.test_command}',
+                                 review_schema(), fresh=True, workspace_override=checkout.root)
+            candidate_tree.verify_candidate_revision(checkout, revision)
+            turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
+            if (turn.get('error') or turn['phase'] != 'Q' or turn['workspace'] != str(checkout.root) or
+                    turn['sequence'] <= pending['review_after_sequence'] or
+                    not any(observed_test_succeeded(c, self.args.test_command)
+                    for c in turn.get('observed_commands', [])) or
+                    not self.q_review_verdict(result['answer'])):
+                raise ValueError('Q reviewer did not approve; abort and start a new run')
+            reviewed = {**receipt, 'review_id': str(uuid.uuid4()), 'sequence': result['sequence'],
+                        'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index),
+                        'root_identity': list(checkout.root_identity), 'proof': self.q_proof(turn, oid)}
+            self.record_review_verdict(turn['sequence'], 'Q', turn['answer']['status'],
+                                       reviewed['proof']['effective_verdict'])
+            atomic_json(self.evidence / (reviewed['review_id'] + '-q-review.json'), reviewed)
+            self.state['fake_q_review'] = reviewed
+            self.state.pop('fake_q_pending')
+            return reviewed
+        finally:
+            self._fake_dispatching = False
+            self.state.pop('pending_reviewer_result_sequence', None)
+            self.save()
+    def fake_q_complete(self, c1, day):
+        source, root, revision = q_evidence.review_source(self, c1, day, observed_test_succeeded)
+        if (self._program_state()[1] or self.state.get('fake_q_bundle_pending') or
+                self.state.get('fake_q_bundle') or self.state['sequence'] != source['sequence'] or
+                self.state.get('q_reserved') != 6 or self.state['invocations_used'] + 6 > self.args.max_invocations):
+            raise ValueError('Q completion uncertain or unreserved; abort and start a new run')
+        life, p_oid = self.state['lifecycle'], source['proposal']['p_oid']
+        noops = json.loads(json.dumps([r for r in life['receipts'] if r['epoch'] == life['epoch'] and
+                 r['stage'] in ('FINISH', 'POLISH-Q', 'DOCS')]))
+        if (len(noops) != 3 or {r['stage'] for r in noops} != {'FINISH', 'POLISH-Q', 'DOCS'} or
+                any(r.get('status') != 'READY' or r['candidate_oid'] != p_oid or r['output_oid'] != p_oid or
+                    r['item_uuid'] != life['item_uuid'] or r['parent'] != life['parent'] for r in noops) or
+                not noops[0].get('finish_result') or not noops[1].get('specialists') or
+                not noops[2].get('docs_file')):
+            raise ValueError('Q requires current P no-op receipts; abort and start a new run')
+        paths = candidate_tree._tree_entries(candidate_tree._git_env(GIT_DIR=str(root.git_dir)), revision.tree_oid)
+        if any(sensitive_policy.sensitive_path_category(row[2]) for row in paths):
+            raise ValueError('Q sensitive preflight blocked; abort and start a new run')
+        template = Path(self.args.gate_prompt).read_text().replace('${REVIEW_TARGET_DESC}', str(root.root))
+        gate_prompt = template.replace('${FOCUS_TEXT}', 'Audit complete Q tree ' + revision.tree_oid)
+        prompts = [('gate', 'Q-GATE', gate_prompt, gate_schema()),
+                   ('reviewer', 'Q-FINAL', 'Role: reviewer, fresh. Audit Q: regressions/docs/tests.', review_schema()),
+                   ('reviewer', 'Q-SECURITY', 'Role: reviewer, fresh. Audit Q: secrets/escapes.', review_schema())]
+        pending = {'id': str(uuid.uuid4()), 'source_id': source['review_id'], 'proofs': [], 'p_noops': noops}
+        self.state['fake_q_bundle_pending'] = pending
+        self._fake_dispatching = True
+        try:
+            previous = source['sequence']
+            for role, phase, prompt, schema in prompts:
+                self.state['q_reserved'] -= 2
+                prompt += f'\n{phase}: Q={revision.tree_oid}; base={life["parent"]}; read task/plan in {self.context}\n'
+                prompt += 'Run this test command exactly as written in one Bash call: ' + self.args.test_command
+                result = self.invoke(role, phase, prompt, schema, fresh=True, workspace_override=root.root)
+                candidate_tree.verify_candidate_revision(root, revision)
+                turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+                if (turn.get('error') or turn['role'] != role or turn['phase'] != phase or
+                        turn['workspace'] != str(root.root) or turn['sequence'] <= previous):
+                    raise ValueError('Q role did not approve exact tree; abort and start a new run')
+                proof = self.q_proof(turn, revision.tree_oid)
+                if (self.configured_test_failed(turn) or not any(
+                        observed_test_succeeded(c, self.args.test_command) for c in turn.get('observed_commands', []))):
+                    raise ValueError('Q role lacks observed checks; abort and start a new run')
+                previous = turn['sequence']
+                pending['proofs'].append(proof)
+            q_evidence.review_source(self, c1, day, observed_test_succeeded)
+            bundle = {**pending, 'status': 'REVIEWED', 'source': source, 'scanned_paths': [r[2] for r in paths]}
+            atomic_json(self.evidence / (pending['id'] + '-q-bundle.json'), bundle)
+            self.state['fake_q_bundle'] = bundle
+            for proof in [source['proof'], *pending['proofs']]:
+                rows = self.record_findings('q-' + proof['role'], proof['phase'],
+                                            proof['sequence'], proof['advisories'])
+                self.mark_advisory_findings(rows)
+            self.state.pop('fake_q_bundle_pending')
+            return bundle
+        finally:
+            self._fake_dispatching = False
+            self.state.pop('pending_reviewer_result_sequence', None)
+            self.save()
 
     def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""
@@ -5005,6 +5250,7 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         while self.state['status'] == 'ACTIVE':
+            if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
             try:
                 if self.state['next'] == 'author':
                     self.author_turn()
@@ -5020,6 +5266,9 @@ class Coordinator:
 
     def resume(self, retry_uncertain=False) -> str:
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
+        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
+        self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
+                                  bool(self.state.get('uncertain_active') or self.state.get('active')))
         if self.args.acknowledge_codex_trust:
             if self.args.acknowledge_codex_trust != self.run_dir.name or not self.state.get('uncertain_active') or not self.state.get('hold_reason', '').startswith('global Codex config changed during uncertain turn'):
                 raise ValueError('trust acknowledgment requires the named run and a prior uncertain trust HOLD')
@@ -5074,6 +5323,7 @@ class Coordinator:
         self.state['hold_reason'] = ''
         self.state['active'] = None
         self.state['uncertain_active'] = None
+        self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
         self.save()
@@ -5230,7 +5480,7 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note'])
+                                      'accept', 'reject', 'note', 'status'])
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -5283,6 +5533,10 @@ def parser() -> argparse.ArgumentParser:
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
+    p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
+    p.add_argument('--reason', help='attributed reason for an operator rejection override')
+    p.add_argument('--expect', help='operator intent digest required by accept/reject')
+    p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
     return p
 
@@ -5396,7 +5650,10 @@ def normalize_cli_paths(args: argparse.Namespace) -> argparse.Namespace:
 def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
+    if args.action == 'status':
+        return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
+    if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):  # restored from state
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
         return 2
@@ -5515,7 +5772,7 @@ def main(argv=None) -> int:
             return 2
     try:
         with run_lease(Path(args.run_dir)):
-            if args.action in ('run', 'resume', 'permission-probe', 'reject', 'note'):
+            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)

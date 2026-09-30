@@ -279,10 +279,47 @@ bin/paired-session reject --workspace /path/to/worktree \
   --text 'Please address this in-scope acceptance feedback'
 ```
 
+Before accepting or rejecting, request an operator intent for the exact action.
+It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
+index, state and rejection text hashes; accept refuses a changed approved tree,
+and the mutation rechecks the intent under both leases. `resume --polish` also
+refuses when the workspace no longer matches the snapshot approved at DONE.
+
+```sh
+bin/paired-session accept --intent-only --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN"
+bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --expect <digest>
+bin/paired-session reject --intent-only --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --text 'Recheck this detail.'
+bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --text 'Recheck this detail.' --expect <digest>
+```
+
+Runs created without the acceptance snapshot and rejected-digest fields refuse
+mutating commands: `run was created by an older paired-session build; start a new run`.
+`status` reads such a run without migrating or modifying its state. Snapshots keep
+counting tracked and untracked non-ignored files; stale refusals report both path
+counts and tell the operator to restore the approved tree or start a new run.
+
+Operator rejection, including the tree held at the rejection limit, permanently
+records that tree's digest. An unchanged author answer enters `HOLD rejected-tree`
+before review. Status includes the author's rationale, truncated to 2,000 characters,
+and a pointer to that author receipt. The operator may add `note` guidance, change
+the workspace and resume a new author ingest, or explicitly rule on the exact held tree:
+
+```sh
+bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
+  --override-rejection --reason 'I inspected the author rationale and accept this tree.'
+```
+
+The override requires `HOLD rejected-tree`, a non-empty reason and an unchanged
+held snapshot. It records operator UID/time, reason, digest and rationale pointer
+in state, events and acceptance evidence. Both leases and role run-dir write denials
+apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
+still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
+no receipt follows plain resume; a fresh author ingest is required for rejected trees.
+
 An idle `HOLD` run waiting for its next author turn accepts an in-scope
 clarification with `note --text '...'` or `note --file /path/to/note`. It reaches
 that author turn on `resume`; a newer note replaces a pending one. Notes are
-refused while waiting for a reviewer/gate, after the rejection cap, and on a
+refused while waiting for a reviewer/gate and on a
 DONE run (use `reject`). The note cannot authorize new scope. For a scope
 change, use `note --scope-change --text/--file` on an idle active or ordinary
 HOLD run, or `reject --scope-change` before accepting a DONE run (also allowed
@@ -331,3 +368,61 @@ as a comparison path during staged migration.
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
 protocol transitions and permissions-command construction; the runtime
 permission probe is the effective check against the installed Codex CLI.
+
+### Fake closeout item admission (offline only)
+
+`fake_lifecycle_drive(backlog_item=N)` may freeze an item from a Compass view generated
+within ten minutes. The view must name this repo-root tracked `BACKLOG.md`, contain
+one open item with that ID, and match its unique normalized title and section.
+Workspace/index drift, ambiguous items and symlink paths refuse before PLAN.
+The run records the exact HEAD, BACKLOG blob and hashes of the view and adapter.
+This admission does not close an item: Q construction, fresh Q checks and DELIVERY
+remain required. Real lifecycle entry remains disabled.
+
+`closeout_adapter.close_blob` produces an **unreviewed Q proposal** from the exact
+frozen BACKLOG bytes, a C1 object ID and closing date. It moves only the selected
+item and its children, restores an empty source sentinel, updates Last updated
+and retains the newest five Done blocks. It writes no file and supplies no
+approval. Q still needs isolated materialization and fresh review/test/SECURITY
+receipts before accept or delivery. Closeout intake is write-once at a fresh
+lifecycle parent, and BACKLOG is excluded from the declared writer grants.
+
+`fake_materialize_q(c1, day)` is an offline object proposal after the P SECURITY
+pass. It checks the P tree, C1 parent/tree and current adapter hash, rejects
+non-child body text or a missing final newline, and uses a temporary index to
+write a BACKLOG-only Q tree in scratch Git. Its status is always UNREVIEWED.
+It changes neither live HEAD/index/BACKLOG, the P root/index, nor lifecycle state.
+Fresh Q tests/reviews/gate/SECURITY and attributed acceptance remain mandatory;
+this method cannot commit, publish or close. C1 message/author/intent verification
+belongs to the later bundle-verification step. Real lifecycle still refuses.
+
+The fake Q source reviewer preserves its raw verdict in the turn and records an
+independent effective verdict/advisory proof. Nonempty REVISE with only
+non-security MINOR/LOW uses the existing advisory rule; empty REVISE, major and
+security findings refuse. This source remains UNREVIEWED until fresh Q bundle
+checks; proof advisories are copied, not shared with the mutable answer list.
+
+### Fake-only Q receipt bundle
+
+The offline lifecycle harness retains Q's proposal/test/reviewer source as
+`UNREVIEWED`. `fake_q_complete` dispatches separate gate, final and SECURITY
+reviews at the same Q OID, requires observed configured-test success and binds
+phase, workspace and increasing turn sequences. P FINISH/POLISH-Q/DOCS receipts
+must be current no-ops. A distinct protected `REVIEWED` bundle is evidence for
+future delivery; it does not itself publish commits or CLOSE. A failed or
+uncertain Q attempt requires abort and a new run. Real lifecycle activation
+remains disabled; sandbox/cache/process-isolation gates are still required.
+
+Non-security reviewer MINOR/LOW and gate low findings are retained in Q proof
+advisories. Their raw verdict stays in the provider receipt; only the coordinator
+classifies them as nonblocking. Major/security and gate medium-or-higher findings
+refuse the bundle. This follows P SECURITY's blocking set; no advisory authorizes
+real activation or bypasses tests/tree binding.
+
+Q final/SECURITY and source APPROVE or nonempty REVISE with only non-security
+MINOR/LOW findings use APPROVE_WITH_ADVISORY. Empty REVISE remains blocked.
+Q source and bundle advisories stay OPEN in the finding ledger before acceptance.
+
+The fake DELIVERY intake re-reads protected Q bundle and provider turn receipts,
+current program hashes, source tests, Q tree and P no-op receipts before any
+Git write. A pending, relabeled, later-turn or failed-test proof refuses intake.

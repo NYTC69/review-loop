@@ -760,6 +760,7 @@ class RealCoordinatorTests(unittest.TestCase):
         co = rc.Coordinator(rc.parser().parse_args(command[2:]))
         self.assertIsNone(co._program_state()[1])
         co.state.update(status='DONE', acceptance_state='PENDING', phase='EXEC')
+        co.state['approved_snapshot'] = rc.git_snapshot(co.workspace)[0]
         co.save()
         Path(co.args.codex_bin).unlink()
         command[2] = 'permission-probe'
@@ -768,6 +769,12 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertIn('FAIL', probe.stdout)
         self.assertEqual(json.loads(co.state_path.read_text())['status'], 'DONE')
         command[2] = 'accept'
+        command.append('--intent-only')
+        intent = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        self.assertEqual(intent.returncode, 0, intent.stdout + intent.stderr)
+        command.remove('--intent-only')
+        command[2] = 'accept'
+        command.extend(['--expect', json.loads(intent.stdout)['digest']])
         accepted = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertIn('ACCEPTED', accepted.stdout)
@@ -1010,10 +1017,23 @@ sys.exit(result.returncode)
         return subprocess.run(command, cwd=self.root, env=merged,
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    def run_operator_action(self, action, *extra):
+    def run_operator_action(self, action, *extra, env=None):
         command = self.command(*extra)
         command[2] = action
         command.append('--skip-probe')
+        if action in ('accept', 'reject') and '--scope-change' not in extra:
+            intent = command.copy(); intent.append('--intent-only')
+            issued = subprocess.run(intent, cwd=self.root, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if issued.returncode:
+                return issued
+            command.extend(['--expect', json.loads(issued.stdout)['digest']])
+        return subprocess.run(command, cwd=self.root, env={**os.environ, **(env or {})}, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def issue_operator_intent(self, action, *extra):
+        command = self.command(*extra); command[2] = action
+        command.extend(['--intent-only', '--skip-probe'])
         return subprocess.run(command, cwd=self.root, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -1246,6 +1266,11 @@ sys.exit(result.returncode)
         config_dir = self.workspace / '.review-loop'
         config_dir.mkdir(exist_ok=True)
         (config_dir / 'paired-session.json').write_text(json.dumps({'exec_turn_timeout': 20000}))
+        refused = self.run_operator_action('reject', '--text', 'Adjust the output.',
+                                           '--exec-turn-timeout', '99999')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('stale', refused.stdout)
+        (config_dir / 'paired-session.json').unlink()
         rejected = self.run_operator_action('reject', '--text', 'Adjust the output.',
                                             '--exec-turn-timeout', '99999')
         self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
@@ -1255,6 +1280,29 @@ sys.exit(result.returncode)
                         row.get('rejection_id') == 'R001']
         self.assertTrue(author_execs, rejected.stdout + rejected.stderr)
         self.assertEqual(author_execs[0]['timeout_seconds'], 9000)
+
+    def test_reject_ignores_project_exec_timeout_on_approved_config_tree(self):
+        config_dir = self.workspace / '.review-loop'
+        config_dir.mkdir(exist_ok=True)
+        config = config_dir / 'paired-session.json'
+        config.write_text(json.dumps({'exec_turn_timeout': 12000}))
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state['config'].pop('exec_turn_timeout')
+        state['config']['timeout'] = 9000
+        path.write_text(json.dumps(state))
+        rejected = self.run_operator_action('reject', '--text', 'Adjust the output.',
+                                            '--exec-turn-timeout', '99999')
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        saved = json.loads(path.read_text())
+        authors = [r for r in saved['turns'] if r.get('rejection_id') == 'R001'
+                   and r.get('role') == 'author' and r.get('phase') == 'EXEC']
+        self.assertTrue(authors, rejected.stdout + rejected.stderr)
+        self.assertEqual(authors[0]['timeout_seconds'], 9000)
+        self.assertEqual(json.loads(config.read_text())['exec_turn_timeout'], 12000)
 
     def test_legacy_resume_allows_only_bounded_exec_timeout_raise(self):
         co = self.coordinator('--timeout', '31')
@@ -1289,6 +1337,133 @@ sys.exit(result.returncode)
                 with self.assertRaisesRegex(ValueError, 'between 1 and 14400'):
                     rc.Coordinator(args)
 
+    def test_old_acceptance_format_refuses_all_mutations_but_status_is_read_only(self):
+        co = self.coordinator()
+        for missing in ('approved_snapshot', 'rejected_digests'):
+            with self.subTest(missing=missing):
+                old = dict(co.state)
+                old.pop(missing)
+                co.state_path.write_text(json.dumps(old))
+                before = co.state_path.read_bytes()
+                for action, extra in [('resume', []), ('resume', ['--polish']),
+                        ('resume', ['--retry-uncertain']), ('accept', []), ('reject', []),
+                        ('note', []), ('note', ['--scope-change']), ('abort', [])]:
+                    result = self.run_operator_action(action, *extra)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                    self.assertEqual(co.state_path.read_bytes(), before)
+                result = self.run_operator_action('status')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout), old)
+                self.assertEqual(co.state_path.read_bytes(), before)
+
+    def test_rejected_tree_rationale_and_attributed_operator_override(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1', 'FAKE_AUTHOR_RATIONALE': 'why ' * 800}):
+            self.assertEqual(co.resume(), 'HOLD')
+        held = co.state['rejected_tree_hold']
+        self.assertEqual(len(held['rationale']), 2000)
+        self.assertEqual(held['rationale'], ('why ' * 800)[:2000])
+        self.assertEqual(co.state['next'], 'author')
+        self.assertIsNone(co.state['pending_author_result_sequence'])
+        self.assertEqual(co.state['turns'][-1]['role'], 'author')
+        for way in ('note', 'change the workspace', 'accept --override-rejection'):
+            self.assertIn(way, co.state['hold_reason'])
+        status = self.run_operator_action('status')
+        self.assertEqual(json.loads(status.stdout)['rejected_tree_hold'], held)
+        co.args.override_rejection = True
+        co.args.reason = ''
+        with self.assertRaisesRegex(ValueError, 'non-empty'):
+            co.accept()
+        co.args.reason = 'I inspected the author rationale and explicitly accept this exact tree.'
+        co.state['uncertain_active'] = {'role': 'reviewer', 'pid': 42424242}
+        with self.assertRaisesRegex(ValueError, 'override requires'):
+            co.accept()
+        co.state.pop('uncertain_active')
+        changed = self.workspace / 'changed-after-hold.txt'
+        changed.write_text('not the held tree')
+        with self.assertRaisesRegex(ValueError, 'unchanged held tree'):
+            co.accept()
+        changed.unlink()
+        co.state['status'] = 'ACTIVE'
+        with self.assertRaisesRegex(ValueError, 'DONE'):
+            co.accept()
+        co.state['status'] = 'HOLD'
+        co.save()
+        result = self.run_operator_action('accept', '--override-rejection', '--reason', co.args.reason)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads(co.state_path.read_text())
+        record = state['acceptance']
+        self.assertEqual(state['status'], 'ACCEPTED')
+        self.assertTrue(record['override_rejection'])
+        self.assertEqual(record['author'], 'operator')
+        self.assertEqual(record['reason'], co.args.reason)
+        self.assertEqual(record['intent']['uid'], os.getuid())
+        self.assertEqual(record['intent']['tree_sha256'], held['tree_sha256'])
+        self.assertEqual(record['rationale'], held['rationale_evidence'])
+        self.assertEqual(state['events'][-1], record)
+        self.assertTrue(record['timestamp'])
+
+    def test_override_uses_both_leases_and_retains_role_run_dir_protections(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        command = self.command()[2:]
+        command[0] = 'accept'
+        command.extend(['--override-rejection', '--reason', 'operator ruling', '--skip-probe'])
+        before = co.state_path.read_bytes()
+        for lease in (rc.run_lease(co.run_dir), rc.workspace_lease(co.workspace, co.run_dir)):
+            with lease:
+                result = self.run_operator_action('accept', '--override-rejection', '--reason', 'operator ruling')
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(co.state_path.read_bytes(), before)
+        self.assertNotIn(str(co.run_dir), co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots'])
+        for role in ('author', 'reviewer'):
+            self.assertIn(str(co.run_dir), co._claude_sandbox_settings(role)['sandbox']['filesystem']['denyWrite'])
+
+    def test_uncertain_reviewer_on_rejected_tree_archives_before_operator_ruling(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        co.state.update(next='reviewer', uncertain_active={
+            'role': 'reviewer', 'vendor': 'claude', 'pid': 42424242, 'sequence': 99})
+        co.save()
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+            with patch.object(co, 'archive_abandoned_turn') as archive, patch.object(co, 'drive') as drive:
+                with self.assertRaisesRegex(ValueError, 'rejected-tree'):
+                    co.resume(retry_uncertain=True)
+                archive.assert_called_once()
+                drive.assert_not_called()
+        self.assertIsNone(co.state.get('uncertain_active'))
+        self.assertEqual(co.state['next'], 'author')
+        co.args.override_rejection = True
+        co.args.reason = 'Explicit ruling after the child stopped.'
+        self.assertEqual(co.accept(), 'ACCEPTED')
+
+    def test_accepted_fast_path_precedes_tree_checks_in_all_resume_forms(self):
+        co = self.coordinator()
+        co.done()
+        co.args.expect = co.operator_intent('accept', None, None)['digest']
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        (self.workspace / 'after-accept.txt').write_text('operator owns subsequent work')
+        before = co.state_path.read_bytes()
+        self.assertEqual(co.resume(), 'ACCEPTED')
+        self.assertEqual(co.resume(retry_uncertain=True), 'ACCEPTED')
+        self.assertEqual(co.resume_polish(), 'ACCEPTED')
+        self.assertEqual(co.state_path.read_bytes(), before)
+
+    def test_active_done_stale_resume_names_tracked_and_untracked_drift(self):
+        co = self.coordinator()
+        co.done()
+        (self.workspace / 'tracked.txt').write_text('changed')
+        (self.workspace / 'new.txt').write_text('untracked')
+        co.state.update(status='ACTIVE', next='reviewer')
+        co.save()
+        with patch.object(co, 'invoke') as invoke:
+            with self.assertRaisesRegex(ValueError, '1 tracked, 1 untracked'):
+                co.resume()
+            invoke.assert_not_called()
+
     def test_done_requires_explicit_accept_and_accept_is_idempotent(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                          '--polish-round', 'off')
@@ -1314,13 +1489,432 @@ sys.exit(result.returncode)
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertIn('ACCEPTED', resumed.stdout)
 
+    def test_operator_intent_stale_tree_refuses_accept_and_records_provenance(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        invalid = self.command('--shadow', 'off', '--adversarial-gate', 'off',
+                               '--polish-round', 'off', '--skip-probe'); invalid[2] = 'abort'
+        invalid.append('--intent-only')
+        refused = subprocess.run(invalid, cwd=self.root, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('intent action must be accept or reject', refused.stdout)
+        issued = self.issue_operator_intent('accept')
+        self.assertEqual(issued.returncode, 0, issued.stdout + issued.stderr)
+        missing = self.command('--skip-probe'); missing[2] = 'accept'
+        refused = subprocess.run(missing, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('intent is stale or missing', refused.stdout)
+        (self.workspace / 'intent-drift.txt').write_text('new workspace content')
+        command = self.command('--expect', json.loads(issued.stdout)['digest'], '--skip-probe')
+        command[2] = 'accept'
+        refused = subprocess.run(command, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('stale', refused.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'DONE')
+        fresh = self.issue_operator_intent('accept')
+        self.assertEqual(fresh.returncode, 2)
+        self.assertIn('stale', fresh.stdout)
+        (self.workspace / 'intent-drift.txt').unlink()
+        accepted = self.run_operator_action('accept')
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        record = json.loads((self.run_dir / 'state.json').read_text())['acceptance']
+        self.assertEqual(record['intent']['uid'], os.getuid())
+        self.assertEqual(record['intent']['action'], 'accept')
+        self.assertEqual(record['intent']['workspace'], str(self.workspace))
+        self.assertEqual(record['intent']['run_id'], str(self.run_dir))
+        self.assertEqual(record['intent']['tree_sha256'],
+                         json.loads((self.run_dir / 'state.json').read_text())['approved_snapshot'])
+        self.assertEqual(len(record['intent']['head']), 40)
+        self.assertEqual(len(record['intent']['index_sha256']), 64)
+        self.assertEqual(len(record['intent']['tree_sha256']), 64)
+
+    def test_rejection_limit_polish_cannot_rebind_changed_held_tree(self):
+        co = self.rejected_done_coordinator()
+        co.hold('rejected-tree', terminal_kind='rejection_limit')
+        held = dict(co.state['rejected_tree_hold'])
+        sequence = co.state['sequence']
+        (self.workspace / 'unreviewed.txt').write_text('not the rejected tree')
+        polished = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(polished.returncode, 2, polished.stdout + polished.stderr)
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['rejected_tree_hold'], held)
+        self.assertEqual(saved['sequence'], sequence)
+        refused = self.run_operator_action('accept', '--override-rejection', '--reason', 'operator ruling')
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn('unchanged held tree', refused.stdout)
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'HOLD')
+
+    def test_run_cannot_review_stale_pending_done_tree(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        before = json.loads(path.read_text())
+        (self.workspace / 'after-done.txt').write_text('unreviewed workspace content')
+        for role in ('reviewer', 'gate'):
+            with self.subTest(role=role):
+                pending = dict(before, status='ACTIVE', next=role, active=None)
+                path.write_text(json.dumps(pending))
+                refused = self.run_operator_action('run', '--shadow', 'off',
+                                                   '--adversarial-gate', 'off', '--polish-round', 'off')
+                self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                self.assertIn('stale:', refused.stdout)
+                saved = json.loads(path.read_text())
+                self.assertEqual(saved['sequence'], before['sequence'])
+                self.assertEqual(saved['approved_snapshot'], before['approved_snapshot'])
+
+    def test_resume_polish_cannot_reapprove_a_changed_done_tree(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        resumed = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('stale:', resumed.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'DONE')
+        intent = self.issue_operator_intent('accept')
+        self.assertEqual(intent.returncode, 2)
+        self.assertIn('stale', intent.stdout)
+
+    def test_resume_after_stale_polish_hold_cannot_reapprove_changed_tree(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        resumed = self.run_operator_action('resume', '--polish', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(before['status'], 'DONE')
+        ordinary = self.run_operator_action('resume')
+        self.assertEqual(ordinary.returncode, 2)
+        after = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(after['status'], 'DONE')
+        self.assertEqual(after['approved_snapshot'], before['approved_snapshot'])
+        self.assertEqual(after['sequence'], before['sequence'])
+
+    def test_polish_hold_after_author_write_remains_resumable(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        flags = ('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
+        (self.workspace / 'polish-output.txt').write_text('polish author output')
+        co.state.update(status='HOLD', next='reviewer', hold_reason='polish reviewer failed')
+        co.state['polish'].update(active=True, completed=False)
+        co.save()
+        with patch.object(co, 'drive', return_value='HOLD') as drive:
+            self.assertEqual(co.resume(), 'HOLD')
+        drive.assert_called_once_with()
+
+    def test_abort_after_changed_done_tree_cannot_reapprove_it(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        approved = json.loads((self.run_dir / 'state.json').read_text())['approved_snapshot']
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        flags = ('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        aborted = self.run_operator_action('abort', *flags)
+        self.assertEqual(aborted.returncode, 2)
+        resumed = self.run_operator_action('resume', *flags)
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn('stale', resumed.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['approved_snapshot'], approved)
+
+    def test_reject_intent_requires_the_approved_snapshot(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        intent = self.issue_operator_intent('reject', '--text', 'please revise')
+        self.assertEqual(intent.returncode, 2)
+        self.assertIn('stale', intent.stdout)
+
+    def test_rejected_author_failure_can_resume_author_without_reviewing_same_tree(self):
+        co = self.rejected_done_coordinator()
+        co.state.update(status='HOLD', next='author', hold_reason='author dispatch failed')
+        co.save()
+        with patch.object(co, 'author_turn', side_effect=RuntimeError('author retry failed')) as author:
+            self.assertEqual(co.resume(), 'HOLD')
+        author.assert_called_once_with()
+        self.assertEqual(co.state['next'], 'author')
+        self.assertEqual(co.state['hold_reason'], 'author retry failed')
+
+    def test_changed_done_tree_cannot_be_accepted_after_resume(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        before = json.loads((self.run_dir / 'state.json').read_text())
+        (self.workspace / 'after-done.txt').write_text('unreviewed content')
+        resumed = self.run_operator_action('resume', '--shadow', 'off',
+                                           '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(resumed.returncode, 2)
+        after = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(after['status'], 'DONE')
+        self.assertEqual(after['approved_snapshot'], before['approved_snapshot'])
+        self.assertEqual(after['sequence'], before['sequence'])
+        intent = self.issue_operator_intent('accept')
+        self.assertEqual(intent.returncode, 2)
+        self.assertIn('stale', intent.stdout)
+
+    def rejected_done_coordinator(self):
+        (self.workspace / 'sum_ints.py').write_text(
+            'def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+            '        raise TypeError("ints only")\n    return sum(values)\n')
+        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                              '--polish-round', 'off')
+        digest, snapshot = rc.git_snapshot(co.workspace)
+        co.state.update(status='DONE', acceptance_state='PENDING',
+                        approved_snapshot=digest, rejections=[])
+        co.save()
+        proof = co.operator_intent('reject', 'please revise', None)
+        co.args.expect = proof['digest']
+        self.assertEqual(co.reject('please revise', None), 'ACTIVE')
+        saved = json.loads(co.state_path.read_text())['rejections'][0]['intent']
+        self.assertEqual(saved['tree_sha256'], digest)
+        self.assertEqual(saved['tree_snapshot'], snapshot)
+        return co
+
+    def test_rejected_tree_blocks_plain_resume(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        state = json.loads(co.state_path.read_text())
+        self.assertIn('rejected-tree', state['hold_reason'])
+        self.assertEqual(state['turns'][-1]['role'], 'author')
+
+    def test_rejected_same_tree_hold_can_retry_author_ingest(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        before = len(co.state['turns'])
+        with patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'}):
+            self.assertEqual(co.resume(), 'DONE')
+        new_author = next(row for row in co.state['turns'][before:] if row['role'] == 'author')
+        prompt = (co.evidence / f"{new_author['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn('## Operator rejection for current EXEC scope', prompt)
+        self.assertTrue(co.state['turns'][before]['snapshot_after'] !=
+                        co.state['rejections'][0]['intent']['tree_sha256'])
+
+    def test_note_and_same_tree_hold_allow_a_fresh_rejected_author_ingest(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        note = self.run_operator_action('note', '--text', 'Please recheck the rejection.',
+                                        '--shadow', 'off', '--adversarial-gate', 'off',
+                                        '--polish-round', 'off')
+        self.assertEqual(note.returncode, 0, note.stdout + note.stderr)
+        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                              '--polish-round', 'off')
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        state = json.loads(co.state_path.read_text())
+        self.assertIsNone(state['pending_author_result_sequence'])
+        self.assertEqual(state['operator_notes'][0]['status'], 'delivered')
+        before = len(state['turns'])
+        self.assertEqual(co.resume(), 'DONE')
+        self.assertGreater(len(co.state['turns']), before)
+
+    def test_legacy_done_without_approved_snapshot_can_resume_and_accept(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_done_abort_hold_can_resume(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_done_abort_author_write_then_hold_remains_resumable(self):
+        completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+                              '--author-effort', 'low', '--reviewer-effort', 'low',
+                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        co.state.update(status='HOLD', acceptance_state='PENDING',
+                        hold_reason='aborted by operator', next='author')
+        co.save()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': '1'}):
+            with patch.object(co, 'reviewer_turn', side_effect=RuntimeError('reviewer interrupted')):
+                self.assertEqual(co.resume(), 'HOLD')
+        self.assertEqual(co.state['acceptance_state'], 'IN_PROGRESS')
+        self.assertNotEqual(rc.git_snapshot(self.workspace)[0], co.state['approved_snapshot'])
+        self.assertEqual(co.resume(), 'DONE')
+
+    def test_done_abort_author_hold_after_write_remains_resumable(self):
+        completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+                              '--author-effort', 'low', '--reviewer-effort', 'low',
+                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        co.state.update(status='HOLD', acceptance_state='PENDING',
+                        hold_reason='aborted by operator', next='author')
+        co.save()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': '1',
+                                     'FAKE_AUTHOR_HOLD_AFTER_WRITE': '1'}):
+            self.assertEqual(co.resume(), 'HOLD')
+        self.assertEqual(co.state['acceptance_state'], 'IN_PROGRESS')
+        self.assertNotEqual(rc.git_snapshot(self.workspace)[0], co.state['approved_snapshot'])
+        self.assertEqual(co.resume(), 'DONE')
+
+    def test_legacy_partial_author_tree_can_resume_as_author(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_hold_skips_final_error_receipt_during_snapshot_recovery(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_rejection_limit_hold_can_accept_without_snapshot(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        state.pop('approved_snapshot')
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        for action in ('resume', 'accept', 'reject', 'note'):
+            with self.subTest(action=action):
+                result = self.run_operator_action(action)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_rejected_author_crash_can_retry_uncertain_author(self):
+        co = self.rejected_done_coordinator()
+        co.state.update(status='HOLD', next='author', hold_reason='uncertain author turn',
+                        uncertain_active={'role': 'author', 'vendor': 'codex',
+                                          'pid': 42424242, 'sequence': 99})
+        co.save()
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+            with patch.object(co, 'archive_abandoned_turn') as archive:
+                with patch.object(co, 'drive', return_value='ACTIVE') as drive:
+                    self.assertEqual(co.resume(retry_uncertain=True), 'ACTIVE')
+        archive.assert_called_once()
+        drive.assert_called_once_with()
+
+    def test_rejected_author_crash_can_retry_directly(self):
+        co = self.rejected_done_coordinator()
+        co.state.update(status='ACTIVE', next='author', active={'role': 'author',
+                        'vendor': 'codex', 'pid': 42424242, 'sequence': 99}, uncertain_active=None)
+        co.save()
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
+            with patch.object(co, 'archive_abandoned_turn') as archive:
+                self.assertEqual(co.resume(retry_uncertain=True), 'DONE')
+        archive.assert_called_once()
+        self.assertEqual(co.state['turns'][-1]['role'], 'gate')
+        self.assertEqual(co.state['turns'][-2]['role'], 'reviewer')
+
+    def test_rejected_tree_blocks_resume_polish(self):
+        co = self.rejected_done_coordinator()
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            co.resume_polish()
+
+    def test_rejected_tree_blocks_retry_uncertain(self):
+        co = self.rejected_done_coordinator()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
+            self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        self.assertEqual(co.state['turns'][-1]['role'], 'author')
+        self.assertIn('rejected-tree', co.state['hold_reason'])
+
+    def test_rejected_tree_blocks_accept_and_new_accept_intent(self):
+        co = self.rejected_done_coordinator()
+        co.state['status'] = 'DONE'
+        co.save()
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            co.accept()
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            co.operator_intent('accept', None, None)
+
+    def test_new_author_tree_differs_from_rejected_tree(self):
+        co = self.rejected_done_coordinator()
+        (self.workspace / 'new-author-output.txt').write_text('new ingest')
+        self.assertFalse(co.rejected_tree())
+
+    def test_operator_intent_records_reject_payload_and_sandbox_cannot_write_run_dir(self):
+        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
+                                         '--polish-round', 'off')
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        source = self.root / 'operator-feedback.md'
+        source.write_text('Recheck the accepted OID.\n')
+        rejected = self.run_operator_action('reject', '--file', str(source),
+                                             env={'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'})
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        record = json.loads((self.run_dir / 'state.json').read_text())['rejections'][0]
+        self.assertEqual(record['intent']['uid'], os.getuid())
+        self.assertEqual(record['intent']['action'], 'reject')
+        self.assertEqual(record['source'], str(source.resolve()))
+        self.assertEqual(record['intent']['payload_sha256'], record['sha256'])
+        self.run_dir = self.root / 'operator-sandbox-policy-run'
+        co = self.coordinator('--author-effort', 'low', '--reviewer-effort', 'low',
+                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        self.assertNotIn(str(self.run_dir), co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots'])
+        for role in ('author', 'reviewer'):
+            self.assertIn(str(self.run_dir),
+                          co._claude_sandbox_settings(role)['sandbox']['filesystem']['denyWrite'])
+
+    def test_operator_intent_requires_an_existing_matching_run(self):
+        result = self.issue_operator_intent('accept')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('requires an existing coordinator run', result.stdout)
+        self.assertFalse((self.run_dir / 'state.json').exists())
+
     def test_reject_reopens_exec_through_review_and_gate_before_accept(self):
         completed = self.run_coordinator('--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         before = json.loads((self.run_dir / 'state.json').read_text())
         sequence_before = before['sequence']
         feedback = 'Please handle the in-scope edge case before acceptance.'
-        rejected = self.run_operator_action('reject', '--text', feedback, '--polish-round', 'off')
+        rejected = self.run_operator_action('reject', '--text', feedback, '--polish-round', 'off',
+                                             env={'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'})
         self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'DONE')
@@ -1387,6 +1981,8 @@ sys.exit(result.returncode)
         self.assertEqual(polished.returncode, 2)
         self.assertIn('accept or abort', polished.stdout)
         accepted = self.run_operator_action('accept')
+        self.assertEqual(accepted.returncode, 2, accepted.stdout + accepted.stderr)
+        accepted = self.run_operator_action('accept', '--override-rejection', '--reason', 'Reviewed author rationale.')
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertEqual(json.loads(path.read_text())['status'], 'ACCEPTED')
         self.run_dir = self.root / 'active-non-done-run'
@@ -1768,6 +2364,8 @@ sys.exit(result.returncode)
         command[2] = 'reject'
         args = rc.parser().parse_args(command[2:])
         co = rc.Coordinator(args)
+        intent = co.operator_intent('reject', 'recheck the in-scope detail', None)
+        co.args.expect = intent['digest']
         self.assertEqual(co.reject('recheck the in-scope detail', None), 'ACTIVE')
         self.assertEqual(len(co.state['rejections']), 1)
         self.assertEqual(co.resume(), 'DONE')
@@ -1786,6 +2384,11 @@ sys.exit(result.returncode)
         reject_cmd = self.command('--text', feedback, '--polish-round', 'off')
         reject_cmd[2] = 'reject'
         reject_cmd.append('--skip-probe')
+        intent_cmd = reject_cmd.copy(); intent_cmd.append('--intent-only')
+        intent = subprocess.run(intent_cmd, cwd=self.root, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(intent.returncode, 0, intent.stdout + intent.stderr)
+        reject_cmd.extend(['--expect', json.loads(intent.stdout)['digest']])
         limited = subprocess.run(reject_cmd, cwd=self.root,
             env={**os.environ, 'FAKE_RATE_LIMIT': '1'}, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -2862,6 +3465,598 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['turns'], [])
         self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
+
+    def test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog(self):
+        docs = self.workspace / 'docs' / 'guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        backlog = self.workspace / 'BACKLOG.md'
+        backlog.write_text('# Backlog\n**Last updated**: 2026-09-30\n\n## P0\n(none)\n## P1\n'
+                           '- Fix sums. (added 2026-09-29)\n  - Keep details.\n## P2\n(none)\n'
+                           '## P3\n(none)\n## Done\n(none)\n')
+        ignore = self.workspace / '.gitignore'
+        ignore.write_text(ignore.read_text() + '\n.compass/\n' if ignore.exists() else '.compass/\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'BACKLOG.md', '.gitignore'],
+                       cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'Q fixture'], cwd=self.workspace, check=True)
+        view = self.workspace / '.compass/backlog-last-view.json'
+        view.parent.mkdir(exist_ok=True)
+        view.write_text(json.dumps({'generated_at': rc.datetime.now().astimezone().isoformat(),
+                         'source_path': str(backlog),
+                         'items': [{'id': 1, 'section': 'P1', 'title_span': 'Fix sums'}]}))
+        original = backlog.read_bytes()
+        command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe',
+                               '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        self.assertEqual(co.fake_lifecycle_drive(backlog_item=1), 'STOP_BEFORE_SECURITY')
+        with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
+            co.fake_materialize_q('a' * 40, '2026-09-30')
+        ingest = co.state['fake_ingest_receipt']
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        revision = ct.CandidateRevision(co.state['lifecycle']['candidate_oid'], tuple(ingest['manifest']), 0)
+        def security(request):
+            co._fake_dispatching = True
+            try:
+                result = co.invoke('reviewer', 'SECURITY',
+                    'Role: reviewer, fresh. Phase: SECURITY.\n'
+                    'Run this test command exactly as written in one Bash call: python3 -c pass',
+                    rc.review_schema(), fresh=True, workspace_override=baseline.root)
+            finally:
+                co._fake_dispatching = False
+            turn = next(r for r in co.state['turns'] if r['sequence'] == result['sequence'])
+            return {'status': result['answer']['status'], 'candidate_oid': request['candidate_oid'],
+                    'findings': result['answer']['full_review'], 'observed_tools': turn['observed_tool_calls']}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
+                         security_context={'baseline': baseline, 'revision': revision, 'review': security}),
+                         'STOP_BEFORE_DELIVERY')
+        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_AUTHOR_NAME='Fixture',
+                         GIT_AUTHOR_EMAIL='fixture@example.test', GIT_COMMITTER_NAME='Fixture',
+                         GIT_COMMITTER_EMAIL='fixture@example.test')
+        c1 = ct._git_bytes(['commit-tree', revision.tree_oid, '-p', baseline.parent_head],
+                            env=env, input_bytes=b'Unpublished fixture C1\n').decode().strip()
+        state = rc.copy.deepcopy(co.state)
+        index = baseline.index.read_bytes()
+        result = co.fake_materialize_q(c1, '2026-09-30')
+        self.assertEqual(result['status'], 'UNREVIEWED')
+        self.assertEqual(co.state, state)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        self.assertEqual(backlog.read_bytes(), original)
+        self.assertEqual(baseline.index.read_bytes(), index)
+        self.assertNotIn('Q', [r['stage'] for r in co.state['lifecycle']['receipts']])
+        with self.assertRaises(ValueError):
+            co.accept()
+
+        cases = [('stage', lambda: co.state['lifecycle'].update(stage='EXEC')),
+                 ('pending', lambda: co.state['lifecycle'].update(pending={'id': 'pending'})),
+                 ('active', lambda: co.state.update(active={'sequence': 1})),
+                 ('uncertain', lambda: co.state.update(uncertain_active={'sequence': 1})),
+                 ('receipt-stage', lambda: co.state['lifecycle']['receipts'][-1].update(stage='DOCS')),
+                 ('receipt-status', lambda: co.state['lifecycle']['receipts'][-1].update(status='HOLD')),
+                 ('security-verdict', lambda: co.state['lifecycle']['receipts'][-1].update(security_review='REVISE')),
+                 ('oid', lambda: co.state['lifecycle']['receipts'][-1].update(output_oid='a' * 40)),
+                 ('item', lambda: co.state.pop('closeout_item'))]
+        for name, mutate in cases:
+            with self.subTest(guard=name):
+                co.state = rc.copy.deepcopy(state)
+                mutate()
+                before = rc.copy.deepcopy(co.state)
+                with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
+                    co.fake_materialize_q(c1, '2026-09-30')
+                self.assertEqual(co.state, before)
+        co.state = rc.copy.deepcopy(state)
+        with patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F001'}]):
+            with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
+                co.fake_materialize_q(c1, '2026-09-30')
+        self.q_test_fixture = (co, c1, rc.copy.deepcopy(co.state))
+        reviewed = co.fake_q_review(c1, '2026-09-30')
+        self.assertEqual(reviewed['status'], 'UNREVIEWED')
+        self.assertEqual(reviewed['oid'], result['q_oid'])
+        self.assertEqual(reviewed['returncode'], 0)
+        self.assertEqual(json.loads((co.evidence / (reviewed['review_id'] + '-q-review.json')).read_text()), reviewed)
+        turn = next(t for t in co.state['turns'] if t['sequence'] == reviewed['sequence'])
+        self.assertEqual(turn['role'], 'reviewer')
+        self.assertEqual(turn['answer']['status'], 'APPROVE')
+        self.assertEqual(backlog.read_bytes(), original)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        with self.assertRaisesRegex(ValueError, 'pending or completed'):
+            co.fake_q_review(c1, '2026-09-30')
+
+        self.assertNotIn('pending_reviewer_result_sequence', co.state)
+        self.assertEqual(co.state['q_reserved'], 6)
+        self.assertEqual(turn['phase'], 'Q')
+        source, root, revision = rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        self.assertEqual(source, reviewed)
+        self.assertEqual(revision.tree_oid, result['q_oid'])
+        self.assertEqual(str(root.root), turn['workspace'])
+        unchanged = rc.copy.deepcopy(co.state)
+        for field, value in [('phase', 'EXEC'), ('workspace', str(self.workspace)),
+                             ('sequence', reviewed['review_after_sequence']), ('error', 'failed')]:
+            with self.subTest(q_source=field):
+                present = field in turn
+                original = turn.get(field)
+                turn[field] = value
+                with self.assertRaises(ValueError):
+                    rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+                if present:
+                    turn[field] = original
+                else:
+                    turn.pop(field)
+        self.assertEqual(co.state, unchanged)
+        co.state['fake_q_review']['status'] = 'REVIEWED'
+        with self.assertRaisesRegex(ValueError, 'protected evidence'):
+            rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        co.state = unchanged
+
+    def test_fake_q_empty_approval_cannot_create_review_receipt(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        old = next(t for t in co.state['turns'] if t['role'] == 'reviewer')
+        old['observed_commands'] = []
+        with patch.object(co, 'invoke', return_value={'sequence': old['sequence'],
+                         'answer': {'status': 'APPROVE', 'full_review': []}}):
+            with self.assertRaisesRegex(ValueError, 'reviewer did not approve'):
+                co.fake_q_review(c1, '2026-09-30')
+        self.assertIn('fake_q_pending', co.state)
+        self.assertNotIn('fake_q_review', co.state)
+        self.assertFalse(co._fake_dispatching)
+
+    def test_fake_q_reservation_refuses_p_dispatch_and_stage_begin(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        co.args.max_invocations = co.state['invocations_used'] + co.state['q_reserved']
+        sequence = co.state['sequence']
+        co._fake_dispatching = True
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'invocation limit'):
+                co.invoke('reviewer', 'EXEC', 'Role: reviewer, fresh.', rc.review_schema(), fresh=True)
+        finally:
+            co._fake_dispatching = False
+        self.assertEqual(co.state['sequence'], sequence)
+        co.args.max_invocations = co.state['invocations_used'] + co.state['q_reserved'] + 1
+        with self.assertRaisesRegex(ValueError, 'P budget exhausted before stage begin'):
+            co._fake_lifecycle_event('begin', {})
+        self.assertIsNone(co.state['lifecycle']['pending'])
+
+    def test_fake_q_retry_fits_reserved_two_slots_and_missing_tools_refuses(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        used = co.state['invocations_used']
+        co.args.max_invocations = used + 8
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            co.fake_q_review(c1, '2026-09-30')
+        self.assertEqual(co.state['invocations_used'], used + 2)
+        self.assertEqual(co.state['q_reserved'], 6)
+        co.state = rc.copy.deepcopy(before)
+        with patch.dict(os.environ, {'FAKE_MISSING_OBSERVED': '1'}):
+            with self.assertRaisesRegex(ValueError, 'reviewer did not approve'):
+                co.fake_q_review(c1, '2026-09-30')
+        self.assertNotIn('fake_q_review', co.state)
+        self.assertIn('fake_q_pending', co.state)
+
+    def test_fake_q_freeze_refuses_insufficient_budget_before_plan(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+                 '--skip-probe', '--run-dir', str(self.root / 'small-budget'), '--max-invocations', '8',
+                 '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        with self.assertRaisesRegex(ValueError, 'Q reservation leaves no P budget'):
+            co.fake_lifecycle_drive(backlog_item=1)
+        self.assertEqual(co.state['turns'], [])
+        self.assertNotIn('closeout_item', co.state)
+        self.assertNotIn('q_reserved', co.state)
+
+    def test_fake_q_reserved_polish_preflight_rejects_short_retry_budget_before_begin(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        co.state['lifecycle']['stage'] = 'POLISH-Q'
+        co.args.max_invocations = co.state['invocations_used'] + co.state['q_reserved'] + 2
+        sequence = co.state['sequence']
+        callback = unittest.mock.Mock(side_effect=AssertionError('preflight must not dispatch'))
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            with self.assertRaisesRegex(ValueError, 'POLISH-Q specialist budget exhausted'):
+                co.fake_lifecycle_route(None, chain_only=True, polish_context={'python-reviewer': callback})
+        callback.assert_not_called()
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertEqual(co.state['sequence'], sequence)
+
+    def test_fake_q_reserved_polish_retry_dispatch_fits_exact_boundary(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        life = co.state['lifecycle']
+        life['stage'] = 'POLISH-Q'
+        # Budget fixture resumes the completed EXEC/FINISH prefix, before its first specialist call.
+        boundary = next(i for i, row in enumerate(life['receipts'])
+                        if row['stage'] == 'POLISH-Q' and row['epoch'] == life['epoch'])
+        life['receipts'] = life['receipts'][:boundary]
+        used = co.state['invocations_used']
+        reserved = co.state['q_reserved']
+        sequence = co.state['sequence']
+        co.args.max_invocations = used + reserved + 3
+        def specialist(request):
+            co._fake_dispatching = True
+            try:
+                result = co.invoke('reviewer', 'POLISH',
+                    'Role: reviewer, fresh. Phase: POLISH.\n'
+                    'Run this test command exactly as written in one Bash call: python3 -c pass',
+                    rc.review_schema(), fresh=True,
+                    workspace_override=Path(co.state['fake_candidate_test']['root']))
+            finally:
+                co._fake_dispatching = False
+            return {'candidate_oid': request['candidate_oid'], 'status': result['answer']['status'],
+                    'findings': result['answer']['full_review']}
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            with self.assertRaisesRegex(ValueError, 'DOCS requires a candidate-bound fake writer'):
+                co.fake_lifecycle_route(None, chain_only=True, polish_context={'python-reviewer': specialist})
+        self.assertEqual(co.state['invocations_used'], used + 3)
+        self.assertEqual(co.state['q_reserved'], reserved)
+        self.assertEqual(co.state['sequence'], sequence + 2)
+        self.assertLessEqual(co.state['lifecycle']['specialist_counts']['python-reviewer'],
+                             rc.budget_policy.BUDGET_CAPS['specialist'][0])
+        self.assertEqual(co.state['lifecycle']['receipts'][-1]['stage'], 'POLISH-Q')
+
+    def test_fake_q_source_revise_minor_keeps_raw_and_effective_proof(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1'}):
+            source = co.fake_q_review(c1, '2026-09-30')
+        self.assertEqual(source['status'], 'UNREVIEWED')
+        self.assertEqual(source['proof']['raw_verdict'], 'REVISE')
+        self.assertEqual(source['proof']['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+        self.assertEqual(source['proof']['advisories'][0]['severity'], 'MINOR')
+        turn = next(t for t in co.state['turns'] if t['sequence'] == source['sequence'])
+        self.assertEqual(turn['answer']['status'], 'REVISE')
+        self.assertIsNot(source['proof']['advisories'], turn['answer']['full_review'])
+        verified, root, revision = rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        self.assertEqual(verified, source)
+        self.assertEqual(revision.tree_oid, source['oid'])
+        record = next(r for r in co.state['review_verdicts'] if r['sequence'] == turn['sequence'])
+        self.assertEqual(record['reviewer_raw_verdict'], 'REVISE')
+        self.assertEqual(record['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_fake_q_source_revise_major_security_or_empty_is_rejected(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        for severity, security, empty in [('MAJOR', '', ''), ('MINOR', '1', ''), ('MINOR', '', '1')]:
+            with self.subTest(severity=severity, security=security, empty=empty):
+                co.state = rc.copy.deepcopy(before)
+                with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1',
+                                             'FAKE_Q_SEVERITY': severity, 'FAKE_Q_SECURITY_FLAG': security,
+                                             'FAKE_Q_EMPTY_REVISE': empty}):
+                    with self.assertRaisesRegex(ValueError, 'Q reviewer did not approve'):
+                        co.fake_q_review(c1, '2026-09-30')
+                self.assertNotIn('fake_q_review', co.state)
+                self.assertIn('fake_q_pending', co.state)
+
+    def test_q_proof_policy_is_advisory_only_and_copies_findings(self):
+        co = self.coordinator()
+        state = rc.copy.deepcopy(co.state)
+        for role, verdict, severity, security, expected in [
+                ('reviewer', 'APPROVE', None, False, 'APPROVE'),
+                ('reviewer', 'APPROVE', 'MINOR', False, 'APPROVE_WITH_ADVISORY'),
+                ('reviewer', 'REVISE', 'LOW', False, 'APPROVE_WITH_ADVISORY'),
+                ('reviewer', 'REVISE', None, False, None),
+                ('reviewer', 'REVISE', 'MAJOR', False, None),
+                ('reviewer', 'REVISE', 'MINOR', True, None),
+                ('reviewer', 'HOLD', 'MINOR', False, None),
+                ('gate', 'approve', None, False, 'APPROVE'),
+                ('gate', 'approve', 'low', False, 'APPROVE_WITH_ADVISORY'),
+                ('gate', 'needs-attention', 'low', False, 'APPROVE_WITH_ADVISORY'),
+                ('gate', 'needs-attention', None, False, None),
+                ('gate', 'needs-attention', 'medium', False, None)]:
+            with self.subTest(role=role, verdict=verdict, severity=severity):
+                findings = [{'severity': severity, 'security': security}] if severity else []
+                answer = {'verdict': verdict, 'findings': findings} if role == 'gate' else {
+                    'status': verdict, 'full_review': findings}
+                turn = {'role': role, 'phase': 'Q', 'sequence': 1, 'answer': answer}
+                if expected is None:
+                    with self.assertRaisesRegex(ValueError, 'blocking or empty'):
+                        co.q_proof(turn, 'a' * 40)
+                else:
+                    proof = co.q_proof(turn, 'a' * 40)
+                    self.assertEqual(proof['effective_verdict'], expected)
+                    self.assertEqual(proof['raw_verdict'], verdict)
+                    self.assertIsNot(proof['advisories'], findings)
+                    proof['advisories'].append({'local': 'mutation'})
+                    self.assertNotIn({'local': 'mutation'}, findings)
+        self.assertEqual(co.state, state)
+
+    def test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        p_oid = co.state['lifecycle']['candidate_oid']
+        used = co.state['invocations_used']
+        co.args.max_invocations = used + 6
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        self.assertEqual(bundle['status'], 'REVIEWED')
+        self.assertEqual(bundle['source']['status'], 'UNREVIEWED')
+        self.assertEqual(co.state['fake_q_review']['status'], 'UNREVIEWED')
+        self.assertEqual([r['phase'] for r in bundle['proofs']], ['Q-GATE', 'Q-FINAL', 'Q-SECURITY'])
+        self.assertEqual({r['stage'] for r in bundle['p_noops']}, {'FINISH', 'POLISH-Q', 'DOCS'})
+        self.assertTrue(all(r['candidate_oid'] == r['output_oid'] == p_oid for r in bundle['p_noops']))
+        self.assertEqual(co.state['q_reserved'], 0)
+        self.assertEqual(co.state['invocations_used'], used + 5)
+        previous = bundle['source']['sequence']
+        for proof in bundle['proofs']:
+            turn = next(t for t in co.state['turns'] if t['sequence'] == proof['sequence'])
+            self.assertEqual(turn['phase'], proof['phase'])
+            self.assertEqual(turn['workspace'], bundle['source']['root'])
+            self.assertGreater(turn['sequence'], previous)
+            self.assertTrue(any(rc.observed_test_succeeded(c, co.args.test_command)
+                                for c in turn['observed_commands']))
+            previous = turn['sequence']
+        self.assertEqual(json.loads((co.evidence / (bundle['id'] + '-q-bundle.json')).read_text()), bundle)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        self.assertNotIn('fake_q_bundle_pending', co.state)
+        with self.assertRaisesRegex(ValueError, 'uncertain or unreserved'):
+            co.fake_q_complete(c1, '2026-09-30')
+
+    def test_fake_q_bundle_refuses_wrong_phase_missing_tools_and_relabeling(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        for kind in ('phase', 'workspace', 'earlier', 'missing-tools', 'gate-block', 'gate-empty-verdict', 'failed-test', 'relabel'):
+            with self.subTest(kind=kind):
+                co.state = rc.copy.deepcopy(source_state)
+                real_invoke = co.invoke
+                def invoke(*args, **kwargs):
+                    result = real_invoke(*args, **kwargs)
+                    turn = next(t for t in co.state['turns'] if t['sequence'] == result['sequence'])
+                    if kind == 'phase':
+                        turn['phase'] = 'EXEC'
+                    elif kind == 'workspace':
+                        turn['workspace'] = str(self.workspace)
+                    elif kind == 'earlier':
+                        turn['sequence'] = source_state['fake_q_review']['sequence']
+                        result['sequence'] = turn['sequence']
+                    elif kind == 'missing-tools':
+                        turn['observed_commands'] = []
+                    elif kind == 'gate-empty-verdict':
+                        turn['answer']['verdict'] = 'needs-attention'
+                    elif kind == 'failed-test':
+                        turn['observed_commands'].append({'command': co.args.test_command, 'exit_code': 1})
+                    return result
+                if kind == 'relabel':
+                    co.state['fake_q_review']['status'] = 'REVIEWED'
+                env = {'FAKE_GATE_BLOCK': '1'} if kind == 'gate-block' else {}
+                with patch.object(co, 'invoke', side_effect=invoke), patch.dict(os.environ, env):
+                    with self.assertRaises(ValueError):
+                        co.fake_q_complete(c1, '2026-09-30')
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+                self.assertFalse(co._fake_dispatching)
+
+    def test_fake_q_bundle_refuses_missing_noop_later_turn_and_short_reservation(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        for kind in ('missing-noop', 'noop-write', 'later-turn', 'reserved', 'budget'):
+            with self.subTest(kind=kind):
+                co.state = rc.copy.deepcopy(source_state)
+                co.args.max_invocations = 192
+                if kind == 'missing-noop':
+                    co.state['lifecycle']['receipts'] = [r for r in co.state['lifecycle']['receipts']
+                                                       if r['stage'] != 'FINISH']
+                elif kind == 'noop-write':
+                    next(r for r in reversed(co.state['lifecycle']['receipts'])
+                         if r['stage'] == 'DOCS')['output_oid'] = 'a' * 40
+                elif kind == 'later-turn':
+                    co.state['sequence'] += 1
+                elif kind == 'reserved':
+                    co.state['q_reserved'] = 5
+                else:
+                    co.args.max_invocations = co.state['invocations_used'] + 5
+                with patch.object(co, 'invoke', side_effect=AssertionError('preflight must not dispatch')) as dispatch:
+                    with self.assertRaisesRegex(ValueError, 'P no-op|uncertain or unreserved'):
+                        co.fake_q_complete(c1, '2026-09-30')
+                dispatch.assert_not_called()
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertNotIn('fake_q_bundle_pending', co.state)
+
+    def test_fake_q_bundle_keeps_minor_advisories_without_restarting_run(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        with patch.dict(os.environ, {'FAKE_Q_MINOR': '1'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        self.assertEqual(bundle['status'], 'REVIEWED')
+        reviewers = [r for r in bundle['proofs'] if r['role'] == 'reviewer']
+        self.assertEqual(len(reviewers), 2)
+        self.assertTrue(all(r['advisories'] and r['advisories'][0]['severity'] == 'MINOR' for r in reviewers))
+        self.assertFalse(co.state.get('fake_q_bundle_pending'))
+
+    def test_fake_q_gate_low_is_advisory_but_reviewer_security_and_major_block(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        with patch.dict(os.environ, {'FAKE_GATE_LOW': '1'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        self.assertEqual(bundle['status'], 'REVIEWED')
+        gate = bundle['proofs'][0]
+        self.assertEqual(gate['advisories'][0]['severity'], 'low')
+        turn = next(t for t in co.state['turns'] if t['sequence'] == gate['sequence'])
+        self.assertEqual(turn['answer']['verdict'], 'needs-attention')
+        for severity, security in [('MAJOR', ''), ('SECURITY', ''), ('MINOR', '1')]:
+            with self.subTest(severity=severity, security=security):
+                co.state = rc.copy.deepcopy(source_state)
+                with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_SEVERITY': severity,
+                                             'FAKE_Q_SECURITY_FLAG': security}):
+                    with self.assertRaisesRegex(ValueError, 'Q verdict is blocking or empty'):
+                        co.fake_q_complete(c1, '2026-09-30')
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertIn('fake_q_bundle_pending', co.state)
+
+    def test_fake_q_bundle_revise_minor_keeps_advisory_and_raw_verdict(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        reviewers = [proof for proof in bundle['proofs'] if proof['role'] == 'reviewer']
+        self.assertEqual(len(reviewers), 2)
+        for proof in reviewers:
+            self.assertEqual(proof['raw_verdict'], 'REVISE')
+            self.assertEqual(proof['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+            turn = next(t for t in co.state['turns'] if t['sequence'] == proof['sequence'])
+            self.assertEqual(turn['answer']['status'], 'REVISE')
+            self.assertEqual(proof['advisories'], turn['answer']['full_review'])
+            self.assertIsNot(proof['advisories'], turn['answer']['full_review'])
+        rows = [row for row in co.state['finding_ledger'] if row['source'] == 'q-reviewer']
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row['status'] == 'open' and row['advisory'] for row in rows))
+        ledger = (co.run_dir / 'findings-ledger.md').read_text()
+        self.assertTrue(all(row['id'] in ledger for row in rows))
+        self.assertEqual(bundle['status'], 'REVIEWED')
+
+    def test_fake_q_bundle_revise_major_security_and_empty_are_rejected(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        for case in ('major', 'security', 'empty'):
+            with self.subTest(case=case):
+                co.state = rc.copy.deepcopy(source_state)
+                env = {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1'}
+                env.update({'FAKE_Q_SEVERITY': 'MAJOR'} if case == 'major' else
+                           {'FAKE_Q_SECURITY_FLAG': '1'} if case == 'security' else
+                           {'FAKE_Q_EMPTY_REVISE': '1'})
+                with patch.dict(os.environ, env):
+                    with self.assertRaisesRegex(ValueError, 'Q verdict is blocking or empty'):
+                        co.fake_q_complete(c1, '2026-09-30')
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertIn('fake_q_bundle_pending', co.state)
+
+    def test_fake_q_delivery_verifier_rechecks_disk_and_returns_detached_proof(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        row, root, revision = rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        self.assertEqual(row, co.state['fake_q_bundle'])
+        self.assertEqual(revision.tree_oid, row['source']['oid'])
+        self.assertEqual(str(root.root), row['source']['root'])
+        row['source']['proof']['advisories'].append({'local': True})
+        self.assertNotIn({'local': True}, co.state['fake_q_review']['proof']['advisories'])
+        binary = Path(co.args.codex_bin)
+        original = binary.read_bytes()
+        binary.write_bytes(original + b'\n# changed after Q\n')
+        try:
+            with self.assertRaisesRegex(ValueError, 'program binding changed'):
+                rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        finally:
+            binary.write_bytes(original)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_q_delivery_verifier_refuses_each_proof_guard(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        state = rc.copy.deepcopy(co.state)
+        source = state['fake_q_review']
+        source_turn = next(t for t in state['turns'] if t['sequence'] == source['sequence'])
+        turn_path = co.evidence / f"{source_turn['sequence']:03d}-q-reviewer.receipt.json"
+        original_turn = turn_path.read_bytes()
+        bundle_path = co.evidence / (state['fake_q_bundle']['id'] + '-q-bundle.json')
+        original_bundle = bundle_path.read_bytes()
+        for case in ('pending', 'later', 'relabel', 'proof', 'disk-turn', 'failed-source-test',
+                     'missing-proof', 'p-noop', 'preflight', 'role', 'source-alias'):
+            with self.subTest(case=case):
+                co.state = rc.copy.deepcopy(state)
+                row = co.state['fake_q_bundle']
+                if case == 'pending':
+                    co.state['fake_q_bundle_pending'] = {'interrupted': True}
+                elif case == 'later':
+                    co.state['sequence'] += 1
+                elif case == 'relabel':
+                    row['status'] = 'UNREVIEWED'
+                elif case == 'proof':
+                    row['proofs'][-1]['oid'] = 'a' * 40
+                elif case == 'disk-turn':
+                    turn_path.write_text('{}')
+                elif case == 'failed-source-test':
+                    turn = next(t for t in co.state['turns'] if t['sequence'] == source['sequence'])
+                    turn['observed_commands'].append({'command': co.args.test_command, 'exit_code': 1})
+                    turn_path.write_text(json.dumps(turn))
+                elif case == 'missing-proof':
+                    row['proofs'].pop()
+                elif case == 'p-noop':
+                    row['p_noops'][0]['output_oid'] = 'a' * 40
+                elif case == 'preflight':
+                    row['scanned_paths'] = []
+                elif case == 'role':
+                    row['proofs'][-1]['role'] = 'gate'
+                else:
+                    row['source']['proof']['advisories'].append({'unexpected': True})
+                if case not in ('pending', 'later', 'disk-turn', 'failed-source-test'):
+                    bundle_path.write_text(json.dumps(row))
+                try:
+                    with self.assertRaises(ValueError):
+                        rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+                finally:
+                    turn_path.write_bytes(original_turn)
+                    bundle_path.write_bytes(original_bundle)
+                self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_q_materialization_refuses_normal_non_fake_coordinator(self):
+        co = self.coordinator()
+        state = rc.copy.deepcopy(co.state)
+        with self.assertRaisesRegex(ValueError, 'fake-only'):
+            co.fake_materialize_q('a' * 40, '2026-09-30')
+        self.assertEqual(co.state, state)
+        self.assertEqual(co.state['sequence'], 0)
+
+    def test_closeout_freeze_refuses_stale_lifecycle_and_backlog_writer_grant(self):
+        for kind in ('prior-freeze', 'prior-stage', 'writer-file', 'writer-allowlist', 'parent-drift'):
+            with self.subTest(kind=kind):
+                run = self.root / ('closeout-' + kind)
+                command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe')
+                command[command.index('--run-dir') + 1] = str(run)
+                if kind.startswith('writer'):
+                    command += ['--docs-file' if kind == 'writer-file' else '--docs-allowlist', 'BACKLOG.md']
+                co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+                if kind == 'prior-freeze':
+                    co.state['closeout_item'] = {'original': True}
+                elif kind == 'prior-stage':
+                    co.state['lifecycle']['stage'] = 'FINISH'
+                before = json.loads(json.dumps(co.state))
+                frozen = {'head': 'different-parent'}
+                with patch.object(rc.closeout_policy, 'freeze_item', return_value=frozen) as freeze:
+                    with self.assertRaises(ValueError):
+                        co.fake_lifecycle_drive(backlog_item=1)
+                self.assertEqual(co.state, before)
+                self.assertEqual(co.state['sequence'], 0)
+                if kind != 'parent-drift':
+                    freeze.assert_not_called()
+
+    def test_fake_drive_freezes_operator_closeout_item_before_candidate_author(self):
+        docs = self.workspace / 'docs' / 'guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        backlog = self.workspace / 'BACKLOG.md'
+        backlog.write_text('# Backlog\n\n## P0\n(none)\n## P1\n'
+                           '- Fix sums. (added 2026-09-29)\n## P2\n(none)\n'
+                           '## P3\n(none)\n## Done\n(none)\n')
+        ignore = self.workspace / '.gitignore'
+        ignore.write_text(ignore.read_text() + '\n.compass/\n' if ignore.exists() else '.compass/\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'BACKLOG.md', '.gitignore'],
+                       cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'closeout fixture'], cwd=self.workspace, check=True)
+        view = self.workspace / '.compass/backlog-last-view.json'
+        view.parent.mkdir(exist_ok=True)
+        view.write_text(json.dumps({'generated_at': rc.datetime.now().astimezone().isoformat(),
+                         'source_path': str(backlog),
+                         'items': [{'id': 1, 'section': 'P1', 'title_span': 'Fix sums'}]}))
+        original = backlog.read_bytes()
+        command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe',
+                               '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        self.assertEqual(co.fake_lifecycle_drive(backlog_item=1), 'STOP_BEFORE_SECURITY')
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['closeout_item']['item_id'], 1)
+        self.assertEqual(saved['closeout_item']['backlog_sha256'], rc.hashlib.sha256(original).hexdigest())
+        self.assertEqual(backlog.read_bytes(), original)
+        self.assertNotIn('Q', [r['stage'] for r in saved['lifecycle']['receipts']])
+        self.assertNotEqual(saved['status'], 'CLOSED')
 
     def test_fake_lifecycle_drive_runs_m3_without_test_built_approvals(self):
         docs = self.workspace / 'docs' / 'guide.md'

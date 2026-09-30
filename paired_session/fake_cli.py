@@ -195,14 +195,22 @@ def main():
             body = 'Updated the configured documentation file.'
         else:
             module = Path.cwd() / 'sum_ints.py'
-            if os.environ.get('FAKE_DOC_DELTA'):
-                (Path.cwd() / 'CLAUDE.md').write_text('Directory: sum_ints.py\n')
-            if 'intentionally omit bool rejection' in prompt or 'No delivered review' in prompt:
-                module.write_text('def sum_ints(values):\n    if not all(isinstance(x, int) for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
-            else:
-                module.write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
+            if not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE'):
+                if os.environ.get('FAKE_DOC_DELTA'):
+                    (Path.cwd() / 'CLAUDE.md').write_text('Directory: sum_ints.py\n')
+                if 'intentionally omit bool rejection' in prompt or 'No delivered review' in prompt:
+                    module.write_text('def sum_ints(values):\n    if not all(isinstance(x, int) for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
+                else:
+                    module.write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
+            if ('## Operator rejection for current EXEC scope' in prompt and
+                    not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE')):
+                module.write_text(module.read_text() + '# rejection applied\n')
+            if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
+                module.write_text(module.read_text() + '# resumed author output\n')
             body = 'Implemented sum_ints and ran fake checks.'
-        answer = {'status': 'READY', 'body': body}
+        answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
+        if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
+            answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
     elif prompt.startswith('You are an adversarial reviewer'):
         configured_test = prompt.split(
             'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
@@ -223,8 +231,9 @@ def main():
                     else 'Trigger: bool input only.')
             findings = [{'severity': 'high', 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3,
                          'confidence': 0.9, 'recommendation': 'reject bool', 'body': body}]
-        elif os.environ.get('FAKE_GATE_MINOR'):
-            findings = [{'severity': 'medium', 'file': 'sum_ints.py', 'line_start': 1,
+        elif os.environ.get('FAKE_GATE_MINOR') or os.environ.get('FAKE_GATE_LOW'):
+            findings = [{'severity': 'low' if os.environ.get('FAKE_GATE_LOW') else 'medium',
+                         'file': 'sum_ints.py', 'line_start': 1,
                          'line_end': 3, 'confidence': 0.8,
                          'recommendation': 'simplify the helper',
                          'body': 'Non-blocking cleanup suggested by the fake gate.'}]
@@ -243,7 +252,10 @@ def main():
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')
         revise = 'Exercise rule: return REVISE' in prompt and 'Role: reviewer,' in prompt
-        phase = ('POLISH' if 'Phase: POLISH' in prompt else
+        phase = ('SECURITY' if 'Q-SECURITY:' in prompt else
+                 'Q' if 'Q-FINAL:' in prompt or 'Phase: Q.' in prompt else
+                 'SECURITY' if 'Phase: SECURITY' in prompt else
+                 'POLISH' if 'Phase: POLISH' in prompt else
                  'EXEC' if 'Phase: EXEC' in prompt else 'PLAN')
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
@@ -303,7 +315,8 @@ def main():
             findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
                          'summary': 'fresh shadow blocker', 'failure_scenario': 'wrong result remains'}]
         if ('include one non-blocking MINOR' in prompt or
-                (os.environ.get('FAKE_APPROVE_MINOR') and phase == 'PLAN')):
+                (os.environ.get('FAKE_APPROVE_MINOR') and phase == 'PLAN') or
+                (os.environ.get('FAKE_Q_MINOR') and phase in ('Q', 'SECURITY'))):
             findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
                          'summary': 'cheap advisory cleanup',
                          'failure_scenario': 'style remains untidy'}]
@@ -322,12 +335,21 @@ def main():
         answer = {'status': 'REVISE' if revise else 'APPROVE',
                   'full_review': findings,
                   'self_run_evidence': ([{'command': configured_test or 'python3 -m unittest'}]
-                                        if phase == 'EXEC' else [])}
+                                        if phase in ('EXEC', 'SECURITY', 'Q') else [])}
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):
                 answer['self_run_evidence'] = []
                 extra_observed_commands = [{'command': configured_test or 'python3 -m unittest'}]
+        if phase in ('Q', 'SECURITY'):
+            for finding in findings:
+                finding['severity'] = os.environ.get('FAKE_Q_SEVERITY', finding['severity'])
+                if 'FAKE_Q_SECURITY_FLAG' in os.environ:
+                    finding['security'] = bool(os.environ['FAKE_Q_SECURITY_FLAG'])
+        if os.environ.get('FAKE_Q_REVISE') and phase in ('Q', 'SECURITY'):
+            answer['status'] = 'REVISE'
+            if os.environ.get('FAKE_Q_EMPTY_REVISE'):
+                answer['full_review'] = []
         for finding in findings:
             finding.setdefault('security', False)
         if prior is not None:
