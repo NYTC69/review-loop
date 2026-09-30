@@ -57,6 +57,7 @@ RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheape
 PROBE_SURFACE_VERSION = 9
 # Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
 VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
+OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'reason'})  # command line only, plus any accept_*
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -1124,7 +1125,7 @@ class Coordinator:
                 for key, value in saved.items():
                     if key == 'gate_prompt' and str(value).startswith('<bundled-default>:'):
                         self.args.gate_prompt = str(DEFAULT_GATE_PROMPT)
-                    elif hasattr(self.args, key):
+                    elif hasattr(self.args, key) and not (key in OPERATOR_ONLY_DESTS or key.startswith('accept_')):
                         setattr(self.args, key, value)
                 self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                     self.state['config'].get('exec_turn_timeout'),
@@ -1480,18 +1481,19 @@ class Coordinator:
         return {**os.environ, 'TMPDIR': str(self.author_temp_dir)}
 
     def codex_contract_verified(self) -> tuple[bool, str]:
-        """Verified set, or this run's own probe PASS / operator override for the installed version."""
+        """Verified set, or this run's full probe_passed() record / operator override for the installed version."""
         version = self._codex_cli_version()
         override = self.state.get('codex_cli_override') or {}
+        if version != 'UNAVAILABLE' and override.get('version') not in (None, version) and not override.get('voided'):
+            override['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'version_seen': version}
+            self.save()
         if version in VERIFIED_CODEX_CLI_VERSIONS: return True, ''
-        if version != 'UNAVAILABLE':
-            if override.get('version') == version and override.get('actor') == 'operator': return True, ''
-            try:
-                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                if (report.get('status') in ('PASS', 'PASS_RESIDUAL_RISK')
-                        and report['author_flags']['codex_cli_version'] == version): return True, ''
-            except (OSError, ValueError, KeyError, TypeError, AttributeError): pass
-        voided = f'; the operator override for {override["version"]} is void' if override.get('version') else ''
+        if version == 'UNAVAILABLE':
+            return False, 'codex-cli version is UNAVAILABLE (binary unreadable); re-run permission-probe'
+        if override.get('version') == version and override.get('actor') == 'operator' and not override.get('voided'):
+            return True, ''
+        if self.probe_passed()[0]: return True, ''
+        voided = f'; the operator override for {override["version"]} is void' if override.get('voided') else ''
         return False, (f'unverified codex sandbox contract: {version}{voided}; run permission-probe on this version '
                        'or pass --accept-unverified-codex-cli --reason TEXT')
 
@@ -2851,6 +2853,12 @@ class Coordinator:
                '-c', f'model_reasoning_effort="{effort}"',
                '-c', 'approval_policy="never"', '-c', 'features.hooks=false']
         if role == 'author':
+            # Single choke point for every real Codex author dispatch (run, resume, reject, drive); the
+            # permission-probe action only gathers the evidence that verifies a version, so it is exempt.
+            if (self.args.author_vendor == 'codex' and self.args.action != 'permission-probe'
+                    and not lifecycle_spine.fake_dispatch_guard(self.args)
+                    and not (ok := self.codex_contract_verified())[0]):
+                raise ValueError(ok[1])
             cmd += self._author_sandbox_config_args()
         else:
             cmd += ['-c', 'sandbox_mode="read-only"']
@@ -5395,7 +5403,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.Ar
         raise ValueError(f'cannot read paired-session config {config_path}: {exc}') from exc
     if not isinstance(values, dict):
         raise ValueError('paired-session config must be a JSON object')
-    unknown = set(values) - CONFIGURABLE_DESTS
+    unknown = (set(values) - CONFIGURABLE_DESTS) | {k for k in values if k in OPERATOR_ONLY_DESTS or k.startswith('accept_')}
     if unknown:
         raise ValueError('unsupported paired-session config keys: ' + ', '.join(sorted(unknown)))
     explicit = set()

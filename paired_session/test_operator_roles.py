@@ -28,9 +28,14 @@ class CodexContractTests(unittest.TestCase):
         return self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
                                   '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
 
-    def write_probe(self, co, status, version):
-        (co.run_dir / 'permission-probe.json').write_text(
-            json.dumps({'status': status, 'author_flags': {'codex_cli_version': version}}))
+    def write_probe(self, co, status):
+        """A record probe_passed() accepts for the CURRENT fake codex version (digests bind the version)."""
+        (co.run_dir / 'permission-probe.json').write_text(json.dumps({
+            'status': status, 'reviewer_flags_digest': co.reviewer_flags_digest(),
+            'author_flags_digest': co.author_flags_digest(),
+            'author_permission_probe': {'status': status, 'd1a_model_verdict': 'UNKNOWN',
+                                        'd1b_synthetic_verdict': 'PASS'},
+            'global_config_changes': {'status': 'PASS'}}))
 
     def cli(self, action, version, *extra):
         """In-process main() with the fake-harness bypass off, as on a real operator machine."""
@@ -79,26 +84,65 @@ class CodexContractTests(unittest.TestCase):
         for status in ('PASS', 'PASS_RESIDUAL_RISK'):
             with self.subTest(status=status), patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
                 co = self.co()
-                self.write_probe(co, status, UNVERIFIED)
+                self.write_probe(co, status)
                 self.assertEqual(co.codex_contract_verified(), (True, ''))
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
-            self.write_probe(co, 'FAIL', UNVERIFIED)
+            self.write_probe(co, 'FAIL')
             self.assertFalse(co.codex_contract_verified()[0])
 
     def test_probe_pass_from_a_different_version_is_refused(self):
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
             co = self.co()
-            self.write_probe(co, 'PASS', OTHER)
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': OTHER}):
+            self.write_probe(co, 'PASS')            # a full record, but produced on another version
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
             self.assertFalse(co.codex_contract_verified()[0])
-            (co.run_dir / 'permission-probe.json').write_text(json.dumps({'status': 'PASS'}))
-            self.assertFalse(co.codex_contract_verified()[0])
+
+    def test_a_probe_file_that_probe_passed_rejects_never_satisfies_the_contract(self):
+        path = self.h.run_dir / 'permission-probe.json'
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
+            co = self.co()
+            self.write_probe(co, 'PASS')
+            good = json.loads(path.read_text())
+            forged = [{'status': 'PASS', 'author_flags': {'codex_cli_version': UNVERIFIED}},
+                      {**good, 'author_flags_digest': '0' * 64}, {**good, 'reviewer_flags_digest': '0' * 64},
+                      {**good, 'author_permission_probe': {'status': 'FAIL'}},
+                      {**good, 'global_config_changes': {'status': 'FAIL'}}]
+            for report in forged:
+                with self.subTest(report=report):
+                    path.write_text(json.dumps(report))
+                    self.assertFalse(co.probe_passed()[0])
+                    self.assertFalse(co.codex_contract_verified()[0])
+            path.write_text(json.dumps(good))
+            self.assertEqual((co.probe_passed()[0], co.codex_contract_verified()[0]), (True, True))
+
+    def test_every_real_codex_author_dispatch_passes_the_contract(self):
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}), \
+                patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            co = self.co()
+            schema = self.h.root / 'schema.json'
+            with self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
+                co._codex_command('author', schema, True)
+            with self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
+                co.command('author', schema, True)
+            with self.assertRaisesRegex(ValueError, 'unverified codex sandbox contract'):
+                co.drive()                            # not via run/resume/reject
+            self.assertIn('exec', co._codex_command('reviewer', schema, True))   # other roles unaffected
+            self.write_probe(co, 'PASS')
+            self.assertIn('exec', co._codex_command('author', schema, True))
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):             # fake harness unchanged
+            self.assertIn('exec', self.co()._codex_command('author', schema, True))
 
     def test_unavailable_version_never_matches_a_probe_or_override(self):
         co = self.co()
-        self.write_probe(co, 'PASS', 'UNAVAILABLE')
+        self.write_probe(co, 'PASS')
         co.state['codex_cli_override'] = {'version': 'UNAVAILABLE', 'actor': 'operator'}
         with patch.object(co, '_codex_cli_version', return_value='UNAVAILABLE'):
-            self.assertFalse(co.codex_contract_verified()[0])
+            ok, why = co.codex_contract_verified()
+            self.assertFalse(ok)
+            self.assertIn('re-run permission-probe', why)
+            self.assertNotIn('--accept-unverified-codex-cli', why)
+            self.assertNotIn('voided', co.state['codex_cli_override'])   # an unreadable version is not a change
 
     def test_override_is_recorded_and_a_version_change_voids_it_on_restore(self):
         refused = self.cli('run', UNVERIFIED, '--accept-unverified-codex-cli', '--reason', 'checked by hand')
@@ -120,6 +164,44 @@ class CodexContractTests(unittest.TestCase):
         again = self.cli('resume', OTHER, '--accept-unverified-codex-cli', '--reason', 'rechecked')
         self.assertNotIn('unverified codex sandbox contract', again.stdout)
         self.assertEqual(self.recorded_override()['version'], OTHER)
+
+    def test_a_voided_override_never_revives_when_the_version_returns(self):
+        self.cli('run', UNVERIFIED, '--accept-unverified-codex-cli', '--reason', 'checked by hand')
+        self.assertNotIn('voided', self.recorded_override())
+        away = self.cli('resume', OTHER)                                   # A -> B
+        self.assertEqual(away.returncode, 2, away.stdout)
+        voided = self.recorded_override()['voided']
+        self.assertEqual(voided['version_seen'], OTHER)
+        self.assertRegex(voided['time'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        back = self.cli('resume', UNVERIFIED)                              # B -> A
+        self.assertEqual(back.returncode, 2, back.stdout)
+        self.assertIn(f'override for {UNVERIFIED} is void', back.stdout)
+        self.assertEqual(self.recorded_override()['voided'], voided)       # the record is not rewritten
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
+            self.assertFalse(self.co().codex_contract_verified()[0])
+        again = self.cli('resume', UNVERIFIED, '--accept-unverified-codex-cli', '--reason', 'rechecked')
+        self.assertNotIn('unverified codex sandbox contract', again.stdout)
+        self.assertNotIn('voided', self.recorded_override())
+
+    def test_operator_only_flags_are_never_restored_from_saved_state(self):
+        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
+            co = self.co()
+        state = json.loads((co.run_dir / 'state.json').read_text())
+        state['config'].update({'accept_unverified_codex_cli': True, 'reason': 'injected', 'accept_future': True})
+        (co.run_dir / 'state.json').write_text(json.dumps(state))
+        refused = self.cli('reject', UNVERIFIED, '--text', 'x')
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('unverified codex sandbox contract', refused.stdout)
+        self.assertIsNone(self.recorded_override())
+        self.assertEqual(rc.OPERATOR_ONLY_DESTS, {'accept_unverified_codex_cli', 'reason'})
+
+    def test_operator_only_keys_are_refused_in_a_config_file(self):
+        config = self.h.workspace / '.review-loop' / 'paired-session.json'
+        config.parent.mkdir()
+        for key in ('accept_unverified_codex_cli', 'reason', 'accept_anything'):
+            with self.subTest(key=key):
+                config.write_text(json.dumps({key: 'x'}))
+                self.assertIn('unsupported paired-session config keys', self.cli('run', UNVERIFIED).stdout)
 
     def test_override_needs_a_reason_and_cannot_come_from_saved_state_or_config(self):
         for extra in (['--accept-unverified-codex-cli'], ['--reason', 'why'],
@@ -147,10 +229,15 @@ class CodexContractTests(unittest.TestCase):
         self.assertEqual(report['model_probe'], 'ATTEMPTED', report)
         self.assertTrue(all(row['status'] == 'CONTRACT-FAIL' for row in
                             report['advisory_direct_controls']['checks'].values()))
+        # Real (non-fake-harness) dispatch path: the author probe turn must not hit the K1 choke point.
         result = self.cli('permission-probe', UNVERIFIED)
         self.assertNotIn('unverified codex sandbox contract', result.stdout + result.stderr)
         recorded = json.loads((self.h.run_dir / 'permission-probe.json').read_text())
         self.assertEqual(recorded['author_flags']['codex_cli_version'], UNVERIFIED)
+        author = recorded['author_permission_probe']
+        self.assertEqual(author.get('model_probe'), 'ATTEMPTED', author)
+        self.assertNotIn('reason', author)         # a refused dispatch is reported as {'status': 'FAIL', 'reason': ...}
+        self.assertTrue(author['observed_commands'])
         if recorded['status'] in ('PASS', 'PASS_RESIDUAL_RISK'):
             after = self.cli('resume', UNVERIFIED)
             self.assertNotIn('unverified codex sandbox contract', after.stdout)
