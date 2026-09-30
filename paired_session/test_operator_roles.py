@@ -41,6 +41,8 @@ class CodexContractTests(unittest.TestCase):
             'status': status, 'reviewer_flags': co.reviewer_flags(),
             'reviewer_flags_digest': co.reviewer_flags_digest(),
             'author_flags_digest': co.author_flags_digest(),
+            'gate_flags': co.gate_flags(), 'gate_flags_digest': co.gate_flags_digest(),   # gate fields added by plan P G-a (owner decision 2026-09-30)
+            'gate_permission_probe': {'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'},
             'author_permission_probe': {'status': status, 'd1a_model_verdict': 'UNKNOWN',
                                         'd1b_synthetic_verdict': 'PASS'},
             'global_config_changes': {'status': 'PASS'}}))
@@ -590,14 +592,33 @@ class RoleModelTests(unittest.TestCase):
         co = self.h.coordinator()
         report = {'status': 'PASS', 'reviewer_flags': co.reviewer_flags(),
                   'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(),
+                  'gate_flags_digest': co.gate_flags_digest(),   # replaced by plan P G-a, owner decision 2026-09-30
+                  'gate_permission_probe': {'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'},
                   'author_permission_probe': {'status': 'PASS', 'd1a_model_verdict': 'UNKNOWN',
                                               'd1b_synthetic_verdict': 'PASS'},
                   'global_config_changes': {'status': 'PASS'}}
         (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
         with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
             self.assertEqual(co.probe_passed(), (True, ''))
-            co.args.gate_vendor = 'codex'                       # reviewer surface probed was claude
-            self.assertEqual(co.probe_passed(), (False, 'permission probe reviewer vendor is not the gate vendor'))
+            co.args.gate_vendor = 'codex'                       # reviewer surface probed was claude; replaced by plan P G-a, owner decision 2026-09-30
+            self.assertEqual(co.probe_passed(), (False, 'permission probe gate flags do not match this run'))
+            report['gate_flags_digest'] = co.gate_flags_digest()   # a report for the codex gate that carries no gate probe turn
+            (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
+            self.assertEqual(co.probe_passed(), (False, 'permission probe has no passing gate probe for gate vendor codex'))
+
+    def test_a_report_made_before_the_gate_digest_does_not_pass_on_the_real_cli(self):          # G-a K4
+        co = self.h.coordinator()
+        report = {'status': 'PASS', 'reviewer_flags': co.reviewer_flags(),
+                  'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(),
+                  'author_permission_probe': {'status': 'PASS', 'd1a_model_verdict': 'UNKNOWN', 'd1b_synthetic_verdict': 'PASS'},
+                  'global_config_changes': {'status': 'PASS'}}
+        (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            passed, why = co.probe_passed()
+        self.assertFalse(passed)
+        self.assertIn('no gate_flags_digest', why)
+        self.assertEqual(co.probe_passed(), (True, ''))                                      # the fake harness is unchanged
+        self.assertEqual(set(co.gate_flags()) - set(co.reviewer_flags()), {'gate_vendor', 'gate_model', 'gate_effort', 'gate_commands', 'gate_binary'})
 
 
 OPT_IN = ['--accept-unverified-claude-author', '--reason', 'checked by hand']
@@ -971,6 +992,8 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         path.write_text(json.dumps({
             'status': status, 'probe_turn': 1, 'reviewer_flags': co.reviewer_flags(), 'reviewer_flags_digest': co.reviewer_flags_digest(),
             'author_flags_digest': co.author_flags_digest(), 'author_permission_probe': author_probe,
+            'gate_flags': co.gate_flags(), 'gate_flags_digest': co.gate_flags_digest(),   # gate fields added by plan P G-a (owner decision 2026-09-30)
+            'gate_permission_probe': {'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'},
             'global_config_changes': {'status': 'PASS'}}))
         if record: co.state['permission_probe'] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'turn': 1}   # as permission_probe does
 
@@ -1630,7 +1653,7 @@ class ProbeSkipTests(unittest.TestCase):
                 co.state['probe_skip_override'] = {**record, 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': '0' * 64}
                 self.assertFalse(co._probe_skip_accepted())
         co.state['probe_skip_override'] = {'actor': 'author', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(),
-                                           'author_flags_digest': co.author_flags_digest()}
+                                           'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}   # gate fields added by plan P G-a (owner decision 2026-09-30)
         self.assertFalse(co._probe_skip_accepted())                                   # right digests, wrong actor
         config = self.h.workspace / '.review-loop' / 'paired-session.json'
         config.parent.mkdir()
@@ -1639,7 +1662,7 @@ class ProbeSkipTests(unittest.TestCase):
 
     def test_a_digest_change_voids_the_acceptance_for_good(self):
         co = self.co()
-        record = {'actor': 'operator', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest()}
+        record = {'actor': 'operator', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}   # replaced by plan P G-a, owner decision 2026-09-30
         co.state['probe_skip_override'] = dict(record)
         self.assertTrue(co._probe_skip_accepted())
         original = co.args.reviewer_effort
@@ -1661,6 +1684,28 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertIn('voided', co2.state['probe_skip_override'])
         co2.args.author_effort = 'low'
         self.assertFalse(co2._probe_skip_accepted())
+
+    def test_a_gate_flag_change_defeats_the_probe_the_acceptance_and_the_cache(self):          # G-a K4/K6
+        for attr, value in (('gate_model', 'other-model'), ('gate_effort', 'high')):
+            with self.subTest(attr=attr):
+                co = self.co()
+                report = self.probe(co)
+                self.assertEqual((report['gate_flags_digest'], report['gate_permission_probe']['status']), (co.gate_flags_digest(), 'NOT_NEEDED'))
+                with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+                    self.assertTrue(co.probe_passed()[0])
+                    key = co._probe_cache_key()[0]
+                    co.state['probe_skip_override'] = {'actor': 'operator', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(),
+                                                       'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}
+                    self.assertTrue(co._probe_skip_accepted())
+                    others = (co.reviewer_flags_digest(), co.author_flags_digest())
+                    setattr(co.args, attr, value)
+                    self.assertEqual((co.reviewer_flags_digest(), co.author_flags_digest()), others)   # only the gate digest moved
+                    passed, why = co.probe_passed()
+                    self.assertFalse(passed)
+                    self.assertIn('gate flags do not match', why)
+                    self.assertNotEqual(co._probe_cache_key()[0], key)
+                    self.assertFalse(co._probe_skip_accepted())
+                    self.assertIn('voided', co.state['probe_skip_override'])
 
     def test_the_acceptance_does_not_bypass_the_codex_contract_or_the_claude_author_gate(self):
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
@@ -1777,7 +1822,8 @@ class ProbeSkipTests(unittest.TestCase):
         key, inputs = co._probe_cache_key()
         self.assertEqual((data['key'], data['key_inputs'], entry.name), (key, inputs, key + '.json'))
         self.assertEqual(inputs, {'surface_version': rc.PROBE_SURFACE_VERSION, 'reviewer_flags_digest': co.reviewer_flags_digest(),
-                                  'author_flags_digest': co.author_flags_digest(), 'claude_versions': ['claude 1.0']})
+                                  'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(),   # gate fields added by plan P G-a (owner decision 2026-09-30)
+                                  'claude_versions': ['claude 1.0']})
         self.assertEqual(data['report'], report)
         self.assertEqual(data['run_dir'], str(co.run_dir))
         self.assertEqual(data['source_report_sha256'], hashlib.sha256((co.run_dir / 'permission-probe.json').read_bytes()).hexdigest())
@@ -1837,7 +1883,8 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertIn('no entry', self.reuse(second)[1])
         self.assertFalse((second.run_dir / 'permission-probe.json').exists())
         with patch.object(second, 'reviewer_flags_digest', return_value=first.reviewer_flags_digest()), \
-                patch.object(second, 'author_flags_digest', return_value=first.author_flags_digest()):
+                patch.object(second, 'author_flags_digest', return_value=first.author_flags_digest()), \
+                patch.object(second, 'gate_flags_digest', return_value=first.gate_flags_digest()):   # gate fields added by plan P G-a (owner decision 2026-09-30)
             self.assertEqual(self.reuse(second)[0], True)
             self.assertEqual(json.loads((second.run_dir / 'permission-probe.json').read_text())['reused_from']['source_run_dir'], str(first.run_dir))
         # a report that probe_passed() rejects for this run is not adopted and leaves no file behind
@@ -1846,7 +1893,8 @@ class ProbeSkipTests(unittest.TestCase):
         third = self.co()
         self.set_entry(entry, report={**json.loads(entry.read_text())['report'], 'global_config_changes': {'status': 'FAIL'}})
         with patch.object(third, 'reviewer_flags_digest', return_value=first.reviewer_flags_digest()), \
-                patch.object(third, 'author_flags_digest', return_value=first.author_flags_digest()):
+                patch.object(third, 'author_flags_digest', return_value=first.author_flags_digest()), \
+                patch.object(third, 'gate_flags_digest', return_value=first.gate_flags_digest()):   # gate fields added by plan P G-a (owner decision 2026-09-30)
             ok, why = self.reuse(third)
         self.assertFalse(ok)
         self.assertIn('does not pass for this run', why)

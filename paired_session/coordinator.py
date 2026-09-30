@@ -1474,20 +1474,28 @@ class Coordinator:
         return current, issue
     def reviewer_flags(self) -> dict:
         """Permission surface whose probe PASS is valid for a later run."""
+        return self._readonly_flags('reviewer', 'reviewer')
+
+    def gate_flags(self) -> dict:
+        """The gate's read-only surface, built like the reviewer's (G-a K1)."""
+        return self._readonly_flags('gate', 'gate')
+
+    def _readonly_flags(self, prefix: str, sandbox_role: str) -> dict:
+        vendor = getattr(self.args, prefix + '_vendor')
         flags = {
             'surface_version': PROBE_SURFACE_VERSION,
-            'reviewer_vendor': self.args.reviewer_vendor,
-            'reviewer_model': self.args.reviewer_model,
-            'reviewer_effort': self.args.reviewer_effort,
-            'reviewer_commands': self.reviewer_commands(),
-            'reviewer_binary': self.args.claude_bin if self.args.reviewer_vendor == 'claude' else self.args.codex_bin,
-            'permission_mode': 'dontAsk' if self.args.reviewer_vendor == 'claude' else 'never',
-            'sandbox': 'restricted-allowlist' if self.args.reviewer_vendor == 'claude' else 'read-only',
+            prefix + '_vendor': vendor,
+            prefix + '_model': getattr(self.args, prefix + '_model'),
+            prefix + '_effort': getattr(self.args, prefix + '_effort'),
+            prefix + '_commands': self.reviewer_commands(),
+            prefix + '_binary': self.args.claude_bin if vendor == 'claude' else self.args.codex_bin,
+            'permission_mode': 'dontAsk' if vendor == 'claude' else 'never',
+            'sandbox': 'restricted-allowlist' if vendor == 'claude' else 'read-only',
         }
-        if self.args.reviewer_vendor == 'claude':
-            flags['claude_bash_sandbox'] = self._claude_sandbox_settings('reviewer')
+        if vendor == 'claude':
+            flags['claude_bash_sandbox'] = self._claude_sandbox_settings(sandbox_role)
             flags['claude_os_denial_probe'] = str(self._claude_os_probe_path())
-        if self.args.reviewer_vendor == 'codex':
+        if vendor == 'codex':
             flags['ignore_execpolicy_rules'] = True
         return flags
 
@@ -1615,6 +1623,9 @@ class Coordinator:
         raw = json.dumps(self.reviewer_flags(), sort_keys=True, separators=(',', ':')).encode()
         return hashlib.sha256(raw).hexdigest()
 
+    def gate_flags_digest(self) -> str:
+        return hashlib.sha256(json.dumps(self.gate_flags(), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
     def _claude_author_edit_rules(self, workspace: Optional[Path] = None) -> tuple[list[str], list[str]]:
         """Path-scoped Edit rules for the Claude author (they cover Write too): only the effective workspace is editable."""
         workspace, context = Path(workspace or self.workspace).resolve(), self.context.resolve()
@@ -1704,13 +1715,17 @@ class Coordinator:
             return False, 'permission probe author permission status is not current'
         if report.get('global_config_changes', {}).get('status') != 'PASS':
             return False, 'permission probe global config changes were not fully attributed'
-        if (report.get('reviewer_flags', {}).get('reviewer_vendor') != self.args.gate_vendor
-                and not lifecycle_spine.fake_dispatch_guard(self.args)):
-            return False, 'permission probe reviewer vendor is not the gate vendor'
+        fake = lifecycle_spine.fake_dispatch_guard(self.args)
+        if 'gate_flags_digest' in report or not fake:   # G-a K4: a pre-G-a report has no gate digest and does not pass on the real CLI
+            if 'gate_flags_digest' not in report: return False, 'permission probe report has no gate_flags_digest (made before the gate probe); run permission-probe again'
+            if report['gate_flags_digest'] != self.gate_flags_digest(): return False, 'permission probe gate flags do not match this run'
+        if self.args.gate_vendor != self.args.reviewer_vendor and not fake:
+            gate_probe = report.get('gate_permission_probe')
+            if not isinstance(gate_probe, dict) or gate_probe.get('status') != report['status']: return False, 'permission probe has no passing gate probe for gate vendor ' + self.args.gate_vendor
         return True, ''
 
     def _probe_skip_accepted(self) -> bool:   # P0-4 V2: the flag is command-line only; the recorded acceptance is honoured until a digest changes or a probe re-runs
-        acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest()}
+        acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest()}
         if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
             acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen}; self.save()
         return acc.get('actor') == 'operator' and not acc.get('voided') and all(acc.get(k) == v for k, v in seen.items())
@@ -1720,7 +1735,7 @@ class Coordinator:
         if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
         versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
         if 'UNAVAILABLE' in versions: return None
-        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'claude_versions': versions}
+        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions}
         return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
 
     def _probe_cache_write(self, report: dict, report_sha256: str) -> None:   # the caller turns any failure into a report warning, never a verdict change
@@ -1761,7 +1776,8 @@ class Coordinator:
         try:
             raw = (self.run_dir / 'permission-probe.json').read_bytes(); report = json.loads(raw)
             current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
-                       and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest())
+                       and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
+                       and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
             return str(report.get('status')) if current and report.get('status') != 'PASS' else ''
         except (OSError, ValueError, AttributeError): return ''
 
@@ -4741,6 +4757,8 @@ class Coordinator:
                        '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output.')
         base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'reviewer_flags': self.reviewer_flags(),
                        'reviewer_flags_digest': self.reviewer_flags_digest(),
+                       'gate_flags': self.gate_flags(), 'gate_flags_digest': self.gate_flags_digest(),
+                       'gate_permission_probe': {'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'},
                        'author_flags': self.author_flags(),
                        'author_flags_digest': self.author_flags_digest(),
                        'author_permission_probe': {
@@ -6073,7 +6091,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
             print(f'REFUSED: the current permission probe is {negative}; fix the cause and re-run permission-probe')
             return 2
-        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest()}; co.save()
+        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}; co.save()
     if args.action == 'reject':
         if not args.skip_probe:
             passed, reason = co.probe_gate()
