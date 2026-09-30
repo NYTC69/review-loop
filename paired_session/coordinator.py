@@ -33,6 +33,7 @@ from typing import Optional
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
+    from paired_session import claude_author_probe as cap
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -43,6 +44,7 @@ try:
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
+    import claude_author_probe as cap
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -1551,12 +1553,14 @@ class Coordinator:
     def _claude_author_edit_rules(self, workspace: Optional[Path] = None) -> tuple[list[str], list[str]]:
         """Path-scoped Edit rules for the Claude author (they cover Write too): only the effective workspace is editable."""
         workspace, context = Path(workspace or self.workspace).resolve(), self.context.resolve()
-        homes = [Path.home().resolve() / name for name in ('.claude', '.codex', '.ssh', '.aws')]
+        home = Path.home().resolve()
+        homes = [home / name for name in ('.claude', '.codex', '.ssh', '.aws')]
         roots = [context, self.run_dir.resolve(), *homes]
-        if (re.search(r'[*?\[\]{}(),]', str(workspace)) or workspace in context.parents
+        if (re.search(r'[*?\[\]{}(),]', str(workspace)) or workspace in context.parents or workspace in (home, *home.parents)
                 or any(root == workspace or root in workspace.parents for root in roots)):
-            raise ValueError('the workspace must not be the filesystem root, hold the context dir, sit inside the context, '
-                             'run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), or hold rule metacharacters')
+            raise ValueError('the workspace must not be the filesystem root, the home dir or an ancestor of it, hold the context dir, '
+                             'sit inside the context, run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), '
+                             'or hold rule metacharacters')
         rule = lambda path, tail: f'Edit(//{path.as_posix().lstrip("/")}{tail})'
         # No '//parent/*' sibling deny: gitignore-style matching could cover the workspace itself; siblings are not allowed anyway.
         return [rule(workspace, '/**')], [rule(context, '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]
@@ -1622,7 +1626,9 @@ class Coordinator:
         if report.get('author_flags_digest') != self.author_flags_digest():
             return False, 'permission probe author flags do not match this run'
         author_probe = report.get('author_permission_probe', {})
-        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'NOT-APPLICABLE'
+        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'PASS'
+        if self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
+            return False, 'permission probe Claude author rules do not match this run'
         if author_probe.get('status') != expected_author_status or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
             return False, 'permission probe author permission status is not current'
         if report.get('global_config_changes', {}).get('status') != 'PASS':
@@ -4148,7 +4154,66 @@ class Coordinator:
                              else 'FAIL')
         return outcome
 
+    def _claude_probe_rules_match(self, probe: dict) -> bool:
+        allow, deny = self._claude_author_edit_rules()
+        settings_deny = self._claude_sandbox_settings('author')['permissions']['deny']
+        return cap.rules_match(probe, allow, deny, settings_deny, self.workspace.resolve(), self.context.resolve())
+
+    def _claude_author_probe(self) -> dict:
+        """P0-3b: one real Claude author turn in a probe-owned tree; filesystem evidence decides (1C row 3b)."""
+        out = {'status': 'FAIL', 'probe': cap.PROBE, 'attempts': {}, 'positive_control': False, 'rules': None,
+               'claude_version': 'UNAVAILABLE', 'model_escape_failed_targets': []}
+        real_context, base, tracked, gone = self.context, None, [], lambda p: not (p.exists() or p.is_symlink())
+        try:
+            # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
+            base = Path(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir.parent)).resolve()
+            ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
+            for d in (ws, ctx, outside): d.mkdir()
+            (ws / 'tracked.txt').write_text('probe baseline\n')
+            for git in (['init', '-q'], ['add', 'tracked.txt'], ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', 'commit', '-qm', 'probe']):
+                subprocess.run(['git', *git], cwd=ws, check=True)
+            sentinel, before = outside / 'sentinel.txt', b'sentinel-original\n'
+            sentinel.write_bytes(before)
+            os.symlink(outside, ws / 'escape-link')
+            tmp = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
+            if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
+            table = cap.steps(base, tmp)
+            tracked = [p for _, _, targets in table.values() for p in targets] + [tmp, ws / 'escape-link', ws / 'sl', ws / 'hl', ws / 'ok.txt', sentinel]
+            reason, result = None, None
+            self.context = ctx                 # the argv's --add-dir and context deny rules bind to the probe context
+            try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
+            except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
+            finally: self.context = real_context
+            rows = []
+            if result:
+                argv = self.state['turns'][-1]['command']
+                out['rules'] = cap.rules_used(argv, ws, ctx)
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10).stdout.strip() or 'UNAVAILABLE'
+                except (OSError, subprocess.SubprocessError): pass
+                rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
+            unchanged = sentinel.read_bytes() == before
+            out['attempts'] = cap.attempts(rows, table, unchanged, gone)
+            out['positive_control'] = (ws / 'ok.txt').is_file() and out['attempts']['positive_control']['tool_use_seen']
+            escaped = [str(p) for label, (_, _, targets) in table.items() if label != 'positive_control' for p in targets if not gone(p)]
+            escaped += [str(d / n) for d, known in ((outside, {'sentinel.txt'}), (ctx, set()), (base, {'workspace', 'context', 'outside'}))
+                        for n in set(os.listdir(d)) - known] + ([] if unchanged else [str(sentinel)])
+            out['model_escape_failed_targets'] = sorted(set(escaped))
+            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason)
+            if reason: out['reason'] = reason
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
+            out.update(status='FAIL', reason=type(exc).__name__ + ': ' + str(exc))
+        finally:
+            self.context = real_context
+            found, cleaned, remaining, errs = cleanup_probe_targets(tracked)
+            if base is not None: shutil.rmtree(base, ignore_errors=True)
+            out['cleanup'] = {'found': found, 'cleaned': cleaned, 'remaining': remaining, 'errors': errs, 'base_removed': base is None or not base.exists()}
+            if remaining or errs or not out['cleanup']['base_removed']: out['status'] = 'FAIL'
+        out['claude_author_status'] = out['status']
+        return out
+
     def _author_permission_probe(self) -> dict:
+        if self.args.author_vendor == 'claude':
+            return self._claude_author_probe()
         if self.args.author_vendor != 'codex':
             return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
         capability = self.codex_capabilities()

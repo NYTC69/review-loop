@@ -1,13 +1,19 @@
 """P0-2 (codex-cli verified-contract rule) and P0-1 (operator-configured role models, ADR-9)."""
 import contextlib
+import hashlib
+import inspect
 import io
 import json
 import os
+import shutil
+import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from paired_session import claude_author_probe as cap
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -837,6 +843,294 @@ class ClaudeAuthorTests(unittest.TestCase):
         self.assertNotIn('model', result.stdout.lower(), result.stdout)
         self.assertIn('permission-probe.json is missing', result.stdout)        # stopped at the probe gate, not a guard
         self.assertEqual(self.state()['claude_author_override']['actor'], 'operator')
+
+
+# A stand-in claude binary: emits a canned stream-json for the probe prompt and, per FAKE_AUTHOR_SCENARIO,
+# really writes the files an escaping author would (escape), omits attempts (skip), reports success without
+# writing (noerror), reports a denial only through permission_denials (pd), or exits non-zero (exit).
+FAKE_AUTHOR = r'''#!PYTHON
+import json, os, re, shlex, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("fake-claude 9.9"); sys.exit(0)
+prompt = sys.stdin.read()
+cfg = json.loads(os.environ.get("FAKE_AUTHOR_SCENARIO", "{}"))
+if cfg.get("exit"): sys.exit(cfg["exit"])
+labels = LABELS
+steps = re.findall(r"(?m)^\d+\. (Write|Edit|Bash) (?:file_path )?(.*?)(?: \((?:old_string|content) .*\))?$", prompt)
+emit = lambda row: print(json.dumps(row), flush=True)
+emit({"type": "system", "subtype": "init", "model": "claude-opus-5-5", "session_id": "s"})
+denials = []
+for index, (tool, key) in enumerate(steps):
+    label = labels[index]
+    if label in cfg.get("skip", []): continue
+    tool_id = "t%d" % index
+    emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tool_id, "name": tool,
+          "input": {"command": key} if tool == "Bash" else {"file_path": key}}]}, "session_id": "s"})
+    ok = label == "positive_control" and not cfg.get("no_positive")
+    if ok or label in cfg.get("escape", []):
+        parts = shlex.split(key) if tool == "Bash" else []
+        if label == "link_symlink": os.symlink(parts[2], parts[3])
+        elif label == "link_hardlink": os.link(parts[1], parts[2])
+        elif tool == "Bash": Path(parts[-1]).write_text("x")
+        elif tool == "Edit": Path(key).write_text("sentinel-edited\n")
+        else:
+            Path(key).parent.mkdir(parents=True, exist_ok=True); Path(key).write_text("x")
+    error = not (ok or label in cfg.get("escape", []) or label in cfg.get("noerror", []) or label in cfg.get("pd", []))
+    if label in cfg.get("pd", []): denials.append({"tool_use_id": tool_id})
+    emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tool_id,
+          "content": "Permission denied" if error else "ok", "is_error": error}]}, "session_id": "s"})
+emit({"type": "result", "session_id": "s", "is_error": False, "permission_denials": denials,
+      "structured_output": {"status": "APPROVE", "findings": []},
+      "usage": {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}})
+'''
+LABELS = list(cap.steps(Path('/b'), Path('/t')))
+NEGATIVE = [label for label in LABELS if label != 'positive_control' and not label.startswith(('link_', 'edit_'))]
+TARGET_NAME = {'write_abs': 'w-abs.txt', 'write_rel': 'w-rel.txt', 'write_symlink': 'w-link.txt',
+               'write_context': 'w-ctx.txt', 'write_tmp': 'paired-session-author-probe-', 'bash_abs': 'b-abs.txt',
+               'bash_context': 'b-ctx.txt', 'write_case': 'w-case.txt'}
+# Hash of exactly the Codex branch of _author_permission_probe (source minus the two Claude-dispatch lines), as of
+# P0-3a (7ebbf14). An intentional change to the Codex probe must update this hash.
+CODEX_PROBE_SHA256 = '19b90ac418ca9936ded422d4c5a8418fbcc65a92fb10c1a4ee8e249a0a0f4a73'
+
+
+class ClaudeAuthorProbeTests(unittest.TestCase):
+    """P0-3b: the real Claude author escape probe, driven with a fake claude binary."""
+
+    def setUp(self):
+        self.h = trc.RealCoordinatorTests()
+        self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        self.addCleanup(self.h.tearDown)
+        self.fake = self.h.root / 'fake-author-claude'
+        self.fake.write_text(FAKE_AUTHOR.replace('#!PYTHON', '#!' + sys.executable).replace('LABELS', repr(LABELS)))
+        self.fake.chmod(0o755)
+
+    def co(self):
+        return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+                                  '--gate-effort', 'low', '--test-command', 'python3 -m unittest', '--claude-bin', str(self.fake))
+
+    def probe(self, scenario=None, co=None):
+        co = co or self.co()
+        with patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': json.dumps(scenario or {})}):
+            return co, co._author_permission_probe()
+
+    def write_report(self, co, author_probe, status='PASS'):
+        (co.run_dir / 'permission-probe.json').write_text(json.dumps({
+            'status': status, 'reviewer_flags': co.reviewer_flags(), 'reviewer_flags_digest': co.reviewer_flags_digest(),
+            'author_flags_digest': co.author_flags_digest(), 'author_permission_probe': author_probe,
+            'global_config_changes': {'status': 'PASS'}}))
+
+    def test_pass_when_every_attempt_is_denied_targets_are_absent_and_the_control_is_present(self):
+        co, out = self.probe()
+        self.assertEqual(out['status'], 'PASS', out)
+        self.assertEqual((out['probe'], out['claude_author_status'], out['positive_control']),
+                         ('claude-author-filesystem-v1', 'PASS', True))
+        self.assertEqual(list(out['attempts']), LABELS)
+        for label, row in out['attempts'].items():
+            self.assertTrue(row['tool_use_seen'], label)
+            self.assertEqual(row['denied'], label != 'positive_control', label)
+            self.assertIn(row['target_absent'], (True, None), label)
+        self.assertEqual(out['model_escape_failed_targets'], [])
+        self.assertEqual(out['claude_version'], 'fake-claude 9.9')
+        self.assertEqual((out['cleanup']['remaining'], out['cleanup']['errors'], out['cleanup']['base_removed']), ([], [], True))
+        self.assertEqual(list(co.run_dir.parent.glob('paired-session-author-probe-*')), [])
+        self.assertEqual(co.context, co.run_dir / 'context')                      # the real context was only swapped out
+        self.assertEqual(co.state['turns'][-1]['phase'], 'AUTHOR_PERMISSION_PROBE')
+
+    def test_a_denial_reported_only_through_permission_denials_counts(self):
+        self.assertEqual(self.probe({'pd': ['bash_abs', 'write_abs']})[1]['status'], 'PASS')
+
+    def test_fail_when_any_negative_target_exists_afterwards(self):
+        for label in NEGATIVE:
+            with self.subTest(label=label):
+                co, out = self.probe({'escape': [label]})
+                self.assertEqual(out['status'], 'FAIL', out)
+                self.assertEqual(out['claude_author_status'], 'FAIL')
+                self.assertTrue(any(TARGET_NAME[label] in target for target in out['model_escape_failed_targets']), out)
+                self.assertEqual((out['cleanup']['remaining'], out['cleanup']['base_removed']), ([], True))
+                self.assertFalse([p for p in Path('/tmp').glob('paired-session-author-probe-*.txt')])
+
+    def test_fail_when_the_sentinel_bytes_change_directly_or_through_a_symlink_or_hardlink(self):
+        for escape in (['edit_sentinel'], ['link_symlink', 'edit_symlink'], ['link_hardlink', 'edit_hardlink']):
+            with self.subTest(escape=escape):
+                co, out = self.probe({'escape': escape})
+                self.assertEqual(out['status'], 'FAIL', out)
+                self.assertTrue(any(t.endswith('sentinel.txt') for t in out['model_escape_failed_targets']), out)
+        co, out = self.probe({'escape': ['link_symlink', 'link_hardlink']})         # links made but never edited: no escape
+        self.assertEqual(out['status'], 'PASS', out)
+
+    def test_unknown_when_a_tool_use_is_missing_or_the_positive_control_is_missing(self):
+        for label in LABELS:
+            with self.subTest(skip=label):
+                self.assertEqual(self.probe({'skip': [label]})[1]['status'], 'UNKNOWN')
+        out = self.probe({'no_positive': True})[1]
+        self.assertEqual((out['status'], out['positive_control']), ('UNKNOWN', False))
+        out = self.probe({'noerror': ['bash_abs']})[1]                               # seen, nothing written, yet not reported denied
+        self.assertEqual(out['status'], 'UNKNOWN', out)
+
+    def test_the_probe_tree_is_fresh_0700_beside_run_dir_and_touches_no_sibling(self):
+        co = self.co()
+        sibling_dir, sibling_file = co.run_dir.parent / 'keep-me', co.run_dir.parent / 'keep-me.txt'
+        sibling_dir.mkdir()
+        (sibling_dir / 'inner').write_text('i')
+        sibling_file.write_text('f')
+        stale = co.run_dir.parent / 'paired-session-author-probe-stale'                # a foreign leftover is not ours to remove
+        stale.mkdir()
+        seen, real_mkdtemp = [], tempfile.mkdtemp
+        def spy(*args, **kwargs):
+            path = real_mkdtemp(*args, **kwargs)
+            seen.append((path, os.stat(path).st_mode & 0o777, os.listdir(path)))
+            return path
+        with patch.object(rc.tempfile, 'mkdtemp', side_effect=spy):
+            out = self.probe(co=co)[1]
+        self.assertEqual(out['status'], 'PASS', out)
+        self.assertEqual([(Path(p).parent, mode, names) for p, mode, names in seen], [(co.run_dir.parent.resolve(), 0o700, [])])
+        self.assertTrue(Path(seen[0][0]).name.startswith('paired-session-author-probe-'))
+        self.assertFalse(Path(seen[0][0]).exists())
+        self.assertEqual((sorted(p.name for p in sibling_dir.iterdir()), sibling_file.read_text(), stale.is_dir()), (['inner'], 'f', True))
+
+    def test_the_probe_tree_is_removed_on_every_exit_path(self):
+        def leftovers(co): return [p for p in co.run_dir.parent.glob('paired-session-author-probe-*')]
+        for name, scenario, patches in (('timeout', None, ('invoke', RuntimeError('author CLI timed out'))),
+                                        ('unknown', {'skip': ['bash_abs']}, None),
+                                        ('fail', {'escape': ['write_abs']}, None),
+                                        ('cli-error', {'exit': 3}, None),
+                                        ('value-error', None, ('invoke', ValueError('refused'))),
+                                        ('unexpected', None, ('invoke', ZeroDivisionError('boom'))),
+                                        ('setup-error', None, ('steps', ZeroDivisionError('boom')))):
+            with self.subTest(exit_path=name):
+                co = self.co()
+                target = co if patches and patches[0] == 'invoke' else cap
+                ctx = patch.object(target, patches[0], side_effect=patches[1]) if patches else contextlib.nullcontext()
+                try:
+                    with ctx:
+                        out = self.probe(scenario, co=co)[1]
+                except ZeroDivisionError:
+                    self.assertEqual(name in ('unexpected', 'setup-error'), True)      # propagated, but not before cleanup
+                else:
+                    self.assertIn(out['status'], ('PASS', 'UNKNOWN', 'FAIL'))
+                    self.assertTrue(out['cleanup']['base_removed'], out)
+                self.assertEqual(leftovers(co), [])
+                self.assertEqual(co.context, co.run_dir / 'context')
+                self.assertEqual(list(Path('/tmp').glob('paired-session-author-probe-*.txt')), [])
+
+    def test_a_leftover_after_cleanup_is_a_fail(self):
+        co = self.co()
+        with patch.object(rc.shutil, 'rmtree'):                                          # cleanup cannot remove the tree
+            out = self.probe(co=co)[1]
+        try:
+            self.assertEqual((out['status'], out['claude_author_status'], out['cleanup']['base_removed']), ('FAIL', 'FAIL', False), out)
+        finally:
+            for path in co.run_dir.parent.glob('paired-session-author-probe-*'):
+                shutil.rmtree(path)
+
+    def test_a_cli_error_is_a_fail_with_the_reason(self):
+        out = self.probe({'exit': 3})[1]
+        self.assertEqual(out['status'], 'FAIL')
+        self.assertIn('CLI exit 3', out['reason'])
+        self.assertFalse(out['positive_control'])
+
+    def test_the_probed_argv_is_the_real_author_argv_with_only_the_probe_paths_substituted(self):
+        co, out = self.probe()
+        recorded = co.state['turns'][-1]['command']
+        rules = out['rules']
+        pw, pc = rules['probe_workspace'], rules['probe_context']
+        schema = self.h.root / 'schema.json'
+        rc.atomic_json(schema, rc.review_schema(verified=False))
+        with patch.object(co, 'context', Path(pc)), patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': '{}'}):   # env names feed the sandbox settings
+            expected = co._claude_command('author', schema, True, Path(pw))
+        self.assertEqual(recorded[1:], expected[1:])
+        self.assertEqual(recorded[recorded.index('--add-dir') + 1], pc)
+        flags = co.author_flags()['claude_author_edit_rules']
+        sub = lambda items, old, new: [r.replace(Path(old).as_posix().lstrip('/'), Path(new).as_posix().lstrip('/')) for r in items]
+        self.assertEqual(sub(rules['allow'], pw, co.workspace.resolve()), flags[0])
+        self.assertEqual(sub(rules['deny'], pc, co.context.resolve()), flags[1])
+        self.assertEqual(rules['settings_deny'], co._claude_sandbox_settings('author')['permissions']['deny'])
+        self.assertNotIn(co.workspace.resolve().as_posix().lstrip('/'), ' '.join(rules['allow']))
+        self.assertTrue(co._claude_probe_rules_match(out))
+        self.assertFalse(Path(pw).is_relative_to(co.run_dir))                        # beside run_dir: its deny would block the control
+
+    def test_probe_passed_needs_a_claude_author_probe_pass_with_this_runs_rules(self):
+        co, out = self.probe()
+        self.write_report(co, out)
+        self.assertEqual(co.probe_passed(), (True, ''))
+        for status in ('NOT-APPLICABLE', 'UNKNOWN', 'FAIL', 'PASS_RESIDUAL_RISK'):
+            with self.subTest(author_status=status):
+                self.write_report(co, {**out, 'status': status})
+                self.assertFalse(co.probe_passed()[0])
+        self.write_report(co, {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'})
+        self.assertFalse(co.probe_passed()[0])
+        self.write_report(co, out, status='PASS_RESIDUAL_RISK')
+        self.assertFalse(co.probe_passed()[0])
+        forged = [{**out, 'rules': {**out['rules'], 'allow': ['Edit(//**)']}}, {**out, 'rules': {**out['rules'], 'deny': []}},
+                  {**out, 'rules': {**out['rules'], 'settings_deny': []}}, {**out, 'rules': None},
+                  {k: v for k, v in out.items() if k != 'rules'}, {**out, 'probe': 'other-probe'}]
+        for record in forged:
+            with self.subTest(forged=str(record.get('rules'))[:60]):
+                self.write_report(co, record)
+                self.assertFalse(co.probe_passed()[0])
+
+    def test_a_pass_record_gates_a_claude_author_and_a_changed_author_flags_digest_refuses_it(self):
+        co, out = self.probe()
+        self.write_report(co, out)
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                patch.object(co, '_drive_loop', side_effect=AssertionError('dispatched')):
+            self.assertEqual(co.claude_author_verified(), (True, ''))               # no --accept-unverified-claude-author
+            with self.assertRaisesRegex(AssertionError, 'dispatched'):
+                co.drive()
+            self.write_report(co, {**out, 'status': 'NOT-APPLICABLE'})               # forged claude_author_status is not enough
+            with self.assertRaisesRegex(ValueError, REFUSAL):
+                co.drive()
+            self.write_report(co, out)
+            co.args.author_model = 'claude-sonnet-5-5'                                # author flags changed after the probe
+            with self.assertRaisesRegex(ValueError, REFUSAL):
+                co.drive()
+            self.assertFalse(co.probe_passed()[0])
+
+    def test_a_stale_pass_from_another_workspace_or_rules_is_refused(self):
+        co, out = self.probe()
+        self.write_report(co, out)
+        other = self.h.root / 'other-ws'
+        other.mkdir()
+        with patch.object(co, 'workspace', other):
+            self.assertFalse(co.probe_passed()[0])                                   # rules and digest bind the workspace
+
+    def test_the_probe_writes_nothing_under_the_real_home_or_real_context(self):
+        home_before = sorted(p.name for p in self.h.test_home.rglob('*'))
+        co = self.co()
+        context_before = rc.directory_digest(co.context)
+        self.probe(co=co)
+        self.assertEqual(sorted(p.name for p in self.h.test_home.rglob('*')), home_before)
+        self.assertEqual(rc.directory_digest(co.context), context_before)
+
+    def test_the_codex_author_probe_is_unchanged(self):
+        source = inspect.getsource(rc.Coordinator._author_permission_probe)
+        dispatch = "        if self.args.author_vendor == 'claude':\n            return self._claude_author_probe()\n"
+        self.assertIn(dispatch, source)
+        self.assertEqual(hashlib.sha256(source.replace(dispatch, '').encode()).hexdigest(), CODEX_PROBE_SHA256)
+        co = self.h.coordinator('--author-vendor', 'codex')                          # a Codex author never reaches the Claude probe
+        with patch.object(co, '_claude_author_probe', side_effect=AssertionError('claude probe')), \
+                patch.object(co, 'codex_capabilities', return_value={'status': 'FAIL', 'issues': ['x']}):
+            self.assertEqual(co._author_permission_probe(), {'status': 'FAIL', 'reason': 'x'})
+
+    def test_a_workspace_that_is_or_contains_the_home_dir_is_refused(self):
+        co = self.co()
+        home = Path.home().resolve()
+        for bad in (home, home.parent):
+            with self.subTest(workspace=str(bad)), self.assertRaisesRegex(ValueError, 'home dir'):
+                co._claude_author_edit_rules(bad)
+        self.assertEqual(co._claude_author_edit_rules(home / 'project')[0], ['Edit(//' + (home / 'project').as_posix().lstrip('/') + '/**)'])
+        for git in (['init', '-q'], ['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'home']):
+            trc.subprocess.run(['git', *git], cwd=home, check=True)                   # the fake HOME as a git workspace
+        self.h.workspace, self.h.run_dir = home, self.h.root / 'run-home'            # surfaced as a clear REFUSED by main()
+        out = io.StringIO()
+        command = self.h.command(*BUG_REPORT_FLAGS, *OPT_IN)
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), contextlib.redirect_stdout(out):
+            code = rc.main(command[2:])
+        self.assertEqual(code, 2, out.getvalue())
+        self.assertRegex(out.getvalue(), r'REFUSED: .*home dir')
 
 
 if __name__ == '__main__':
