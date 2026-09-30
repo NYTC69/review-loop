@@ -440,3 +440,7 @@ recovery is wired; use abort/new run or an explicit scope-change instead.
 Fake delivery seals Git hook/config inventory before PLAN and binds it into the operator intent. Active hooks refuse until the hook runner exists. C1 has a fixed coordinator author, committer, start time and item message; delivery refuses metadata or inventory drift. Real lifecycle remains disabled.
 
 Fake publication uses a protected acceptance journal. Its PREPARED/PUBLISHED phases are incomplete delivery states, not CLOSE receipts. Post-CAS verification checks frozen proof files, current programs, exact candidate bytes and the C1/C2 chain without assuming the old HEAD; final live-index reconciliation is a separate required check.
+
+Fake publication imports C1/C2 through `index-pack --strict`, records the journal before the single old-value CAS, and keeps the live index lock while checking out through an alternate index and replacing the live index. Final verification compares read-only index entries to Q (it cannot run `write-tree` while holding that same lock). Publication errors record a digest-bound HOLD; post-CAS replay is a separate required recovery step.
+
+A publication journal or structured publication HOLD quarantines ordinary operator commands (including scope-change, probe, note, accept and resume). Read-only status remains available. Use the locked publication recovery path; pending journal phases are not acceptance or CLOSE.

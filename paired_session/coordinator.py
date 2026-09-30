@@ -2458,7 +2458,12 @@ class Coordinator:
             lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
+    def _publication_guard(self):
+        if self.state.get('publication_hold') or (self.evidence / 'delivery-publication.json').exists():
+            raise ValueError('publication incomplete; use locked publication recovery before operator commands')
+
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
+        self._publication_guard()
         if self.state.get('status') in ('ACCEPTED', 'ABORTED'):
             return self.state['status']
         if reason == 'rejected-tree':
@@ -2493,6 +2498,7 @@ class Coordinator:
         return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
 
     def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
+        self._publication_guard()
         intent = self.state.get('scope_change_intent')
         target = self.run_dir.with_name(self.run_dir.name + '-successor')
         task_path = self.evidence / 'successor-workitem.md'; config_path = self.evidence / 'successor-config.json'
@@ -2562,6 +2568,7 @@ class Coordinator:
                     '\nSuccessor: ' + str(spec_path) + '\n')
 
     def note(self, text: Optional[str], file: Optional[str]) -> str:
+        self._publication_guard()
         if self.state['status'] != 'HOLD':
             raise ValueError('note requires a HOLD run; DONE uses reject')
         if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
@@ -2609,6 +2616,7 @@ class Coordinator:
         return note_id
 
     def accept(self) -> str:
+        self._publication_guard()
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
@@ -2672,6 +2680,7 @@ class Coordinator:
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
+        self._publication_guard()
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
@@ -2813,6 +2822,7 @@ class Coordinator:
         self.write_ledger()
 
     def resume_polish(self) -> str:
+        self._publication_guard()
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
             return self.rejection_limit_hold()
@@ -4331,6 +4341,7 @@ class Coordinator:
 
     def permission_probe(self, retry_uncertain=False) -> bool:
         """One fresh reviewer turn proving allowlist use and write denial/detection."""
+        self._publication_guard()
         uncertain = self.state.get('active') or self.state.get('uncertain_active')
         if uncertain:
             if uncertain.get('phase') not in ('PROBE', 'AUTHOR_PERMISSION_PROBE'):
@@ -5272,6 +5283,7 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
+        self._publication_guard()
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
@@ -5660,6 +5672,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action == 'status':
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
+    co._publication_guard()
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if args.scope_change:
         print(co.scope_change(args.text, args.file))

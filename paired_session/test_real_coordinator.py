@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import patch
 from paired_session import candidate_tree as ct
 from paired_session import delivery_journal as dj
+from paired_session import delivery_publish as dp
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -3993,6 +3994,101 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_publication_hold_quarantines_all_operator_paths_without_state_write(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        saved = co.state_path.read_bytes()
+        calls = (lambda: co.hold('aborted'), lambda: co.accept(), lambda: co.reject('retry', None),
+                 lambda: co.note('guidance', None), lambda: co.scope_change('new scope', None),
+                 lambda: co.resume(), lambda: co.resume(True), lambda: co.resume_polish(),
+                 lambda: co.permission_probe())
+        for call in calls:
+            with self.subTest(call=call):
+                with patch.object(co, 'invoke', side_effect=AssertionError('provider dispatched')):
+                    with self.assertRaisesRegex(ValueError, 'locked publication recovery'):
+                        call()
+                self.assertEqual(co.state_path.read_bytes(), saved)
+        command = self.command()[2:]
+        command[0] = 'status'
+        with patch('builtins.print', return_value=None):
+            self.assertEqual(rc.main(command), 0)
+        self.assertEqual(co.state_path.read_bytes(), saved)
+
+    def test_fake_publication_cas_holds_index_lock_through_checkout(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        index = self.workspace / '.git/index'
+        original = index.read_bytes()
+        calls = []
+        git = ct._git
+        def observed(args, **kwargs):
+            if args[0] == 'update-ref':
+                journal = json.loads((co.evidence / 'delivery-publication.json').read_text())
+                self.assertEqual(journal['phase'], 'PREPARED')
+                self.assertEqual(journal['lock']['pid'], os.getpid())
+                self.assertTrue(index.with_name('index.lock').exists())
+                self.assertEqual(index.read_bytes(), original)
+                calls.append('CAS')
+            if args[0] == 'read-tree' and '-u' in args:
+                self.assertTrue(index.with_name('index.lock').exists())
+                self.assertEqual(index.read_bytes(), original)
+                self.assertNotEqual(kwargs['env']['GIT_INDEX_FILE'], str(index))
+                calls.append('checkout')
+            return git(args, **kwargs)
+        with patch.object(ct, '_git', side_effect=observed):
+            row = dp.publish(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertIsInstance(row, dict, co.state.get('hold_reason'))
+        self.assertEqual(row['phase'], 'RECONCILED')
+        self.assertEqual(calls, ['CAS', 'checkout'])
+        self.assertEqual(co._head_commit(), row['intent']['c2'])
+        live = ct._git_env(GIT_DIR=str(self.workspace / '.git'), GIT_WORK_TREE=str(self.workspace))
+        self.assertEqual(ct._git(['write-tree'], env=live), row['intent']['q_oid'])
+        self.assertEqual(ct._git(['status', '--porcelain=v1', '--untracked-files=all'], env=live), '')
+        self.assertFalse(index.with_name('index.lock').exists())
+        self.assertIn(c1, (self.workspace / 'BACKLOG.md').read_text())
+        self.assertEqual(json.loads((co.evidence / 'delivery-publication.json').read_text()), row)
+        dj.verify(co, row)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        index = self.workspace / '.git/index'
+        original = index.read_bytes()
+        def crash(path, value):
+            if path.name == 'delivery-publication.json' and value.get('phase') == 'PUBLISHED':
+                raise OSError('simulated journal completion failure')
+            rc.atomic_json(path, value)
+        self.assertEqual(dp.publish(co, rc.observed_test_succeeded, crash), 'HOLD')
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        self.assertEqual(row['phase'], 'PREPARED')
+        self.assertEqual(co._head_commit(), row['intent']['c2'])
+        self.assertEqual(index.read_bytes(), original)
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertEqual(co.state['publication_hold'], row['intent']['digest'])
+        self.assertIn('simulated journal completion failure', co.state['hold_reason'])
+
+    def test_fake_publication_refuses_unaccepted_and_dirty_workspace(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        saved = rc.copy.deepcopy(co.state)
+        co.state['status'] = 'DONE'
+        with self.assertRaisesRegex(ValueError, 'operator ACCEPTED'):
+            dp.publish(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertFalse((co.evidence / 'delivery-publication.json').exists())
+        co.state = saved
+        co._fake_lifecycle = False
+        with self.assertRaisesRegex(ValueError, 'fake operator'):
+            dp.publish(co, rc.observed_test_succeeded, rc.atomic_json)
+        co._fake_lifecycle = True
+        (self.workspace / 'user.txt').write_text('foreign work')
+        parent = co._head_commit()
+        self.assertEqual(dp.publish(co, rc.observed_test_succeeded, rc.atomic_json), 'HOLD')
+        self.assertEqual(co._head_commit(), parent)
+        self.assertEqual((self.workspace / 'user.txt').read_text(), 'foreign work')
+        self.assertEqual(co.state['status'], 'HOLD')
 
     def test_publication_journal_proofs_survive_cas_but_reject_drift(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
