@@ -90,3 +90,35 @@ entry; never edit history.
 - **Options considered**: (A) 每次运行按当时情况选模型 — 灵活，但运行之间不可比；(B) 按角色固定模型（实现方 / 持久 reviewer / 影子 / gate 各不同）— 可调优但组合多；(C) 按厂商固定：Claude 侧所有角色一个模型，Codex 侧所有角色一个模型 — 简单、可比。
 - **Decision**: 选 (C)。今后 paired-session 的配置：Claude 侧所有角色（author、持久 reviewer、影子、adversarial gate，无论执行还是评审）都用 `--model claude-opus-5-5`（用连字符；`claude-opus-5.5` 无效；不用会漂移的别名 `opus`）；Codex 侧所有角色都用 `gpt-6-luna`。owner 2026-09-23 决定。
 - **Consequences**: 运行之间的模型变量被消除，成本与质量可以直接对比。`claude-opus-5-5` 已于 2026-09-23 在本机 Claude Code 2.1.280 上用 `claude -p --no-session-persistence --model claude-opus-5-5 --effort medium` 实测可用；`gpt-6-luna` 在记录时尚未实测，第一次使用前需用 probe 轮确认。以后换模型要新开 ADR supersede 本条，并在报告中注明换模型前后的运行不可直接比较。run #5 及之前的数据属于旧配置。
+
+---
+
+### ADR-6: paired-session primary daily entry and replacement gate
+- **Date**: 2026-09-24
+- **Status**: Accepted
+- **Context**: The 2026-09-21 owner decision in `BACKLOG.md` at `b61fa29` ("Replacement gate") says "until then the new architecture ships as a mode alongside the old one"; this ADR amends that sentence to allow paired-session to become the primary daily entry after 1A–1C readiness and an explicit go for 1D, while legacy remains the explicit control path.
+- **Options considered**: (A) Keep the new architecture alongside the old one without changing the primary daily entry until all four replacement criteria pass; (B) after 1A–1C readiness and explicit authorization for 1D, allow paired-session to become the primary daily entry while retaining legacy as an explicit control until all four criteria pass.
+- **Decision**: Adopt (B). Criterion (1) decides WHETHER; criteria (2)–(4) decide WHEN. (1) The fresh reviewing roles must catch most seeded regressions that keep the suite green; run the same seeded diffs through the old reviewer path as control; the new path must be no worse than the old. If both miss, that is a reviewer limit, not an architecture verdict; if only the new one misses, fix its review design first. (2) Three consecutive real runs with zero coordinator defects and an overseer limited to scoping the work item and verifying at the end; measure overseer steady-state token cost and include it in per-item cost. (3) A first-class user-acceptance feedback phase exists in the coordinator. (4) Coverage includes at least one repo other than poker-tools, one large task, and one real subscription-limit HOLD followed by a successful resume. Paired-session may become the primary daily entry only after 1A–1C readiness and an explicit owner go for 1D. 1D may not switch the default route until there is an owner decision or explicit mapping on parity with legacy polish, docs, security stages, and specialist reviewer agents; until then those stages remain reachable through the explicit legacy/control path. The old implementation may be retired only after all four criteria pass. owner 2026-09-24 decision.
+- **Consequences**: After 1A–1C readiness and explicit go for 1D, the daily entry may switch to paired-session, subject to the parity decision or explicit mapping for legacy polish, docs, security stages, and specialist reviewer agents; until then those stages remain reachable through the explicit legacy/control path. This does not authorize retirement of the old implementation, which remains the explicit control until all four replacement criteria pass, or authorize starting a real task.
+
+---
+
+### ADR-7: paired-session Codex 角色模型改用 gpt-6-sol
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: ADR-5 将 Codex 侧所有 paired-session 角色固定为 `gpt-6-luna`。Yuan 在 2026-09-27 的 D5 明确决定“换成 sol”；这改变产品角色模型，不只是当前执行会话的默认值。
+- **Options considered**: (A) 维持 ADR-5 的 `gpt-6-luna` 固定值；(B) 依 D5 将 Codex 侧所有角色统一改为 `gpt-6-sol`，Claude 侧保持原值。
+- **Decision**: 采用 (B)。Claude 侧所有 paired-session 角色仍用 `claude-opus-5-5`；Codex 侧所有角色统一用 `gpt-6-sol`。Yuan 2026-09-27 D5 决定。
+- **Consequences**: 换模型前后的运行成本与评审质量不能直接比较。已安装 Codex 的 1C 权限探测必须用新模型重跑，且探测结果绑定当时的作者模型与 CLI 配置；这不授权 1D。
+- **Supersedes**: ADR-5
+
+---
+
+### ADR-8: paired-session Codex 角色模型切回 gpt-6-luna
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: Yuan 在 2026-09-27 的 D9 决定“都切回 luna 吧. 不然我怕做不完, token 就没了.” 当日的成本记录显示 ADR-7 所选模型每 token 约为 gpt-6-luna 的 7 倍。
+- **Options considered**: (A) 继续使用 ADR-7 的 Codex 模型 pin；(B) 按 D9 将所有 paired-session Codex 角色恢复为 gpt-6-luna，Claude 角色保持不变。
+- **Decision**: 采用 (B)。Codex author、reviewer、shadow、gate 的默认值与 enforcement 均固定为 gpt-6-luna；Claude 角色仍固定为 claude-opus-5-5。Yuan 2026-09-27 D9 决定。
+- **Consequences**: ADR-7 (sol) 期间记录的运行与 ADR-8 期间的运行不可直接比较；M6 复查使用 ADR-8 模型。R21-1 的 D1(b) 合成权限证据与模型无关，继续有效。旧 DONE 且未 accept 的 run 通过 reject 重新派发时仍会使用冻结模型；该已知路径记录在 BACKLOG.md，修复前不能声称历史 run 的每条再派发路径均已切到 ADR-8。
+- **Supersedes**: ADR-7

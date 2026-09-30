@@ -7,8 +7,9 @@ top-level `README.md` Quick Start.
 
 ## Prerequisites
 
-- **Codex CLI ≥ 0.130** — earlier releases have not been verified against
-  the marketplace flow that review-loop ships.
+- **Codex CLI 0.155.1 or later (verified)** — older releases may require the
+  `/plugins` UI path; check `codex plugin --help` before using the CLI install
+  command documented below.
 - **Python ≥ 3.11** — `scripts/run_skill_smoke_lib.py` and other helpers
   used by review-loop's smoke / lint suites depend on it.
 - **git** — used by the executor / reviewer agents and by the smoke
@@ -18,7 +19,7 @@ top-level `README.md` Quick Start.
   sandbox. Without it, opt into the local Codex reviewer with
   `codex_reviewer_backend: codex` in `.review-loop/config.md`.
 
-## Install path: marketplace + `/plugins` TUI enable
+## Install path: marketplace + CLI install
 
 review-loop publishes a Codex marketplace manifest at
 `.agents/plugins/marketplace.json` and a `plugins/review-loop` symlink
@@ -28,42 +29,32 @@ first-class Codex plugin source.
 ```bash
 # Register the marketplace (remote git URL or local path both work)
 codex plugin marketplace add NYTC69/review-loop
+codex plugin add review-loop@review-loop-marketplace
 # or, when developing review-loop locally:
 codex plugin marketplace add /path/to/review-loop
+codex plugin add review-loop@review-loop-marketplace
 ```
 
-Then, inside a fresh Codex session:
+Installing from a local directory marketplace copies the whole directory,
+including Git-ignored files, into the host plugin cache. This may copy `.compass/`,
+`.claude/`, `HANDOFF.md`, and local caches. Use a clean checkout or the GitHub
+marketplace to keep local working-tree state out of the plugin cache.
 
-```
-/plugins
-```
+Start a fresh Codex session after installation. The plugin cache is under
+`$CODEX_HOME/plugins/cache/review-loop-marketplace/review-loop/<version>/`
+(default `~/.codex/plugins/cache/review-loop-marketplace/review-loop/<version>/`).
+The paired-session skill obtains the installed version from
+`codex plugin list --json` so it can invoke its bundled coordinator after
+plugin updates.
 
-> Note: it is **plural `plugins`**, not `/plugin install …`. Codex CLI
-> 0.130 has only `codex plugin marketplace {add, upgrade, remove}` — no
-> CLI-side install or enable subcommand. The `/plugins` TUI is the only
-> path that writes the enable entry to `~/.codex/config.toml`:
->
-> ```toml
-> [plugins."review-loop@review-loop-marketplace"]
-> enabled = true
-> ```
->
-> The TUI write requires Codex's approval policy to allow user-level
-> config writes (start Codex with `--ask-for-approval on-request` or
-> looser; `read-only` / `workspace-write` sandboxes will block the
-> write).
-
-Pick `review-loop` from the panel and enable it. Codex caches the
-plugin contents at
-`~/.codex/plugins/cache/review-loop-marketplace/review-loop/<version>/`.
-
-Uninstall is the reverse: disable in `/plugins`, then on the host shell:
+Uninstall the plugin and optionally remove its marketplace:
 
 ```bash
+codex plugin remove review-loop@review-loop-marketplace
 codex plugin marketplace remove review-loop-marketplace
 ```
 
-## Triggering review-loop in a Codex session
+## Triggering workflows in a Codex session
 
 Codex matches plugin skills via their `SKILL.md` `description` field;
 literal slash commands like `/review-loop:plan` are Claude-Code-only and
@@ -76,16 +67,25 @@ surface as `Unrecognized command` in Codex. Use natural language:
 | Resume an approved plan | "resume review-loop session `<uuid>`" |
 | Review-only pass on the working tree | "review the pending changes" |
 | Show review-loop's command surface | "show review-loop guide" |
+| Paired-session work item (explicit opt-in during migration) | "use paired-session for this task" |
 
-Stage 1 exposes four skills under `.agents/skills/`:
-`review-loop` (umbrella), `plan`, `execute`, `guide`. Both `plan` and
+Stage 1 exposes five skills under `.agents/skills/`:
+`review-loop` (legacy umbrella), `plan`, `execute`, `guide`, and
+`paired-session`. Both `plan` and
 `execute` share `.review-loop/config.md` and `.review-loop/sessions/`
 with the Claude Code path, so a session started under one runtime can be
 resumed under the other.
 
+Paired-session reads non-program defaults from the optional workspace
+`.review-loop/paired-session.json`. Keep role, vendor, program and test-command
+settings in an operator-owned profile outside the workspace and run directory,
+and pass it with `--config` to both probe and run. This replaces the workspace
+profile, so copy any desired non-program limits into it. Coordinator state stays
+outside the workspace under `$CODEX_HOME/state/paired-session/`.
+
 ## Verification
 
-After `marketplace add` + `/plugins` enable, sanity-check:
+After marketplace registration + CLI install, sanity-check:
 
 ```bash
 # 1. config.toml has both the marketplace and plugin entries
@@ -96,12 +96,11 @@ ls ~/.codex/plugins/cache/review-loop-marketplace/review-loop/
 
 # 3. A non-interactive Codex session sees the skills
 codex exec --skip-git-repo-check \
-  "List enabled plugins and the skills you have. Be terse."
+  "List enabled plugins and skills. Be terse."
 ```
 
-The third command should list `review-loop`, `review-loop:plan`,
-`review-loop:execute`, `review-loop:guide`, `review-loop:review-loop`
-among the available skills.
+The third command should list `review-loop`, its plan/execute/guide skills,
+and `paired-session` among the available skills.
 
 ## Boundary: Claude Code plugin path vs Codex plugin path
 
@@ -110,13 +109,14 @@ session state but install through different package managers.
 
 | Surface | Manifest | Marketplace manifest | Skill tree | Slash commands |
 |---|---|---|---|---|
-| Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` | `skills/` (top-level) | `/review-loop`, `/review-loop:plan`, … |
+| Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` | `skills/` (top-level) | `/review-loop`, `/review-loop:plan`, `/review-loop:paired-session`, … |
 | Codex CLI | `.codex-plugin/plugin.json` | `.agents/plugins/marketplace.json` | `.agents/skills/` | none — natural-language only |
 
 The top-level `skills/` tree (with `review-pr`, `code-quality-loop`,
 `reorganize`, …) dispatches via Claude's Agent tool and is intentionally
-**not** exposed to Codex. The four `.agents/skills/` entries are the
-Stage 1 Codex surface.
+**not** exposed to Codex. The five `.agents/skills/` entries are the
+Stage 1 Codex surface. Paired-session is an explicit path in both runtimes;
+the familiar legacy `/review-loop` routing remains unchanged in this batch.
 
 There is also a fallback wrapper at `~/.codex/skills/review-loop/SKILL.md`
 that some users symlink for the legacy "skills only, no marketplace"

@@ -26,8 +26,9 @@
 Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
 `review-loop` skill shares `.review-loop/config.md` and `.review-loop/sessions/`
 with Claude Code, so both runtimes work against the same project state.
-The rest of this README primarily documents the current Claude Code plugin
-surface; Codex Stage 1 currently exposes only `review-loop` and `guide`.
+The rest of the user guide primarily documents the Claude Code plugin surface.
+Codex Stage 1 additionally exposes `paired-session` as an explicit opt-in while
+the familiar legacy route remains the default during staged migration.
 
 The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
 (`claude -p`). If you need to force the Codex fallback reviewer, set

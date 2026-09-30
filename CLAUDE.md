@@ -46,13 +46,12 @@ The Codex marketplace surface specifically requires:
    the symlink is what makes the path resolve to the repo. Tracked in git
    as a real symlink (mode `120000`), mirrors the compass plugin layout.
 
-Codex install + enable flow: `codex plugin marketplace add NYTC69/review-loop`
-registers the marketplace; then inside a fresh Codex session, `/plugins`
-opens a TUI panel where the user manually enables review-loop. Codex CLI
-0.130 has no `plugin install` / `plugin enable` subcommand — the TUI is
-the only path that writes
-`[plugins."review-loop@review-loop-marketplace"] enabled = true` to
-`~/.codex/config.toml`.
+Codex install flow verified with Codex CLI 0.155.1:
+`codex plugin marketplace add NYTC69/review-loop` registers the marketplace;
+`codex plugin add review-loop@review-loop-marketplace` installs the plugin.
+Start a fresh Codex session to load its skills. Older Codex versions may use
+the `/plugins` UI; check `codex plugin --help` rather than assuming the CLI
+install command exists.
 
 Slash commands like `/review-loop:plan` are Claude-only. Codex matches
 plugin skills via their `SKILL.md` `description` field; trigger is

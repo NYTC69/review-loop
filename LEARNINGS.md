@@ -96,6 +96,13 @@ is created (SPEC rev 14 architecture E').
 - **Root cause**: Codex 线程自带一份保存的权限配置（`active_permission_profile`），resume 时带的启动参数不一定能覆盖它；app-server 守护进程重启时，也会用 `:workspace` 重新写一次线程设置。TUI 显示的是启动参数，模型实际拿到的是线程设置，两者可能不一致。只有在 TUI 里执行 `/permissions` → Full access，才会写入 `thread_settings_applied`，内容为 `:danger-full-access`，新回合随后才真正拿到完全权限。
 - **Rule going forward**: After resuming a Codex TUI thread, switch /permissions to Full access and confirm the next turn_context shows danger-full-access; launch flags alone are not enough
 - **Scope**: codex resume, yolo / dangerously-bypass-approvals-and-sandbox, /permissions Full access, turn_context sandbox_policy workspace-write, app-server daemon restart, 监工 codex queue 推进
+### <a id="L-review-loop-checkpoint-helper-write-and-verify"></a> Write Compass checkpoints only through the state helper and re-read the saved Next after every write.
+- **Date**: 2026-09-25
+- **Task context**: Round 3/4 paired-session closeout while recording Compass checkpoint state and advancing batch plans.
+- **What broke**: Rev23 in `.compass/CHECKPOINT.md` retained a stale Next on 2026-09-24; on 2026-09-25, rev45 in the same file was written outside the helper and acquired an invalid predecessor, requiring explicit replacement with a fresh task identity.
+- **Root cause**: Candidate editing and state publication were conflated, and the saved Next was not consistently read back after each write; a direct filesystem edit bypassed helper validation and broke lineage.
+- **Rule going forward**: Write Compass checkpoints only through the state helper and re-read the saved Next after every write.
+- **Scope**: Compass checkpoint, state helper, saved Next verification, checkpoint lineage
 - **Promotion candidacy**: project-only
 
 ---
