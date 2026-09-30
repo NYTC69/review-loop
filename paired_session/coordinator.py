@@ -57,6 +57,9 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 PROBE_SURFACE_VERSION = 9
+def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
+    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
+    except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
 # Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
 VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
 OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'reason'})  # command line only, plus any accept_*
@@ -1447,7 +1450,7 @@ class Coordinator:
                 'codex_config_sha256': self._codex_policy_digest(),
             })
         else:
-            flags.update({'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
+            flags.update({'plugin_version': plugin_version(), 'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
                           'author_subagents': self.args.author_subagents,
                           'claude_author_surface': cap.surface(self._claude_command('author', cap.NO_SCHEMA, True)),
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
@@ -1598,7 +1601,8 @@ class Coordinator:
                     'files': [{'path': path, 'mode': 'deny'} for path in credential_paths],
                 },
                 'filesystem': {
-                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else []),
+                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path())] if role == 'probe' and self._probe_sandbox_commands else [])
+                                 + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else []),   # the probe's context; the real one is under run_dir
                 },
             },
             'permissions': {
@@ -1623,7 +1627,7 @@ class Coordinator:
         except (OSError, json.JSONDecodeError):
             return False, 'permission-probe.json is unreadable'
         # A Claude author's PASS must be the very file permission_probe wrote (state.json shares run_dir's write protection).
-        if self.args.author_vendor == 'claude' and self.state.get('permission_probe', {}).get('sha256') != hashlib.sha256(raw).hexdigest():
+        if self.args.author_vendor == 'claude' and self.state.get('permission_probe') != {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}:
             return False, 'permission-probe.json is not the report this run recorded'
         if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'):
             return False, 'permission probe status is not PASS'
@@ -4164,7 +4168,7 @@ class Coordinator:
         allow, deny = self._claude_author_edit_rules()
         settings_deny = self._claude_sandbox_settings('author')['permissions']['deny']
         return cap.rules_match(probe, allow, deny, settings_deny, self.workspace.resolve(), self.context.resolve(),
-                               self.author_flags()['claude_author_surface'], self.args.author_subagents)
+                               self.author_flags()['claude_author_surface'])
 
     def _claude_author_probe(self) -> dict:
         """P0-3b: one real Claude author turn in a probe-owned tree; filesystem evidence decides (1C row 3b)."""
@@ -4187,7 +4191,7 @@ class Coordinator:
             if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
             table = cap.steps(base, tmp)
             baseline, reason, result, seq0 = cap.listing(base, base.parent, skip), None, None, self.state['sequence']
-            self.context = ctx                 # the argv's --add-dir and context deny rules bind to the probe context
+            self.context = ctx                 # the argv's --add-dir, context deny rules and denyWrite bind to the probe context
             try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
             except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
             finally: self.context = real_context
@@ -4213,8 +4217,9 @@ class Coordinator:
                 try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
-            try: unchanged = sentinel.read_bytes() == before and sentinel.stat().st_ino == sentinel_ino
-            except OSError: unchanged = False
+            got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
+            unchanged = got == (before, sentinel_ino)
+            if got is None: reason = reason or 'sentinel-replaced'
             out['attempts'], unexpected = cap.attempts(rows, table, unchanged, gone)
             made = out['links_made'] = cap.links_made(out['attempts'], ws, sentinel_ino)
             out['positive_control'] = (ws / 'ok.txt').is_file() and out['attempts']['positive_control']['tool_use_seen']
@@ -4536,7 +4541,7 @@ class Coordinator:
                        'If using code-mode, each cell must be exactly: const r = await tools.exec_command('
                        '{"cmd":"<one literal command>","workdir":' + json.dumps(str(self.workspace)) +
                        '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output.')
-        base_report = {'status': 'FAIL', 'reviewer_flags': self.reviewer_flags(),
+        base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'reviewer_flags': self.reviewer_flags(),
                        'reviewer_flags_digest': self.reviewer_flags_digest(),
                        'author_flags': self.author_flags(),
                        'author_flags_digest': self.author_flags_digest(),
@@ -4597,6 +4602,7 @@ class Coordinator:
             if sandbox_probe_paths:
                 report['failure_reasons'].append('claude-sandbox-write-not-denied-or-not-observed')
             atomic_json(self.run_dir / 'permission-probe.json', report)
+            self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
             self.state['hold_reason'] = 'permission probe failed; inspect permission-probe.json'
             self.save()
             self.write_usage()

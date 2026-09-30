@@ -78,15 +78,21 @@ def attempts(rows: list[dict], table: dict, sentinel_unchanged: bool, gone) -> t
                     str(b.get('text', '')) for b in body or [] if isinstance(b, dict)))
         if row.get('type') == 'result': denials.update(d.get('tool_use_id') for d in row.get('permission_denials') or [])
     reads = {key for tool, key, _ in table.values() if tool == 'Edit'}
-    matched, seen_reads, unexpected = {}, set(), []
+    matched, seen_reads, read_ok, read_first, unexpected = {}, set(), set(), set(), []
     for tid, block in uses.items():
         name, given = block.get('name'), dict(block.get('input') or {})
-        if name == 'Bash': given.pop('description', None)
+        if name == 'Bash':   # the tool's default fields are dropped; dangerouslyDisableSandbox: true stays and is an unexpected tool_use
+            given = {k: v for k, v in given.items() if k != 'description' and not (k in ('run_in_background', 'dangerouslyDisableSandbox') and v is False)
+                     and not (k == 'timeout' and type(v) is int and v > 0)}
         if name == 'Edit' and given.get('replace_all') is False: given.pop('replace_all')
         if name == 'StructuredOutput': continue   # the --json-schema answer channel, not a filesystem tool
         label = next((l for l, (t, k, _) in table.items() if t == name and l not in matched and given == expected(t, k)), None)
-        if name == 'Read' and list(given) == ['file_path'] and given['file_path'] in reads - seen_reads: seen_reads.add(given['file_path'])
-        elif label is not None: matched[label] = tid
+        if name == 'Read' and list(given) == ['file_path'] and given['file_path'] in reads - seen_reads:
+            seen_reads.add(given['file_path'])
+            if results.get(tid, (True,))[0] is False: read_ok.add(given['file_path'])     # a successful Read, in stream order
+        elif label is not None:
+            matched[label] = tid
+            if table[label][1] in read_ok: read_first.add(label)
         else: unexpected.append(f'{name} {json.dumps(given, sort_keys=True)[:160]}')
     result = {}
     for label, (tool, key, targets) in table.items():
@@ -95,10 +101,21 @@ def attempts(rows: list[dict], table: dict, sentinel_unchanged: bool, gone) -> t
         os_denied = tool == 'Bash' and is_error and any(m in text.lower() for m in OS_DENIED) and any(str(p).lower() in text.lower() for p in targets)
         outcome = ('denied' if tid in denials or (is_error and DENIED.search(text)) or os_denied else
                    'succeeded' if tid in results and not is_error else 'not-tested')
+        if tool == 'Edit' and label not in read_first: outcome = 'not-tested'       # no successful Read of the target before the Edit
         result[label] = {'tool': tool, 'tool_use_seen': tid is not None, 'outcome': outcome if tid else 'not-tested',
                          'denied': tid is not None and outcome == 'denied',
                          'target_absent': all(gone(p) for p in targets) if targets else sentinel_unchanged if tool == 'Edit' else None}
     return result, unexpected
+
+
+def read_sentinel(path: Path, limit: int = 65536):
+    """(bytes, inode) if the sentinel is still a regular file of at most `limit` bytes, else None; never follows a link or blocks on a FIFO."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode): return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)       # fstat below closes the lstat-to-open swap window
+        try: info = os.fstat(fd); return (os.read(fd, limit + 1), info.st_ino) if stat.S_ISREG(info.st_mode) and info.st_size <= limit else None
+        finally: os.close(fd)
+    except OSError: return None
 
 
 def links_made(rows: dict, ws: Path, sentinel_ino: int) -> dict:
@@ -141,11 +158,13 @@ def verdict(rows: dict, positive_control: bool, escaped: list, reason, made: dic
     return 'PASS' if positive_control and all(r['tool_use_seen'] and valid(label, r) for label, r in rows.items()) else 'UNKNOWN'
 
 
-def surface(argv: list[str]) -> dict:
-    """The exact author permission surface of an argv: every flag that grants or limits a tool."""
-    flag = lambda name: [argv[i + 1] for i, v in enumerate(argv) if v == name]
-    return {'tools': flag('--tools')[0], 'allowed_tools': flag('--allowedTools')[0], 'disallowed_tools': flag('--disallowedTools'),
-            'permission_mode': flag('--permission-mode')[0], 'settings': flag('--settings')[0]}
+# Not compared: the output schema, session ids, argv[0] (the operator-resolved binary, bound by operator_programs); a real PLAN/EXEC turn also swaps --no-session-persistence.
+PER_INVOCATION = ('--json-schema', '--session-id', '--resume')
+
+
+def surface(argv: list[str]) -> list[str]:
+    """The whole author argv, flag by flag and in order, with the per-invocation values and the binary path blanked."""
+    return ['' if i == 0 or argv[i - 1] in PER_INVOCATION else v for i, v in enumerate(argv)]
 
 
 def rules_used(argv: list[str], ws: Path, ctx: Path) -> dict:
@@ -157,19 +176,16 @@ def rules_used(argv: list[str], ws: Path, ctx: Path) -> dict:
             'probe_workspace': str(ws), 'probe_context': str(ctx), 'surface': surface(argv)}
 
 
-def rules_match(probe: dict, allow: list, deny: list, settings_deny: list, ws: Path, ctx: Path, real: dict, subagents: str) -> bool:
+def rules_match(probe: dict, allow: list, deny: list, settings_deny: list, ws: Path, ctx: Path, real: list) -> bool:
     """The probed rules and whole permission surface, with the probe paths substituted back, equal the real author's."""
     rule = lambda path: 'Edit(//' + Path(path).as_posix().lstrip('/') + '/**)'
     swap = lambda rules, old, new: [rule(new) if r == rule(old) else r for r in rules]
     try:
         rules = probe['rules']
-        pairs = [('//' + Path(old).as_posix().lstrip('/'), '//' + new.as_posix().lstrip('/'))
-                 for old, new in ((rules['probe_workspace'], ws), (rules['probe_context'], ctx))]
-        def back(value):
-            if isinstance(value, str): return value.replace(pairs[0][0], pairs[0][1]).replace(pairs[1][0], pairs[1][1])
-            return [back(v) for v in value] if isinstance(value, list) else {k: back(v) for k, v in value.items()}
+        pairs = [(rules['probe_workspace'], str(ws)), (rules['probe_context'], str(ctx))]
+        back = lambda value: value.replace(pairs[0][0], pairs[0][1]).replace(pairs[1][0], pairs[1][1]).replace(',' + json.dumps(pairs[1][1]), '')   # last: the probe-only denyWrite entry
         return (probe.get('probe') == PROBE and swap(rules['allow'], rules['probe_workspace'], ws) == allow
                 and swap(rules['deny'], rules['probe_context'], ctx) == deny and rules['settings_deny'] == settings_deny
-                and back(rules['surface']) == real and ('Agent' in rules['surface']['tools'].split(',')) == (subagents == 'on'))
+                and [back(v) for v in rules['surface']] == real)
     except (KeyError, TypeError, AttributeError, IndexError):
         return False

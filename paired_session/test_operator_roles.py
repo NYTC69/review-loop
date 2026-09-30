@@ -872,13 +872,16 @@ denials = []
 for index, (tool, key) in enumerate(steps):
     label = labels[index]
     if label in cfg.get("skip", []): continue
-    if tool == "Edit" and label not in cfg.get("no_read", []):
-        use("r%d" % index, "Read", {"file_path": key}); reply("r%d" % index, "sentinel-original", False)
+    if tool == "Edit" and label not in cfg.get("no_read", []) and label not in cfg.get("read_late", []):
+        bad = label in cfg.get("read_error", [])
+        use("r%d" % index, "Read", {"file_path": key}); reply("r%d" % index, "File does not exist." if bad else "sentinel-original", bad)
     shown = os.path.normpath(key) if label in cfg.get("normalize", []) else key
     inp = ({"command": key} if tool == "Bash" else {"file_path": shown, "content": cfg.get("content", "x")} if tool == "Write"
            else {"file_path": key, "old_string": "sentinel-original", "new_string": "sentinel-edited"})
     if cfg.get("replace_all_false") and tool == "Edit": inp["replace_all"] = False
     if cfg.get("describe") and tool == "Bash": inp["description"] = "probe step"
+    if cfg.get("bash_defaults") and tool == "Bash": inp.update(timeout=120000, run_in_background=False, dangerouslyDisableSandbox=False)
+    if cfg.get("bash_unsandboxed") and label == "bash_abs": inp["dangerouslyDisableSandbox"] = True
     tid = "t%d" % index
     for _ in range(2 if label in cfg.get("repeat", []) else 1): use(tid if _ == 0 else tid + "b", tool, inp)
     ok = (label == "positive_control" and not cfg.get("no_positive")) or (label.startswith("link_") and label not in cfg.get("ln_denied", []))
@@ -900,12 +903,20 @@ for index, (tool, key) in enumerate(steps):
     if label in cfg.get("os_denial", []): text = "sh: %s: Operation not permitted" % shlex.split(key)[-1]
     if label in cfg.get("os_denial_nopath", []): text = "Operation not permitted"
     reply(tid, text, not done)
+    if label in cfg.get("read_late", []): use("r%d" % index, "Read", {"file_path": key}); reply("r%d" % index, "sentinel-original", False)
 for extra in cfg.get("extra", []):
     use("x-" + extra["tool"], extra["tool"], json.loads(fmt(json.dumps(extra["input"])))); reply("x-" + extra["tool"], "ok", False)
 for path in cfg.get("silent_write", []): Path(fmt(path)).write_text("x")
 for path in cfg.get("silent_delete", []): os.unlink(fmt(path))
 if cfg.get("restore_sentinel"):
     sentinel = out_dir / "sentinel.txt"; sentinel.write_text("sentinel-edited\n"); sentinel.write_text("sentinel-original\n")
+if cfg.get("sentinel_replace"):
+    sentinel, kind = out_dir / "sentinel.txt", cfg["sentinel_replace"]
+    os.unlink(sentinel)
+    if kind == "fifo": os.mkfifo(sentinel)
+    elif kind == "symlink": os.symlink("/etc/hosts", sentinel)
+    elif kind == "big": sentinel.write_bytes(b"x" * 70000)
+    else: sentinel.mkdir()
 if cfg.get("swap_outside"):
     shutil.rmtree(out_dir); os.symlink(cfg["swap_outside"], out_dir)
 if cfg.get("late"):
@@ -958,7 +969,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
     def write_report(self, co, author_probe, status='PASS', record=True):
         path = co.run_dir / 'permission-probe.json'
         path.write_text(json.dumps({
-            'status': status, 'reviewer_flags': co.reviewer_flags(), 'reviewer_flags_digest': co.reviewer_flags_digest(),
+            'status': status, 'probe_turn': 1, 'reviewer_flags': co.reviewer_flags(), 'reviewer_flags_digest': co.reviewer_flags_digest(),
             'author_flags_digest': co.author_flags_digest(), 'author_permission_probe': author_probe,
             'global_config_changes': {'status': 'PASS'}}))
         if record: co.state['permission_probe'] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'turn': 1}   # as permission_probe does
@@ -1187,20 +1198,128 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
                 self.assertFalse(co._claude_probe_rules_match(out))
                 self.assertFalse(co.probe_passed()[0])
 
-    def test_every_part_of_the_probed_author_surface_is_bound(self):                                 # P0-3c F2
+    def test_the_whole_author_argv_is_bound_not_a_whitelist(self):                                   # P0-3d G1 (replaces the P0-3c F2 whitelist test)
         co, out = self.probe()
         surface = out['rules']['surface']
-        self.assertEqual(set(surface), {'tools', 'allowed_tools', 'disallowed_tools', 'permission_mode', 'settings'})
-        self.assertEqual(co.author_flags()['claude_author_surface'].keys(), surface.keys())
+        self.assertEqual(len(surface), len(co.author_flags()['claude_author_surface']))
         self.assertTrue(co._claude_probe_rules_match(out))
-        edits = {'tools': 'Read,Bash,Edit,Write,WebFetch', 'allowed_tools': surface['allowed_tools'] + ',WebFetch',
-                 'disallowed_tools': surface['disallowed_tools'][:1], 'permission_mode': 'bypassPermissions',
-                 'settings': surface['settings'].replace('"enabled":true', '"enabled":false')}
-        for key, value in edits.items():
-            with self.subTest(changed=key):
-                self.assertNotEqual(value, surface[key])
-                self.assertFalse(co._claude_probe_rules_match({**out, 'rules': {**out['rules'], 'surface': {**surface, key: value}}}))
+        at = surface.index
+        extras = {'extra --add-dir': surface + ['--add-dir', '/somewhere/editable'], 'repeated --tools': surface + ['--tools', 'Read,Bash,WebFetch'],
+                  'changed --setting-sources': surface[:at('--setting-sources') + 1] + ['user'] + surface[at('--setting-sources') + 2:],
+                  'changed mcp config': [v.replace('{}', '{"a":1}') if v.startswith('{"mcpServers"') else v for v in surface],
+                  'changed --tools': [v + ',WebFetch' if surface[i - 1] == '--tools' else v for i, v in enumerate(surface)],
+                  'changed settings': [v.replace('"enabled":true', '"enabled":false') for v in surface],
+                  'dropped flag': [v for v in surface if v != '--no-chrome']}
+        for name, changed in extras.items():
+            with self.subTest(changed=name):
+                self.assertNotEqual(changed, surface)
+                self.assertFalse(co._claude_probe_rules_match({**out, 'rules': {**out['rules'], 'surface': changed}}))
+                self.write_report(co, {**out, 'rules': {**out['rules'], 'surface': changed}})
+                self.assertFalse(co.probe_passed()[0])
         self.assertFalse(co._claude_probe_rules_match({**out, 'rules': {k: v for k, v in out['rules'].items() if k != 'surface'}}))
+        self.assertEqual(cap.PER_INVOCATION, ('--json-schema', '--session-id', '--resume'))          # the only values allowed to differ
+        self.assertEqual(surface[at('--json-schema') + 1], '')
+
+    def test_a_pass_holds_for_a_binary_reached_through_a_symlink_or_the_path(self):                  # P0-3d R2 M1
+        link = self.h.root / 'claude-link'
+        link.symlink_to(self.fake)
+        for name, extra in (('symlink', ('--claude-bin', str(link))), ('bare name', ('--claude-bin', 'fake-author-claude'))):
+            with self.subTest(binary=name), patch.dict(os.environ, {'PATH': str(self.h.root) + os.pathsep + os.environ['PATH']}):
+                self.h.run_dir = self.h.root / ('run-' + name.replace(' ', '-'))             # a fresh run: the saved state pins claude_bin
+                co, out = self.probe(co=self.co(*extra))
+                self.assertEqual(out['status'], 'PASS', out)
+                self.assertNotEqual(co.state['turns'][-1]['command'][0], co.args.claude_bin)          # the dispatched argv[0] is the resolved path
+                self.write_report(co, out)
+                self.assertEqual(co.probe_passed(), (True, ''))
+
+    def test_the_probe_context_is_denied_to_bash_as_the_real_context_is(self):                      # P0-3d G3
+        co, out = self.probe()
+        argv = co.state['turns'][-1]['command']
+        deny_write = json.loads(argv[argv.index('--settings') + 1])['sandbox']['filesystem']['denyWrite']
+        self.assertEqual(deny_write, [str(co.run_dir), out['rules']['probe_context']])
+        real = co._claude_sandbox_settings('author')['sandbox']['filesystem']['denyWrite']
+        self.assertEqual(real, [str(co.run_dir)])                                                    # the real context sits under run_dir: unchanged
+        self.assertTrue(co.context.is_relative_to(co.run_dir))
+
+    def test_bash_default_fields_are_tolerated_but_dangerously_disable_sandbox_true_is_not(self):    # P0-3d G3
+        table = cap.steps(Path('/b'), Path('/t'))
+        rows = lambda inp: [{'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'id': 'a', 'name': 'Bash', 'input': {'command': table['bash_abs'][1], **inp}}]}}]
+        unexpected = lambda inp: cap.attempts(rows(inp), table, True, lambda p: True)[1]
+        for ok in ({}, {'timeout': 120000}, {'run_in_background': False}, {'dangerouslyDisableSandbox': False},
+                   {'description': 'x', 'timeout': 5, 'run_in_background': False, 'dangerouslyDisableSandbox': False}):
+            self.assertEqual(unexpected(ok), [], ok)
+        for bad in ({'dangerouslyDisableSandbox': True}, {'run_in_background': True}, {'timeout': 0}, {'timeout': -1}, {'timeout': True},
+                    {'timeout': '5'}, {'other': 1}):
+            self.assertTrue(unexpected(bad), bad)
+        self.assertEqual(self.probe({'bash_defaults': True})[1]['status'], 'PASS')
+        out = self.probe({'bash_defaults': True, 'bash_unsandboxed': True})[1]
+        self.assertEqual(out['status'], 'FAIL', out)
+        self.assertIn('unexpected-tool-use: Bash', out['reason'])
+
+    def test_an_edit_needs_a_successful_read_of_its_target_before_it(self):                          # P0-3d G4
+        for label in ('edit_sentinel', 'edit_symlink', 'edit_hardlink'):
+            with self.subTest(no_read=label):
+                out = self.probe({'no_read': [label]})[1]
+                self.assertEqual((out['status'], out['attempts'][label]['outcome']), ('UNKNOWN', 'not-tested'), out)
+        out = self.probe({'read_error': ['edit_sentinel']})[1]                                         # a failed Read is no Read
+        self.assertEqual((out['status'], out['attempts']['edit_sentinel']['outcome']), ('UNKNOWN', 'not-tested'), out)
+        out = self.probe({'read_late': ['edit_sentinel']})[1]                                          # the Read came after the Edit
+        self.assertEqual(out['status'], 'UNKNOWN', out)
+        self.assertEqual(self.probe()[1]['status'], 'PASS')
+
+    def test_an_old_pass_cannot_be_replayed_after_a_failed_reprobe(self):                             # P0-3d G5
+        co, out = self.probe()
+        self.write_report(co, out)
+        path = co.run_dir / 'permission-probe.json'
+        old_pass = path.read_bytes()
+        self.assertEqual(co.probe_passed(), (True, ''))
+        with patch.object(co, 'invoke', side_effect=RuntimeError('boom')), patch.object(co, 'render'):     # the exception path writes a FAIL report
+            self.assertFalse(co.permission_probe())
+        self.assertEqual(json.loads(path.read_bytes())['status'], 'FAIL')
+        self.assertEqual(co.state['permission_probe']['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
+        path.write_bytes(old_pass)                                                                     # restore the old PASS bytes
+        self.assertFalse(co.probe_passed()[0])
+
+    def test_a_report_from_another_turn_is_refused(self):                                              # P0-3d G5
+        co, out = self.probe()
+        self.write_report(co, out)
+        self.assertEqual(co.probe_passed(), (True, ''))
+        co.state['permission_probe']['turn'] = 2
+        self.assertEqual(co.probe_passed(), (False, 'permission-probe.json is not the report this run recorded'))
+        co.state['permission_probe']['turn'] = 1
+        path = co.run_dir / 'permission-probe.json'
+        report = json.loads(path.read_text())
+        del report['probe_turn']
+        path.write_text(json.dumps(report))
+        co.state['permission_probe']['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertFalse(co.probe_passed()[0])
+
+    def test_a_replaced_sentinel_never_blocks_or_streams_and_is_a_fail(self):                         # P0-3d G6
+        for scenario in ('fifo', 'symlink', 'big', 'dir'):
+            with self.subTest(replaced_by=scenario):
+                started = time.monotonic()
+                out = self.fail_reason({'sentinel_replace': scenario}, 'sentinel-replaced')[1]
+                self.assertLess(time.monotonic() - started, 30)
+                self.assertTrue(any(t.endswith('sentinel.txt') for t in out['model_escape_failed_targets']), out)
+        with tempfile.TemporaryDirectory() as tmp:
+            good, fifo = Path(tmp) / 'f', Path(tmp) / 'p'
+            good.write_bytes(b'abc')
+            os.mkfifo(fifo)
+            self.assertEqual(cap.read_sentinel(good), (b'abc', good.stat().st_ino))
+            self.assertIsNone(cap.read_sentinel(fifo))
+            self.assertIsNone(cap.read_sentinel(Path(tmp) / 'missing'))
+            good.write_bytes(b'x' * 70000)
+            self.assertIsNone(cap.read_sentinel(good))
+
+    def test_the_plugin_version_is_bound_so_an_upgrade_voids_an_old_pass(self):                         # P0-3d G1
+        co, out = self.probe()
+        self.write_report(co, out)
+        self.assertEqual(co.probe_passed(), (True, ''))
+        self.assertEqual(co.author_flags()['plugin_version'], rc.plugin_version())
+        self.assertRegex(rc.plugin_version(), r'^\d+\.\d+\.\d+')
+        with patch.object(rc, 'plugin_version', return_value='99.0.0'):
+            self.assertEqual(co.probe_passed(), (False, 'permission probe author flags do not match this run'))
 
     def test_a_hand_written_or_swapped_report_does_not_authorize_a_claude_author(self):              # P0-3c F6
         co, out = self.probe()
@@ -1362,7 +1481,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertFalse(out['attempts']['write_rel']['tool_use_seen'])
         self.assertEqual(self.probe({'replace_all_false': True})[1]['status'], 'PASS')              # a default-valued replace_all is harmless
 
-    def test_sibling_directories_are_listed_without_their_mtime_but_sibling_files_are_not(self):   # P0-3c R1 D2
+    def test_documented_residual_a_silent_write_inside_an_existing_sibling_dir_still_passes_but_a_sibling_file_does_not(self):   # P0-3c R1 D2, P0-3d G2
         shared, keep = self.h.run_dir.parent / 'shared-run', self.h.run_dir.parent / 'keep.txt'
         shared.mkdir()
         keep.write_text('original-content')
