@@ -57,7 +57,7 @@ RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheape
 PROBE_SURFACE_VERSION = 9
 # Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
 VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
-OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'reason'})  # command line only, plus any accept_*
+OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'reason'})  # command line only, plus any accept_*
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -1445,7 +1445,7 @@ class Coordinator:
                 'codex_config_sha256': self._codex_policy_digest(),
             })
         else:
-            flags.update({'permission_mode': 'acceptEdits',
+            flags.update({'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
                           'non_bash_run_state_edit_access': 'denied by Edit/Write path rules'})
         return flags
@@ -1509,6 +1509,25 @@ class Coordinator:
         return False, (f'unverified codex sandbox contract: {version}{voided}; run permission-probe on this version '
                        'or pass --accept-unverified-codex-cli --reason TEXT')
 
+    def claude_author_verified(self) -> tuple[bool, str]:
+        """A Claude author dispatches only on a Claude author probe PASS (P0-3b) or a current operator opt-in."""
+        digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
+        if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
+            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest}
+            self.save()
+        if optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided'):
+            return True, ''
+        try:
+            probed = json.loads((self.run_dir / 'permission-probe.json').read_text()).get(
+                'author_permission_probe', {}).get('claude_author_status') == 'PASS'
+        except (OSError, ValueError, AttributeError):
+            probed = False
+        if probed and self.probe_passed()[0]: return True, ''
+        voided = '; the earlier operator opt-in is void (author flags changed)' if optin.get('voided') else ''
+        return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
+                       'author permission-probe passes (P0-3b) or the operator opts in with `run '
+                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided)
+
     def _codex_sandbox_profile_args(self) -> list[str]:
         if not (verified := self.codex_contract_verified())[0]:
             raise ValueError(verified[1])
@@ -1528,6 +1547,19 @@ class Coordinator:
     def reviewer_flags_digest(self) -> str:
         raw = json.dumps(self.reviewer_flags(), sort_keys=True, separators=(',', ':')).encode()
         return hashlib.sha256(raw).hexdigest()
+
+    def _claude_author_edit_rules(self, workspace: Optional[Path] = None) -> tuple[list[str], list[str]]:
+        """Path-scoped Edit rules for the Claude author (they cover Write too): only the effective workspace is editable."""
+        workspace, context = Path(workspace or self.workspace).resolve(), self.context.resolve()
+        homes = [Path.home().resolve() / name for name in ('.claude', '.codex', '.ssh', '.aws')]
+        roots = [context, self.run_dir.resolve(), *homes]
+        if (re.search(r'[*?\[\]{}(),]', str(workspace)) or workspace in context.parents
+                or any(root == workspace or root in workspace.parents for root in roots)):
+            raise ValueError('the workspace must not be the filesystem root, hold the context dir, sit inside the context, '
+                             'run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), or hold rule metacharacters')
+        rule = lambda path, tail: f'Edit(//{path.as_posix().lstrip("/")}{tail})'
+        # No '//parent/*' sibling deny: gitignore-style matching could cover the workspace itself; siblings are not allowed anyway.
+        return [rule(workspace, '/**')], [rule(context, '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]
 
     def _claude_sandbox_settings(self, role: str) -> dict:
         """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
@@ -2826,7 +2858,7 @@ class Coordinator:
             return self.args.reviewer_model, self.args.reviewer_effort
         return self.args.gate_model, self.args.gate_effort
 
-    def _claude_command(self, role: str, schema_path: Path, fresh: bool) -> list[str]:
+    def _claude_command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
         model, effort = self._model_effort(role)
         cmd = [self.args.claude_bin, '-p', '--model', model, '--effort', effort,
                '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
@@ -2841,8 +2873,12 @@ class Coordinator:
             # that may already edit and run Bash. Read-only roles keep it denied.
             subagents = self.args.author_subagents == 'on'
             tools = 'Read,Grep,Glob,Bash,Edit,Write' + (',Agent' if subagents else '')
-            cmd += ['--permission-mode', 'acceptEdits', '--tools', tools, '--allowedTools', tools,
+            allow, deny = self._claude_author_edit_rules(workspace)
+            allowed = 'Read,Grep,Glob,Bash' + (',Agent' if subagents else '') + ',' + ','.join(allow)
+            cmd += ['--permission-mode', 'acceptEdits', '--tools', tools, '--allowedTools', allowed,
                     '--disallowedTools', 'NotebookEdit' if subagents else 'NotebookEdit,Agent']
+            for rule in deny:  # separate arguments, as for the reviewer's Bash rules; the first --disallowedTools is unchanged
+                cmd += ['--disallowedTools', rule]
         else:
             exact_commands = self.reviewer_commands()
             if role == 'probe' and self._probe_sandbox_commands:
@@ -2877,9 +2913,9 @@ class Coordinator:
             cmd += ['resume', self.state['sessions'][role]]
         return cmd + ['-']
 
-    def command(self, role: str, schema_path: Path, fresh: bool) -> list[str]:
+    def command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
         vendor = self._role_vendor(role)
-        return (self._claude_command(role, schema_path, fresh) if vendor == 'claude'
+        return (self._claude_command(role, schema_path, fresh, workspace) if vendor == 'claude'
                 else self._codex_command(role, schema_path, fresh))
 
     def _author_prompt(self) -> str:
@@ -3400,7 +3436,7 @@ class Coordinator:
         before, manifest = git_snapshot(snapshot_workspace)
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
-        command = self.command(role, schema_path, fresh)
+        command = self.command(role, schema_path, fresh, active_workspace)
         command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
         now = time.time()
         receipt = {'sequence': seq, 'role': role, 'phase': phase, 'vendor': self._role_vendor(role),
@@ -4595,6 +4631,9 @@ class Coordinator:
         if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
+        if self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+                and not (ok := self.claude_author_verified())[0]:
+            raise ValueError(ok[1])
         return self._drive_loop()
 
     def fake_drive(self) -> str:
@@ -5335,7 +5374,12 @@ def parser() -> argparse.ArgumentParser:
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--accept-unverified-codex-cli', action='store_true',
                    help='operator override: run a Codex author on an unverified codex-cli version (needs --reason)')
-    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version')
+    p.add_argument('--accept-unverified-claude-author', action='store_true',
+                   help='operator opt-in: run a Claude author with path-scoped Edit rules but no probe PASS (needs --reason; '
+                        'with run, resume or reject). Persisted and re-applied on restore until the author flags change. '
+                        'The Edit path boundary is not yet verified against symlink or hardlink redirection created '
+                        'inside the workspace (P0-3b probes it)')
+    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version or Claude author')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
@@ -5475,9 +5519,16 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
     co = Coordinator(args)
-    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):  # restored from state
-        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
-        return 2
+    if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
+            and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
+        if args.accept_unverified_claude_author:
+            co.state['claude_author_override'] = {
+                'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
+                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+            co.save()
+        if not (claude_ok := co.claude_author_verified())[0]:
+            print('REFUSED: ' + claude_ok[1])
+            return 2
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -5572,9 +5623,9 @@ def main(argv=None) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
-    if bool(args.accept_unverified_codex_cli) != bool((args.reason or '').strip()) or (
-            args.accept_unverified_codex_cli and args.action not in ('run', 'resume', 'reject')):
-        print('REFUSED: --accept-unverified-codex-cli needs --reason and run, resume or reject')
+    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author
+    if bool(accepts) != bool((args.reason or '').strip()) or (accepts and args.action not in ('run', 'resume', 'reject')):
+        print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author needs --reason and run, resume or reject')
         return 2
     try:
         resolve_role_model_defaults(args)
@@ -5582,8 +5633,12 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
-    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args):
-        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b)')
+    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
+            and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
+            and not restores_run(args):
+        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
+              'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
+              '--reason TEXT` (permission-probe does not take the flag)')
         return 2
     if not restores_run(args) and (issue := gate_surface_issue(args)):
         print('REFUSED: ' + issue)

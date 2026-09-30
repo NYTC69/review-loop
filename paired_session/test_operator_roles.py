@@ -200,7 +200,8 @@ class CodexContractTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 2, refused.stdout)
         self.assertIn('unverified codex sandbox contract', refused.stdout)
         self.assertIsNone(self.recorded_override())
-        self.assertEqual(rc.OPERATOR_ONLY_DESTS, {'accept_unverified_codex_cli', 'reason'})
+        self.assertEqual(rc.OPERATOR_ONLY_DESTS,
+                         {'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'reason'})
 
     def test_operator_only_keys_are_refused_in_a_config_file(self):
         config = self.h.workspace / '.review-loop' / 'paired-session.json'
@@ -590,6 +591,252 @@ class RoleModelTests(unittest.TestCase):
             self.assertEqual(co.probe_passed(), (True, ''))
             co.args.gate_vendor = 'codex'                       # reviewer surface probed was claude
             self.assertEqual(co.probe_passed(), (False, 'permission probe reviewer vendor is not the gate vendor'))
+
+
+OPT_IN = ['--accept-unverified-claude-author', '--reason', 'checked by hand']
+REFUSAL = 'Claude author is limited to the fake test harness'
+STAMP = r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'
+
+
+class ClaudeAuthorTests(unittest.TestCase):
+    """P0-3a: path-scoped Claude author file rules; probe-or-explicit-opt-in replaces the hard refusal."""
+
+    def setUp(self):
+        self.h = trc.RealCoordinatorTests()
+        self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        self.addCleanup(self.h.tearDown)
+
+    def co(self, *extra):
+        # Same flags as self.h.command() so a CLI call can restore this coordinator's saved run.
+        return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', '10', '--author-effort', 'low',
+                                  '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                  '--test-command', 'python3 -m unittest', *extra)
+
+    def cli(self, action, *extra):
+        """In-process main() with the fake-harness bypass off, as on a real operator machine."""
+        command = self.h.command(*BUG_REPORT_FLAGS, *extra)
+        command[2] = action
+        out = io.StringIO()
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                contextlib.redirect_stdout(out):
+            code = rc.main(command[2:])
+        return types.SimpleNamespace(returncode=code, stdout=out.getvalue())
+
+    def state(self):
+        return json.loads((self.h.run_dir / 'state.json').read_text())
+
+    def author_argv(self, co):
+        schema = self.h.root / 'schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        return co.command('author', schema, False)
+
+    @staticmethod
+    def author_deny(argv):
+        """Every deny rule in force: the settings' run_dir rule plus the author's separate --disallowedTools rules."""
+        settings = json.loads(argv[argv.index('--settings') + 1])
+        return settings['permissions']['deny'] + [
+            argv[i + 1] for i, v in enumerate(argv) if v == '--disallowedTools' and argv[i + 1].startswith('Edit(')]
+
+    @staticmethod
+    def denied(rule, path):
+        """The documented rule forms: '//p/**' is everything under p, '//p/*' only the direct children of p."""
+        pattern = rule[len('Edit('):-1].replace('~', str(Path.home()), 1)
+        pattern = pattern[1:] if pattern.startswith('//') else pattern
+        base = pattern.rsplit('/', 1)[0]
+        if pattern.endswith('/**'): return str(path).startswith(base.rstrip('/') + '/')
+        return str(Path(path).parent) == base
+
+    def test_author_argv_is_path_scoped_and_denies_everything_outside_the_workspace(self):
+        co = self.co()
+        argv = self.author_argv(co)
+        allowed = argv[argv.index('--allowedTools') + 1].split(',')
+        ws, ctx = co.workspace.resolve(), co.context.resolve()
+        self.assertNotIn('Edit', allowed)
+        self.assertNotIn('Write', allowed)
+        self.assertEqual([r for r in allowed if r.startswith(('Edit', 'Write'))],
+                         ['Edit(//' + ws.as_posix().lstrip('/') + '/**)'])
+        self.assertIn('Edit,Write', argv[argv.index('--tools') + 1])            # availability only
+        settings = json.loads(argv[argv.index('--settings') + 1])
+        deny = self.author_deny(argv)
+        self.assertEqual(argv.count('--settings'), 1)
+        for rule in ('Edit(//' + co.run_dir.as_posix().lstrip('/') + '/**)', 'Edit(//' + ctx.as_posix().lstrip('/') + '/**)',
+                     'Edit(~/.claude/**)', 'Edit(~/.codex/**)',
+                     'Edit(~/.ssh/**)', 'Edit(~/.aws/**)'):
+            self.assertIn(rule, deny)
+        deny_write = [Path(p) for p in settings['sandbox']['filesystem']['denyWrite']]
+        self.assertTrue(any(p == co.context or p in co.context.parents for p in deny_write))   # context sits under run_dir
+        schema = self.h.root / 'schema.json'                                    # other roles are unchanged
+        reviewer = co._claude_command('reviewer', schema, False)
+        self.assertEqual(reviewer.count('--disallowedTools'), 1)
+        self.assertEqual(len(json.loads(reviewer[reviewer.index('--settings') + 1])['permissions']['deny']), 1)
+
+    def test_no_deny_rule_matches_a_path_inside_the_workspace(self):
+        co = self.co()
+        ws = co.workspace.resolve()
+        argv = self.author_argv(co)
+        deny = self.author_deny(argv)
+        for inside in (ws / 'a.py', ws / 'sub' / 'dir' / 'b.py', ws / '.git' / 'config'):
+            for rule in deny:
+                self.assertFalse(self.denied(rule, inside), (rule, inside))
+        for outside in (co.context / 'workitem.md', co.run_dir / 'state.json',
+                        Path.home() / '.ssh' / 'id', Path.home() / '.claude' / 'x'):
+            self.assertTrue(any(self.denied(rule, outside) for rule in deny), outside)
+        allow = co._claude_author_edit_rules()[0]                               # siblings: not allowed, no '//parent/*' deny
+        self.assertFalse(any(self.denied(rule, ws.parent / 'sibling') for rule in allow))
+        self.assertFalse(any(rule.endswith(ws.parent.as_posix().lstrip('/') + '/*)') for rule in deny))
+        for bad in (co.workspace.parent / 'we(ird', Path.home() / '.ssh' / 'proj', co.context.parent):
+            co.workspace = bad
+            with self.assertRaisesRegex(ValueError, 'workspace must not'):
+                co._claude_author_edit_rules()
+
+    def test_actions_that_never_dispatch_an_author_are_not_blocked_by_a_void_opt_in(self):
+        self.cli('run', '--author-vendor', 'claude', *OPT_IN)
+        state = self.state()
+        state['claude_author_override']['author_flags_digest'] = '0' * 64            # stale: void on the next check
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        for action, extra in (('note', ['--text', 'n']), ('accept', []), ('abort', []), ('snapshot', []),
+                              ('permission-probe', [])):
+            self.assertNotIn(REFUSAL, self.cli(action, *extra).stdout, action)
+        self.assertIn(REFUSAL, self.cli('reject', '--text', 'x').stdout)             # dispatching actions still refuse
+        self.assertIn(REFUSAL, self.cli('resume').stdout)
+
+    def test_the_edit_rules_refuse_a_workspace_in_a_denied_root_or_the_filesystem_root(self):
+        co = self.co()
+        for bad in (Path('/'), co.context / 'ws', co.run_dir / 'ws', Path.home() / '.aws',
+                    Path.home() / '.codex' / 'p'):
+            with self.assertRaisesRegex(ValueError, 'workspace must not'):
+                co._claude_author_edit_rules(bad)
+        allow = co._claude_author_edit_rules(Path('/x'))[0]
+        self.assertEqual(allow, ['Edit(//x/**)'])
+        with patch.object(co, 'workspace', Path('/')):                          # surfaced as a clear REFUSED by main()
+            with self.assertRaisesRegex(ValueError, 'filesystem root'):
+                co.author_flags()
+
+    def test_every_allow_rule_is_joined_into_the_author_allowed_tools(self):
+        co = self.co()
+        deny = co._claude_author_edit_rules()[1]
+        with patch.object(co, '_claude_author_edit_rules', return_value=(['Edit(//a/**)', 'Edit(//b/**)'], deny)):
+            argv = self.author_argv(co)
+        allowed = argv[argv.index('--allowedTools') + 1].split(',')
+        self.assertEqual([r for r in allowed if r.startswith('Edit(')], ['Edit(//a/**)', 'Edit(//b/**)'])
+
+    def test_the_rules_bind_to_the_effective_workspace_override(self):
+        co = self.co()
+        other = (self.h.root / 'probe-ws').resolve()
+        other.mkdir()
+        schema = self.h.root / 'schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        argv = co.command('author', schema, False, other)
+        allowed = argv[argv.index('--allowedTools') + 1].split(',')
+        self.assertEqual([r for r in allowed if r.startswith('Edit(')], ['Edit(//' + other.as_posix().lstrip('/') + '/**)'])
+        self.assertNotIn('Edit(//' + co.workspace.resolve().as_posix().lstrip('/') + '/**)', allowed)
+        self.assertNotIn(co.workspace.resolve().as_posix().lstrip('/'), ' '.join(self.author_deny(argv)))
+
+    def test_author_flags_record_the_exact_rules_and_the_digest_binds_them(self):
+        co = self.co()
+        flags = co.author_flags()
+        allow, deny = co._claude_author_edit_rules()
+        self.assertEqual(flags['claude_author_edit_rules'], (allow, deny))
+        digest = co.author_flags_digest()
+        with patch.object(co, '_claude_author_edit_rules', return_value=(allow, [*deny, 'Edit(//extra/**)'])):
+            self.assertNotEqual(co.author_flags_digest(), digest)
+        with patch.object(co, '_claude_author_edit_rules', return_value=([*allow, 'Edit(//extra/**)'], deny)):
+            self.assertNotEqual(co.author_flags_digest(), digest)
+
+    def test_a_claude_author_is_refused_without_the_opt_in_at_start_and_on_restore(self):
+        started = self.cli('run', '--author-vendor', 'claude')
+        self.assertEqual(started.returncode, 2)
+        self.assertIn(REFUSAL, started.stdout)
+        self.assertIn('--accept-unverified-claude-author', started.stdout)
+        self.assertFalse((self.h.run_dir / 'state.json').exists())
+        self.co()                                                               # a saved Claude-author run, no opt-in
+        restored = self.cli('reject', '--text', 'x')
+        self.assertEqual(restored.returncode, 2)
+        self.assertIn(REFUSAL, restored.stdout)
+        self.assertNotIn('claude_author_override', self.state())
+        self.cli('reject', '--text', 'x', *OPT_IN)                              # the opt-in records and persists ...
+        self.assertNotIn(REFUSAL, self.cli('reject', '--text', 'x').stdout)     # ... while the author flags are unchanged
+        co = self.co()
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                patch.object(co, '_drive_loop', side_effect=AssertionError('dispatched')):
+            self.assertTrue(co.claude_author_verified()[0])
+            with self.assertRaisesRegex(AssertionError, 'dispatched'):
+                co.drive()                                                      # drive() directly passes with a current opt-in
+            co.state['claude_author_override']['actor'] = 'author'
+            with self.assertRaisesRegex(ValueError, REFUSAL):
+                co.drive()                                                      # ... and refuses without one
+
+    def test_the_opt_in_is_recorded_with_actor_reason_time_and_the_author_flags_digest(self):
+        result = self.cli('run', '--author-vendor', 'claude', *OPT_IN)
+        self.assertIn('permission-probe.json is missing', result.stdout)        # past the guard, at the probe gate
+        record = self.state()['claude_author_override']
+        self.assertEqual((record['actor'], record['reason']), ('operator', 'checked by hand'))
+        self.assertRegex(record['time'], STAMP)
+        self.assertEqual(record['author_flags_digest'], self.co().author_flags_digest())
+        self.assertNotIn('voided', record)
+
+    def test_the_opt_in_is_operator_only_and_needs_a_reason(self):
+        self.assertIn('accept_unverified_claude_author', rc.OPERATOR_ONLY_DESTS)
+        for extra in (['--accept-unverified-claude-author'], ['--accept-unverified-claude-author', '--reason', ' ']):
+            self.assertIn('needs --reason', self.cli('run', '--author-vendor', 'claude', *extra).stdout)
+        self.assertIn('needs --reason and run, resume or reject', self.cli(
+            'permission-probe', '--author-vendor', 'claude', *OPT_IN).stdout)
+        config = self.h.workspace / '.review-loop' / 'paired-session.json'
+        config.parent.mkdir()
+        config.write_text(json.dumps({'accept_unverified_claude_author': True}))
+        self.assertIn('unsupported paired-session config keys', self.cli('run', '--author-vendor', 'claude').stdout)
+        config.unlink()
+        self.co()                                                               # a saved run carrying the flag ...
+        state = self.state()
+        state['config'].update({'accept_unverified_claude_author': True, 'reason': 'injected'})
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        refused = self.cli('reject', '--text', 'x')                             # ... is not an opt-in
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn(REFUSAL, refused.stdout)
+        self.assertNotIn('claude_author_override', self.state())
+        (self.h.run_dir / 'state.json').write_text(json.dumps({**self.state(), 'config': {
+            k: v for k, v in self.state()['config'].items() if not k.startswith('accept_') and k != 'reason'}}))
+        forged = self.co()                                                      # nor is a record naming another actor
+        forged.state['claude_author_override'] = {'actor': 'author', 'reason': 'x',
+                                                  'author_flags_digest': forged.author_flags_digest()}
+        self.assertFalse(forged.claude_author_verified()[0])
+
+    def test_the_opt_in_is_voided_when_the_author_flags_change_and_never_revives(self):
+        self.cli('run', '--author-vendor', 'claude', *OPT_IN)
+        co = self.co()
+        self.assertTrue(co.claude_author_verified()[0])
+        with patch.object(co, 'author_flags_digest', return_value='f' * 64):    # flags A -> B
+            self.assertFalse(co.claude_author_verified()[0])
+        voided = self.state()['claude_author_override']['voided']
+        self.assertEqual(voided['digest_seen'], 'f' * 64)
+        self.assertRegex(voided['time'], STAMP)
+        ok, message = self.co().claude_author_verified()                        # flags B -> A: the opt-in stays void
+        self.assertFalse(ok)
+        self.assertIn('void', message)
+        self.assertEqual(self.state()['claude_author_override']['voided'], voided)
+        self.assertEqual(self.cli('reject', '--text', 'x', '--author-vendor', 'claude').returncode, 2)
+        again = self.cli('reject', '--text', 'x', '--author-vendor', 'claude', *OPT_IN)   # only a fresh flag re-accepts
+        self.assertNotIn(REFUSAL, again.stdout)
+        self.assertNotIn('voided', self.state()['claude_author_override'])
+
+    def test_a_claude_author_probe_pass_is_the_other_way_forward(self):
+        co = self.co()
+        self.assertFalse(co.claude_author_verified()[0])
+        probe = co.run_dir / 'permission-probe.json'
+        probe.write_text(json.dumps({'status': 'PASS'}))
+        self.assertFalse(co.claude_author_verified()[0])                        # a bare or forged file is not enough
+        with patch.object(co, 'probe_passed', return_value=(True, '')):
+            self.assertFalse(co.claude_author_verified()[0])                    # probe_passed alone is not enough
+            probe.write_text(json.dumps({'author_permission_probe': {'claude_author_status': 'PASS'}}))
+            self.assertTrue(co.claude_author_verified()[0])                     # both together are (P0-3b produces it)
+
+    def test_the_bug_report_config_with_the_opt_in_passes_validation_up_to_dispatch(self):
+        result = self.cli('run', *BUG_REPORT_FLAGS, *OPT_IN)
+        self.assertNotIn(REFUSAL, result.stdout)
+        self.assertNotIn('model', result.stdout.lower(), result.stdout)
+        self.assertIn('permission-probe.json is missing', result.stdout)        # stopped at the probe gate, not a guard
+        self.assertEqual(self.state()['claude_author_override']['actor'], 'operator')
 
 
 if __name__ == '__main__':
