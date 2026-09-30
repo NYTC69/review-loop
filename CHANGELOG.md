@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-01
+
+### v2.9.1：修 poker-news-bob 的 bug report（paired-session 仍是可选入口，默认 legacy）
+
+- **发布范围**：B 道 v2.9.1 分支（P0-1 至 PR1c）与 A 道（至 `2fc2bea`）。APPROVE 之后的生命周期（Step 3.4 之后的 FINISH、quality polish、DOCS、SECURITY、DELIVERY、CLOSE）仍只在 fake harness 中可用，真实 CLI 仍拒绝 `--lifecycle-mode on`；这些步骤由操作者自己完成。
+- **feat（P0-1/1b）**：角色模型可配置：`--author-model`、`--reviewer-model`、`--gate-model`、`--gate-vendor`（默认取 author 的相反厂商），可选 `allowed_models` 白名单；默认模型仍按 ADR-9（Claude `claude-opus-5-5`，Codex `gpt-6-luna`）。
+- **feat（P0-2*）**：Codex CLI 版本契约。未验证的版本（当前只验证 `codex-cli 0.157.0`）需要 `--accept-unverified-codex-cli --reason TEXT`，记录操作者、理由、时间和版本，版本变化即失效。
+- **feat（P0-3*）**：Claude author 在真实 CLI 上可用：一次性 cwd、Edit/Write 路径拒绝规则、Bash 沙箱、真实越界探测（含硬链接 Bash 写入）；探测未 PASS 时需 `--accept-unverified-claude-author --reason TEXT`。
+- **feat（P0-4/4b）**：`--accept-probe-skip --reason TEXT` 记录式跳过 permission probe（不能推翻当前 FAIL/UNKNOWN）；完全 PASS 的探测结果自动缓存在 `~/.cache/review-loop/probe-pass/`，按 flags、CLI 版本和规则指纹复用，7 天过期，按 fd 安全读取。
+- **fix（PR1/1b/1c，发版前 Opus 对抗性审查）**：coordinator 在作者工作区运行的 git 调用不再执行工作区可控的程序（fsmonitor、hooks、pager、external diff、textconv、filter 驱动、lazy fetch、传输协议、全局/系统配置）；作者改动 git 控制文件或使其不可读时，run 持久化为 HOLD。workspace profile 的角色/模型选择在写入 state 之前被拒绝（关闭 BACKLOG MEDIUM-1）。`adversarial_gate_invoke.py` 默认超时 570 秒。
+- **fix（B15b）**：legacy 协议的跨厂商审查规则：只用 `[CRITICAL]`/`[MINOR]`，无效结果阻断交付，每次收敛只跑一次；launcher 超时统一 570 秒。
+- **test（B16c）**：smoke 加固：review packet 唯一且不在代码块里、no-op 行逐格校验、Metadata 限定在本节、所有 PASS 路径都检查加载的是被测插件。
+- **已知限制**：探测缓存没有 HMAC；Claude author 的 Bash 写 `/tmp` 未被探测；FAIL 后删除 run 目录再在同路径重建时缓存可能复活（v2.9.2）；fake Q 测试子进程没有写沙箱（打开真实 Q 交付前必须修，A 道 R44-QS）；gate 默认用 author 厂商的 WI 放在 v2.9.2。
+
 ## 2026-09-30
 
 ### v2.9.0 预览版：paired-session 可选入口（实验性，默认仍是 legacy）
