@@ -422,3 +422,7 @@ real activation or bypasses tests/tree binding.
 Q final/SECURITY and source APPROVE or nonempty REVISE with only non-security
 MINOR/LOW findings use APPROVE_WITH_ADVISORY. Empty REVISE remains blocked.
 Q source and bundle advisories stay OPEN in the finding ledger before acceptance.
+
+The fake DELIVERY intake re-reads protected Q bundle and provider turn receipts,
+current program hashes, source tests, Q tree and P no-op receipts before any
+Git write. A pending, relabeled, later-turn or failed-test proof refuses intake.

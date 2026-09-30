@@ -3929,6 +3929,74 @@ sys.exit(result.returncode)
                 self.assertNotIn('fake_q_bundle', co.state)
                 self.assertIn('fake_q_bundle_pending', co.state)
 
+    def test_fake_q_delivery_verifier_rechecks_disk_and_returns_detached_proof(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        row, root, revision = rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        self.assertEqual(row, co.state['fake_q_bundle'])
+        self.assertEqual(revision.tree_oid, row['source']['oid'])
+        self.assertEqual(str(root.root), row['source']['root'])
+        row['source']['proof']['advisories'].append({'local': True})
+        self.assertNotIn({'local': True}, co.state['fake_q_review']['proof']['advisories'])
+        binary = Path(co.args.codex_bin)
+        original = binary.read_bytes()
+        binary.write_bytes(original + b'\n# changed after Q\n')
+        try:
+            with self.assertRaisesRegex(ValueError, 'program binding changed'):
+                rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        finally:
+            binary.write_bytes(original)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_q_delivery_verifier_refuses_each_proof_guard(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        state = rc.copy.deepcopy(co.state)
+        source = state['fake_q_review']
+        source_turn = next(t for t in state['turns'] if t['sequence'] == source['sequence'])
+        turn_path = co.evidence / f"{source_turn['sequence']:03d}-q-reviewer.receipt.json"
+        original_turn = turn_path.read_bytes()
+        bundle_path = co.evidence / (state['fake_q_bundle']['id'] + '-q-bundle.json')
+        original_bundle = bundle_path.read_bytes()
+        for case in ('pending', 'later', 'relabel', 'proof', 'disk-turn', 'failed-source-test',
+                     'missing-proof', 'p-noop', 'preflight', 'role', 'source-alias'):
+            with self.subTest(case=case):
+                co.state = rc.copy.deepcopy(state)
+                row = co.state['fake_q_bundle']
+                if case == 'pending':
+                    co.state['fake_q_bundle_pending'] = {'interrupted': True}
+                elif case == 'later':
+                    co.state['sequence'] += 1
+                elif case == 'relabel':
+                    row['status'] = 'UNREVIEWED'
+                elif case == 'proof':
+                    row['proofs'][-1]['oid'] = 'a' * 40
+                elif case == 'disk-turn':
+                    turn_path.write_text('{}')
+                elif case == 'failed-source-test':
+                    turn = next(t for t in co.state['turns'] if t['sequence'] == source['sequence'])
+                    turn['observed_commands'].append({'command': co.args.test_command, 'exit_code': 1})
+                    turn_path.write_text(json.dumps(turn))
+                elif case == 'missing-proof':
+                    row['proofs'].pop()
+                elif case == 'p-noop':
+                    row['p_noops'][0]['output_oid'] = 'a' * 40
+                elif case == 'preflight':
+                    row['scanned_paths'] = []
+                elif case == 'role':
+                    row['proofs'][-1]['role'] = 'gate'
+                else:
+                    row['source']['proof']['advisories'].append({'unexpected': True})
+                if case not in ('pending', 'later', 'disk-turn', 'failed-source-test'):
+                    bundle_path.write_text(json.dumps(row))
+                try:
+                    with self.assertRaises(ValueError):
+                        rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+                finally:
+                    turn_path.write_bytes(original_turn)
+                    bundle_path.write_bytes(original_bundle)
+                self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()
         state = rc.copy.deepcopy(co.state)
