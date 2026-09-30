@@ -3,6 +3,10 @@
 
 ## P0 — blocker / must-do-now
 
+- [new] **P0 operator-configurable roles on the real CLI (v2.9.1)** (highest priority; also fixes the M6 blocker). (added 2026-09-30)
+  - Plan (approved by Yuan 13:40 JST 09-30): `.compass/results/2026-09-30_wi-p0-operator-roles-plan.md`. Bug report: `~/3Cats/poker-news-bot/.compass/results/2026-09-24_ab_pipeline/review_loop_290_bug_report.md`. Batches P0-1 flexible models, P0-2 codex CLI version, P0-3 Claude author boundary, P0-4 `--skip-probe`, P0-5 live acceptance on compass with M6.
+  - Progress (2026-09-30, laneb P0-2): the exact `codex-cli 0.157.0` pin is now `VERIFIED_CODEX_CLI_VERSIONS` plus a per-run probe PASS for the installed version, or the operator override `--accept-unverified-codex-cli --reason TEXT` (recorded in run state, voided by a version change). 0.159.2 is not yet in the set; add it only after a real probe PASS on this machine. Tests: `paired_session/test_operator_roles.py`. Opus R1 APPROVE_WITH_ADVISORY. Open advisories: the contract is checked once at entry, not before each author dispatch (a mid-run CLI upgrade is not caught); an UNAVAILABLE version message points at the override, which cannot record it; `paired_session/docs/1c-safety-controls.md` row 2 still says "pinned"; a stale override stays in state and revives if the version returns.
+
 ## P1 — high priority
 
 - [new] **Workstream 1 — productize paired-session as the daily default, then deprecate legacy invocation.** (highest priority; do before protocol-optimization items) (amended by ADR-6)

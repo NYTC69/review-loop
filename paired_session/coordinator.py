@@ -55,6 +55,8 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 PROBE_SURFACE_VERSION = 9
+# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
+VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -1472,9 +1474,25 @@ class Coordinator:
     def _author_environment(self) -> dict:
         return {**os.environ, 'TMPDIR': str(self.author_temp_dir)}
 
+    def codex_contract_verified(self) -> tuple[bool, str]:
+        """Verified set, or this run's own probe PASS / operator override for the installed version."""
+        version = self._codex_cli_version()
+        override = self.state.get('codex_cli_override') or {}
+        if version in VERIFIED_CODEX_CLI_VERSIONS: return True, ''
+        if version != 'UNAVAILABLE':
+            if override.get('version') == version and override.get('actor') == 'operator': return True, ''
+            try:
+                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+                if (report.get('status') in ('PASS', 'PASS_RESIDUAL_RISK')
+                        and report['author_flags']['codex_cli_version'] == version): return True, ''
+            except (OSError, ValueError, KeyError, TypeError, AttributeError): pass
+        voided = f'; the operator override for {override["version"]} is void' if override.get('version') else ''
+        return False, (f'unverified codex sandbox contract: {version}{voided}; run permission-probe on this version '
+                       'or pass --accept-unverified-codex-cli --reason TEXT')
+
     def _codex_sandbox_profile_args(self) -> list[str]:
-        if self._codex_cli_version() != 'codex-cli 0.157.0':
-            raise ValueError('unsupported codex sandbox contract; expected codex-cli 0.157.0')
+        if not (verified := self.codex_contract_verified())[0]:
+            raise ValueError(verified[1])
         policy = self._author_sandbox_overrides()
         if (policy['sandbox'] != 'workspace-write' or policy['sandbox_workspace_write.network_access'] is not False
                 or policy['sandbox_workspace_write.exclude_tmpdir_env_var'] is not False
@@ -5281,6 +5299,9 @@ def parser() -> argparse.ArgumentParser:
                    help='with resume, run only the one-time polish round on an older DONE run')
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
+    p.add_argument('--accept-unverified-codex-cli', action='store_true',
+                   help='operator override: run a Codex author on an unverified codex-cli version (needs --reason)')
+    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
@@ -5419,6 +5440,16 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.accept()
         print(status)
         return 0
+    if (args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+            and not lifecycle_spine.fake_dispatch_guard(args)):
+        if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
+            co.state['codex_cli_override'] = {
+                'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
+                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+            co.save()
+        if not (verified := co.codex_contract_verified())[0]:
+            print('REFUSED: ' + verified[1])
+            return 2
     if args.action == 'reject':
         if not args.skip_probe:
             passed, reason = co.probe_passed()
@@ -5478,6 +5509,10 @@ def main(argv=None) -> int:
         return 2
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
+        return 2
+    if bool(args.accept_unverified_codex_cli) != bool((args.reason or '').strip()) or (
+            args.accept_unverified_codex_cli and args.action not in ('run', 'resume', 'reject')):
+        print('REFUSED: --accept-unverified-codex-cli needs --reason and run, resume or reject')
         return 2
     try:
         resolve_role_model_defaults(args)
