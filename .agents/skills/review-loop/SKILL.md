@@ -32,7 +32,7 @@ reviewer jobs (never in Claude Code or for local Codex Reviewer agents); load
 `context-persist` only when that optional substep is applicable.
 
 Single default Claude-CLI reviewer job:
-`python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model} --stage {planning|execution} --role reviewer --timeout-seconds 600`
+`python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model} --stage {planning|execution} --role reviewer --timeout-seconds 570`
 Rules: `docs/protocol/runtime-codex.md` §Reviewer dispatch.
 
 The caller owns the session file and lock. Preserve unrelated dirty work;

@@ -6,7 +6,7 @@
       "id": "codex_reviewer_wrapper_runtime_dispatch",
       "kind": "contains",
       "path": "docs/protocol/reviewer-runtime.md",
-      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 600"
+      "needle": "python3 <support-root>/scripts/run_claude_reviewer.py --session-id <slot> --parent-session-id <session-id> --model <resolved-model> --stage <planning|execution|polish> --role <reviewer|specialist-name> --timeout-seconds 570"
     },
     {
       "id": "codex_reviewer_wrapper_planning_dispatch",
@@ -3696,6 +3696,18 @@
       "kind": "contains",
       "path": "docs/protocol/reviewer-runtime.md",
       "needle": "`cross-vendor review: unavailable (<reason>)`"
+    },
+    {
+      "id": "cross_vendor_review_invalid_blocks_delivery",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "`cross-vendor review: invalid (<reason>)`"
+    },
+    {
+      "id": "cross_vendor_review_at_most_once_per_convergence",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "At most once per convergence: the pass never reruns for the same convergence."
     },
     {
       "id": "loader_call_standalone_bash_rule",

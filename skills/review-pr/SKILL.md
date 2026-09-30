@@ -91,7 +91,7 @@ Keep cwd in the task workspace and resolve the launcher against the support
 repository:
 
 ```sh
-python3 <support-root>/scripts/run_claude_reviewer.py --session-id <invocation_slot> --parent-session-id <session_id> --model <resolved-model> --stage polish --role <agent-name> --timeout-seconds 600
+python3 <support-root>/scripts/run_claude_reviewer.py --session-id <invocation_slot> --parent-session-id <session_id> --model <resolved-model> --stage polish --role <agent-name> --timeout-seconds 570
 ```
 
 Keep the existing judgment/cheap tier rules in the dispatch inventory. Its
