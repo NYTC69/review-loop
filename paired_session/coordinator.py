@@ -4680,7 +4680,8 @@ class Coordinator:
         proof = life['receipts'][-1] if life['receipts'] else {}
         if (life['stage'] != 'STOP_BEFORE_DELIVERY' or life['pending'] or self.state.get('active') or
                 self.state.get('uncertain_active') or proof.get('stage') != 'SECURITY' or
-                proof.get('status') != 'READY' or proof.get('output_oid') != life['candidate_oid'] or
+                proof.get('status') != 'READY' or proof.get('security_review') != 'APPROVE' or
+                proof.get('output_oid') != life['candidate_oid'] or
                 not self.state.get('closeout_item') or self.blocking_open_findings()):
             raise ValueError('Q needs current SECURITY pass and frozen item; resolve blockers or abort')
         ingest = self.state['fake_ingest_receipt']
@@ -4688,6 +4689,61 @@ class Coordinator:
         revision = candidate_tree.CandidateRevision(life['candidate_oid'], tuple(ingest['manifest']), 0)
         return q_proposal.materialize(baseline, revision, self.state['closeout_item'], c1, day)
 
+    def fake_q_review(self, c1, day):
+        proposal = self.fake_materialize_q(c1, day)
+        if self.state.get('fake_q_pending') or self.state.get('fake_q_review'):
+            raise ValueError('Q review already pending or completed; abort or resume its recovery')
+        ingest = self.state['fake_ingest_receipt']
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
+        oid = proposal['q_oid']
+        revision = candidate_tree.CandidateRevision(
+            oid, candidate_tree._manifest(env, baseline.tree_oid, oid), 0)
+        baseline = candidate_tree.replace(baseline, authorized_prefixes=(*baseline.authorized_prefixes, 'BACKLOG.md'))
+        candidate_tree._git(['update-ref', 'refs/paired-session/candidates/' + oid, oid], env=env)
+        checkout = candidate_tree.rebuild_candidate_from_oid(baseline, revision)
+        command = shlex.split(self.args.test_command)
+        if not command or Path(command[0]).name == 'env':
+            raise ValueError('Q test requires a direct executable')
+        executable = Path(resolve_test_executable(checkout.root, self.args.test_command)).resolve()
+        if any(root == executable or root in executable.parents for root in (self.workspace, self.run_dir)):
+            raise ValueError('Q test executable is under writable operator roots')
+        command[0] = str(executable)
+        test_id = str(uuid.uuid4())
+        pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
+                   'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch']}
+        self.state['fake_q_pending'] = pending
+        self.save()
+        test = subprocess.run(command, cwd=checkout.root, timeout=self.args.timeout, capture_output=True,
+                              env={'PATH': os.defpath, 'HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
+                                   'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'})
+        candidate_tree.verify_candidate_revision(checkout, revision)
+        receipt = {**pending, 'oid': oid, 'command': command, 'returncode': test.returncode,
+                   'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
+                   'stderr_sha256': hashlib.sha256(test.stderr).hexdigest(),
+                   'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
+        atomic_json(self.evidence / (test_id + '-q-test.json'), receipt)
+        if test.returncode:
+            raise ValueError('Q tests failed; abort or repair P and re-review')
+        self._fake_dispatching = True
+        try:
+            result = self.invoke('reviewer', 'EXEC',
+                                 f'Role: reviewer, fresh. Phase: EXEC. Candidate Q OID: {oid}.\n'
+                                 f'Run this test command exactly as written in one Bash call: {self.args.test_command}',
+                                 review_schema(), fresh=True, workspace_override=checkout.root)
+            candidate_tree.verify_candidate_revision(checkout, revision)
+            turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
+            if turn.get('error') or result['answer']['status'] != 'APPROVE' or result['answer']['full_review']:
+                raise ValueError('Q reviewer did not approve; abort or repair P')
+            reviewed = {**receipt, 'review_id': str(uuid.uuid4()), 'sequence': result['sequence'],
+                        'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index)}
+            atomic_json(self.evidence / (reviewed['review_id'] + '-q-review.json'), reviewed)
+            self.state['fake_q_review'] = reviewed
+            self.state.pop('fake_q_pending')
+            return reviewed
+        finally:
+            self._fake_dispatching = False
+            self.save()
     def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""
         if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or

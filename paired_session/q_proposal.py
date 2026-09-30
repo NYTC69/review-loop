@@ -14,6 +14,8 @@ def materialize(baseline, revision, frozen, c1, day):
     if not isinstance(c1, str) or len(c1) not in (40, 64) or set(c1) - set('0123456789abcdef'):
         raise ValueError('Q requires an exact C1 object ID')
     env = ct._git_env(GIT_DIR=str(baseline.git_dir))
+    if ct._git(['cat-file', '-t', c1], env=env) != 'commit':
+        raise ValueError('Q requires a C1 commit, not a tag')
     commit = ct._git_bytes(['cat-file', 'commit', c1], env=env)
     header = commit.decode().split('\n\n', 1)[0].splitlines()
     if ('tree ' + revision.tree_oid not in header or

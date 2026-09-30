@@ -3526,6 +3526,40 @@ sys.exit(result.returncode)
         with self.assertRaises(ValueError):
             co.accept()
 
+        cases = [('stage', lambda: co.state['lifecycle'].update(stage='EXEC')),
+                 ('pending', lambda: co.state['lifecycle'].update(pending={'id': 'pending'})),
+                 ('active', lambda: co.state.update(active={'sequence': 1})),
+                 ('uncertain', lambda: co.state.update(uncertain_active={'sequence': 1})),
+                 ('receipt-stage', lambda: co.state['lifecycle']['receipts'][-1].update(stage='DOCS')),
+                 ('receipt-status', lambda: co.state['lifecycle']['receipts'][-1].update(status='HOLD')),
+                 ('security-verdict', lambda: co.state['lifecycle']['receipts'][-1].update(security_review='REVISE')),
+                 ('oid', lambda: co.state['lifecycle']['receipts'][-1].update(output_oid='a' * 40)),
+                 ('item', lambda: co.state.pop('closeout_item'))]
+        for name, mutate in cases:
+            with self.subTest(guard=name):
+                co.state = rc.copy.deepcopy(state)
+                mutate()
+                before = rc.copy.deepcopy(co.state)
+                with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
+                    co.fake_materialize_q(c1, '2026-09-30')
+                self.assertEqual(co.state, before)
+        co.state = rc.copy.deepcopy(state)
+        with patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F001'}]):
+            with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
+                co.fake_materialize_q(c1, '2026-09-30')
+        reviewed = co.fake_q_review(c1, '2026-09-30')
+        self.assertEqual(reviewed['status'], 'UNREVIEWED')
+        self.assertEqual(reviewed['oid'], result['q_oid'])
+        self.assertEqual(reviewed['returncode'], 0)
+        self.assertEqual(json.loads((co.evidence / (reviewed['review_id'] + '-q-review.json')).read_text()), reviewed)
+        turn = next(t for t in co.state['turns'] if t['sequence'] == reviewed['sequence'])
+        self.assertEqual(turn['role'], 'reviewer')
+        self.assertEqual(turn['answer']['status'], 'APPROVE')
+        self.assertEqual(backlog.read_bytes(), original)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        with self.assertRaisesRegex(ValueError, 'pending or completed'):
+            co.fake_q_review(c1, '2026-09-30')
+
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()
         state = rc.copy.deepcopy(co.state)

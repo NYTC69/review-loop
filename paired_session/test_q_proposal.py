@@ -81,6 +81,13 @@ class QProposalTests(unittest.TestCase):
         self.assertNotIn('accepted', first)
         self.assertEqual(first['status'], 'UNREVIEWED')
 
+    def test_annotated_tag_cannot_stand_in_for_c1_commit(self):
+        raw = ('object ' + self.c1 + '\ntype commit\ntag alias\ntagger Fixture <f@example.test> '
+               '1 +0000\n\nTag C1\n').encode()
+        tag = ct._git_bytes(['mktag'], env=self.env, input_bytes=raw).decode().strip()
+        with self.assertRaisesRegex(ValueError, 'not a tag'):
+            self.materialize(c1=tag)
+
     def test_wrong_c1_tree_parent_or_multiple_parents_refuse(self):
         older = self.git('rev-parse', self.baseline.parent_head + '^')
         wrong = [self.commit(self.baseline.tree_oid, self.baseline.parent_head),
