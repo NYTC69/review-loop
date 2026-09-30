@@ -3738,12 +3738,14 @@ sys.exit(result.returncode)
         state = rc.copy.deepcopy(co.state)
         for role, verdict, severity, security, expected in [
                 ('reviewer', 'APPROVE', None, False, 'APPROVE'),
+                ('reviewer', 'APPROVE', 'MINOR', False, 'APPROVE_WITH_ADVISORY'),
                 ('reviewer', 'REVISE', 'LOW', False, 'APPROVE_WITH_ADVISORY'),
                 ('reviewer', 'REVISE', None, False, None),
                 ('reviewer', 'REVISE', 'MAJOR', False, None),
                 ('reviewer', 'REVISE', 'MINOR', True, None),
                 ('reviewer', 'HOLD', 'MINOR', False, None),
                 ('gate', 'approve', None, False, 'APPROVE'),
+                ('gate', 'approve', 'low', False, 'APPROVE_WITH_ADVISORY'),
                 ('gate', 'needs-attention', 'low', False, 'APPROVE_WITH_ADVISORY'),
                 ('gate', 'needs-attention', None, False, None),
                 ('gate', 'needs-attention', 'medium', False, None)]:
@@ -3763,6 +3765,169 @@ sys.exit(result.returncode)
                     proof['advisories'].append({'local': 'mutation'})
                     self.assertNotIn({'local': 'mutation'}, findings)
         self.assertEqual(co.state, state)
+
+    def test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        p_oid = co.state['lifecycle']['candidate_oid']
+        used = co.state['invocations_used']
+        co.args.max_invocations = used + 6
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        self.assertEqual(bundle['status'], 'REVIEWED')
+        self.assertEqual(bundle['source']['status'], 'UNREVIEWED')
+        self.assertEqual(co.state['fake_q_review']['status'], 'UNREVIEWED')
+        self.assertEqual([r['phase'] for r in bundle['proofs']], ['Q-GATE', 'Q-FINAL', 'Q-SECURITY'])
+        self.assertEqual({r['stage'] for r in bundle['p_noops']}, {'FINISH', 'POLISH-Q', 'DOCS'})
+        self.assertTrue(all(r['candidate_oid'] == r['output_oid'] == p_oid for r in bundle['p_noops']))
+        self.assertEqual(co.state['q_reserved'], 0)
+        self.assertEqual(co.state['invocations_used'], used + 5)
+        previous = bundle['source']['sequence']
+        for proof in bundle['proofs']:
+            turn = next(t for t in co.state['turns'] if t['sequence'] == proof['sequence'])
+            self.assertEqual(turn['phase'], proof['phase'])
+            self.assertEqual(turn['workspace'], bundle['source']['root'])
+            self.assertGreater(turn['sequence'], previous)
+            self.assertTrue(any(rc.observed_test_succeeded(c, co.args.test_command)
+                                for c in turn['observed_commands']))
+            previous = turn['sequence']
+        self.assertEqual(json.loads((co.evidence / (bundle['id'] + '-q-bundle.json')).read_text()), bundle)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        self.assertNotIn('fake_q_bundle_pending', co.state)
+        with self.assertRaisesRegex(ValueError, 'uncertain or unreserved'):
+            co.fake_q_complete(c1, '2026-09-30')
+
+    def test_fake_q_bundle_refuses_wrong_phase_missing_tools_and_relabeling(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        for kind in ('phase', 'workspace', 'earlier', 'missing-tools', 'gate-block', 'gate-empty-verdict', 'failed-test', 'relabel'):
+            with self.subTest(kind=kind):
+                co.state = rc.copy.deepcopy(source_state)
+                real_invoke = co.invoke
+                def invoke(*args, **kwargs):
+                    result = real_invoke(*args, **kwargs)
+                    turn = next(t for t in co.state['turns'] if t['sequence'] == result['sequence'])
+                    if kind == 'phase':
+                        turn['phase'] = 'EXEC'
+                    elif kind == 'workspace':
+                        turn['workspace'] = str(self.workspace)
+                    elif kind == 'earlier':
+                        turn['sequence'] = source_state['fake_q_review']['sequence']
+                        result['sequence'] = turn['sequence']
+                    elif kind == 'missing-tools':
+                        turn['observed_commands'] = []
+                    elif kind == 'gate-empty-verdict':
+                        turn['answer']['verdict'] = 'needs-attention'
+                    elif kind == 'failed-test':
+                        turn['observed_commands'].append({'command': co.args.test_command, 'exit_code': 1})
+                    return result
+                if kind == 'relabel':
+                    co.state['fake_q_review']['status'] = 'REVIEWED'
+                env = {'FAKE_GATE_BLOCK': '1'} if kind == 'gate-block' else {}
+                with patch.object(co, 'invoke', side_effect=invoke), patch.dict(os.environ, env):
+                    with self.assertRaises(ValueError):
+                        co.fake_q_complete(c1, '2026-09-30')
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+                self.assertFalse(co._fake_dispatching)
+
+    def test_fake_q_bundle_refuses_missing_noop_later_turn_and_short_reservation(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        for kind in ('missing-noop', 'noop-write', 'later-turn', 'reserved', 'budget'):
+            with self.subTest(kind=kind):
+                co.state = rc.copy.deepcopy(source_state)
+                co.args.max_invocations = 192
+                if kind == 'missing-noop':
+                    co.state['lifecycle']['receipts'] = [r for r in co.state['lifecycle']['receipts']
+                                                       if r['stage'] != 'FINISH']
+                elif kind == 'noop-write':
+                    next(r for r in reversed(co.state['lifecycle']['receipts'])
+                         if r['stage'] == 'DOCS')['output_oid'] = 'a' * 40
+                elif kind == 'later-turn':
+                    co.state['sequence'] += 1
+                elif kind == 'reserved':
+                    co.state['q_reserved'] = 5
+                else:
+                    co.args.max_invocations = co.state['invocations_used'] + 5
+                with patch.object(co, 'invoke', side_effect=AssertionError('preflight must not dispatch')) as dispatch:
+                    with self.assertRaisesRegex(ValueError, 'P no-op|uncertain or unreserved'):
+                        co.fake_q_complete(c1, '2026-09-30')
+                dispatch.assert_not_called()
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertNotIn('fake_q_bundle_pending', co.state)
+
+    def test_fake_q_bundle_keeps_minor_advisories_without_restarting_run(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        with patch.dict(os.environ, {'FAKE_Q_MINOR': '1'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        self.assertEqual(bundle['status'], 'REVIEWED')
+        reviewers = [r for r in bundle['proofs'] if r['role'] == 'reviewer']
+        self.assertEqual(len(reviewers), 2)
+        self.assertTrue(all(r['advisories'] and r['advisories'][0]['severity'] == 'MINOR' for r in reviewers))
+        self.assertFalse(co.state.get('fake_q_bundle_pending'))
+
+    def test_fake_q_gate_low_is_advisory_but_reviewer_security_and_major_block(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        with patch.dict(os.environ, {'FAKE_GATE_LOW': '1'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        self.assertEqual(bundle['status'], 'REVIEWED')
+        gate = bundle['proofs'][0]
+        self.assertEqual(gate['advisories'][0]['severity'], 'low')
+        turn = next(t for t in co.state['turns'] if t['sequence'] == gate['sequence'])
+        self.assertEqual(turn['answer']['verdict'], 'needs-attention')
+        for severity, security in [('MAJOR', ''), ('SECURITY', ''), ('MINOR', '1')]:
+            with self.subTest(severity=severity, security=security):
+                co.state = rc.copy.deepcopy(source_state)
+                with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_SEVERITY': severity,
+                                             'FAKE_Q_SECURITY_FLAG': security}):
+                    with self.assertRaisesRegex(ValueError, 'Q verdict is blocking or empty'):
+                        co.fake_q_complete(c1, '2026-09-30')
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertIn('fake_q_bundle_pending', co.state)
+
+    def test_fake_q_bundle_revise_minor_keeps_advisory_and_raw_verdict(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1'}):
+            bundle = co.fake_q_complete(c1, '2026-09-30')
+        reviewers = [proof for proof in bundle['proofs'] if proof['role'] == 'reviewer']
+        self.assertEqual(len(reviewers), 2)
+        for proof in reviewers:
+            self.assertEqual(proof['raw_verdict'], 'REVISE')
+            self.assertEqual(proof['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+            turn = next(t for t in co.state['turns'] if t['sequence'] == proof['sequence'])
+            self.assertEqual(turn['answer']['status'], 'REVISE')
+            self.assertEqual(proof['advisories'], turn['answer']['full_review'])
+            self.assertIsNot(proof['advisories'], turn['answer']['full_review'])
+        rows = [row for row in co.state['finding_ledger'] if row['source'] == 'q-reviewer']
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row['status'] == 'open' and row['advisory'] for row in rows))
+        ledger = (co.run_dir / 'findings-ledger.md').read_text()
+        self.assertTrue(all(row['id'] in ledger for row in rows))
+        self.assertEqual(bundle['status'], 'REVIEWED')
+
+    def test_fake_q_bundle_revise_major_security_and_empty_are_rejected(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        source_state = rc.copy.deepcopy(co.state)
+        for case in ('major', 'security', 'empty'):
+            with self.subTest(case=case):
+                co.state = rc.copy.deepcopy(source_state)
+                env = {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1'}
+                env.update({'FAKE_Q_SEVERITY': 'MAJOR'} if case == 'major' else
+                           {'FAKE_Q_SECURITY_FLAG': '1'} if case == 'security' else
+                           {'FAKE_Q_EMPTY_REVISE': '1'})
+                with patch.dict(os.environ, env):
+                    with self.assertRaisesRegex(ValueError, 'Q verdict is blocking or empty'):
+                        co.fake_q_complete(c1, '2026-09-30')
+                self.assertNotIn('fake_q_bundle', co.state)
+                self.assertIn('fake_q_bundle_pending', co.state)
 
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()

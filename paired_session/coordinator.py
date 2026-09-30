@@ -4788,6 +4788,65 @@ class Coordinator:
             self._fake_dispatching = False
             self.state.pop('pending_reviewer_result_sequence', None)
             self.save()
+    def fake_q_complete(self, c1, day):
+        source, root, revision = q_evidence.review_source(self, c1, day, observed_test_succeeded)
+        if (self._program_state()[1] or self.state.get('fake_q_bundle_pending') or
+                self.state.get('fake_q_bundle') or self.state['sequence'] != source['sequence'] or
+                self.state.get('q_reserved') != 6 or self.state['invocations_used'] + 6 > self.args.max_invocations):
+            raise ValueError('Q completion uncertain or unreserved; abort and start a new run')
+        life, p_oid = self.state['lifecycle'], source['proposal']['p_oid']
+        noops = json.loads(json.dumps([r for r in life['receipts'] if r['epoch'] == life['epoch'] and
+                 r['stage'] in ('FINISH', 'POLISH-Q', 'DOCS')]))
+        if (len(noops) != 3 or {r['stage'] for r in noops} != {'FINISH', 'POLISH-Q', 'DOCS'} or
+                any(r.get('status') != 'READY' or r['candidate_oid'] != p_oid or r['output_oid'] != p_oid or
+                    r['item_uuid'] != life['item_uuid'] or r['parent'] != life['parent'] for r in noops) or
+                not noops[0].get('finish_result') or not noops[1].get('specialists') or
+                not noops[2].get('docs_file')):
+            raise ValueError('Q requires current P no-op receipts; abort and start a new run')
+        paths = candidate_tree._tree_entries(candidate_tree._git_env(GIT_DIR=str(root.git_dir)), revision.tree_oid)
+        if any(sensitive_policy.sensitive_path_category(row[2]) for row in paths):
+            raise ValueError('Q sensitive preflight blocked; abort and start a new run')
+        template = Path(self.args.gate_prompt).read_text().replace('${REVIEW_TARGET_DESC}', str(root.root))
+        gate_prompt = template.replace('${FOCUS_TEXT}', 'Audit complete Q tree ' + revision.tree_oid)
+        prompts = [('gate', 'Q-GATE', gate_prompt, gate_schema()),
+                   ('reviewer', 'Q-FINAL', 'Role: reviewer, fresh. Audit Q: regressions/docs/tests.', review_schema()),
+                   ('reviewer', 'Q-SECURITY', 'Role: reviewer, fresh. Audit Q: secrets/escapes.', review_schema())]
+        pending = {'id': str(uuid.uuid4()), 'source_id': source['review_id'], 'proofs': [], 'p_noops': noops}
+        self.state['fake_q_bundle_pending'] = pending
+        self._fake_dispatching = True
+        try:
+            previous = source['sequence']
+            for role, phase, prompt, schema in prompts:
+                self.state['q_reserved'] -= 2
+                prompt += f'\n{phase}: Q={revision.tree_oid}; base={life["parent"]}; read task/plan in {self.context}\n'
+                prompt += 'Run this test command exactly as written in one Bash call: ' + self.args.test_command
+                result = self.invoke(role, phase, prompt, schema, fresh=True, workspace_override=root.root)
+                candidate_tree.verify_candidate_revision(root, revision)
+                turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+                if (turn.get('error') or turn['role'] != role or turn['phase'] != phase or
+                        turn['workspace'] != str(root.root) or turn['sequence'] <= previous):
+                    raise ValueError('Q role did not approve exact tree; abort and start a new run')
+                proof = self.q_proof(turn, revision.tree_oid)
+                if (self.configured_test_failed(turn) or not any(
+                        observed_test_succeeded(c, self.args.test_command) for c in turn.get('observed_commands', []))):
+                    raise ValueError('Q role lacks observed checks; abort and start a new run')
+                previous = turn['sequence']
+                pending['proofs'].append(proof)
+            q_evidence.review_source(self, c1, day, observed_test_succeeded)
+            bundle = {**pending, 'status': 'REVIEWED', 'source': source, 'scanned_paths': [r[2] for r in paths]}
+            atomic_json(self.evidence / (pending['id'] + '-q-bundle.json'), bundle)
+            self.state['fake_q_bundle'] = bundle
+            for proof in [source['proof'], *pending['proofs']]:
+                rows = self.record_findings('q-' + proof['role'], proof['phase'],
+                                            proof['sequence'], proof['advisories'])
+                self.mark_advisory_findings(rows)
+            self.state.pop('fake_q_bundle_pending')
+            return bundle
+        finally:
+            self._fake_dispatching = False
+            self.state.pop('pending_reviewer_result_sequence', None)
+            self.save()
+
     def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""
         if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or

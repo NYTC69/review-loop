@@ -344,7 +344,8 @@ def main():
         if phase in ('Q', 'SECURITY'):
             for finding in findings:
                 finding['severity'] = os.environ.get('FAKE_Q_SEVERITY', finding['severity'])
-                finding['security'] = bool(os.environ.get('FAKE_Q_SECURITY_FLAG'))
+                if 'FAKE_Q_SECURITY_FLAG' in os.environ:
+                    finding['security'] = bool(os.environ['FAKE_Q_SECURITY_FLAG'])
         if os.environ.get('FAKE_Q_REVISE') and phase in ('Q', 'SECURITY'):
             answer['status'] = 'REVISE'
             if os.environ.get('FAKE_Q_EMPTY_REVISE'):
