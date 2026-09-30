@@ -3699,6 +3699,71 @@ sys.exit(result.returncode)
                              rc.budget_policy.BUDGET_CAPS['specialist'][0])
         self.assertEqual(co.state['lifecycle']['receipts'][-1]['stage'], 'POLISH-Q')
 
+    def test_fake_q_source_revise_minor_keeps_raw_and_effective_proof(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1'}):
+            source = co.fake_q_review(c1, '2026-09-30')
+        self.assertEqual(source['status'], 'UNREVIEWED')
+        self.assertEqual(source['proof']['raw_verdict'], 'REVISE')
+        self.assertEqual(source['proof']['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+        self.assertEqual(source['proof']['advisories'][0]['severity'], 'MINOR')
+        turn = next(t for t in co.state['turns'] if t['sequence'] == source['sequence'])
+        self.assertEqual(turn['answer']['status'], 'REVISE')
+        self.assertIsNot(source['proof']['advisories'], turn['answer']['full_review'])
+        verified, root, revision = rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        self.assertEqual(verified, source)
+        self.assertEqual(revision.tree_oid, source['oid'])
+        record = next(r for r in co.state['review_verdicts'] if r['sequence'] == turn['sequence'])
+        self.assertEqual(record['reviewer_raw_verdict'], 'REVISE')
+        self.assertEqual(record['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_fake_q_source_revise_major_security_or_empty_is_rejected(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        for severity, security, empty in [('MAJOR', '', ''), ('MINOR', '1', ''), ('MINOR', '', '1')]:
+            with self.subTest(severity=severity, security=security, empty=empty):
+                co.state = rc.copy.deepcopy(before)
+                with patch.dict(os.environ, {'FAKE_Q_MINOR': '1', 'FAKE_Q_REVISE': '1',
+                                             'FAKE_Q_SEVERITY': severity, 'FAKE_Q_SECURITY_FLAG': security,
+                                             'FAKE_Q_EMPTY_REVISE': empty}):
+                    with self.assertRaisesRegex(ValueError, 'Q reviewer did not approve'):
+                        co.fake_q_review(c1, '2026-09-30')
+                self.assertNotIn('fake_q_review', co.state)
+                self.assertIn('fake_q_pending', co.state)
+
+    def test_q_proof_policy_is_advisory_only_and_copies_findings(self):
+        co = self.coordinator()
+        state = rc.copy.deepcopy(co.state)
+        for role, verdict, severity, security, expected in [
+                ('reviewer', 'APPROVE', None, False, 'APPROVE'),
+                ('reviewer', 'REVISE', 'LOW', False, 'APPROVE_WITH_ADVISORY'),
+                ('reviewer', 'REVISE', None, False, None),
+                ('reviewer', 'REVISE', 'MAJOR', False, None),
+                ('reviewer', 'REVISE', 'MINOR', True, None),
+                ('reviewer', 'HOLD', 'MINOR', False, None),
+                ('gate', 'approve', None, False, 'APPROVE'),
+                ('gate', 'needs-attention', 'low', False, 'APPROVE_WITH_ADVISORY'),
+                ('gate', 'needs-attention', None, False, None),
+                ('gate', 'needs-attention', 'medium', False, None)]:
+            with self.subTest(role=role, verdict=verdict, severity=severity):
+                findings = [{'severity': severity, 'security': security}] if severity else []
+                answer = {'verdict': verdict, 'findings': findings} if role == 'gate' else {
+                    'status': verdict, 'full_review': findings}
+                turn = {'role': role, 'phase': 'Q', 'sequence': 1, 'answer': answer}
+                if expected is None:
+                    with self.assertRaisesRegex(ValueError, 'blocking or empty'):
+                        co.q_proof(turn, 'a' * 40)
+                else:
+                    proof = co.q_proof(turn, 'a' * 40)
+                    self.assertEqual(proof['effective_verdict'], expected)
+                    self.assertEqual(proof['raw_verdict'], verdict)
+                    self.assertIsNot(proof['advisories'], findings)
+                    proof['advisories'].append({'local': 'mutation'})
+                    self.assertNotIn({'local': 'mutation'}, findings)
+        self.assertEqual(co.state, state)
+
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()
         state = rc.copy.deepcopy(co.state)

@@ -31,7 +31,8 @@ def review_source(co, c1, day, observed_test):
             raise ValueError('Q sequence is not fresh and unique')
         turn = turns[0]
         if (turn['phase'] != 'Q' or turn['role'] != 'reviewer' or turn['workspace'] != row['root'] or
-                turn.get('error') or turn['answer']['status'] != 'APPROVE' or turn['answer']['full_review'] or
+                turn.get('error') or not co.q_review_verdict(turn['answer']) or
+                row.get('proof') != co.q_proof(turn, proposal['q_oid']) or
                 not any(observed_test(c, co.args.test_command) for c in turn.get('observed_commands', []))):
             raise ValueError('Q reviewer phase/workspace/result/check evidence differs')
         if hashlib.sha256(Path(row['command'][0]).read_bytes()).hexdigest() != row['executable_sha256']:
@@ -44,5 +45,5 @@ def review_source(co, c1, day, observed_test):
                           authorized_prefixes=(*base.authorized_prefixes, 'BACKLOG.md'))
         ct.verify_candidate_revision(root, rev)
         return row, root, rev
-    except (KeyError, TypeError, OSError, json.JSONDecodeError) as error:
+    except (KeyError, TypeError, AttributeError, OSError, json.JSONDecodeError) as error:
         raise ValueError('Q source missing or malformed; abort and start a new run') from error

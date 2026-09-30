@@ -395,3 +395,9 @@ It changes neither live HEAD/index/BACKLOG, the P root/index, nor lifecycle stat
 Fresh Q tests/reviews/gate/SECURITY and attributed acceptance remain mandatory;
 this method cannot commit, publish or close. C1 message/author/intent verification
 belongs to the later bundle-verification step. Real lifecycle still refuses.
+
+The fake Q source reviewer preserves its raw verdict in the turn and records an
+independent effective verdict/advisory proof. Nonempty REVISE with only
+non-security MINOR/LOW uses the existing advisory rule; empty REVISE, major and
+security findings refuse. This source remains UNREVIEWED until fresh Q bundle
+checks; proof advisories are copied, not shared with the mutable answer list.

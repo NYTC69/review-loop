@@ -4700,6 +4700,28 @@ class Coordinator:
         revision = candidate_tree.CandidateRevision(life['candidate_oid'], tuple(ingest['manifest']), 0)
         return q_proposal.materialize(baseline, revision, self.state['closeout_item'], c1, day)
 
+    def q_review_verdict(self, answer):
+        if answer.get('status') == 'APPROVE' and answer.get('full_review') == []:
+            return 'APPROVE'
+        if (answer.get('status') in ('APPROVE', 'REVISE') and
+                self.findings_are_advisory(answer.get('full_review', []))):
+            return 'APPROVE_WITH_ADVISORY'
+        return None
+
+    def q_proof(self, turn, oid):
+        answer, role = turn['answer'], turn['role']
+        findings = answer.get('findings', []) if role == 'gate' else answer.get('full_review', [])
+        effective = self.q_review_verdict(answer) if role == 'reviewer' else None
+        if (role == 'gate' and answer.get('verdict') in ('approve', 'needs-attention') and
+                (answer['verdict'] == 'approve' or findings) and
+                all(f.get('severity') == 'low' and not f.get('security') for f in findings)):
+            effective = 'APPROVE_WITH_ADVISORY' if findings else 'APPROVE'
+        if not effective:
+            raise ValueError('Q verdict is blocking or empty; abort and start a new run')
+        return {'role': role, 'phase': turn['phase'], 'sequence': turn['sequence'], 'oid': oid,
+                'raw_verdict': answer.get('status', answer.get('verdict')), 'effective_verdict': effective,
+                'advisories': copy.deepcopy(findings)}
+
     def fake_q_review(self, c1, day):
         proposal = self.fake_materialize_q(c1, day)
         if (self.state.get('fake_q_pending') or self.state.get('fake_q_review') or
@@ -4751,11 +4773,13 @@ class Coordinator:
                     turn['sequence'] <= pending['review_after_sequence'] or
                     not any(observed_test_succeeded(c, self.args.test_command)
                     for c in turn.get('observed_commands', [])) or
-                    result['answer']['status'] != 'APPROVE' or result['answer']['full_review']):
+                    not self.q_review_verdict(result['answer'])):
                 raise ValueError('Q reviewer did not approve; abort and start a new run')
             reviewed = {**receipt, 'review_id': str(uuid.uuid4()), 'sequence': result['sequence'],
                         'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index),
-                        'root_identity': list(checkout.root_identity)}
+                        'root_identity': list(checkout.root_identity), 'proof': self.q_proof(turn, oid)}
+            self.record_review_verdict(turn['sequence'], 'Q', turn['answer']['status'],
+                                       reviewed['proof']['effective_verdict'])
             atomic_json(self.evidence / (reviewed['review_id'] + '-q-review.json'), reviewed)
             self.state['fake_q_review'] = reviewed
             self.state.pop('fake_q_pending')
