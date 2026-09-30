@@ -3466,6 +3466,36 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
 
+    def test_fake_drive_freezes_operator_closeout_item_before_candidate_author(self):
+        docs = self.workspace / 'docs' / 'guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        backlog = self.workspace / 'BACKLOG.md'
+        backlog.write_text('# Backlog\n\n## P0\n(none)\n## P1\n'
+                           '- Fix sums. (added 2026-09-29)\n## P2\n(none)\n'
+                           '## P3\n(none)\n## Done\n(none)\n')
+        ignore = self.workspace / '.gitignore'
+        ignore.write_text(ignore.read_text() + '\n.compass/\n' if ignore.exists() else '.compass/\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'BACKLOG.md', '.gitignore'],
+                       cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'closeout fixture'], cwd=self.workspace, check=True)
+        view = self.workspace / '.compass/backlog-last-view.json'
+        view.parent.mkdir(exist_ok=True)
+        view.write_text(json.dumps({'generated_at': rc.datetime.now().astimezone().isoformat(),
+                         'source_path': str(backlog),
+                         'items': [{'id': 1, 'section': 'P1', 'title_span': 'Fix sums'}]}))
+        original = backlog.read_bytes()
+        command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe',
+                               '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        self.assertEqual(co.fake_lifecycle_drive(backlog_item=1), 'STOP_BEFORE_SECURITY')
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['closeout_item']['item_id'], 1)
+        self.assertEqual(saved['closeout_item']['backlog_sha256'], rc.hashlib.sha256(original).hexdigest())
+        self.assertEqual(backlog.read_bytes(), original)
+        self.assertNotIn('Q', [r['stage'] for r in saved['lifecycle']['receipts']])
+        self.assertNotEqual(saved['status'], 'CLOSED')
+
     def test_fake_lifecycle_drive_runs_m3_without_test_built_approvals(self):
         docs = self.workspace / 'docs' / 'guide.md'
         docs.parent.mkdir()

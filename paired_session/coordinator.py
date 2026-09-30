@@ -33,6 +33,7 @@ from typing import Optional
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
+    from paired_session import closeout_policy
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -43,6 +44,7 @@ try:
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
+    import closeout_policy
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -4615,9 +4617,11 @@ class Coordinator:
         finally:
             self._fake_dispatching = False
 
-    def fake_lifecycle_drive(self) -> str:
+    def fake_lifecycle_drive(self, backlog_item=None) -> str:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise RuntimeError('fake lifecycle refuses a non-fake provider')
+        if backlog_item is not None:
+            self.state['closeout_item'] = closeout_policy.freeze_item(self.workspace, backlog_item)
         if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:
             return self.state['status']
         self.fake_candidate_author_turn(chain_only=True)

@@ -368,3 +368,13 @@ as a comparison path during staged migration.
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
 protocol transitions and permissions-command construction; the runtime
 permission probe is the effective check against the installed Codex CLI.
+
+### Fake closeout item admission (offline only)
+
+`fake_lifecycle_drive(backlog_item=N)` may freeze an item from a Compass view generated
+within ten minutes. The view must name this repo-root tracked `BACKLOG.md`, contain
+one open item with that ID, and match its unique normalized title and section.
+Workspace/index drift, ambiguous items and symlink paths refuse before PLAN.
+The run records the exact HEAD, BACKLOG blob and hashes of the view and adapter.
+This admission does not close an item: Q construction, fresh Q checks and DELIVERY
+remain required. Real lifecycle entry remains disabled.
