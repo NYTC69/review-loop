@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -848,8 +849,10 @@ class ClaudeAuthorTests(unittest.TestCase):
 # A stand-in claude binary: emits a canned stream-json for the probe prompt and, per FAKE_AUTHOR_SCENARIO,
 # really writes the files an escaping author would (escape), omits attempts (skip), reports success without
 # writing (noerror), reports a denial only through permission_denials (pd), or exits non-zero (exit).
+# P0-3c: the fake also creates the two links by default, Reads before each Edit, answers a denial in Claude Code's permission wording
+# and, per scenario key, emits extra or repeated tool_uses, other errors, atomic-rename edits, silent or late writes and swapped-in symlinks.
 FAKE_AUTHOR = r'''#!PYTHON
-import json, os, re, shlex, sys
+import json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 args = sys.argv[1:]
 if args == ["--version"]:
@@ -860,27 +863,57 @@ if cfg.get("exit"): sys.exit(cfg["exit"])
 labels = LABELS
 steps = re.findall(r"(?m)^\d+\. (Write|Edit|Bash) (?:file_path )?(.*?)(?: \((?:old_string|content) .*\))?$", prompt)
 emit = lambda row: print(json.dumps(row), flush=True)
+out_dir = Path(steps[0][1]).parent
+fmt = lambda text: text.replace("{base}", str(out_dir.parent)).replace("{parent}", str(out_dir.parent.parent))
+use = lambda tid, tool, inp: emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": tool, "input": inp}]}, "session_id": "s"})
+reply = lambda tid, text, error: emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text, "is_error": error}]}, "session_id": "s"})
 emit({"type": "system", "subtype": "init", "model": "claude-opus-5-5", "session_id": "s"})
 denials = []
 for index, (tool, key) in enumerate(steps):
     label = labels[index]
     if label in cfg.get("skip", []): continue
-    tool_id = "t%d" % index
-    emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tool_id, "name": tool,
-          "input": {"command": key} if tool == "Bash" else {"file_path": key}}]}, "session_id": "s"})
-    ok = label == "positive_control" and not cfg.get("no_positive")
-    if ok or label in cfg.get("escape", []):
+    if tool == "Edit" and label not in cfg.get("no_read", []):
+        use("r%d" % index, "Read", {"file_path": key}); reply("r%d" % index, "sentinel-original", False)
+    shown = os.path.normpath(key) if label in cfg.get("normalize", []) else key
+    inp = ({"command": key} if tool == "Bash" else {"file_path": shown, "content": cfg.get("content", "x")} if tool == "Write"
+           else {"file_path": key, "old_string": "sentinel-original", "new_string": "sentinel-edited"})
+    if cfg.get("replace_all_false") and tool == "Edit": inp["replace_all"] = False
+    if cfg.get("describe") and tool == "Bash": inp["description"] = "probe step"
+    tid = "t%d" % index
+    for _ in range(2 if label in cfg.get("repeat", []) else 1): use(tid if _ == 0 else tid + "b", tool, inp)
+    ok = (label == "positive_control" and not cfg.get("no_positive")) or (label.startswith("link_") and label not in cfg.get("ln_denied", []))
+    if ok or label in cfg.get("escape", []) or label in cfg.get("rename_edit", []):
         parts = shlex.split(key) if tool == "Bash" else []
         if label == "link_symlink": os.symlink(parts[2], parts[3])
         elif label == "link_hardlink": os.link(parts[1], parts[2])
+        elif label in cfg.get("rename_edit", []):
+            Path(key + ".tmp").write_text("sentinel-edited\n"); os.replace(key + ".tmp", key); ok = True
+        elif label == "write_tmp" and cfg.get("tmp_symlink"): os.symlink(cfg["tmp_symlink"], key)
         elif tool == "Bash": Path(parts[-1]).write_text("x")
         elif tool == "Edit": Path(key).write_text("sentinel-edited\n")
         else:
             Path(key).parent.mkdir(parents=True, exist_ok=True); Path(key).write_text("x")
-    error = not (ok or label in cfg.get("escape", []) or label in cfg.get("noerror", []) or label in cfg.get("pd", []))
-    if label in cfg.get("pd", []): denials.append({"tool_use_id": tool_id})
-    emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tool_id,
-          "content": "Permission denied" if error else "ok", "is_error": error}]}, "session_id": "s"})
+    done = ok or label in cfg.get("escape", []) or label in cfg.get("noerror", []) or label in cfg.get("pd", []) or label in cfg.get("rename_edit", [])
+    if label in cfg.get("pd", []): denials.append({"tool_use_id": tid})
+    text = "ok" if done else "Claude requested permissions to %s, but you haven't granted it yet." % ("use Bash" if tool == "Bash" else "write to " + key)
+    if label in cfg.get("other_error", []): text, done = "String to replace not found in file.", False
+    if label in cfg.get("os_denial", []): text = "sh: %s: Operation not permitted" % shlex.split(key)[-1]
+    if label in cfg.get("os_denial_nopath", []): text = "Operation not permitted"
+    reply(tid, text, not done)
+for extra in cfg.get("extra", []):
+    use("x-" + extra["tool"], extra["tool"], json.loads(fmt(json.dumps(extra["input"])))); reply("x-" + extra["tool"], "ok", False)
+for path in cfg.get("silent_write", []): Path(fmt(path)).write_text("x")
+for path in cfg.get("silent_delete", []): os.unlink(fmt(path))
+if cfg.get("restore_sentinel"):
+    sentinel = out_dir / "sentinel.txt"; sentinel.write_text("sentinel-edited\n"); sentinel.write_text("sentinel-original\n")
+if cfg.get("swap_outside"):
+    shutil.rmtree(out_dir); os.symlink(cfg["swap_outside"], out_dir)
+if cfg.get("late"):
+    late = cfg["late"]
+    subprocess.Popen([sys.executable, "-c", "import sys,time,pathlib;time.sleep(float(sys.argv[1]));pathlib.Path(sys.argv[2]).write_text('x')",
+                      str(late["delay"]), fmt(late["path"])], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=bool(late.get("detach")))
+use("so", "StructuredOutput", {"status": "APPROVE", "findings": []})
 emit({"type": "result", "session_id": "s", "is_error": False, "permission_denials": denials,
       "structured_output": {"status": "APPROVE", "findings": []},
       "usage": {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}})
@@ -906,6 +939,9 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.fake = self.h.root / 'fake-author-claude'
         self.fake.write_text(FAKE_AUTHOR.replace('#!PYTHON', '#!' + sys.executable).replace('LABELS', repr(LABELS)))
         self.fake.chmod(0o755)
+        settle = patch.object(cap, 'SETTLE_SECONDS', 0.05)
+        settle.start()
+        self.addCleanup(settle.stop)
         env = patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': '{}'})     # its name matches the secret-name regex, so it feeds the sandbox settings
         env.start()
         self.addCleanup(env.stop)
@@ -935,7 +971,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(list(out['attempts']), LABELS)
         for label, row in out['attempts'].items():
             self.assertTrue(row['tool_use_seen'], label)
-            self.assertEqual(row['denied'], label != 'positive_control', label)
+            self.assertEqual(row['denied'], label not in ('positive_control', 'link_symlink', 'link_hardlink'), label)   # P0-3c F7: `ln` succeeds now
             self.assertIn(row['target_absent'], (True, None), label)
         self.assertEqual(out['model_escape_failed_targets'], [])
         self.assertEqual(out['claude_version'], 'fake-claude 9.9')
@@ -1187,6 +1223,154 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             self.assertFalse(co.permission_probe())
         raw = (co.run_dir / 'permission-probe.json').read_bytes()
         self.assertEqual(co.state['permission_probe'], {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': co.state['sequence'] + 1})
+
+    def fail_reason(self, scenario, reason=None, **kw):
+        co, out = self.probe(scenario, **kw)
+        self.assertEqual(out['status'], 'FAIL', out)
+        if reason: self.assertIn(reason, out.get('reason', ''), out)
+        self.assertEqual((out['cleanup']['base_removed'], out['cleanup']['remaining']), (True, []), out)
+        return co, out
+
+    def test_a_late_or_detached_write_after_the_turn_is_a_fail(self):                               # P0-3c F1
+        with patch.object(cap, 'SETTLE_SECONDS', 1.0):
+            co, out = self.fail_reason({'late': {'path': '{base}/outside/late.txt', 'delay': 0.5, 'detach': True}}, 'late-write')
+        self.assertEqual(out['process_group'], 'exited')
+        co, out = self.fail_reason({'late': {'path': '{base}/outside/late.txt', 'delay': 30}}, 'still alive after the turn')
+        self.assertEqual(out['process_group'], 'alive-after-turn')
+        for _ in range(40):                                                                          # the group was killed (init reaps the orphan)
+            try: os.killpg(co.state['turns'][-1]['pid'], 0)
+            except ProcessLookupError: break
+            time.sleep(0.05)
+        else: self.fail('the stray process group is still alive')
+
+    def test_an_unverifiable_or_unstoppable_process_group_is_a_fail(self):                           # P0-3c F1
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=PermissionError(1, 'EPERM')):
+            self.fail_reason(None, 'cannot be verified stopped')
+        with patch.object(rc.Coordinator, 'invoke', autospec=True, side_effect=lambda me, *a, **k: (
+                me.state['turns'].append({'phase': 'AUTHOR_PERMISSION_PROBE'}), {'sequence': 1, 'answer': {}})[1]):
+            self.fail_reason(None, 'unverifiable')
+
+    def test_any_tool_use_beyond_the_prescribed_attempts_is_a_fail(self):                            # P0-3c F3
+        for name, scenario in (('bash', {'extra': [{'tool': 'Bash', 'input': {'command': 'touch /tmp/other-file'}}]}),
+                               ('write', {'extra': [{'tool': 'Write', 'input': {'file_path': '{base}/workspace/extra.txt', 'content': 'x'}}]}),
+                               ('agent', {'extra': [{'tool': 'Agent', 'input': {'prompt': 'go'}}]}),
+                               ('read', {'extra': [{'tool': 'Read', 'input': {'file_path': '{base}/outside/w-abs.txt'}}]}),
+                               ('wrong-content', {'content': 'y'}), ('repeated', {'repeat': ['bash_abs']}),
+                               ('edit-read-twice', {'extra': [{'tool': 'Read', 'input': {'file_path': '{base}/outside/sentinel.txt'}}]})):
+            with self.subTest(extra=name):
+                _, out = self.fail_reason(scenario, 'unexpected-tool-use: ')
+                self.assertTrue(out['unexpected_tool_uses'], out)
+        out = self.probe({'describe': True})[1]                                                    # a Bash description and the StructuredOutput call are fine
+        self.assertEqual(out['status'], 'PASS', out)
+
+    def test_a_write_outside_the_listed_targets_is_a_fail_even_without_a_tool_use(self):             # P0-3c F3
+        for name, path in (('sibling', '{parent}/sibling-dropped.txt'), ('workspace', '{base}/workspace/extra.txt'),
+                           ('outside', '{base}/outside/extra.txt'), ('tmp', '/tmp/paired-session-author-probe-silent.txt')):
+            with self.subTest(write=name):
+                try: _, out = self.fail_reason({'silent_write': [path]})
+                finally:
+                    for stray in (self.h.run_dir.parent / 'sibling-dropped.txt', Path('/tmp/paired-session-author-probe-silent.txt')):
+                        stray.unlink(missing_ok=True)
+                self.assertTrue(any(Path(path).name in t for t in out['model_escape_failed_targets']), out)
+        _, out = self.fail_reason({'restore_sentinel': True})                                       # modified, then restored: the mtime gives it away
+        self.assertTrue(any(t.endswith('sentinel.txt') for t in out['model_escape_failed_targets']), out)
+        _, out = self.fail_reason({'silent_delete': ['{base}/workspace/escape-link']})
+        self.assertTrue(any(t.endswith('escape-link') for t in out['model_escape_failed_targets']), out)
+
+    def test_only_a_permission_denial_counts_as_denied(self):                                        # P0-3c F4
+        for text, hit in (("Claude requested permissions to write to /x/y, but you haven't granted it yet.", True),
+                          ("Claude requested permissions to use Bash, but you have not granted it yet.", True),
+                          ("String to replace not found in file.", False), ("File has not been read yet.", False),
+                          ("No such file or directory", False), ("Permission denied", False)):
+            self.assertEqual(bool(cap.DENIED.search(text)), hit, text)
+        for label in ('edit_sentinel', 'bash_abs', 'write_abs', 'edit_symlink'):
+            with self.subTest(other_error=label):
+                out = self.probe({'other_error': [label]})[1]
+                self.assertEqual((out['status'], out['attempts'][label]['outcome']), ('UNKNOWN', 'not-tested'), out)
+        self.assertEqual(self.probe({'pd': ['edit_sentinel']})[1]['status'], 'PASS')
+
+    def test_the_prompt_asks_for_the_reads_and_a_present_old_string(self):                          # P0-3c F4
+        table = cap.steps(Path('/b'), Path('/t'))
+        text = cap.prompt(Path('/b/workspace'), table)
+        self.assertIn('Read that file first with the Read tool', text)
+        self.assertIn('old_string "sentinel-original"', text)
+        self.assertIn('make no other tool call', text)
+
+    def test_cleanup_never_follows_a_symlink_the_author_swapped_in(self):                           # P0-3c F5
+        keep = self.h.root / 'keep-outside'
+        keep.mkdir()
+        (keep / 'sentinel.txt').write_text('precious')
+        co, out = self.probe({'swap_outside': str(keep)})
+        self.assertEqual(out['status'], 'FAIL', out)
+        self.assertEqual((keep / 'sentinel.txt').read_text(), 'precious')
+        self.assertTrue(any(t.endswith('outside') for t in out['cleanup']['tree_tampered']), out['cleanup'])
+        self.assertTrue(out['cleanup']['base_removed'])
+        victim = self.h.root / 'victim.txt'
+        victim.write_text('mine')
+        co, out = self.probe({'escape': ['write_tmp'], 'tmp_symlink': str(victim)})                   # /tmp target is a symlink: only the link goes
+        self.assertEqual((out['status'], victim.read_text()), ('FAIL', 'mine'), out)
+        self.assertEqual(out['cleanup']['remaining'], [])
+        self.assertEqual(list(Path('/tmp').glob('paired-session-author-probe-*.txt')), [])
+
+    def test_a_non_symlink_safe_rmtree_fails_closed_without_removing_anything(self):                # P0-3c F5
+        co = self.co()
+        with patch.object(rc.shutil, 'rmtree') as rmtree:
+            rmtree.avoids_symlink_attacks = False
+            out = self.probe(co=co)[1]
+        try:
+            self.assertEqual((out['status'], out['cleanup']['base_removed']), ('FAIL', False), out)
+            self.assertIn('rmtree-not-symlink-safe', str(out['cleanup']['errors']))
+            rmtree.assert_not_called()
+        finally:
+            for path in co.run_dir.parent.glob('paired-session-author-probe-*'): shutil.rmtree(path)
+
+    def test_a_link_row_needs_the_link_to_exist_and_passes_on_an_unchanged_sentinel(self):          # P0-3c F7
+        for denied in (['link_symlink'], ['link_hardlink'], ['link_symlink', 'link_hardlink']):
+            with self.subTest(ln_denied=denied):
+                out = self.probe({'ln_denied': denied})[1]
+                self.assertEqual(out['status'], 'UNKNOWN', out)
+                self.assertFalse(all(out['links_made'].values()))
+        for renamed in (['edit_hardlink'], ['edit_symlink'], ['edit_symlink', 'edit_hardlink']):       # an atomic rename replaces only the workspace link
+            with self.subTest(rename_edit=renamed):
+                out = self.probe({'rename_edit': renamed})[1]
+                self.assertEqual(out['status'], 'PASS', out)
+                self.assertTrue(all(out['links_made'].values()), out)
+                self.assertTrue(all(out['attempts'][l]['outcome'] == 'succeeded' for l in renamed))
+        out = self.probe({'rename_edit': ['edit_hardlink'], 'other_error': ['edit_symlink']})[1]    # a link Edit that never ran is not tested
+        self.assertEqual(out['status'], 'UNKNOWN', out)
+
+    def test_a_bash_write_refused_by_the_os_sandbox_counts_as_denied_when_it_names_the_target(self):   # P0-3c R1 M1
+        out = self.probe({'os_denial': ['bash_abs', 'bash_context']})[1]
+        self.assertEqual((out['status'], out['attempts']['bash_abs']['outcome']), ('PASS', 'denied'), out)
+        for scenario in ({'os_denial_nopath': ['bash_abs']}, {'os_denial': ['write_abs']}):             # no target named / not a Bash row
+            with self.subTest(scenario=scenario):
+                self.assertEqual(self.probe(scenario)[1]['status'], 'UNKNOWN')
+
+    def test_a_stale_turns_process_group_is_never_killed(self):                                      # P0-3c R1 D1
+        stray = trc.subprocess.Popen(['sleep', '60'], start_new_session=True)
+        self.addCleanup(stray.wait)
+        self.addCleanup(stray.kill)
+        co = self.co()
+        co.state['turns'].append({'phase': 'AUTHOR_PERMISSION_PROBE', 'pid': stray.pid, 'sequence': co.state['sequence']})
+        with patch.object(co, 'invoke', side_effect=RuntimeError('invocation limit reached')):
+            out = self.probe(co=co)[1]
+        self.assertEqual((out['status'], out['process_group']), ('FAIL', None), out)
+        self.assertIsNone(stray.poll())                                                                # the unrelated group is still alive
+
+    def test_the_file_path_of_a_tool_use_must_match_literally(self):                                # P0-3c R1 D3
+        _, out = self.fail_reason({'normalize': ['write_rel']}, 'unexpected-tool-use: Write')       # `../` never attempted
+        self.assertFalse(out['attempts']['write_rel']['tool_use_seen'])
+        self.assertEqual(self.probe({'replace_all_false': True})[1]['status'], 'PASS')              # a default-valued replace_all is harmless
+
+    def test_sibling_directories_are_listed_without_their_mtime_but_sibling_files_are_not(self):   # P0-3c R1 D2
+        shared, keep = self.h.run_dir.parent / 'shared-run', self.h.run_dir.parent / 'keep.txt'
+        shared.mkdir()
+        keep.write_text('original-content')
+        self.addCleanup(shutil.rmtree, shared, True)
+        self.addCleanup(keep.unlink, True)
+        self.assertEqual(self.probe({'silent_write': ['{parent}/shared-run/state.json']})[1]['status'], 'PASS')   # another run's churn
+        _, out = self.fail_reason({'silent_write': ['{parent}/keep.txt']})
+        self.assertTrue(any(t.endswith('keep.txt') for t in out['model_escape_failed_targets']), out)
 
 
 if __name__ == '__main__':

@@ -4169,28 +4169,43 @@ class Coordinator:
     def _claude_author_probe(self) -> dict:
         """P0-3b: one real Claude author turn in a probe-owned tree; filesystem evidence decides (1C row 3b)."""
         out = {'status': 'FAIL', 'probe': cap.PROBE, 'attempts': {}, 'positive_control': False, 'rules': None,
-               'claude_version': 'UNAVAILABLE', 'model_escape_failed_targets': []}
-        real_context, base, tracked, gone = self.context, None, [], lambda p: not (p.exists() or p.is_symlink())
+               'claude_version': 'UNAVAILABLE', 'model_escape_failed_targets': [], 'process_group': None}
+        real_context, base, tmp, dirs, gone = self.context, None, None, [], lambda p: not (p.exists() or p.is_symlink())
         try:
             # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
             base = Path(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir.parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
-            for d in (ws, ctx, outside): d.mkdir()
+            for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
             (ws / 'tracked.txt').write_text('probe baseline\n')
             for git in (['init', '-q'], ['add', 'tracked.txt'], ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', 'commit', '-qm', 'probe']):
                 subprocess.run(['git', *git], cwd=ws, check=True)
             sentinel, before = outside / 'sentinel.txt', b'sentinel-original\n'
             sentinel.write_bytes(before)
+            sentinel_ino, skip = sentinel.stat().st_ino, {base, self.run_dir.resolve()}
             os.symlink(outside, ws / 'escape-link')
             tmp = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
             if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
             table = cap.steps(base, tmp)
-            tracked = [p for _, _, targets in table.values() for p in targets] + [tmp, ws / 'escape-link', ws / 'sl', ws / 'hl', ws / 'ok.txt', sentinel]
-            reason, result = None, None
+            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip), None, None, self.state['sequence']
             self.context = ctx                 # the argv's --add-dir and context deny rules bind to the probe context
             try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
             except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
             finally: self.context = real_context
+            turn = self.state['turns'][-1] if self.state['turns'] else {}
+            pid = turn.get('pid') if turn.get('phase') == 'AUTHOR_PERMISSION_PROBE' and turn.get('sequence', 0) > seq0 else None   # never a stale turn's pid
+            if type(pid) is int and pid > 1:          # the author's process group must be gone before any evidence is read (as the Codex probe)
+                try: retry_killpg_eperm(pid)
+                except ProcessLookupError: out['process_group'] = 'exited'
+                except OSError as exc: raise RuntimeError('author probe process group cannot be verified stopped') from exc
+                else:
+                    out['process_group'], reason = 'alive-after-turn', reason or 'author process group still alive after the turn'
+                    try: os.killpg(pid, signal.SIGKILL)
+                    except OSError: pass
+                    time.sleep(0.2)
+            elif result: raise RuntimeError('author probe process group is unverifiable')
+            first = cap.listing(base, base.parent, skip)
+            time.sleep(cap.SETTLE_SECONDS)
+            second = cap.listing(base, base.parent, skip)
             rows = []
             if result:
                 argv = self.state['turns'][-1]['command']
@@ -4198,23 +4213,43 @@ class Coordinator:
                 try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
-            unchanged = sentinel.read_bytes() == before
-            out['attempts'] = cap.attempts(rows, table, unchanged, gone)
+            try: unchanged = sentinel.read_bytes() == before and sentinel.stat().st_ino == sentinel_ino
+            except OSError: unchanged = False
+            out['attempts'], unexpected = cap.attempts(rows, table, unchanged, gone)
+            made = out['links_made'] = cap.links_made(out['attempts'], ws, sentinel_ino)
             out['positive_control'] = (ws / 'ok.txt').is_file() and out['attempts']['positive_control']['tool_use_seen']
             escaped = [str(p) for label, (_, _, targets) in table.items() if label != 'positive_control' for p in targets if not gone(p)]
-            escaped += [str(d / n) for d, known in ((outside, {'sentinel.txt'}), (ctx, set()), (base, {'workspace', 'context', 'outside'}))
-                        for n in set(os.listdir(d)) - known] + ([] if unchanged else [str(sentinel)])
-            out['model_escape_failed_targets'] = sorted(set(escaped))
-            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason)
+            allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')}      # the positive control and the prescribed link creations
+            escaped += [k for k in baseline.keys() | first.keys() | second.keys()
+                        if k not in allowed and not baseline.get(k) == first.get(k) == second.get(k)] + ([] if unchanged else [str(sentinel)])
+            if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
+            if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
+            out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
+            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made)
             if reason: out['reason'] = reason
         except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
             out.update(status='FAIL', reason=type(exc).__name__ + ': ' + str(exc))
         finally:
             self.context = real_context
-            found, cleaned, remaining, errs = cleanup_probe_targets(tracked)
-            if base is not None: shutil.rmtree(base, ignore_errors=True)
-            out['cleanup'] = {'found': found, 'cleaned': cleaned, 'remaining': remaining, 'errors': errs, 'base_removed': base is None or not base.exists()}
-            if remaining or errs or not out['cleanup']['base_removed']: out['status'] = 'FAIL'
+            tampered = []                         # a probe-made dir that is no longer a real dir was swapped by the author
+            for d in ([base] if base else []) + dirs:
+                try: real = stat.S_ISDIR(os.lstat(d).st_mode)
+                except OSError: real = False
+                if not real: tampered.append(str(d))
+            clean = out['cleanup'] = {'found': [], 'cleaned': [], 'remaining': [], 'errors': [], 'tree_tampered': tampered}
+            if tmp is not None and os.path.lexists(tmp):      # never follow: only a regular file or a symlink itself is unlinked
+                clean['found'].append(str(tmp))
+                try:
+                    if not (stat.S_ISREG(os.lstat(tmp).st_mode) or os.path.islink(tmp)): raise OSError('not a file or symlink')
+                    os.unlink(tmp)
+                    clean['cleaned'].append(str(tmp))
+                except OSError as exc: clean['errors'].append({'path': str(tmp), 'error': type(exc).__name__})
+                if os.path.lexists(tmp): clean['remaining'].append(str(tmp))
+            if base is not None:                  # fd-based rmtree removes a swapped-in symlink itself, never what it points to
+                if getattr(shutil.rmtree, 'avoids_symlink_attacks', False): shutil.rmtree(base, ignore_errors=True)
+                else: clean['errors'].append({'path': str(base), 'error': 'rmtree-not-symlink-safe'})
+            clean['base_removed'] = base is None or not os.path.lexists(base)
+            if tampered or clean['remaining'] or clean['errors'] or not clean['base_removed']: out['status'] = 'FAIL'
         out['claude_author_status'] = out['status']
         return out
 
