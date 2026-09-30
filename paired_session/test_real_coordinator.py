@@ -18,6 +18,7 @@ import time
 import unittest
 from unittest.mock import patch
 from paired_session import candidate_tree as ct
+from paired_session import delivery_journal as dj
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -3992,6 +3993,72 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_publication_journal_proofs_survive_cas_but_reject_drift(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        row = dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        path = co.evidence / 'delivery-publication.json'
+        self.assertEqual(json.loads(path.read_text()), row)
+        with patch.object(co, 'invoke', side_effect=AssertionError('must not dispatch')):
+            self.assertEqual(dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json), row)
+        root, revision, live = dj.verify(co, row)
+        scratch = ct._git_env(GIT_DIR=str(root.git_dir))
+        pack = ct._git_bytes(['pack-objects', '--stdout', '--revs'], env=scratch,
+                             input_bytes=(row['intent']['c2'] + '\n').encode())
+        ct._git_bytes(['index-pack', '--strict', '--stdin'], env=live, input_bytes=pack)
+        ct._git(['update-ref', row['intent']['ref'], row['intent']['c2'], row['intent']['parent']], env=live)
+        with self.assertRaisesRegex(ValueError, 'parent changed'):
+            ct.verify_candidate_revision(root, revision)
+        dj.verify(co, row)
+        self.assertEqual(dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json), row)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        proof_path = co.evidence / 'delivery-acceptance.json'
+        saved = proof_path.read_bytes()
+        proof_path.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'proof changed'):
+            dj.verify(co, row)
+        proof_path.write_bytes(saved)
+        saved_state = rc.copy.deepcopy(co.state)
+        co.state['sequence'] += 1
+        with self.assertRaisesRegex(ValueError, 'proof changed'):
+            dj.verify(co, row)
+        co.state = saved_state
+        changed = rc.copy.deepcopy(row)
+        changed['bundle']['status'] = 'UNREVIEWED'
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.verify(co, changed)
+        atomic = co.evidence / 'delivery-publication.json'
+        old = atomic.read_bytes()
+        atomic.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ValueError, 'proof changed'):
+            dj.verify(co, changed)
+        atomic.write_bytes(old)
+        root.index.write_bytes(b'invalid index')
+        with self.assertRaises(ValueError):
+            dj.verify(co, row)
+
+    def test_publication_journal_needs_operator_acceptance_and_no_later_writer(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        saved = rc.copy.deepcopy(co.state)
+        co.state['acceptance_state'] = 'PENDING'
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertFalse((co.evidence / 'delivery-publication.json').exists())
+        co.state = saved
+        row = dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        co._fake_lifecycle = False
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.verify(co, row)
+        co._fake_lifecycle = True
+        co.state['status'] = 'HOLD'
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.verify(co, row)
+        co.state['status'] = 'ACCEPTED'
+        subprocess.run(['git', 'config', 'core.filemode', 'false'], cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            dj.verify(co, row)
 
     def test_candidate_contents_verify_after_cas_without_weakening_prepublication_guard(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
