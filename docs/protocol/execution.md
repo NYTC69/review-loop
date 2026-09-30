@@ -889,6 +889,11 @@ zero, since the adversarial-review prompt and schema are intentionally
 orthogonal to the protocol-reviewer prompt. This tradeoff is accepted;
 the gate does not claim runtime-independence.
 
+### Cross-vendor pass
+
+After the last execution-round APPROVE, and after this gate if it runs, apply
+[reviewer-runtime.md §Cross-vendor review](reviewer-runtime.md#cross-vendor-review) once, before Step 3.5.
+
 ---
 
 ## Quality-agent tool-use guard
@@ -1312,6 +1317,7 @@ python3 scripts/delivery_gate.py --repo . \
   --output .review-loop/tmp/{session_id}-delivery-gate-{attempt_id}.json
 ```
 
+Before running it, check the current convergence's latest `cross-vendor review:` line; see reviewer-runtime.md.
 Only a fresh `eligible: true` report authorizes Step 4. The terminal adversarial
 pass (Step 3.4) remains the explicit stranger-eyes check; the helper verifies its
 ledger evidence remains valid rather than rerunning reviewers.
@@ -1348,7 +1354,7 @@ After the gate passes:
 2. **Display the Delivery Summary** to the user (see summary template in
    the runtime's SKILL.md — runtime-specific formatting, but always
    includes: status, reviewer backend, rounds, quality-polish summary,
-   review findings table, files changed, autonomous decisions if any,
+   review findings table, the `cross-vendor review:` line, files changed, autonomous decisions if any,
    unresolved minor issues if any, time breakdown, token usage, suggested
    next steps). **Language: render the Delivery Summary in 中文 (Simplified
    Chinese)** — section headings, prose, and prose-style field values use

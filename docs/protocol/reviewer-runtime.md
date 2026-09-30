@@ -105,3 +105,33 @@ snapshots or overlapping `modelUsage` and `usage` counters manually. See
 
 Parallel dispatch uses the same launchers and permission boundary. Arbitrary
 extra CLI arguments cannot override isolation, model or result paths.
+
+## Cross-vendor review
+
+Author vendor is the runtime that wrote the change (Claude runtime: claude; Codex runtime: codex). Reviewer vendor is
+the launcher actually used, fallbacks included (`run_codex_reviewer.py`: codex; `run_claude_reviewer.py`: claude).
+Equal is same-vendor: Claude `reviewer: subagent` and Codex `codex_reviewer_backend: codex`.
+
+Config key `cross_vendor_review`: `auto` (default) or `off`. Any other value fails closed: checked at the run's
+first reviewer dispatch, it stops the run with a config error naming the key. No pass runs and nothing is delivered.
+
+Each execution convergence needs one visible `cross-vendor review:` line in the session file and the delivery summary.
+A line from before an exec-invalidating replay does not count; the latest line for the convergence does.
+
+- Final execution review already cross-vendor: `cross-vendor review: not needed (cross-vendor final review)`.
+- Same-vendor and `off`: `cross-vendor review: off (config)`.
+- Same-vendor and `auto`: run ONE extra report-only review with the other vendor's launcher, after the last
+  execution-round APPROVE and after Step 3.4 if it runs, before Step 3.5 and any `--stop-after before-polish` exit.
+  Same launcher contract, isolation, schema and triage gates; `--stage execution --role cross-vendor-reviewer`.
+  Record `cross-vendor review: <VERDICT>`.
+- Model is the other backend's own key: codex uses `reviewer_model` only when it names a Codex model, else
+  `codex_reviewer_model`, else the Codex default; claude uses `reviewer_model` > `judgment_model` > the Claude
+  runtime default (`claude-sonnet-4-6` on the Codex runtime, Claude CLI default on the Claude runtime).
+- CRITICAL or MAJOR findings reopen an execution round, which counts toward `soft_limit_exec`. Delivery stays blocked
+  until a round that changed files is followed by a pass without them, or the dispute flow resolves them. Each
+  convergence gets one pass. MEDIUM and LOW are recorded as advisories.
+- No CLI, launcher failure, or a result still invalid after the usual one retry (schema, rubric, `tool_uses: 0`):
+  delivery is not blocked; record `cross-vendor review: unavailable (<reason>)`, naming the category (`no-cli`,
+  `launcher-failed`, `invalid-result`, `tool-uses-0`). This is a review result, not an optional integration.
+- Before `delivery_gate.py`, the orchestrator checks that the latest line for the current convergence exists and has no
+  unresolved CRITICAL/MAJOR. If not, it does not run the gate: it loads `execution-review`, runs the pass, then retries.

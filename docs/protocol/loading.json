@@ -856,7 +856,8 @@
         "evidence",
         "resume",
         "caps",
-        "delivery-object"
+        "delivery-object",
+        "reviewer-runtime"
       ],
       "codex": [
         "exit-guards",
@@ -866,7 +867,8 @@
         "evidence",
         "resume",
         "caps",
-        "delivery-object"
+        "delivery-object",
+        "reviewer-runtime"
       ]
     },
     "stop": {

@@ -33,6 +33,7 @@ review_focus: ""                # free text injected into code-review prompts on
 quality_focus: ""               # `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 review_style: ""                # free text injected into ALL reviewer prompts
 skip_quality_polish: false      # `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
+cross_vendor_review: auto
 ```
 
 `--handsfree` flag at invocation overrides the config value.

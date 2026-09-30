@@ -3678,6 +3678,24 @@
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
       "needle": "key `entry` is exactly `paired-session` and the work is fresh"
+    },
+    {
+      "id": "cross_vendor_review_section_heading",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "## Cross-vendor review"
+    },
+    {
+      "id": "cross_vendor_review_config_key_values",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Config key `cross_vendor_review`: `auto` (default) or `off`."
+    },
+    {
+      "id": "cross_vendor_review_unavailable_visible_record",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "`cross-vendor review: unavailable (<reason>)`"
     }
   ]
 }
