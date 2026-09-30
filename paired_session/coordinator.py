@@ -1053,7 +1053,7 @@ def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
-        validate_role_models(args)
+        if not restores_run(args): validate_role_models(args)
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -1117,7 +1117,11 @@ class Coordinator:
             if self.args.action in ('accept', 'reject', 'note'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
-                for key, value in self.state['config'].items():
+                saved = {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), **self.state['config']}
+                for key in getattr(self.args, 'explicit_role_flags', ()):
+                    if getattr(self.args, key) != saved[key]:
+                        raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
+                for key, value in saved.items():
                     if key == 'gate_prompt' and str(value).startswith('<bundled-default>:'):
                         self.args.gate_prompt = str(DEFAULT_GATE_PROMPT)
                     elif hasattr(self.args, key):
@@ -1125,6 +1129,7 @@ class Coordinator:
                 self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                     self.state['config'].get('exec_turn_timeout'),
                     self.state['config'].get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
+                validate_role_models(self.args)
             else:
                 self._validate_resume_args()
             scope_request = args.action in ('note', 'reject') and getattr(args, 'scope_change', False)
@@ -1279,7 +1284,7 @@ class Coordinator:
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
-                'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
+                'gate_vendor', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
@@ -1627,7 +1632,11 @@ class Coordinator:
                 self.hold(reason)
                 raise RuntimeError(reason)
             if current != value:
-                raise ValueError('resume configuration differs: ' + key)
+                raise ValueError(('role models are fixed for this run: ' if key in ROLE_DESTS else
+                                  'resume configuration differs: ') + key)
+        if 'gate_vendor' not in self.state['config'] and (
+                self.args.gate_vendor != old_gate_vendor(self.state['config']['author_vendor'])):
+            raise ValueError('role models are fixed for this run: gate_vendor')
 
     def save(self) -> None:
         with self._save_lock:
@@ -2786,7 +2795,7 @@ class Coordinator:
             return self.args.author_vendor
         if role in ('reviewer', 'shadow', 'probe'):
             return self.args.reviewer_vendor
-        return 'claude' if self.args.author_vendor == 'codex' else 'codex'
+        return self.args.gate_vendor
 
     def _rotate_failed_first_claude_session(self, role: str, vendor: str, fresh: bool) -> None:
         """Do not reuse a Claude session id after an unaccepted first turn."""
@@ -3566,6 +3575,9 @@ class Coordinator:
                 raise ValueError(f'{role} mutated workspace')
             if role != 'author':
                 answer['reviewed_snapshot'] = before
+            if receipt['model_identity'] == 'MISMATCH':
+                raise ValueError(f'model identity mismatch: {role} configured {receipt["model"]}, '
+                                 f'CLI reported {reported_model}')
             approves_exec = (phase in ('EXEC', 'POLISH') and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'approve')))
@@ -5260,6 +5272,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
     p.add_argument('--reviewer-model', help='defaults to the vendor-pinned ADR-8 model')
     p.add_argument('--reviewer-effort', default='medium')
+    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help='defaults to the vendor opposite the author')
     p.add_argument('--gate-model', help='defaults to the vendor-pinned ADR-8 model')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
@@ -5305,27 +5318,39 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
+    p.set_defaults(allowed_models=None)
     return p
 
 
 CONFIGURABLE_DESTS = {
     'author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
-    'reviewer_model', 'reviewer_effort', 'gate_model', 'gate_effort', 'shadow',
-    'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
+    'reviewer_model', 'reviewer_effort', 'gate_vendor', 'gate_model', 'gate_effort', 'shadow',
+    'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish',
 }
 
 
+ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_model', 'gate_vendor', 'gate_model')
+MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
+
+
+def old_gate_vendor(author_vendor: str) -> str:
+    return 'claude' if author_vendor == 'codex' else 'codex'
+
+
+def restores_run(args: argparse.Namespace) -> bool:
+    return args.action in ('accept', 'reject', 'note') and (Path(args.run_dir) / 'state.json').exists()
+
+
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
     model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
-    role_vendors = {
-        'author_model': args.author_vendor,
-        'reviewer_model': args.reviewer_vendor,
-        'gate_model': 'claude' if args.author_vendor == 'codex' else 'codex',
-    }
+    if getattr(args, 'gate_vendor', None) is None:
+        args.gate_vendor = old_gate_vendor(args.author_vendor)
+    role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
+                    'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
         if getattr(args, key) is None:
             setattr(args, key, model_for_vendor[vendor])
@@ -5333,18 +5358,20 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def validate_role_models(args: argparse.Namespace) -> None:
-    """Enforce the currently accepted ADR-5 vendor/model pairing before a run."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
-    role_vendors = {
-        'author_model': args.author_vendor,
-        'reviewer_model': args.reviewer_vendor,
-        'gate_model': 'claude' if args.author_vendor == 'codex' else 'codex',
-    }
+    """ADR-9: each role needs a well-formed model id, listed in allowed_models when that key is set."""
+    allowed = getattr(args, 'allowed_models', None)
+    if allowed is not None and not (
+            isinstance(allowed, dict) and set(allowed) <= {'codex', 'claude'} and all(
+                isinstance(v, list) and all(isinstance(m, str) for m in v) for v in allowed.values())):
+        raise ValueError('allowed_models must be an object {"codex": [...], "claude": [...]} of string lists')
+    role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
+                    'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
-        expected = model_for_vendor[vendor]
-        actual = getattr(args, key)
-        if actual != expected:
-            raise ValueError(f'{key} must be {expected} for the {vendor} role under ADR-8; got {actual}')
+        model = getattr(args, key)
+        if not isinstance(model, str) or not MODEL_ID_RE.fullmatch(model):
+            raise ValueError(f'{key} is not a well-formed model id: {model!r}')
+        if allowed is not None and model not in allowed.get(vendor, []):
+            raise ValueError(f'{key} {model} is not in allowed_models for the {vendor} role')
 
 
 def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.ArgumentParser:
@@ -5380,6 +5407,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str]) -> argparse.Ar
     actions = {action.dest: action for action in p._actions}
     for key, value in values.items():
         if key in explicit:
+            continue
+        if key == 'allowed_models':
+            p.set_defaults(allowed_models=value)
             continue
         action = actions[key]
         if action.dest in ('reviewer_command', 'docs_allowlist', 'skip_globs'):
@@ -5502,6 +5532,8 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
+        arg == o or arg.startswith(o + '=') for o in a.option_strings for arg in raw_argv)}
     roots = (Path(args.workspace), Path(args.run_dir))
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
     if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
@@ -5516,7 +5548,7 @@ def main(argv=None) -> int:
         return 2
     try:
         resolve_role_model_defaults(args)
-        validate_role_models(args)
+        if not restores_run(args): validate_role_models(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
