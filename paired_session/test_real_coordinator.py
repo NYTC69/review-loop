@@ -3993,6 +3993,30 @@ sys.exit(result.returncode)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    def test_candidate_contents_verify_after_cas_without_weakening_prepublication_guard(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        bundle, root, revision = rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        scratch = ct._git_env(GIT_DIR=str(root.git_dir))
+        live = ct._git_env(GIT_DIR=str(self.workspace / '.git'))
+        pack = ct._git_bytes(['pack-objects', '--stdout', '--revs'], env=scratch,
+                             input_bytes=(intent['c2'] + '\n').encode())
+        ct._git_bytes(['index-pack', '--strict', '--stdin'], env=live, input_bytes=pack)
+        ct._git(['update-ref', intent['ref'], intent['c2'], intent['parent']], env=live)
+        with self.assertRaisesRegex(ValueError, 'parent changed'):
+            ct.verify_candidate_revision(root, revision)
+        ct.verify_candidate_contents(root, revision)
+        backlog = root.root / 'BACKLOG.md'
+        saved = backlog.read_bytes()
+        backlog.write_bytes(saved + b'foreign change\n')
+        with self.assertRaises(ValueError):
+            ct.verify_candidate_contents(root, revision)
+        backlog.write_bytes(saved)
+        ct.verify_candidate_contents(root, revision)
+        with patch.object(ct, '_assert_live_unchanged', side_effect=AssertionError('pre-CAS only')):
+            ct.verify_candidate_contents(root, revision)
+
     def test_delivery_seal_rejected_closeout_leaves_no_state_or_evidence(self):
         self.test_closeout_freeze_refuses_stale_lifecycle_and_backlog_writer_grant()
         for run in self.root.glob('closeout-*'):
