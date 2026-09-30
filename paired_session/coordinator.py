@@ -35,6 +35,7 @@ try:
     from paired_session import candidate_tree
     from paired_session import closeout_policy
     from paired_session import q_proposal
+    from paired_session import q_evidence
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -47,6 +48,7 @@ except ModuleNotFoundError:
     import candidate_tree
     import closeout_policy
     import q_proposal
+    import q_evidence
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -4721,7 +4723,8 @@ class Coordinator:
         command[0] = str(executable)
         test_id = str(uuid.uuid4())
         pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
-                   'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch']}
+                   'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
+                   'review_after_sequence': self.state['sequence'], 'binding_sha256': q_evidence.binding(self)}
         self.state['fake_q_pending'] = pending
         self.save()
         test = subprocess.run(command, cwd=checkout.root, timeout=self.args.timeout, capture_output=True,
@@ -4744,12 +4747,15 @@ class Coordinator:
                                  review_schema(), fresh=True, workspace_override=checkout.root)
             candidate_tree.verify_candidate_revision(checkout, revision)
             turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
-            if (turn.get('error') or not any(observed_test_succeeded(c, self.args.test_command)
+            if (turn.get('error') or turn['phase'] != 'Q' or turn['workspace'] != str(checkout.root) or
+                    turn['sequence'] <= pending['review_after_sequence'] or
+                    not any(observed_test_succeeded(c, self.args.test_command)
                     for c in turn.get('observed_commands', [])) or
                     result['answer']['status'] != 'APPROVE' or result['answer']['full_review']):
                 raise ValueError('Q reviewer did not approve; abort and start a new run')
             reviewed = {**receipt, 'review_id': str(uuid.uuid4()), 'sequence': result['sequence'],
-                        'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index)}
+                        'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index),
+                        'root_identity': list(checkout.root_identity)}
             atomic_json(self.evidence / (reviewed['review_id'] + '-q-review.json'), reviewed)
             self.state['fake_q_review'] = reviewed
             self.state.pop('fake_q_pending')

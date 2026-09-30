@@ -3564,6 +3564,28 @@ sys.exit(result.returncode)
         self.assertNotIn('pending_reviewer_result_sequence', co.state)
         self.assertEqual(co.state['q_reserved'], 6)
         self.assertEqual(turn['phase'], 'Q')
+        source, root, revision = rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        self.assertEqual(source, reviewed)
+        self.assertEqual(revision.tree_oid, result['q_oid'])
+        self.assertEqual(str(root.root), turn['workspace'])
+        unchanged = rc.copy.deepcopy(co.state)
+        for field, value in [('phase', 'EXEC'), ('workspace', str(self.workspace)),
+                             ('sequence', reviewed['review_after_sequence']), ('error', 'failed')]:
+            with self.subTest(q_source=field):
+                present = field in turn
+                original = turn.get(field)
+                turn[field] = value
+                with self.assertRaises(ValueError):
+                    rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+                if present:
+                    turn[field] = original
+                else:
+                    turn.pop(field)
+        self.assertEqual(co.state, unchanged)
+        co.state['fake_q_review']['status'] = 'REVIEWED'
+        with self.assertRaisesRegex(ValueError, 'protected evidence'):
+            rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        co.state = unchanged
 
     def test_fake_q_empty_approval_cannot_create_review_receipt(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
@@ -3592,6 +3614,7 @@ sys.exit(result.returncode)
         finally:
             co._fake_dispatching = False
         self.assertEqual(co.state['sequence'], sequence)
+        co.args.max_invocations = co.state['invocations_used'] + co.state['q_reserved'] + 1
         with self.assertRaisesRegex(ValueError, 'P budget exhausted before stage begin'):
             co._fake_lifecycle_event('begin', {})
         self.assertIsNone(co.state['lifecycle']['pending'])
@@ -3639,6 +3662,42 @@ sys.exit(result.returncode)
         callback.assert_not_called()
         self.assertIsNone(co.state['lifecycle']['pending'])
         self.assertEqual(co.state['sequence'], sequence)
+
+    def test_fake_q_reserved_polish_retry_dispatch_fits_exact_boundary(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        co.state = rc.copy.deepcopy(before)
+        life = co.state['lifecycle']
+        life['stage'] = 'POLISH-Q'
+        # Budget fixture resumes the completed EXEC/FINISH prefix, before its first specialist call.
+        boundary = next(i for i, row in enumerate(life['receipts'])
+                        if row['stage'] == 'POLISH-Q' and row['epoch'] == life['epoch'])
+        life['receipts'] = life['receipts'][:boundary]
+        used = co.state['invocations_used']
+        reserved = co.state['q_reserved']
+        sequence = co.state['sequence']
+        co.args.max_invocations = used + reserved + 3
+        def specialist(request):
+            co._fake_dispatching = True
+            try:
+                result = co.invoke('reviewer', 'POLISH',
+                    'Role: reviewer, fresh. Phase: POLISH.\n'
+                    'Run this test command exactly as written in one Bash call: python3 -c pass',
+                    rc.review_schema(), fresh=True,
+                    workspace_override=Path(co.state['fake_candidate_test']['root']))
+            finally:
+                co._fake_dispatching = False
+            return {'candidate_oid': request['candidate_oid'], 'status': result['answer']['status'],
+                    'findings': result['answer']['full_review']}
+        with patch.dict(os.environ, {'FAKE_EMPTY_CLAIMS': 'reviewer'}):
+            with self.assertRaisesRegex(ValueError, 'DOCS requires a candidate-bound fake writer'):
+                co.fake_lifecycle_route(None, chain_only=True, polish_context={'python-reviewer': specialist})
+        self.assertEqual(co.state['invocations_used'], used + 3)
+        self.assertEqual(co.state['q_reserved'], reserved)
+        self.assertEqual(co.state['sequence'], sequence + 2)
+        self.assertLessEqual(co.state['lifecycle']['specialist_counts']['python-reviewer'],
+                             rc.budget_policy.BUDGET_CAPS['specialist'][0])
+        self.assertEqual(co.state['lifecycle']['receipts'][-1]['stage'], 'POLISH-Q')
 
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()
