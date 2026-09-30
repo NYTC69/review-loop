@@ -72,6 +72,10 @@
       "artifact": "session-final.md",
       "needle": "- Author route: orchestrator-direct"
     },
+    "last_round_direct_noop_bound": {
+      "kind": "session_last_round_direct_noop",
+      "artifact": "session-final.md"
+    },
     "attributable_delta_empty": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -150,6 +154,11 @@
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+    },
+    "codex_stage1_downstream_lifecycle_unicode_arrow": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "exec → polish → docs → security → delivery"
     },
     "codex_stage1_downstream_stop_points_mentioned": {
       "kind": "artifact_contains",
@@ -315,6 +324,36 @@
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
+    },
+    "workspace_authority_works_single": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 works in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_works_one": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 works in one orchestrator-owned workspace"
+    },
+    "workspace_authority_operates_single": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 operates in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_operates_one": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 operates in one orchestrator-owned workspace"
+    },
+    "workspace_authority_runs_single": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 runs in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_runs_one": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 runs in one orchestrator-owned workspace"
     },
     "plan_source_reviewer_approved": {
       "kind": "artifact_contains",
@@ -592,7 +631,8 @@
       "members": [
         "codex_stage1_downstream_lifecycle_exact",
         "codex_stage1_downstream_lifecycle_paraphrase",
-        "codex_stage1_downstream_lifecycle_codeblock"
+        "codex_stage1_downstream_lifecycle_codeblock",
+        "codex_stage1_downstream_lifecycle_unicode_arrow"
       ]
     },
     "codex_stage1_downstream_stop_points_mentioned": {
@@ -659,7 +699,13 @@
         "workspace_authority_paraphrase",
         "workspace_authority_one_workspace",
         "workspace_authority_assumes_one_workspace",
-        "workspace_authority_uses_one_workspace"
+        "workspace_authority_uses_one_workspace",
+        "workspace_authority_works_single",
+        "workspace_authority_works_one",
+        "workspace_authority_operates_single",
+        "workspace_authority_operates_one",
+        "workspace_authority_runs_single",
+        "workspace_authority_runs_one"
       ]
     },
     "reviewer_prompt_user_supplied_provenance_marker": {
@@ -708,7 +754,8 @@
       "mode": "all",
       "members": [
         "orchestrator_direct_author_route_recorded",
-        "attributable_delta_empty"
+        "attributable_delta_empty",
+        "last_round_direct_noop_bound"
       ]
     },
     "agent_calls_subagent_or_direct_noop": {

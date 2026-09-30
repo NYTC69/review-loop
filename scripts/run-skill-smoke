@@ -20,6 +20,8 @@ from scripts.run_skill_smoke_lib import (
     cleanup_stale_review_loop_runtime,
     cleanup_timed_out_process,
     finalize_stream_capture_artifact,
+    last_round_direct_noop,
+    load_gate,
     protocol_stages_loaded,
     select_primary_session_path,
     triage_report_fields,
@@ -451,6 +453,12 @@ def evaluate_mapping(case_id: str, assertion_ids, mapping_data, artifact_dir: Pa
             if isinstance(needle, str) and needle.lower() in haystack.lower():
                 return {"id": assertion_id, "status": "pass", "message": f"{artifact_name} contains expected text"}
             return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} does not contain {needle!r}"}
+
+        if kind == "session_last_round_direct_noop":
+            if artifact_path is None or not artifact_path.exists():
+                return {"id": assertion_id, "status": "fail", "message": f"{artifact_name} is missing"}
+            ok, message = last_round_direct_noop(artifact_path.read_text(encoding="utf-8"))
+            return {"id": assertion_id, "status": "pass" if ok else "fail", "message": message}
 
         if kind == "tool_use_read_covers_paths":
             if artifact_path is None or not artifact_path.exists():
@@ -1118,6 +1126,8 @@ def run_case(case_data, mapping_data):
                     mapping_data,
                     artifact_dir,
                 )
+                assertion_status, assertion_reason = load_gate(
+                    tool_events_artifact, ROOT, meta, assertion_status, assertion_reason)
                 write_json(artifact_dir / "assertions.json", assertion_results)
                 artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
                 meta["finished_at"] = finished_at
@@ -1214,6 +1224,7 @@ def run_case(case_data, mapping_data):
     )
     write_json(artifact_dir / "assertions.json", assertion_results)
     artifacts["assertions"] = relative_to_root(artifact_dir / "assertions.json", ROOT)
+    assertion_status, assertion_reason = load_gate(tool_events_artifact, ROOT, meta, assertion_status, assertion_reason)
 
     environment_reason = ""
     if execution_policy == "best_effort":
