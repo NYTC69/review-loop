@@ -34,6 +34,7 @@ try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
     from paired_session import closeout_policy
+    from paired_session import q_proposal
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -45,6 +46,7 @@ except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
     import closeout_policy
+    import q_proposal
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -4670,6 +4672,21 @@ class Coordinator:
                 docs_context=docs_context, chain_only=True)
             if route != 'EXEC': return route
         return 'HOLD'
+
+    def fake_materialize_q(self, c1, day):
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise ValueError('Q objects are fake-only and never authorize delivery')
+        life = self.state['lifecycle']
+        proof = life['receipts'][-1] if life['receipts'] else {}
+        if (life['stage'] != 'STOP_BEFORE_DELIVERY' or life['pending'] or self.state.get('active') or
+                self.state.get('uncertain_active') or proof.get('stage') != 'SECURITY' or
+                proof.get('status') != 'READY' or proof.get('output_oid') != life['candidate_oid'] or
+                not self.state.get('closeout_item') or self.blocking_open_findings()):
+            raise ValueError('Q needs current SECURITY pass and frozen item; resolve blockers or abort')
+        ingest = self.state['fake_ingest_receipt']
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        revision = candidate_tree.CandidateRevision(life['candidate_oid'], tuple(ingest['manifest']), 0)
+        return q_proposal.materialize(baseline, revision, self.state['closeout_item'], c1, day)
 
     def fake_candidate_author_turn(self, chain_only=False) -> dict:
         """Run one fake EXEC author against a clean isolated candidate root."""

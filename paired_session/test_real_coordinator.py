@@ -3466,6 +3466,74 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
 
+    def test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog(self):
+        docs = self.workspace / 'docs' / 'guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        backlog = self.workspace / 'BACKLOG.md'
+        backlog.write_text('# Backlog\n**Last updated**: 2026-09-30\n\n## P0\n(none)\n## P1\n'
+                           '- Fix sums. (added 2026-09-29)\n  - Keep details.\n## P2\n(none)\n'
+                           '## P3\n(none)\n## Done\n(none)\n')
+        ignore = self.workspace / '.gitignore'
+        ignore.write_text(ignore.read_text() + '\n.compass/\n' if ignore.exists() else '.compass/\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'BACKLOG.md', '.gitignore'],
+                       cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'Q fixture'], cwd=self.workspace, check=True)
+        view = self.workspace / '.compass/backlog-last-view.json'
+        view.parent.mkdir(exist_ok=True)
+        view.write_text(json.dumps({'generated_at': rc.datetime.now().astimezone().isoformat(),
+                         'source_path': str(backlog),
+                         'items': [{'id': 1, 'section': 'P1', 'title_span': 'Fix sums'}]}))
+        original = backlog.read_bytes()
+        command = self.command('--lifecycle-mode', 'on', '--stop-after-plan', '--skip-probe',
+                               '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        self.assertEqual(co.fake_lifecycle_drive(backlog_item=1), 'STOP_BEFORE_SECURITY')
+        with self.assertRaisesRegex(ValueError, 'current SECURITY pass'):
+            co.fake_materialize_q('a' * 40, '2026-09-30')
+        ingest = co.state['fake_ingest_receipt']
+        baseline = ct.baseline_from_binding(ingest['baseline'])
+        revision = ct.CandidateRevision(co.state['lifecycle']['candidate_oid'], tuple(ingest['manifest']), 0)
+        def security(request):
+            co._fake_dispatching = True
+            try:
+                result = co.invoke('reviewer', 'SECURITY',
+                    'Role: reviewer, fresh. Phase: SECURITY.\n'
+                    'Run this test command exactly as written in one Bash call: python3 -c pass',
+                    rc.review_schema(), fresh=True, workspace_override=baseline.root)
+            finally:
+                co._fake_dispatching = False
+            turn = next(r for r in co.state['turns'] if r['sequence'] == result['sequence'])
+            return {'status': result['answer']['status'], 'candidate_oid': request['candidate_oid'],
+                    'findings': result['answer']['full_review'], 'observed_tools': turn['observed_tool_calls']}
+        self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
+                         security_context={'baseline': baseline, 'revision': revision, 'review': security}),
+                         'STOP_BEFORE_DELIVERY')
+        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_AUTHOR_NAME='Fixture',
+                         GIT_AUTHOR_EMAIL='fixture@example.test', GIT_COMMITTER_NAME='Fixture',
+                         GIT_COMMITTER_EMAIL='fixture@example.test')
+        c1 = ct._git_bytes(['commit-tree', revision.tree_oid, '-p', baseline.parent_head],
+                            env=env, input_bytes=b'Unpublished fixture C1\n').decode().strip()
+        state = rc.copy.deepcopy(co.state)
+        index = baseline.index.read_bytes()
+        result = co.fake_materialize_q(c1, '2026-09-30')
+        self.assertEqual(result['status'], 'UNREVIEWED')
+        self.assertEqual(co.state, state)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        self.assertEqual(backlog.read_bytes(), original)
+        self.assertEqual(baseline.index.read_bytes(), index)
+        self.assertNotIn('Q', [r['stage'] for r in co.state['lifecycle']['receipts']])
+        with self.assertRaises(ValueError):
+            co.accept()
+
+    def test_q_materialization_refuses_normal_non_fake_coordinator(self):
+        co = self.coordinator()
+        state = rc.copy.deepcopy(co.state)
+        with self.assertRaisesRegex(ValueError, 'fake-only'):
+            co.fake_materialize_q('a' * 40, '2026-09-30')
+        self.assertEqual(co.state, state)
+        self.assertEqual(co.state['sequence'], 0)
+
     def test_closeout_freeze_refuses_stale_lifecycle_and_backlog_writer_grant(self):
         for kind in ('prior-freeze', 'prior-stage', 'writer-file', 'writer-allowlist', 'parent-drift'):
             with self.subTest(kind=kind):

@@ -386,3 +386,12 @@ and retains the newest five Done blocks. It writes no file and supplies no
 approval. Q still needs isolated materialization and fresh review/test/SECURITY
 receipts before accept or delivery. Closeout intake is write-once at a fresh
 lifecycle parent, and BACKLOG is excluded from the declared writer grants.
+
+`fake_materialize_q(c1, day)` is an offline object proposal after the P SECURITY
+pass. It checks the P tree, C1 parent/tree and current adapter hash, rejects
+non-child body text or a missing final newline, and uses a temporary index to
+write a BACKLOG-only Q tree in scratch Git. Its status is always UNREVIEWED.
+It changes neither live HEAD/index/BACKLOG, the P root/index, nor lifecycle state.
+Fresh Q tests/reviews/gate/SECURITY and attributed acceptance remain mandatory;
+this method cannot commit, publish or close. C1 message/author/intent verification
+belongs to the later bundle-verification step. Real lifecycle still refuses.
