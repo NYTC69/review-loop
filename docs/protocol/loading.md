@@ -13,6 +13,9 @@ python3 <support-root>/scripts/read_protocol.py --runtime <claude|codex> --stage
   --output .review-loop/tmp/protocol-<runtime>-<stage>.md
 ```
 
+Every `read_protocol.py` call is its own Bash command, with no `&&`, `;`, pipes,
+loops, command substitution or shell variables. Write `--loaded` values out literally.
+
 On exit 0, determine the output file's line count and read it completely in
 bounded chunks before its action. The loader writes atomically and emits only a
 compact hash/size receipt to stdout, avoiding host tool-output truncation. Missing

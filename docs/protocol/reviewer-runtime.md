@@ -48,7 +48,11 @@ aliases defined only in user config are therefore not inherited; select a model
 supported by the clean CLI context or use another configured reviewer backend.
 A different positive timeout may be chosen explicitly for a large task; no
 unlimited wait. A host command timeout must exceed `--timeout-seconds` by
-~15 s of cleanup grace; otherwise run the launcher in the background and poll. Claude supports
+~15 s of cleanup grace. Never end the turn while a reviewer launcher is running; in
+`claude -p`/headless mode a background task is killed when the turn ends. Prefer the
+foreground with a host timeout greater than `--timeout-seconds` + 15 s (choose
+`--timeout-seconds` so that fits the host cap, e.g. 570 under a 600 s cap). If the
+launcher must be backgrounded, poll it within the same turn until it exits. Claude supports
 Read/Grep/Glob only, with hooks, plugins, skills and external MCP customizations
 disabled. Codex starts in an empty temporary cwd with user config and execpolicy
 rules ignored, hooks/plugins/apps disabled, and a read-only shell sandbox. The

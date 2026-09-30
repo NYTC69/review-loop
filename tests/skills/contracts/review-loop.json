@@ -3696,6 +3696,30 @@
       "kind": "contains",
       "path": "docs/protocol/reviewer-runtime.md",
       "needle": "`cross-vendor review: unavailable (<reason>)`"
+    },
+    {
+      "id": "loader_call_standalone_bash_rule",
+      "kind": "contains",
+      "path": "docs/protocol/loading.md",
+      "needle": "Every `read_protocol.py` call is its own Bash command"
+    },
+    {
+      "id": "reviewer_launcher_never_end_turn_while_running",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "Never end the turn while a reviewer launcher is running"
+    },
+    {
+      "id": "reviewer_launcher_poll_same_turn",
+      "kind": "contains",
+      "path": "docs/protocol/reviewer-runtime.md",
+      "needle": "poll it within the same turn until it exits"
+    },
+    {
+      "id": "project_config_reviewer_model_owner_default",
+      "kind": "contains",
+      "path": ".review-loop/config.md",
+      "needle": "reviewer_model: \"gpt-6.1-sol\""
     }
   ]
 }

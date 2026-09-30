@@ -67,6 +67,16 @@
       "artifact": "session-final.md",
       "needle": "no-op execution round"
     },
+    "orchestrator_direct_author_route_recorded": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Author route: orchestrator-direct"
+    },
+    "attributable_delta_empty": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "(no attributable change)"
+    },
     "reviewer_backend_codex_metadata": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -692,6 +702,20 @@
       "members": [
         "execution_round_recorded",
         "noop_execution_outcome_recorded"
+      ]
+    },
+    "orchestrator_direct_noop_round": {
+      "mode": "all",
+      "members": [
+        "orchestrator_direct_author_route_recorded",
+        "attributable_delta_empty"
+      ]
+    },
+    "agent_calls_subagent_or_direct_noop": {
+      "mode": "any",
+      "members": [
+        "agent_calls_used_at_least_one_subagent",
+        "orchestrator_direct_noop_round"
       ]
     },
     "review_loop_planning_or_review_only_route_recorded": {

@@ -136,6 +136,22 @@ def select_primary_session_path(stdout: str, root: Path, before_sessions: set[Pa
     return None
 
 
+def claude_plugin_source(command: list, root: Path) -> dict:
+    """Meta fields for the plugin a claude case loads; {} when the command passes no --plugin-dir."""
+    root_text = root.as_posix()
+    if "--plugin-dir" in command:
+        index = command.index("--plugin-dir") + 1
+        target = command[index] if index < len(command) else ""
+    elif any('--plugin-dir "$WT"' in item for item in command):
+        target = command[-1]  # bash -lc script; WT="$1" is the last argument
+    else:
+        return {}
+    if target != root_text:
+        raise ValueError("--plugin-dir must be the worktree under test")
+    manifest = json.loads((root / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+    return {"plugin_dir": root_text, "plugin_version": manifest["version"]}
+
+
 def _protocol_command(command: str):
     """Recognize only a direct loader invocation, never infer shell execution."""
     if "read_protocol.py" not in command:

@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 from scripts.run_skill_smoke_lib import (
+    claude_plugin_source,
     cleanup_stale_review_loop_runtime,
     cleanup_timed_out_process,
     finalize_stream_capture_artifact,
@@ -1011,6 +1012,11 @@ def run_case(case_data, mapping_data):
     capture_modes = definition["artifacts"]["capture"]
     execution_policy = definition["execution_policy"]
     meta["command"] = command
+    if runtime_profile == "claude":
+        try:
+            meta.update(claude_plugin_source(command, ROOT))
+        except (OSError, ValueError, KeyError) as exc:
+            raise RunnerError(case_id, f"plugin under test: {exc}") from exc
     meta["expected_artifacts"] = definition["artifacts"]["required"]
     meta["timeout_seconds"] = definition["timeout_seconds"]
     meta["execution_policy"] = execution_policy
