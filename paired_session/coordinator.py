@@ -88,7 +88,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip() or 'UNAVAILABLE'
+    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
@@ -406,7 +406,7 @@ PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re
 
 
 def _plugin_entries_without_bump(value):
-    if isinstance(value, dict): return {k: _plugin_entries_without_bump(v) for k, v in value.items() if k not in ('version', 'lastUpdated')}
+    if isinstance(value, dict): return {k: None if k in ('version', 'lastUpdated') and not isinstance(v, (dict, list)) else _plugin_entries_without_bump(v) for k, v in value.items()}   # G-b: the keys stay, only scalar values are ignored
     if isinstance(value, list): return [_plugin_entries_without_bump(v) for v in value]
     return value
 
@@ -1408,7 +1408,7 @@ class Coordinator:
 
     def _restore_role_policy(self, explicit) -> dict:
         """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
-        saved = {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), **self.state['config']}
+        saved = self._saved_config()
         for key in explicit:
             if getattr(self.args, key) != saved[key]:
                 raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
@@ -1416,14 +1416,18 @@ class Coordinator:
         if getattr(self.args, 'allowed_models', None) not in (None, policy):
             raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
         self.args.allowed_models = policy
-        for key in ROLE_DESTS:
+        for key in (*ROLE_DESTS, 'gate_vendor_source'):
             setattr(self.args, key, saved[key])
         return saved
+
+    def _saved_config(self) -> dict:
+        """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
+        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived', **self.state['config']}
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
-                'gate_vendor', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
+                'gate_vendor', 'gate_vendor_source', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
@@ -2838,7 +2842,7 @@ class Coordinator:
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
-        atomic_json(config_path, {k: v for k, v in self.state['config'].items() if k in CONFIGURABLE_DESTS and v is not None and
+        atomic_json(config_path, {k: v for k, v in self._saved_config().items() if k in CONFIGURABLE_DESTS and v is not None and
                     not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:'))})
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
                 'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
@@ -4506,7 +4510,7 @@ class Coordinator:
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10).stdout.strip() or 'UNAVAILABLE'
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10, env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -5978,7 +5982,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
     p.add_argument('--reviewer-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--reviewer-effort', default='medium')
-    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help='defaults to the vendor opposite the author')
+    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help="defaults to the author's vendor (ADR-10); an explicit value is recorded as operator")
     p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
@@ -6053,7 +6057,7 @@ ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_mode
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
-def old_gate_vendor(author_vendor: str) -> str:
+def old_gate_vendor(author_vendor: str) -> str:   # legacy opposite-vendor rule: only saved runs without gate_vendor (ADR-10 M3) and M4
     return 'claude' if author_vendor == 'codex' else 'codex'
 
 
@@ -6061,11 +6065,27 @@ def restores_run(args: argparse.Namespace) -> bool:
     return args.action in ('accept', 'reject', 'note', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
+def refuse_foreign_gate_model(args: argparse.Namespace) -> None:
+    """ADR-10 M4: an explicit gate_model of the other vendor needs an explicit --gate-vendor (never applies to a restored run)."""
+    model, given = getattr(args, 'gate_model', None), getattr(args, 'gate_vendor', None)
+    vendor = given or args.author_vendor
+    other = old_gate_vendor(vendor)
+    allowed = getattr(args, 'allowed_models', None) or {}
+    if model is None or restores_run(args) or model in allowed.get(vendor, []): return
+    if model in allowed.get(other, []) or model.startswith({'claude': 'claude-', 'codex': 'gpt-'}[other]):
+        raise ValueError(f'gate_model {model} belongs to {other}, but the gate ' + (
+            f'vendor is {vendor}; pass --gate-vendor {other} or a {vendor} model' if given else
+            f"now defaults to the author's vendor {vendor}; pass --gate-vendor {other} to keep it"))
+
+
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
     model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
+    refuse_foreign_gate_model(args)
+    if getattr(args, 'gate_vendor_source', None) is None:
+        args.gate_vendor_source = 'default' if getattr(args, 'gate_vendor', None) is None else 'operator'
     if getattr(args, 'gate_vendor', None) is None:
-        args.gate_vendor = old_gate_vendor(args.author_vendor)
+        args.gate_vendor = args.author_vendor   # ADR-10: the gate defaults to the author's vendor
     role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
                     'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
@@ -6257,6 +6277,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         co.hold('aborted by operator' + suffix)
         print('HOLD: ' + co.state['hold_reason'])
         return 2
+    print(f'GATE: {args.gate_vendor} {args.gate_model} (gate_vendor_source: {args.gate_vendor_source})')   # ADR-10 M2
     status = (co.drive() if args.action == 'run' else
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
     print(status + (' (acceptance pending)' if status == 'DONE' else

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -32,8 +33,8 @@ class CodexContractTests(unittest.TestCase):
 
     def co(self):
         # Same flags as self.h.command() so a CLI call can restore this coordinator's saved run.
-        return self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
-                                  '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
+        return self.h.coordinator('--gate-vendor', 'claude', '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+                                  '--gate-effort', 'low', '--test-command', 'python3 -m unittest')   # explicit gate: default moved by owner decision 2026-09-30
 
     def write_probe(self, co, status):
         """A record probe_passed() accepts for the CURRENT fake codex version (digests bind the version)."""
@@ -49,7 +50,7 @@ class CodexContractTests(unittest.TestCase):
 
     def cli(self, action, version, *extra):
         """In-process main() with the fake-harness bypass off, as on a real operator machine."""
-        command = self.h.command(*extra)
+        command = self.h.command('--gate-vendor', 'claude', *extra)   # explicit gate: default moved by owner decision 2026-09-30
         command[2] = action
         out = io.StringIO()
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': version}), \
@@ -320,9 +321,9 @@ class RoleModelTests(unittest.TestCase):
 
     def test_defaults_are_unchanged(self):
         for flags, expected in (
-                ([], ('codex', 'gpt-6-luna', 'claude', 'claude-opus-5-5', 'claude', 'claude-opus-5-5')),
+                ([], ('codex', 'gpt-6-luna', 'claude', 'claude-opus-5-5', 'codex', 'gpt-6-luna')),   # default moved by owner decision 2026-09-30
                 (['--author-vendor', 'claude', '--reviewer-vendor', 'codex'],
-                 ('claude', 'claude-opus-5-5', 'codex', 'gpt-6-luna', 'codex', 'gpt-6-luna'))):
+                 ('claude', 'claude-opus-5-5', 'codex', 'gpt-6-luna', 'claude', 'claude-opus-5-5'))):   # default moved by owner decision 2026-09-30
             with self.subTest(flags=flags):
                 a = self.resolved(*flags)
                 rc.validate_role_models(a)
@@ -386,7 +387,7 @@ class RoleModelTests(unittest.TestCase):
         schema = self.h.root / 'gate-schema.json'
         rc.atomic_json(schema, rc.review_schema())
         for index, (flags, vendor) in enumerate(((['--gate-vendor', 'codex'], 'codex'),
-                                                 (['--gate-vendor', 'claude'], 'claude'), ([], 'claude'))):
+                                                 (['--gate-vendor', 'claude'], 'claude'), ([], 'codex'))):   # default moved by owner decision 2026-09-30
             with self.subTest(flags=flags):
                 self.h.run_dir = self.h.root / f'gate-{index}'
                 co = self.h.coordinator(*flags)
@@ -433,7 +434,7 @@ class RoleModelTests(unittest.TestCase):
                 self.h.coordinator(*saved_flags, flag, value)      # run/resume compare every role key
 
     def test_a_saved_run_without_gate_vendor_derives_it_the_old_way(self):
-        flags = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex']
+        flags = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex']   # default moved by owner decision 2026-09-30
         self.h.coordinator(*flags)
         state = self.state()
         self.assertEqual(state['config']['gate_vendor'], 'codex')
@@ -499,7 +500,7 @@ class RoleModelTests(unittest.TestCase):
         return path
 
     def test_the_allowlist_is_saved_and_enforced_after_every_restore(self):
-        path = self.allowlist_run()
+        path = self.allowlist_run(None, '--gate-vendor', 'claude')   # explicit: the gate_model swap below needs a claude gate
         self.assertEqual(self.state()['config']['allowed_models'], self.ALLOWED)
         for action in ('accept', 'reject', 'note', 'resume', 'run'):
             with self.subTest(action=action):
@@ -557,7 +558,7 @@ class RoleModelTests(unittest.TestCase):
         # An allowlist naming only the saved models must not trip over the CLI defaults on a plain resume.
         self.h.run_dir = self.h.root / 'allow-resume'
         policy = self.allowlist_run({'codex': ['gpt-6.1-sol'], 'claude': ['claude-sonnet-5-5']}, '--author-model',
-                           'gpt-6.1-sol', '--reviewer-model', 'claude-sonnet-5-5', '--gate-model', 'claude-sonnet-5-5')
+                           'gpt-6.1-sol', '--reviewer-model', 'claude-sonnet-5-5', '--gate-model', 'claude-sonnet-5-5', '--gate-vendor', 'claude')   # explicit: the default gate moved to the author's vendor
         resumed = self.main('resume', '--config', str(policy)).stdout
         for text in ('allowed_models', 'role models are fixed', 'role policy is fixed'):
             self.assertNotIn(text, resumed)
@@ -590,7 +591,7 @@ class RoleModelTests(unittest.TestCase):
             self.assertIn('only a passing gate probe covers it', self.main('reject', '--text', 'x').stdout)   # replaced by plan P G-a, owner decision 2026-09-30
 
     def test_probe_passed_binds_the_probed_reviewer_vendor_to_the_gate_vendor(self):
-        co = self.h.coordinator()
+        co = self.h.coordinator('--gate-vendor', 'claude')   # explicit: the default gate moved to the author's vendor
         report = {'status': 'PASS', 'reviewer_flags': co.reviewer_flags(),
                   'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(),
                   'gate_flags_digest': co.gate_flags_digest(),   # replaced by plan P G-a, owner decision 2026-09-30
@@ -608,7 +609,7 @@ class RoleModelTests(unittest.TestCase):
             self.assertEqual(co.probe_passed(), (False, 'permission probe has no passing gate probe for gate vendor codex'))
 
     def test_a_report_made_before_the_gate_digest_does_not_pass_on_the_real_cli(self):          # G-a K4
-        co = self.h.coordinator()
+        co = self.h.coordinator('--gate-vendor', 'claude')   # explicit: the default gate moved to the author's vendor
         report = {'status': 'PASS', 'reviewer_flags': co.reviewer_flags(),
                   'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(),
                   'author_permission_probe': {'status': 'PASS', 'd1a_model_verdict': 'UNKNOWN', 'd1b_synthetic_verdict': 'PASS'},
@@ -620,6 +621,73 @@ class RoleModelTests(unittest.TestCase):
         self.assertIn('no gate_flags_digest', why)
         self.assertEqual(co.probe_passed(), (True, ''))                                      # the fake harness is unchanged
         self.assertEqual(set(co.gate_flags()) - set(co.reviewer_flags()), {'gate_vendor', 'gate_model', 'gate_effort', 'gate_commands', 'gate_binary'})
+
+    # ---- G-b / ADR-10: the gate defaults to the author's vendor ----
+    def test_the_gate_defaults_to_the_authors_vendor_and_records_the_source(self):   # G-b M1/M2
+        policy = self.h.root / 'gate-policy.json'
+        policy.write_text(json.dumps({'gate_vendor': 'claude'}))
+        for index, (flags, expected) in enumerate((
+                ([], ('codex', 'gpt-6-luna', 'default')),
+                (['--author-vendor', 'claude', '--reviewer-vendor', 'codex'], ('claude', 'claude-opus-5-5', 'default')),
+                (['--gate-vendor', 'claude'], ('claude', 'claude-opus-5-5', 'operator')),
+                (['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex'], ('codex', 'gpt-6-luna', 'operator')),
+                (['--config', str(policy)], ('claude', 'claude-opus-5-5', 'operator')))):      # a config key is an operator choice too
+            with self.subTest(flags=flags):
+                self.h.run_dir = self.h.root / f'gate-default-{index}'
+                co = rc.Coordinator(self.args(*flags))
+                config = co.state['config']
+                self.assertEqual((config['gate_vendor'], config['gate_model'], config['gate_vendor_source']), expected)
+                self.assertEqual((co._role_vendor('gate'), co.args.gate_model), expected[:2])
+        self.h.run_dir = self.h.root / 'gate-default-e2e'
+        result = self.h.run_coordinator('--shadow', 'off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('GATE: codex gpt-6-luna (gate_vendor_source: default)', result.stdout)
+        gates = [t for t in self.state()['turns'] if t['role'] == 'gate']
+        self.assertTrue(gates and all(t['vendor'] == 'codex' and t['model'] == 'gpt-6-luna' for t in gates))
+
+    def test_a_legacy_saved_run_restores_as_legacy_derived_and_its_successor_keeps_the_derived_vendor(self):   # G-b M2/M3
+        self.h.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
+        state = self.state()
+        del state['config']['gate_vendor'], state['config']['gate_vendor_source']
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        restored = self.restored()                  # the new default would be claude (the author); the old derivation says codex
+        self.assertEqual((restored.gate_vendor, restored.gate_vendor_source), ('codex', 'legacy-derived'))
+        self.assertIn('Start:', self.main('note', '--scope-change', '--text', 'narrow it').stdout)
+        config_path = self.h.run_dir / 'evidence' / 'successor-config.json'
+        self.assertEqual(json.loads(config_path.read_text())['gate_vendor'], 'codex')
+        target = self.h.run_dir.with_name(self.h.run_dir.name + '-successor')
+        self.main('run', '--workitem', str(self.h.run_dir / 'evidence' / 'successor-workitem.md'),
+                  '--run-dir', str(target), '--supersedes', str(self.h.run_dir), '--config', str(config_path))
+        successor = self.state_at(target)['config']
+        self.assertEqual((successor['gate_vendor'], successor['gate_model']), ('codex', 'gpt-6-luna'))
+
+    def test_a_gate_model_of_the_other_vendor_is_refused_before_state_unless_the_vendor_is_explicit(self):   # G-b M4
+        bob = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6.1-sol']
+        message = ("REFUSED: gate_model gpt-6.1-sol belongs to codex, but the gate now defaults to the author's vendor claude; "
+                   "pass --gate-vendor codex to keep it")
+        for action in ('run', 'resume', 'permission-probe'):
+            with self.subTest(action=action):
+                refused = self.main(action, *bob)
+                self.assertEqual(refused.returncode, 2, refused.stdout)
+                self.assertIn(message, refused.stdout)
+                self.assertFalse(self.h.run_dir.exists())
+        for flags, text in ((['--gate-vendor', 'claude', '--gate-model', 'gpt-6.1-sol'], 'belongs to codex, but the gate vendor is claude'),
+                            (['--author-vendor', 'claude', '--gate-vendor', 'codex', '--gate-model', 'claude-opus-5-5'],
+                             'belongs to claude, but the gate vendor is codex')):
+            with self.subTest(flags=flags):
+                refused = self.main('run', *flags)
+                self.assertEqual(refused.returncode, 2, refused.stdout)
+                self.assertIn(text, refused.stdout)
+                self.assertFalse(self.h.run_dir.exists())
+        policy = self.h.root / 'known-ids.json'      # an id the allowlist assigns to the other vendor counts as known
+        policy.write_text(json.dumps({'allowed_models': {'codex': ['house-model'], 'claude': ['claude-opus-5-5']}, 'gate_model': 'house-model'}))
+        with self.assertRaisesRegex(ValueError, 'belongs to codex'):
+            self.resolved('--config', str(policy), '--author-vendor', 'claude')
+        a = self.resolved(*bob, '--gate-vendor', 'codex')
+        self.assertEqual((a.gate_vendor, a.gate_model, a.gate_vendor_source), ('codex', 'gpt-6.1-sol', 'operator'))
+        accepted = self.main('run', *bob, '--gate-vendor', 'codex')
+        self.assertNotIn('belongs to', accepted.stdout)
+        self.assertTrue((self.h.run_dir / 'state.json').exists(), accepted.stdout)
 
 
 OPT_IN = ['--accept-unverified-claude-author', '--reason', 'checked by hand']
@@ -997,6 +1065,16 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             'gate_permission_probe': {'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'},
             'global_config_changes': {'status': 'PASS'}}))
         if record: co.state['permission_probe'] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'turn': 1}   # as permission_probe does
+
+    def test_the_claude_version_call_of_the_author_probe_runs_in_the_claude_child_env(self):   # G-b, RF follow-up (a)
+        seen, real = [], subprocess.run
+        def spy(argv, *args, **kwargs):
+            if list(argv[1:]) == ['--version']: seen.append(kwargs.get('env'))
+            return real(argv, *args, **kwargs)
+        with patch.object(rc.subprocess, 'run', spy):
+            _, out = self.probe()
+        self.assertEqual(out['claude_version'], 'fake-claude 9.9')
+        self.assertTrue(seen and all(env and env.get('DISABLE_AUTOUPDATER') == '1' and 'FORCE_AUTOUPDATE_PLUGINS' not in env for env in seen), seen)
 
     def test_pass_when_every_attempt_is_denied_targets_are_absent_and_the_control_is_present(self):
         co, out = self.probe()
@@ -1549,13 +1627,13 @@ class ProbeSkipTests(unittest.TestCase):
         self.addCleanup(seam.stop)
         self.cache = self.h.test_home / '.cache' / 'review-loop' / 'probe-pass'
 
-    def co(self, *extra):
-        return self.h.coordinator(*extra, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+    def co(self, *extra, default_gate=False):
+        return self.h.coordinator(*(() if default_gate else ('--gate-vendor', 'claude')), *extra, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
                                   '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
 
-    def cli(self, action, *extra):
+    def cli(self, action, *extra, default_gate=False):
         """In-process main() with the fake-harness bypass off, as on a real operator machine."""
-        command = self.h.command(*extra)
+        command = self.h.command(*(() if default_gate else ('--gate-vendor', 'claude')), *extra)   # explicit gate: default moved by owner decision 2026-09-30
         command[2] = action
         out = io.StringIO()
         with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), contextlib.redirect_stdout(out), \
@@ -1762,6 +1840,20 @@ class ProbeSkipTests(unittest.TestCase):
         allowed = self.cli('permission-probe', *flags)                                              # the real CLI runs the probe that produces the proof
         self.assertEqual(allowed.returncode, 0, allowed.stdout)
         self.assertEqual(json.loads((self.h.run_dir / 'permission-probe.json').read_text())['gate_permission_probe']['status'], 'PASS')
+
+    def test_a_default_run_on_the_real_cli_needs_the_gate_probe_because_the_gate_now_follows_the_author(self):   # G-b + G-a
+        refused = self.cli('run', default_gate=True)               # codex author, claude reviewer: the default gate is codex
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('gate vendor codex differs from reviewer vendor claude: only a passing gate probe covers it', refused.stdout)
+        self.assertEqual(self.state().get('turns', []), [])
+        probe = self.cli('permission-probe', default_gate=True)
+        self.assertEqual(probe.returncode, 0, probe.stdout)
+        report = json.loads((self.h.run_dir / 'permission-probe.json').read_text())
+        self.assertEqual((report['gate_permission_probe']['status'], report['gate_permission_probe']['vendor']), ('PASS', 'codex'))
+        allowed = self.cli('run', default_gate=True)
+        self.assertEqual(allowed.returncode, 0, allowed.stdout)
+        self.assertIn('GATE: codex gpt-6-luna (gate_vendor_source: default)', allowed.stdout)
+        self.assertEqual(self.state()['config']['gate_vendor_source'], 'default')
 
     def test_the_gate_probe_is_its_own_role_with_its_own_os_only_path(self):                          # G-a K2
         co = self.co('--reviewer-vendor', 'codex', '--gate-vendor', 'claude')
