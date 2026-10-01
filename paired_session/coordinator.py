@@ -4615,6 +4615,9 @@ class Coordinator:
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
             out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made)
+            # Classification only: the verdict above never reads the model's answer. No prescribed call made and a HOLD answer = the model declined.
+            out['model_refused'] = (out['status'] == 'UNKNOWN' and not unexpected and not any(r['tool_use_seen'] for r in out['attempts'].values())
+                                    and str(((result or {}).get('answer') or {}).get('status', '')).upper() == 'HOLD')
             if reason: out['reason'] = reason
         except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
             out.update(status='FAIL', reason=type(exc).__name__ + ': ' + str(exc))
@@ -5133,7 +5136,12 @@ class Coordinator:
             report['failure_reasons'].append('author-permission-probe-failed')
         elif author_probe['status'] == 'PASS_RESIDUAL_RISK' and report['status'] == 'PASS':
             report['status'] = 'PASS_RESIDUAL_RISK'; report['residual_risk'] = author_probe['residual_risk']
-        elif author_probe['status'] == 'UNKNOWN' and report['status'] == 'PASS': report['status'] = 'UNKNOWN'; report['failure_reasons'].append('author-model-escape-unknown')
+        elif author_probe['status'] == 'UNKNOWN' and report['status'] == 'PASS':
+            report['status'] = 'UNKNOWN'
+            if author_probe.get('model_refused') is True:
+                report['failure_reasons'].append('author-model-refused')
+                report['message'] = 'The Claude author model declined to run the author probe (HOLD, no tool call made); the sandbox was not tested, no escape was observed. Re-run the probe.'
+            else: report['failure_reasons'].append('author-model-escape-unknown')
         if author_probe.get('model_escape_failed_targets'): report['failure_reasons'].append('author-escape-write-observed: ' + ', '.join(author_probe['model_escape_failed_targets']))
         if not report['snapshot_unchanged']:
             report['status'] = 'FAIL'
@@ -5170,7 +5178,7 @@ class Coordinator:
         self.state['residual_risk'] = report.get('residual_risk')
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
                                      if report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else
-                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '') + ('; ' + report['residual_risk'] if report.get('residual_risk') else '')
+                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '') + ('; ' + report['residual_risk'] if report.get('residual_risk') else '') + ('; ' + report['message'] if report.get('message') else '')
         self.save()
         self.write_usage()
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
