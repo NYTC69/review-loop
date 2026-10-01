@@ -1,15 +1,25 @@
-import hashlib, json, os, signal, subprocess, sys, tempfile
+import hashlib, json, os, pwd, signal, subprocess, sys, tempfile
 from pathlib import Path
 from importlib import import_module
 safe_temp = import_module(('paired_session.' if __package__ else '') + 'safe_temp')
 spine = import_module(('paired_session.' if __package__ else '') + 'lifecycle_spine')
 def run(co, command, *, cwd, env, timeout, capture_output=True):
     root = Path(cwd).resolve(strict=True)
-    fake_root = Path(os.environ.get('FAKE_CODEX_TEST_ROOT', '/')).resolve()
+    root_text = os.environ.get('FAKE_CODEX_TEST_ROOT')
+    if not root_text:
+        raise RuntimeError('candidate test root missing; refuse dispatch')
+    if not Path(root_text).is_absolute():
+        raise RuntimeError('candidate test root must be absolute; refuse dispatch')
+    fake_root = Path(root_text).resolve(strict=True)
+    broad_roots = (Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(),
+                   Path(tempfile.gettempdir()).resolve(), Path('/tmp').resolve(), Path('/var/tmp').resolve())
+    broad_scope = any(fake_root == p or fake_root in p.parents for p in broad_roots)
     engine = Path('/usr/bin/sandbox-exec')
-    if (not co._fake_lifecycle or not spine.fake_dispatch_guard(co.args) or not capture_output or
-            fake_root not in root.parents or any(p == root or p in root.parents
-            for p in (co.workspace, co.run_dir)) or sys.platform != 'darwin' or not engine.is_file()):
+    protected_roots = (co.workspace.resolve(), co.run_dir.resolve())
+    overlaps = any(p == root or p in root.parents or root in p.parents for p in protected_roots)
+    if (broad_scope or not co._fake_lifecycle or
+            not spine.fake_dispatch_guard(co.args) or not capture_output or fake_root not in root.parents or
+            overlaps or sys.platform != 'darwin' or not engine.is_file()):
         raise RuntimeError('candidate test write sandbox unavailable or invalid; refuse dispatch')
     with safe_temp.directory(dir=co.evidence, prefix='test-tmp-') as scratch:
         tmp = Path(scratch).resolve()
@@ -21,7 +31,7 @@ def run(co, command, *, cwd, env, timeout, capture_output=True):
                    '(deny file-link)(deny network*)(deny mach-lookup)')
         argv = [str(engine), '-p', profile, *(command or ['/usr/bin/true'])]
         process = subprocess.Popen(argv, cwd=root, env={**env, 'TMPDIR': str(tmp),
-                    'GIT_CEILING_DIRECTORIES': str(root.parent)}, stdout=subprocess.PIPE,
+                    'GIT_CEILING_DIRECTORIES': str(root.parent)}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, start_new_session=True)
         try:
             stdout, stderr = process.communicate(timeout=timeout)
