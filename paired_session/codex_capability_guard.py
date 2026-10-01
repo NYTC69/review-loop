@@ -23,6 +23,21 @@ def _root_key(line):
     return text.split('.', 1)[0].strip()
 
 
+def _plugins_off(path):
+    """CG-1: True only when this config.toml sets `[features] plugins = false` (or `features.plugins = false`), which makes cached bundles inert."""
+    table, off = '', False
+    try: lines = path.read_text('utf-8-sig').splitlines()
+    except (OSError, UnicodeError): return False
+    for line in lines:
+        text = line.split('#', 1)[0].strip()
+        if text.startswith('['):
+            table = text.strip('[] ').replace(' ', '')
+            continue
+        key, _, value = (part.strip() for part in text.partition('='))
+        if (table, key) in (('features', 'plugins'), ('', 'features.plugins')): off = value == 'false'
+    return off
+
+
 def _inspect_file(path, project=False, requirements=False):
     raw = path.read_bytes()
     keys = {_root_key(line) for line in raw.decode('utf-8-sig').splitlines()}
@@ -59,7 +74,7 @@ def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=N
             continue
         files[str(path.resolve())] = digest
         issues.extend(f'{key} configured in {path}' for key in sorted(findings))
-    for version in (home / 'plugins/cache').glob('*/*/*'):
+    for version in () if _plugins_off(home / 'config.toml') else (home / 'plugins/cache').glob('*/*/*'):
         for name in ('mcp.json', '.mcp.json', '.app.json', 'plugin.json', '.codex-plugin/plugin.json'):
             path = version / name
             try:

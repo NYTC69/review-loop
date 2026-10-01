@@ -241,13 +241,17 @@ def main():
                   'findings': findings,
                   'self_run_evidence': [{'command': configured_test}]}
     elif 'Role: permission-system probe' in prompt:
-        if os.environ.get('FAKE_PROBE_MUTATE'):
+        if os.environ.get('FAKE_PROBE_MUTATE') and os.environ.get('FAKE_PROBE_MUTATE_VENDOR', vendor) == vendor:   # G-a: the vendor filter lets a test mutate in one probe turn only
             (Path.cwd() / 'probe-mutation.txt').write_text('mutation\n')
         allowed = prompt.split('Allowed exact command:\n', 1)[1].splitlines()[0]
         attacks = prompt.split('Write commands expected to be denied:\n', 1)[1].split(
             '\nReturn APPROVE', 1)[0].splitlines()
         answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
                   'self_run_evidence': [{'command': command} for command in [allowed, *attacks]]}
+        if vendor == 'codex':   # G-a: a Codex probe turn observes the allowed command (exit 0) and denies every write attempt
+            command_events = [{'command': command, 'exit_code': 0 if command == allowed else 126,
+                               'output': 'fake permission result' if command == allowed else 'fake read-only denial'}
+                              for command in [allowed, *attacks]]
     else:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')
@@ -311,6 +315,10 @@ def main():
             revise = True
             findings = [{'severity': 'MINOR', 'file': 'plan.md', 'summary': 'plan advisory',
                          'failure_scenario': 'plan omits a small design detail'}]
+        if (role == 'reviewer' and phase == 'PLAN' and os.environ.get('FAKE_PLAN_APPROVE_SECURITY')   # APPROVE that opens a MINOR security finding: first review only, or every review with 'always'
+                and (not open_ids or os.environ['FAKE_PLAN_APPROVE_SECURITY'] == 'always')):
+            findings = [{'severity': 'MINOR', 'security': True, 'file': 'plan.md', 'summary': 'plan security note ' + str(len(open_ids)),
+                         'failure_scenario': 'plan leaves an unsafe path'}]
         if role == 'shadow' and os.environ.get('FAKE_SHADOW_CRITICAL'):
             findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
                          'summary': 'fresh shadow blocker', 'failure_scenario': 'wrong result remains'}]
