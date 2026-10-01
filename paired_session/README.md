@@ -207,6 +207,8 @@ is `UNKNOWN`. A missing or malformed attempt stays `UNKNOWN` for that target;
 only the D1(b) filesystem and synthetic conditions above can qualify residual
 risk. `permission-probe.json`
 records per-target evidence and cleanup.
+What a Codex author cannot do inside this sandbox: see
+"Codex author sandbox: what a work item cannot do" below.
 Escape sentinels live in coordinator-created dedicated directories. The probe
 records each directory's before/after mtime, ctime, link count and sorted
 listing. A new entry FAILs; a changed directory with no entry stays UNKNOWN.
@@ -395,6 +397,35 @@ as a comparison path during staged migration.
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
 protocol transitions and permissions-command construction; the runtime
 permission probe is the effective check against the installed Codex CLI.
+
+### Codex author sandbox: what a work item cannot do
+
+A Codex author runs under the `workspace-write` sandbox (writes confined to the
+workspace and the run-owned temp dir; `network_access` is off). Real runs on
+this machine (poker-tools, 2026-10-01) showed three things a work item cannot do
+there:
+
+- Postgres `initdb` fails (`shmget` returns EPERM), so a test database cannot be
+  created inside the sandbox.
+- Unix-socket connections to a server running outside the sandbox fail; they
+  work only with network access enabled, which the author policy keeps off.
+- iOS builds and the simulator are unavailable: the Swift macro plugin server
+  answers "malformed response" under the nested sandbox, and the connection to
+  CoreSimulatorService is refused.
+
+A work item that needs one of these will stall or fail in the author turn, not
+in the permission probe. Options for the operator:
+
+1. Pick a Claude author (`--author-vendor claude`) for that item. It needs a
+   passing Claude-author permission-probe, or the documented
+   `--accept-unverified-claude-author --reason` opt-in, which is the operator's
+   own decision (see the probe section above).
+2. Split out the step that needs the capability and keep the rest in the work item.
+3. Run that step outside paired-session, by hand, and feed the result back as
+   ordinary workspace content.
+
+Do not loosen the sandbox to make such an item pass; the probe PASS and the
+safety rows in `docs/1c-safety-controls.md` are bound to the sandbox as probed.
 
 ### Fake closeout item admission (offline only)
 
