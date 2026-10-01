@@ -76,6 +76,10 @@ VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
 OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
 UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
+def _lstat_present(path: Path) -> bool:   # F4: only a definite absence is False; EACCES and friends raise, so an unreadable cache is never mistaken for an empty one
+    try: os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError): return False
+    return True
 def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # P0-4b H2: fd walk from ~ (O_NOFOLLOW each step); every check is on the fd that is read
     fds, home = [], Path.home()
     try:
@@ -1837,15 +1841,38 @@ class Coordinator:
         inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions}
         return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
 
-    def _probe_cache_write(self, report: dict, report_sha256: str) -> None:   # the caller turns any failure into a report warning, never a verdict change
-        key, inputs, root = *(self._probe_cache_key() or (None, None)), probe_cache_root()
+    def _probe_cache_put(self, keyed: Optional[tuple[str, dict]], body: dict) -> None:   # the one private-dir + symlink-checked write path of an entry or a tombstone
+        key, inputs, root = *(keyed or (None, None)), probe_cache_root()
         if key is None or any(p.is_symlink() for p in (root.parent.parent, root.parent, root)):
             raise RuntimeError('no cache key (Claude version or program state unavailable) or a symlinked cache path')
         os.makedirs(root, mode=0o700, exist_ok=True)
         if not stat.S_ISDIR((info := os.lstat(root)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022: raise RuntimeError('cache root is not a private directory')   # P0-4b H2
         (temp := root / f'{key}.json.tmp').unlink(missing_ok=True)
         os.close(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))   # atomic_json rewrites this file, which keeps 0600
-        atomic_json(root / f'{key}.json', {'key': key, 'key_inputs': inputs, 'run_dir': str(self.run_dir), 'source_report_sha256': report_sha256, 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'report': report})
+        atomic_json(root / f'{key}.json', {'key': key, 'key_inputs': inputs, 'run_dir': str(self.run_dir), 'time': time.strftime(UTC_FORMAT, time.gmtime()), **body})
+
+    def _probe_cache_write(self, report: dict, report_sha256: str) -> None:   # the caller turns any failure into a report warning, never a verdict change
+        self._probe_cache_put(self._probe_cache_key(), {'source_report_sha256': report_sha256, 'report': report})
+
+    def _probe_cache_void(self, report_sha256: str) -> str:   # F4: a non-PASS probe voids this key's entry (tombstone, else delete); returns a warning text, '' when nothing stays reusable
+        if not _lstat_present(root := probe_cache_root()): return ''
+        if (keyed := self._probe_cache_key()) is None: return f'WARNING: PROBE CACHE ENTRY MAY NOT BE VOIDED: no cache key for this probe (Claude version or program state unavailable), so an older PASS in {root} for this configuration was not looked up and can still be reused once the key is available again, until it is deleted by hand or is 7 days old; the verdict of this probe is unchanged'
+        if not _lstat_present(path := root / f'{keyed[0]}.json'): return ''   # no cache dir: no key lookup (no claude --version) either
+        try:
+            if path.is_symlink(): raise RuntimeError('symlinked entry')
+            return self._probe_cache_put(keyed, {'status': 'VOID', 'source_report_sha256': report_sha256}) or ''
+        except Exception as exc: why = f'{type(exc).__name__}: {exc}'
+        try:
+            if any(p.is_symlink() for p in (root.parent.parent, root.parent, root)): raise RuntimeError('symlinked cache directory')
+            path.unlink(); return f'probe cache: could not write a VOID tombstone ({why}); {path} was deleted instead'
+        except Exception as exc:
+            return f'WARNING: PROBE CACHE ENTRY NOT VOIDED: {path} still holds an older PASS for this key ({why}; delete failed: {type(exc).__name__}: {exc}); a run with the same key can still reuse it until it is deleted by hand or is 7 days old; the verdict of this probe is unchanged'
+
+    def _probe_void_on_non_pass(self, report: dict) -> None:   # F4: the report and stdout carry the warning; never a verdict change, whatever fails here
+        if lifecycle_spine.fake_dispatch_guard(self.args): return
+        try: note = self._probe_cache_void(hashlib.sha256((json.dumps(report, indent=2, ensure_ascii=False) + '\n').encode()).hexdigest())
+        except Exception as exc: note = f'WARNING: PROBE CACHE ENTRY MAY NOT BE VOIDED ({type(exc).__name__}: {exc}); an older PASS in {probe_cache_root()} can still be reused until it is deleted by hand or is 7 days old; the verdict of this probe is unchanged'
+        if note: report['warning'] = (report.get('warning', '') + '; ' if report.get('warning') else '') + note; print(note)
 
     def _probe_cache_reuse(self) -> tuple[bool, str]:   # P0-4 V3: adopt an earlier PASS for this exact key after the checks; else name the failed one
         keyed, root = self._probe_cache_key(), probe_cache_root()
@@ -1854,7 +1881,7 @@ class Coordinator:
         if any(p.is_symlink() for p in (root.parent.parent, root.parent, root, path)): return False, 'probe cache: symlinked entry or directory'
         try: raw = read_cache_entry(root, path.name)
         except OSError as exc: return False, 'probe cache: ' + ('no entry for these flags and versions' if exc.errno == errno.ENOENT else 'symlinked entry or directory' if exc.errno in (errno.ELOOP, errno.ENOTDIR) else exc.strerror)
-        try: entry = json.loads(raw); report = entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT)); json.dumps(entry, ensure_ascii=False).encode()   # the last: a lone surrogate would fail atomic_json's write
+        try: entry = json.loads(raw); void = isinstance(entry, dict) and entry.get('status') == 'VOID'; report = {} if void else entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT)); json.dumps(entry, ensure_ascii=False).encode()   # the last: a lone surrogate would fail atomic_json's write
         except (ValueError, KeyError, TypeError, RecursionError): return False, 'probe cache: entry is unreadable'
         if not isinstance(report, dict): return False, 'probe cache: entry is malformed (report is not an object)'   # P0-4b H4
         if entry.get('key') != key or entry.get('key_inputs') != inputs: return False, 'probe cache: recorded key inputs differ'
@@ -1862,6 +1889,7 @@ class Coordinator:
         if 'permission_probe_superseded' in self.state and not self.state.get('permission_probe'): return False, 'probe cache: the last permission-probe did not complete'
         if (target := self.run_dir / 'permission-probe.json').exists(): return False, 'probe cache: this run already has a report that does not pass'
         if self.state.get('permission_probe'): return False, 'probe cache: this run has already probed; the cache never revives an older PASS'   # P0-4b H3
+        if void: return False, f'probe cache: voided by a later non-PASS probe ({entry["time"]}, {entry.get("run_dir")})'   # F4
         prior = self.state.get('permission_probe')
         atomic_json(target, {**report, 'reused_from': {'cache_path': str(path), 'cache_sha256': hashlib.sha256(raw).hexdigest(), 'source_run_dir': entry.get('run_dir'), 'original_time': entry['time'], 'reuse_time': time.strftime(UTC_FORMAT, time.gmtime())}})
         self.state['permission_probe'] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'turn': report.get('probe_turn')}
@@ -5138,6 +5166,7 @@ class Coordinator:
                 report['failure_reasons'].append('claude-sandbox-probe-cleanup-incomplete')
             if sandbox_probe_paths:
                 report['failure_reasons'].append('claude-sandbox-write-not-denied-or-not-observed')
+            self._probe_void_on_non_pass(report)   # F4
             atomic_json(self.run_dir / 'permission-probe.json', report)
             self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
             self.state['hold_reason'] = 'permission probe failed; inspect permission-probe.json'
@@ -5196,6 +5225,7 @@ class Coordinator:
         if report['status'] == 'PASS' and not author_probe.get('model_escape_failed_targets') and not lifecycle_spine.fake_dispatch_guard(self.args):    # P0-4 V3: never PASS_RESIDUAL_RISK / UNKNOWN
             try: self._probe_cache_write(report, hashlib.sha256((json.dumps(report, indent=2, ensure_ascii=False) + '\n').encode()).hexdigest())
             except Exception as exc: report['warning'] = (report.get('warning', '') + '; ' if report.get('warning') else '') + f'probe-pass cache not written: {exc}'
+        else: self._probe_void_on_non_pass(report)   # F4
         atomic_json(self.run_dir / 'permission-probe.json', report)
         self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
         if author_probe.get('model_escape_failed_targets'):

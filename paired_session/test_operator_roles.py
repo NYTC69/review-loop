@@ -2070,6 +2070,119 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertIn('symlinked cache path', report['warning'])
         self.assertEqual(list(outside.iterdir()), [])
 
+    def probe_quiet(self, co, author):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            report = self.probe(co, author)
+        return report, out.getvalue()
+
+    def test_a_later_non_pass_probe_with_the_same_key_voids_the_cached_pass(self):                    # F4
+        for status, author in (('FAIL', {'status': 'FAIL', 'reason': 'x'}), ('UNKNOWN', {'status': 'UNKNOWN'})):
+            with self.subTest(status=status):
+                self.h.run_dir = self.h.root / ('run-' + status)
+                co, entry = self.seed()
+                later = self.co()
+                report, out = self.probe_quiet(later, author)
+                self.assertEqual(report['status'], status)
+                self.assertNotIn('warning', report)
+                tomb = json.loads(entry.read_text())
+                self.assertEqual((tomb['status'], tomb['key'], tomb['key_inputs'], tomb['run_dir']), ('VOID', entry.stem, co._probe_cache_key()[1], str(later.run_dir)))
+                self.assertEqual(tomb['source_report_sha256'], hashlib.sha256((later.run_dir / 'permission-probe.json').read_bytes()).hexdigest())
+                self.assertRegex(tomb['time'], STAMP)
+                self.assertNotIn('report', tomb)
+                self.assertEqual(entry.stat().st_mode & 0o777, 0o600)
+                shutil.rmtree(self.h.run_dir)                                                   # the documented residual: delete the run dir, recreate it at the same path
+                again = self.co()
+                ok, why = self.reuse(again)
+                self.assertFalse(ok)
+                self.assertRegex(why, r'^probe cache: voided by a later non-PASS probe \(\d{4}-.*, ' + re.escape(str(later.run_dir)) + r'\)$')
+                self.assertFalse((again.run_dir / 'permission-probe.json').exists())
+                self.h.run_dir = self.h.root / ('other-' + status)                              # a different run dir with the same key inputs
+                other = self.co()
+                with patch.object(other, 'reviewer_flags_digest', return_value=co.reviewer_flags_digest()), \
+                        patch.object(other, 'author_flags_digest', return_value=co.author_flags_digest()), \
+                        patch.object(other, 'gate_flags_digest', return_value=co.gate_flags_digest()):
+                    self.assertIn('voided by a later non-PASS probe', self.reuse(other)[1])
+                for old in self.entries(): old.unlink()
+
+    def test_a_non_pass_probe_with_another_key_leaves_an_unrelated_entry_alone(self):                # F4
+        co, entry = self.seed()
+        before = entry.read_bytes()
+        self.claude_version = 'claude 1.1'
+        self.h.run_dir = self.h.root / 'run-other-key'
+        self.assertEqual(self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})[0]['status'], 'FAIL')
+        self.assertEqual((self.entries(), entry.read_bytes()), ([entry], before))
+
+    def test_a_void_failure_never_changes_the_verdict_and_never_passes_silently(self):               # F4
+        co, entry = self.seed()
+        real = self.h.root / 'real-entry.json'
+        shutil.copy(entry, real)
+        entry.unlink()
+        entry.symlink_to(real)                                                                   # tombstone refused, the link is deleted instead
+        report, out = self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertIn('was deleted instead', report['warning'])
+        self.assertEqual((entry.exists() or entry.is_symlink(), json.loads(real.read_text())['key']), (False, entry.stem))   # never written through
+        shutil.copy(real, entry)
+        if os.geteuid() == 0: self.skipTest('root ignores directory modes')
+        self.cache.chmod(0o500)                                                                  # neither writable nor deletable
+        self.addCleanup(self.cache.chmod, 0o700)
+        report, out = self.probe_quiet(self.co(), {'status': 'UNKNOWN'})
+        self.assertEqual(report['status'], 'UNKNOWN')
+        for text in (report['warning'], out):
+            self.assertIn('PROBE CACHE ENTRY NOT VOIDED', text)
+            self.assertIn(str(entry), text)
+            self.assertIn('can still reuse it', text)
+        self.assertIsNone(json.loads(entry.read_text()).get('status'))                          # the PASS entry is untouched
+
+    def test_an_unexpected_void_error_is_a_warning_and_never_changes_the_verdict(self):              # F4
+        co, entry = self.seed()
+        with patch.object(rc.Coordinator, '_probe_cache_void', side_effect=ValueError('boom')):
+            report, out = self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(report['status'], 'FAIL')
+        for text in (report['warning'], out):
+            self.assertIn('MAY NOT BE VOIDED (ValueError: boom)', text)
+        self.assertIsNone(json.loads(entry.read_text()).get('status'))
+
+    def test_an_unavailable_key_with_a_cache_present_warns_and_without_a_cache_stays_quiet(self):    # F4 R1
+        self.claude_version = 'UNAVAILABLE'
+        self.assertNotIn('warning', self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})[0])   # no cache dir: nothing to void
+        self.claude_version = 'claude 1.0'
+        self.h.run_dir = self.h.root / 'run-seeded'
+        co, entry = self.seed()
+        before = entry.read_bytes()
+        self.claude_version = 'UNAVAILABLE'
+        report, out = self.probe_quiet(self.co(), {'status': 'UNKNOWN'})
+        self.assertEqual(report['status'], 'UNKNOWN')
+        for text in (report['warning'], out):
+            self.assertIn('MAY NOT BE VOIDED: no cache key', text)
+        self.assertEqual(entry.read_bytes(), before)
+
+    def test_an_unreadable_cache_is_never_mistaken_for_an_absent_entry(self):                        # F4 R2
+        if os.geteuid() == 0: self.skipTest('root ignores directory modes')
+        co, entry = self.seed()
+        for name, directory in (('cache dir without search permission', self.cache), ('ancestor without search permission', self.cache.parent)):
+            with self.subTest(name):
+                directory.chmod(0o400)
+                self.addCleanup(directory.chmod, 0o700)
+                report, out = self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+                directory.chmod(0o700)
+                self.assertEqual(report['status'], 'FAIL')
+                for text in (report['warning'], out):
+                    self.assertIn('MAY NOT BE VOIDED (PermissionError', text)
+                self.assertIsNone(json.loads(entry.read_text()).get('status'))
+
+    def test_a_later_pass_replaces_the_tombstone_and_is_reusable(self):                              # F4
+        co, entry = self.seed()
+        self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(json.loads(entry.read_text())['status'], 'VOID')
+        later = self.co()
+        self.assertEqual(self.probe(later)['status'], 'PASS')
+        data = json.loads(entry.read_text())
+        self.assertEqual((data.get('status'), data['report']['status']), (None, 'PASS'))
+        self.forget_report(later)
+        self.assertTrue(self.reuse(later)[0])
+
     def test_a_later_run_with_the_same_key_reuses_the_pass_automatically_and_records_it(self):
         co, entry = self.seed()
         self.assertFalse(co.probe_passed()[0])
