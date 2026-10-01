@@ -78,6 +78,7 @@ def emit_claude(answer, session, extra_commands=None):
         time.sleep(30)
     if not os.environ.get('FAKE_MISSING_OBSERVED'):
         evidence_rows = [*answer.get('self_run_evidence', []), *(extra_commands or [])]
+        evidence_rows.sort(key=lambda row: not row.get('force_failure', False))
         for index, evidence in enumerate(evidence_rows):
             tool_id = 'fake-tool-' + str(index)
             command = evidence['command']
@@ -85,8 +86,8 @@ def emit_claude(answer, session, extra_commands=None):
                 continue
             forbidden = command.startswith(('echo ', 'git checkout', 'rm ', 'git diff --output=',
                                              'git log --output=', 'git show --output=')) or ' > ' in command
-            test_failure = bool(os.environ.get('FAKE_REVIEW_TEST_FAILURE') and
-                                command == 'python3 -m unittest')
+            test_failure = bool(evidence.get('force_failure') or
+                                (os.environ.get('FAKE_REVIEW_TEST_FAILURE') and command == 'python3 -m unittest'))
             if (os.environ.get('FAKE_SANDBOX_WRITE') and
                     ('paired-session-claude-sandbox-' in command or
                      '.paired-session-run-dir-probe-' in command or
@@ -438,6 +439,11 @@ def main():
         answer['reviewed_snapshot'] = '0' * 40
     elif snapshot_mode != 'missing' and 'reviewed_snapshot' in answer:
         answer['reviewed_snapshot'] = answer['reviewed_snapshot']
+    if locals().get('phase') == 'Q' and os.environ.get('FAKE_Q_FAILED_THEN_PASSED'):
+        command_events = [{'command': configured_test, 'exit_code': 1, 'output': 'FAILED first test'},
+                          {'command': configured_test, 'exit_code': 0, 'output': 'passed retry'}]
+        extra_observed_commands = [{'command': configured_test, 'force_failure': True},
+                                   *(extra_observed_commands or [])]
     if vendor == 'codex':
         emit_codex(answer, session, locals().get('command_events'))
     else:

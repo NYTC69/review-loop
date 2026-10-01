@@ -497,10 +497,15 @@ def ingest_candidate_revision(baseline: CandidateBaseline) -> CandidateRevision:
 
 
 def verify_candidate_revision(baseline: CandidateBaseline, revision: CandidateRevision) -> None:
+    """Prepublication verifier, including live HEAD/index admission."""
+    _assert_live_unchanged(baseline, _git_env(GIT_DIR=str(baseline.git_dir)))
+    verify_candidate_contents(baseline, revision)
+
+
+def verify_candidate_contents(baseline: CandidateBaseline, revision: CandidateRevision) -> None:
     """Reject any post-ingest candidate or isolated-index drift before review."""
     env = _git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(baseline.index),
                    GIT_WORK_TREE=str(baseline.root), GIT_CEILING_DIRECTORIES=str(baseline.root.parent))
-    _assert_live_unchanged(baseline, env)
     files = _candidate_files(baseline)
     computed = tuple((mode, _object_oid(data, baseline.object_format), path)
                      for path, (mode, data) in sorted(files.items()))

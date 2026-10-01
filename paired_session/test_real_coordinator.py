@@ -18,6 +18,13 @@ import time
 import unittest
 from unittest.mock import patch
 from paired_session import candidate_tree as ct
+from paired_session import delivery_journal as dj
+from paired_session import candidate_test_sandbox as cts
+from paired_session import delivery_publish as dp
+from paired_session import delivery_recovery_state as drs
+from paired_session import delivery_recovery_lock as drl
+from paired_session import delivery_recover as dr
+from paired_session import delivery_close_proof as dcp
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -1783,7 +1790,7 @@ sys.exit(result.returncode)
         self.assertNotEqual(rc.git_snapshot(self.workspace)[0], co.state['approved_snapshot'])
         self.assertEqual(co.resume(), 'DONE')
 
-    def test_legacy_partial_author_tree_can_resume_as_author(self):
+    def test_legacy_partial_author_tree_resume_is_refused(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
@@ -1798,7 +1805,7 @@ sys.exit(result.returncode)
                 self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
                 self.assertEqual(path.read_bytes(), before)
 
-    def test_legacy_hold_skips_final_error_receipt_during_snapshot_recovery(self):
+    def test_legacy_hold_snapshot_recovery_is_refused(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
@@ -1813,7 +1820,7 @@ sys.exit(result.returncode)
                 self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
                 self.assertEqual(path.read_bytes(), before)
 
-    def test_legacy_rejection_limit_hold_can_accept_without_snapshot(self):
+    def test_legacy_rejection_limit_accept_without_snapshot_is_refused(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
@@ -3513,11 +3520,7 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(None, chain_only=True,
                          security_context={'baseline': baseline, 'revision': revision, 'review': security}),
                          'STOP_BEFORE_DELIVERY')
-        env = ct._git_env(GIT_DIR=str(baseline.git_dir), GIT_AUTHOR_NAME='Fixture',
-                         GIT_AUTHOR_EMAIL='fixture@example.test', GIT_COMMITTER_NAME='Fixture',
-                         GIT_COMMITTER_EMAIL='fixture@example.test')
-        c1 = ct._git_bytes(['commit-tree', revision.tree_oid, '-p', baseline.parent_head],
-                            env=env, input_bytes=b'Unpublished fixture C1\n').decode().strip()
+        c1 = rc.delivery_seal.c1(co, baseline, revision)
         state = rc.copy.deepcopy(co.state)
         index = baseline.index.read_bytes()
         result = co.fake_materialize_q(c1, '2026-09-30')
@@ -4000,6 +4003,1023 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def hard_crash_publication_recovery(self, window):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        args_path = self.root / 'publish-args.json'
+        payload = vars(co.args).copy()
+        payload.update({k: v for k, v in co.state['config'].items() if k in payload and k != 'gate_prompt'})
+        args_path.write_text(json.dumps(payload))
+        script = """
+import argparse, json, os, signal, sys
+from pathlib import Path
+from paired_session import coordinator as rc, delivery_publish as dp, delivery_recover as dr
+co = rc.Coordinator(argparse.Namespace(**json.loads(Path(sys.argv[1]).read_text())), _fake_lifecycle=True)
+window = sys.argv[2]
+original_git, original_replace = dp.ct._git, os.replace
+original_bytes = dp.ct._git_bytes
+def git_bytes(args, **kwargs):
+    result = original_bytes(args, **kwargs)
+    if window == 'pre-cas' and args[0] == 'index-pack':
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+def git(args, **kwargs):
+    result = original_git(args, **kwargs)
+    if window == 'cas' and args[0] == 'update-ref' and args[1] == co.state['fake_delivery_intent']['ref']:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+def replace(source, target):
+    result = original_replace(source, target)
+    if window == 'index' and Path(target) == co.workspace / '.git/index':
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+dp.ct._git, dp.ct._git_bytes, os.replace = git, git_bytes, replace
+dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+raise AssertionError('fault window was not reached')
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(args_path), window],
+                                cwd=MODULE_PATH.parent.parent, env=os.environ.copy(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        self.assertEqual(result.returncode, -9, result.stderr.decode())
+        co = rc.Coordinator(rc.argparse.Namespace(**payload), _fake_lifecycle=True)
+        lock = self.workspace / '.git/index.lock'
+        self.assertTrue(lock.exists())
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        self.assertEqual(lock.read_text(), row['lock']['nonce'])
+        self.assertEqual(co.state['publication_hold'], row['intent']['digest'])
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co._publication_guard()
+        original = ct._git
+        cas_calls = []
+        def no_cas(args, **kwargs):
+            if args[0] == 'update-ref' and args[1] == row['intent']['ref']:
+                if window == 'pre-cas':
+                    cas_calls.append(tuple(args))
+                else:
+                    self.fail('recovery repeated CAS')
+            return original(args, **kwargs)
+        with patch.object(ct, '_git', side_effect=no_cas):
+            self.assertEqual(dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)['phase'], 'RECONCILED')
+        self.assertFalse(lock.exists())
+        self.assertEqual(co._head_commit(), row['intent']['c2'])
+        drs.inspect(co, exact_q=True)
+        if window == 'pre-cas':
+            self.assertEqual(len(cas_calls), 1)
+            dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+            self.assertEqual(len(cas_calls), 1)
+
+    def test_reconcile_after_sigkill_immediately_after_cas(self):
+        self.hard_crash_publication_recovery('cas')
+
+    def test_reconcile_after_sigkill_immediately_after_index_replace(self):
+        self.hard_crash_publication_recovery('index')
+
+    def test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        index = self.workspace / '.git/index'
+        lock = index.with_name('index.lock')
+        self.assertTrue(lock.exists())
+        self.assertEqual(lock.read_text(), row['lock']['nonce'])
+        calls = []
+        original = ct._git
+        def observed(args, **kwargs):
+            if (args[0] in ('read-tree', 'update-ref') and
+                    kwargs.get('env', {}).get('GIT_DIR') == str(self.workspace / '.git')):
+                self.assertTrue(lock.exists())
+                calls.append(tuple(args))
+            return original(args, **kwargs)
+        with patch.object(ct, '_git', side_effect=observed):
+            result = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(result['phase'], 'RECONCILED')
+        self.assertEqual(co.state['publication_complete'], row['intent']['digest'])
+        self.assertNotIn('publication_hold', co.state)
+        self.assertFalse(lock.exists())
+        self.assertTrue(calls)
+        self.assertTrue(all(args[0] != 'update-ref' for args in calls))
+        before_calls = list(calls)
+        with patch.object(ct, '_git', side_effect=observed):
+            again = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(again['intent'], result['intent'])
+        self.assertEqual(calls, before_calls)
+        self.assertFalse(lock.exists())
+        co._publication_guard()
+        drs.inspect(co, exact_q=True)
+
+    def test_reconcile_retries_zero_side_effect_hold_without_journal(self):
+        self.test_fake_publication_refuses_unaccepted_and_dirty_workspace()
+        co, c1, before = self.q_test_fixture
+        (self.workspace / 'user.txt').unlink()
+        self.assertFalse((co.evidence / 'delivery-publication.json').exists())
+        result = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(result['phase'], 'RECONCILED')
+        self.assertEqual(co._head_commit(), result['intent']['c2'])
+        self.assertEqual(co.state['publication_complete'], result['intent']['digest'])
+        co._publication_guard()
+        self.assertEqual(dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)['phase'], 'RECONCILED')
+        self.assertFalse((self.workspace / '.git/index.lock').exists())
+
+    def test_reconcile_after_sigkill_before_cas(self):
+        self.hard_crash_publication_recovery('pre-cas')
+
+    def test_reconcile_preserves_explicit_pending_null(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        co.state['pending_reviewer_result_sequence'] = None
+        co.save()
+        result = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(result['phase'], 'RECONCILED')
+        self.assertIsNone(co.state['pending_reviewer_result_sequence'])
+        self.assertIn('pending_reviewer_result_sequence', json.loads(co.state_path.read_text()))
+        self.assertNotIn('hold_reason', co.state)
+        co._publication_guard()
+
+    def test_reconcile_refuses_foreign_bytes_immediately_before_checkout(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        original = ct._check_attributes
+        target = self.workspace / 'tracked.txt'
+
+        def edit(attrs_env, entries):
+            result = original(attrs_env, entries)
+            if attrs_env.get('GIT_DIR') == str(self.workspace / '.git'):
+                target.write_text('foreign operator edit\n')
+            return result
+
+        with patch.object(ct, '_check_attributes', side_effect=edit):
+            with self.assertRaisesRegex(ValueError, 'foreign recovery bytes'):
+                dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(target.read_text(), 'foreign operator edit\n')
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertNotEqual(json.loads((co.evidence / 'delivery-publication.json').read_text())['phase'],
+                            'RECONCILED')
+
+    def test_publication_guard_refuses_completed_state_with_leftover_lock_and_missing_intent(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        lock = self.workspace / '.git/index.lock'
+        lock.write_text('foreign lock')
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co._publication_guard()
+        lock.unlink()
+        co.state['fake_delivery_intent'] = None
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co._publication_guard()
+        with self.assertRaisesRegex(ValueError, 'publication intent missing'):
+            dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+
+    def test_close_proof_requires_exact_accepted_reconciled_tree_and_compass_blob(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        original = rc.copy.deepcopy(co.state)
+        proof = dcp.verify(co)
+        self.assertEqual(proof['c2'], co._head_commit())
+        self.assertEqual(proof['intent_digest'], co.state['publication_complete'])
+        self.assertEqual(proof['backlog_sha256'], hashlib.sha256((self.workspace / 'BACKLOG.md').read_bytes()).hexdigest())
+        self.assertEqual(co.state, original)
+        mutations = [('completion', lambda: co.state.pop('publication_complete')),
+                     ('acceptance', lambda: co.state.update(acceptance_state='PENDING')),
+                     ('pending', lambda: co.state['lifecycle'].update(pending={'id': 'unreviewed'})),
+                     ('blockers', lambda: co.state.update(finding_ledger=[{'id': 'F001', 'status': 'open',
+                                      'severity': 'MAJOR', 'source': 'security-reviewer'}])),
+                     ('program', lambda: co.state['operator_programs'].update(path_env='/foreign'))]
+        for name, mutate in mutations:
+            with self.subTest(guard=name):
+                co.state = rc.copy.deepcopy(original)
+                mutate()
+                with self.assertRaises((ValueError, RuntimeError)):
+                    dcp.verify(co)
+        co.state = rc.copy.deepcopy(original)
+        backlog = self.workspace / 'BACKLOG.md'
+        raw = backlog.read_bytes()
+        backlog.write_bytes(raw + b'foreign edit\n')
+        with self.assertRaises(ValueError):
+            dcp.verify(co)
+        self.assertEqual(backlog.read_bytes(), raw + b'foreign edit\n')
+        backlog.write_bytes(raw)
+        with patch.object(co, '_fake_lifecycle', False):
+            with self.assertRaisesRegex(ValueError, 'fake-only'):
+                dcp.verify(co)
+        self.assertEqual(dcp.verify(co), proof)
+
+    def test_fake_close_is_bound_to_operator_intent_exact_tree_and_idempotent_receipt(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        digest = co.state['fake_delivery_intent']['digest']
+        saved = co.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'explicit operator intent'):
+            co.fake_close('wrong')
+        with self.assertRaisesRegex(ValueError, 'external delivery'):
+            co.fake_close(digest, external_delivery=True)
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+        self.assertEqual(co.state['lifecycle']['stage'], 'CLOSED')
+        self.assertEqual([r['stage'] for r in co.state['lifecycle']['receipts'][-2:]], ['DELIVERY', 'CLOSE'])
+        self.assertEqual(co.state['close_receipt'], json.loads((co.evidence / 'delivery-close.json').read_text()))
+        self.assertEqual(co.state['close_receipt']['facts']['c2'], co._head_commit())
+        self.assertFalse(co.state['close_receipt']['facts']['external_delivery'])
+        events = rc.copy.deepcopy(co.state['events'])
+        sequence = co.state['sequence']
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+        self.assertEqual(co.state['events'], events)
+        self.assertEqual(co.state['sequence'], sequence)
+        backlog = self.workspace / 'BACKLOG.md'
+        raw = backlog.read_bytes()
+        backlog.write_bytes(raw + b'foreign\n')
+        with self.assertRaises(ValueError):
+            co.fake_close(digest)
+        self.assertEqual(backlog.read_bytes(), raw + b'foreign\n')
+        backlog.write_bytes(raw)
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+
+    def test_fake_close_replays_receipt_write_crash_and_refuses_stale_disk_and_relabel(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        digest = co.state['fake_delivery_intent']['digest']
+        original = rc.copy.deepcopy(co.state)
+        co.state['extra'] = 'stale'
+        with self.assertRaisesRegex(ValueError, 'saved state changed'):
+            co.fake_close(digest)
+        co.state = rc.copy.deepcopy(original)
+        with patch.object(co, 'save', side_effect=RuntimeError('crash before state write')):
+            with self.assertRaisesRegex(RuntimeError, 'crash before'):
+                co.fake_close(digest)
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'ACCEPTED')
+        co.state = rc.copy.deepcopy(original)
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+        record = co.evidence / 'delivery-close.json'
+        raw = record.read_bytes()
+        record.write_text(record.read_text().replace('CLOSED', 'UNREVIEWED'))
+        with self.assertRaisesRegex(ValueError, 'protected receipt'):
+            co.fake_close(digest)
+        record.write_bytes(raw)
+        with patch.object(co, '_fake_lifecycle', False):
+            with self.assertRaisesRegex(ValueError, 'fake-only'):
+                co.fake_close(digest)
+
+    def close_drive_fixture(self):
+        docs = self.workspace / 'docs/guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        backlog = self.workspace / 'BACKLOG.md'
+        backlog.write_text('# Backlog\n**Last updated**: 2026-10-01\n\n## P0\n(none)\n## P1\n'
+                           '- Fix sums. (added 2026-09-29)\n  - Keep details.\n## P2\n(none)\n'
+                           '## P3\n(none)\n## Done\n(none)\n')
+        ignore = self.workspace / '.gitignore'
+        ignore.write_text(ignore.read_text() + '\n.compass/\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'BACKLOG.md', '.gitignore'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'close fixture'], cwd=self.workspace, check=True)
+        view = self.workspace / '.compass/backlog-last-view.json'
+        view.parent.mkdir()
+        view.write_text(json.dumps({'generated_at': rc.datetime.now().astimezone().isoformat(),
+                                    'source_path': str(backlog),
+                                    'items': [{'id': 1, 'section': 'P1', 'title_span': 'Fix sums'}]}))
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+            '--skip-probe', '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass',
+            '--max-invocations', '64')[2:])
+        return rc.Coordinator(args, _fake_lifecycle=True)
+
+    def test_coordinator_prepares_and_finishes_fake_delivery_without_test_stage_outputs(self):
+        co = self.close_drive_fixture()
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertEqual(co.state['fake_q_bundle']['status'], 'REVIEWED')
+        self.assertIn('SECURITY', [r['stage'] for r in co.state['lifecycle']['receipts']])
+        self.assertEqual(co.fake_prepare_delivery(), intent)
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            with patch.object(co, '_head_commit', side_effect=AssertionError('recovery before fake guard')):
+                with self.assertRaisesRegex(ValueError, 'fake-only'):
+                    co.fake_finish_delivery(intent['digest'])
+        co.args.expect = intent['digest']
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co._head_commit(), intent['c2'])
+        self.assertIn('已关闭工作项', (co.run_dir / 'delivery-report.md').read_text())
+        sequence = co.state['sequence']
+        self.assertEqual(co.fake_prepare_delivery(), intent)
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co.state['sequence'], sequence)
+        with patch.object(co, '_fake_lifecycle', False):
+            with self.assertRaisesRegex(ValueError, 'fake-only'):
+                co.fake_prepare_delivery()
+
+    def test_delivery_drive_rejects_invalid_parameters_before_freeze_or_dispatch(self):
+        co = self.close_drive_fixture()
+        saved = co.state_path.read_bytes()
+        with patch.object(co, 'invoke', side_effect=AssertionError('parameters must precede dispatch')):
+            with self.assertRaisesRegex(ValueError, 'backlog item ID'):
+                co.fake_prepare_delivery(day='2026-10-01')
+            with self.assertRaisesRegex(ValueError, 'invalid delivery day'):
+                co.fake_prepare_delivery(backlog_item=1, day='2026-1-1')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertNotIn('fake_delivery_day', co.state)
+        self.assertEqual(co.state['invocations_used'], 0)
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertEqual(intent['day'], '2026-10-01')
+
+    def test_delivery_drive_refuses_unfrozen_item_after_supported_m3_without_spending_or_saving(self):
+        co = self.close_drive_fixture()
+        self.assertEqual(co.fake_lifecycle_drive(), 'STOP_BEFORE_SECURITY')
+        saved, used = co.state_path.read_bytes(), co.state['invocations_used']
+        with patch.object(co, 'invoke', side_effect=AssertionError('late ID must not dispatch SECURITY')):
+            with self.assertRaisesRegex(ValueError, 'abort and start a new run'):
+                co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.state['invocations_used'], used)
+        self.assertNotIn('fake_delivery_day', co.state)
+
+    def reload_fake_drive(self, co):
+        args = rc.argparse.Namespace(**vars(co.args).copy())
+        return rc.Coordinator(args, _fake_lifecycle=True)
+
+    def exercise_m4_resume_boundary(self, stage):
+        co = self.close_drive_fixture()
+        class BoundaryCrash(BaseException):
+            pass
+        original_save = co.save
+        crashed = False
+        def save():
+            nonlocal crashed
+            result = original_save()
+            hit = (co.state['lifecycle']['stage'] == stage if stage not in ('DELIVERY', 'CLOSE') else
+                   bool(co.state.get('publication_hold')) if stage == 'DELIVERY' else
+                   co.state['status'] == 'CLOSED')
+            if hit and not crashed:
+                crashed = True
+                raise BoundaryCrash(stage)
+            return result
+        with patch.object(co, 'save', side_effect=save):
+            if stage in ('DELIVERY', 'CLOSE'):
+                intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+                co.args.expect = intent['digest']
+                co.accept()
+                with self.assertRaises(BoundaryCrash):
+                    co.fake_finish_delivery(intent['digest'])
+            else:
+                with self.assertRaises(BoundaryCrash):
+                    co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertTrue(crashed)
+        co = self.reload_fake_drive(co)
+        before = list(co.state['turns'])
+        if stage not in ('DELIVERY', 'CLOSE'):
+            intent = co.fake_prepare_delivery(day='2026-10-01')
+            co.args.expect = intent['digest']
+            co.accept()
+        else:
+            intent = co.state['fake_delivery_intent']
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co.state['turns'][:len(before)], before)
+        sequence = co.state['sequence']
+        co = self.reload_fake_drive(co)
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co.state['sequence'], sequence)
+        self.assertEqual(co._head_commit(), intent['c2'])
+        self.assertEqual(co.state['lifecycle']['candidate_oid'], intent['q_oid'])
+        self.assertEqual(len({r['request_id'] for r in co.state['lifecycle']['receipts']}),
+                         len(co.state['lifecycle']['receipts']))
+
+    def test_m4_resume_finish_boundary(self):
+        self.exercise_m4_resume_boundary('FINISH')
+
+    def test_m4_resume_polish_boundary(self):
+        self.exercise_m4_resume_boundary('POLISH-Q')
+
+    def test_m4_resume_docs_boundary(self):
+        self.exercise_m4_resume_boundary('DOCS')
+
+    def test_m4_resume_security_boundary(self):
+        self.exercise_m4_resume_boundary('SECURITY')
+
+    def test_m4_resume_delivery_boundary(self):
+        self.exercise_m4_resume_boundary('DELIVERY')
+
+    def test_m4_resume_close_boundary(self):
+        self.exercise_m4_resume_boundary('CLOSE')
+
+    def test_m4_plan_to_close_has_two_exact_commits_without_hand_built_approvals(self):
+        co = self.close_drive_fixture()
+        parent = co._head_commit()
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        with patch.object(dr, 'reconcile', side_effect=AssertionError('digest check must precede publication')):
+            with self.assertRaisesRegex(ValueError, 'exact accepted intent'):
+                co.fake_finish_delivery('wrong')
+        self.assertEqual(co._head_commit(), parent)
+        with self.assertRaisesRegex(ValueError, 'frozen item'):
+            co.fake_prepare_delivery(backlog_item=2)
+        co.args.expect = intent['digest']
+        co.accept()
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co._git(['rev-list', '--count', parent + '..HEAD']).strip(), '2')
+        self.assertEqual(co._git(['rev-parse', intent['c2'] + '^']).strip(), intent['c1'])
+        self.assertEqual(co._git(['rev-parse', 'HEAD^{tree}']).strip(), intent['q_oid'])
+        done = (self.workspace / 'BACKLOG.md').read_text().split('## Done\n', 1)[1]
+        self.assertIn('Fix sums', done)
+        self.assertIn(intent['c1'], done)
+        phases = [r['stage'] for r in co.state['lifecycle']['receipts']]
+        for phase in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY', 'DELIVERY', 'CLOSE'):
+            self.assertIn(phase, phases)
+
+    def test_m4_security_error_cannot_reach_q_or_delivery(self):
+        co = self.close_drive_fixture()
+        original = co.invoke
+        def failed_security(role, phase, *args, **kwargs):
+            result = original(role, phase, *args, **kwargs)
+            if phase == 'SECURITY':
+                turn = next(t for t in co.state['turns'] if t['sequence'] == result['sequence'])
+                turn['error'] = 'injected transport failure after actual provider result'
+                co.save()
+            return result
+        with patch.object(co, 'invoke', side_effect=failed_security):
+            with self.assertRaisesRegex(ValueError, 'error-free test evidence'):
+                co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertNotIn('fake_q_bundle', co.state)
+        self.assertNotIn('fake_delivery_intent', co.state)
+        self.assertNotEqual(co.state['status'], 'DONE')
+
+    def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        saved = co.state_path.read_bytes()
+        with self.assertRaises(FileNotFoundError):
+            with drl.locked(co, rc.atomic_json):
+                self.fail('missing journal admitted')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.state['status'], 'ACCEPTED')
+        dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        co.state['publication_hold'] = 'different-run'
+        co.save()
+        saved = co.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'matching attributed acceptance'):
+            with drl.locked(co, rc.atomic_json):
+                self.fail('mismatched digest admitted')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.state['publication_hold'], 'different-run')
+
+    def test_recovery_lock_is_journal_bound_and_retained_until_completion(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        with drl.locked(co, rc.atomic_json) as context:
+            row, root, revision, live, index, lock, maps = context
+            self.assertTrue(lock.exists())
+            self.assertEqual(row['lock']['ino'], lock.stat().st_ino)
+            self.assertEqual(row['lock']['pid'], os.getpid())
+            self.assertEqual(json.loads((co.evidence / 'delivery-publication.json').read_text()), row)
+            self.assertEqual(lock.read_text(), row['lock']['nonce'])
+        self.assertTrue(lock.exists())
+        with drl.locked(co, rc.atomic_json):
+            self.assertTrue(lock.exists())
+        self.assertTrue(lock.exists())
+        with self.assertRaisesRegex(ValueError, 'state changed'):
+            with drl.locked(co, rc.atomic_json) as context:
+                context[0]['phase'] = 'RECONCILED'
+                co.state['publication_complete'] = context[0]['intent']['digest']
+                raise OSError('completion not saved')
+        self.assertTrue(lock.exists())
+        self.assertNotIn('publication_complete', json.loads(co.state_path.read_text()))
+        co.state = json.loads(co.state_path.read_text())
+        lock.write_text('foreign lock')
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        row['lock']['ino'] += 1
+        rc.atomic_json(co.evidence / 'delivery-publication.json', row)
+        with self.assertRaisesRegex(ValueError, 'unattributed index lock'):
+            with drl.locked(co, rc.atomic_json):
+                self.fail('foreign lock adopted')
+        self.assertEqual(lock.read_text(), 'foreign lock')
+        self.assertEqual(co.state['status'], 'HOLD')
+
+    def test_recovery_state_accepts_preimport_scratch_q_objects(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        original = ct._git_bytes
+        def fail_import(args, **kwargs):
+            if args[0] == 'index-pack':
+                raise OSError('before import')
+            return original(args, **kwargs)
+        with patch.object(ct, '_git_bytes', side_effect=fail_import):
+            self.assertEqual(dp.publish(co, rc.observed_test_succeeded, rc.atomic_json), 'HOLD')
+        row, root, revision, live, index, lock, maps = drs.inspect(co)
+        self.assertEqual(ct._git(['rev-parse', 'HEAD'], env=live), row['intent']['parent'])
+        self.assertEqual(row['phase'], 'PREPARED')
+        self.assertIn('sum_ints.py', maps[1])
+        with self.assertRaises(ct.CandidateError):
+            ct._tree_entries(live, row['intent']['q_oid'])
+
+    def test_recovery_state_accepts_q_new_files_before_live_index_replace(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        original = ct._git
+        def fail_after_checkout(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[0] == 'read-tree' and '-u' in args:
+                raise OSError('after checkout')
+            return result
+        with patch.object(ct, '_git', side_effect=fail_after_checkout):
+            self.assertEqual(dp.publish(co, rc.observed_test_succeeded, rc.atomic_json), 'HOLD')
+        row, root, revision, live, index, lock, maps = drs.inspect(co)
+        self.assertEqual(row['phase'], 'PUBLISHED')
+        self.assertIn('sum_ints.py', ct._git(['ls-files', '--others', '--exclude-standard'], env=live))
+        self.assertEqual((self.workspace / 'sum_ints.py').read_bytes(), (root.root / 'sum_ints.py').read_bytes())
+
+    def test_recovery_state_accepts_known_parent_or_q_and_rejects_foreign_bytes(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        state = co.state_path.read_bytes()
+        row, root, revision, live, index, lock, maps = drs.inspect(co)
+        self.assertEqual(row['phase'], 'PREPARED')
+        self.assertEqual(ct._git(['rev-parse', 'HEAD'], env=live), row['intent']['c2'])
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertEqual(co.state_path.read_bytes(), state)
+        path = self.workspace / 'tracked.txt'
+        saved = path.read_bytes()
+        path.write_bytes(b'foreign bytes')
+        with self.assertRaisesRegex(ValueError, 'foreign recovery bytes'):
+            drs.inspect(co)
+        path.write_bytes(saved)
+        attrs = self.workspace / '.git/info/attributes'
+        attrs.write_text('*.txt text\n')
+        with self.assertRaisesRegex(ValueError, 'attributes/filter unsupported'):
+            drs.inspect(co)
+        attrs.unlink()
+        co.state['publication_hold'] = 'other-run'
+        with self.assertRaisesRegex(ValueError, 'matching attributed acceptance'):
+            drs.inspect(co)
+        self.assertEqual(co.state_path.read_bytes(), state)
+
+    def test_publication_hold_quarantines_all_operator_paths_without_state_write(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        saved = co.state_path.read_bytes()
+        calls = (lambda: co.hold('aborted'), lambda: co.accept(), lambda: co.reject('retry', None),
+                 lambda: co.note('guidance', None), lambda: co.scope_change('new scope', None),
+                 lambda: co.resume(), lambda: co.resume(True), lambda: co.resume_polish(),
+                 lambda: co.permission_probe())
+        for call in calls:
+            with self.subTest(call=call):
+                with patch.object(co, 'invoke', side_effect=AssertionError('provider dispatched')):
+                    with self.assertRaisesRegex(ValueError, 'locked publication recovery'):
+                        call()
+                self.assertEqual(co.state_path.read_bytes(), saved)
+        command = self.command()[2:]
+        command[0] = 'status'
+        with patch('builtins.print', return_value=None):
+            self.assertEqual(rc.main(command), 0)
+        self.assertEqual(co.state_path.read_bytes(), saved)
+
+    def test_fake_publication_cas_holds_index_lock_through_checkout(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        index = self.workspace / '.git/index'
+        original = index.read_bytes()
+        calls = []
+        git = ct._git
+        def observed(args, **kwargs):
+            if args[0] == 'update-ref':
+                journal = json.loads((co.evidence / 'delivery-publication.json').read_text())
+                self.assertEqual(journal['phase'], 'PREPARED')
+                self.assertEqual(journal['lock']['pid'], os.getpid())
+                self.assertTrue(index.with_name('index.lock').exists())
+                self.assertEqual(index.read_bytes(), original)
+                calls.append('CAS')
+            if args[0] == 'read-tree' and '-u' in args:
+                self.assertTrue(index.with_name('index.lock').exists())
+                self.assertEqual(index.read_bytes(), original)
+                self.assertNotEqual(kwargs['env']['GIT_INDEX_FILE'], str(index))
+                calls.append('checkout')
+            return git(args, **kwargs)
+        with patch.object(ct, '_git', side_effect=observed):
+            row = dp.publish(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertIsInstance(row, dict, co.state.get('hold_reason'))
+        self.assertEqual(row['phase'], 'RECONCILED')
+        self.assertEqual(calls, ['CAS', 'checkout'])
+        self.assertEqual(co._head_commit(), row['intent']['c2'])
+        live = ct._git_env(GIT_DIR=str(self.workspace / '.git'), GIT_WORK_TREE=str(self.workspace))
+        self.assertEqual(ct._git(['write-tree'], env=live), row['intent']['q_oid'])
+        self.assertEqual(ct._git(['status', '--porcelain=v1', '--untracked-files=all'], env=live), '')
+        self.assertFalse(index.with_name('index.lock').exists())
+        self.assertIn(c1, (self.workspace / 'BACKLOG.md').read_text())
+        self.assertEqual(json.loads((co.evidence / 'delivery-publication.json').read_text()), row)
+        dj.verify(co, row)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        index = self.workspace / '.git/index'
+        original = index.read_bytes()
+        def crash(path, value):
+            if path.name == 'delivery-publication.json' and value.get('phase') == 'PUBLISHED':
+                raise OSError('simulated journal completion failure')
+            rc.atomic_json(path, value)
+        self.assertEqual(dp.publish(co, rc.observed_test_succeeded, crash), 'HOLD')
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        self.assertEqual(row['phase'], 'PREPARED')
+        self.assertEqual(co._head_commit(), row['intent']['c2'])
+        self.assertEqual(index.read_bytes(), original)
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertEqual(co.state['publication_hold'], row['intent']['digest'])
+        self.assertIn('simulated journal completion failure', co.state['hold_reason'])
+
+    def test_fake_publication_refuses_unaccepted_and_dirty_workspace(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        saved = rc.copy.deepcopy(co.state)
+        co.state['status'] = 'DONE'
+        with self.assertRaisesRegex(ValueError, 'operator ACCEPTED'):
+            dp.publish(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertFalse((co.evidence / 'delivery-publication.json').exists())
+        co.state = saved
+        co._fake_lifecycle = False
+        with self.assertRaisesRegex(ValueError, 'fake operator'):
+            dp.publish(co, rc.observed_test_succeeded, rc.atomic_json)
+        co._fake_lifecycle = True
+        (self.workspace / 'user.txt').write_text('foreign work')
+        parent = co._head_commit()
+        self.assertEqual(dp.publish(co, rc.observed_test_succeeded, rc.atomic_json), 'HOLD')
+        self.assertEqual(co._head_commit(), parent)
+        self.assertEqual((self.workspace / 'user.txt').read_text(), 'foreign work')
+        self.assertEqual(co.state['status'], 'HOLD')
+
+    def test_candidate_test_sandbox_executes_controls_and_denies_workspace_refs_and_aliases(self):
+        command = self.command('--lifecycle-mode', 'on', '--skip-probe')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        root = self.root / 'candidate-test-root'
+        root.mkdir()
+        (root / 'BACKLOG.md').write_text('sealed candidate backlog')
+        (root / '.compass').mkdir()
+        original = self.workitem.read_bytes()
+        head = co._head_commit()
+        ref = 'refs/heads/qs-denied'
+        git = '/usr/bin/git'
+        control = [git, '-C', str(self.workspace), '-c', 'core.hooksPath=/dev/null', 'update-ref', ref, head]
+        subprocess.run(control, check=True, capture_output=True)
+        subprocess.run([git, '-C', str(self.workspace), 'update-ref', '-d', ref], check=True)
+        script = """import json, os, pathlib, subprocess, tempfile
+print('EXECUTED', flush=True)
+results = {}
+for name in ('BACKLOG.md', '.compass/proof', '.git/ref'):
+    try:
+        pathlib.Path(name).parent.mkdir(exist_ok=True)
+        pathlib.Path(name).write_text('escaped metadata')
+        results[name] = 'WRITTEN'
+    except PermissionError:
+        results[name] = 'DENIED'
+pathlib.Path('positive').write_text('candidate write')
+pathlib.Path(tempfile.gettempdir(), 'positive').write_text('temp write')
+try:
+    pathlib.Path(TARGET).write_text('escaped')
+    results['workspace'] = 'WRITTEN'
+except PermissionError:
+    results['workspace'] = 'DENIED'
+pathlib.Path('alias').symlink_to(TARGET)
+try:
+    pathlib.Path('alias').write_text('escaped alias')
+    results['alias'] = 'WRITTEN'
+except PermissionError:
+    results['alias'] = 'DENIED'
+try:
+    os.link(TARGET, 'linked')
+    results['hardlink'] = 'CREATED'
+except PermissionError:
+    results['hardlink'] = 'DENIED'
+child = subprocess.run(CONTROL, capture_output=True, text=True)
+results['git_returncode'] = child.returncode
+results['git_stderr'] = child.stderr
+print(json.dumps(results))
+"""
+        script = 'TARGET=' + repr(str(self.workitem)) + '\nCONTROL=' + repr(control) + '\n' + script
+        result = cts.run(co, [sys.executable, '-c', script], cwd=root,
+                         env={'PATH': os.defpath, 'HOME': os.devnull}, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        lines = result.stdout.decode().splitlines()
+        self.assertEqual(lines[0], 'EXECUTED')
+        observed = json.loads(lines[-1])
+        for name in ('BACKLOG.md', '.compass/proof', '.git/ref'):
+            self.assertEqual(observed[name], 'DENIED')
+        self.assertEqual((root / 'BACKLOG.md').read_text(), 'sealed candidate backlog')
+        self.assertEqual(observed['workspace'], 'DENIED')
+        self.assertEqual(observed['alias'], 'DENIED')
+        self.assertEqual(observed['hardlink'], 'DENIED')
+        self.assertNotEqual(observed['git_returncode'], 0)
+        self.assertIn('Operation not permitted', observed['git_stderr'])
+        self.assertEqual(self.workitem.read_bytes(), original)
+        self.assertEqual((root / 'positive').read_text(), 'candidate write')
+        self.assertFalse((self.workspace / '.git/refs/heads/qs-denied').exists())
+        self.assertFalse(Path(result.write_boundary['tmpdir']).exists())
+        self.assertEqual(result.write_boundary['root'], str(root.resolve()))
+        with self.assertRaisesRegex(RuntimeError, 'invalid; refuse'):
+            cts.run(co, [sys.executable, '-c', 'pass'], cwd=self.workspace, env={}, timeout=30)
+        co._fake_lifecycle = False
+        with self.assertRaises(RuntimeError):
+            cts.run(co, [sys.executable, '-c', 'pass'], cwd=root, env={}, timeout=30)
+
+    def test_oid_sandbox_preflight_failure_is_retryable_without_pending(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        with patch.object(cts.sys, 'platform', 'unsupported'):
+            with self.assertRaisesRegex(RuntimeError, 'sandbox unavailable'):
+                co.fake_candidate_oid_test()
+        self.assertNotIn('fake_candidate_test_pending', co.state)
+        self.assertNotIn('fake_candidate_test_pending', json.loads((co.run_dir / 'state.json').read_text()))
+        real_popen = cts.subprocess.Popen
+        sandbox_calls = []
+
+        def sandbox_failure(argv, **kwargs):
+            if argv[0] == '/usr/bin/sandbox-exec':
+                sandbox_calls.append(argv)
+                return real_popen([sys.executable, '-c', 'import sys; sys.exit(71)'], **kwargs)
+            return real_popen(argv, **kwargs)
+
+        with patch.object(cts.subprocess, 'Popen', side_effect=sandbox_failure):
+            with self.assertRaisesRegex(RuntimeError, 'sandbox unavailable'):
+                co.fake_candidate_oid_test()
+        self.assertEqual(len(sandbox_calls), 1)
+        self.assertEqual(sandbox_calls[0][-1], '/usr/bin/true')
+        self.assertNotIn('fake_candidate_test_pending', co.state)
+        self.assertEqual(co.fake_candidate_oid_test()['returncode'], 0)
+
+    def test_q_failed_then_passed_test_never_yields_source_or_reviewed_bundle(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        self.assertIn('write_boundary', co.state['fake_candidate_test'])
+        self.assertEqual(co.state['fake_q_review']['write_boundary']['root'], co.state['fake_q_review']['root'])
+        co.state = rc.copy.deepcopy(before)
+        with patch.object(cts.sys, 'platform', 'unsupported'):
+            with self.assertRaisesRegex(RuntimeError, 'sandbox unavailable'):
+                co.fake_q_review(c1, '2026-09-30')
+        self.assertNotIn('fake_q_pending', co.state)
+        with patch.dict(os.environ, {'FAKE_Q_FAILED_THEN_PASSED': '1'}):
+            with self.assertRaisesRegex(ValueError, 'reviewer did not approve'):
+                co.fake_q_review(c1, '2026-09-30')
+        turn = co.state['turns'][-1]
+        self.assertTrue(co.configured_test_failed(turn))
+        self.assertTrue(co.configured_test_succeeded(turn))
+        self.assertNotIn('fake_q_review', co.state)
+        self.assertNotIn('fake_q_bundle', co.state)
+        self.assertIn('fake_q_pending', co.state)
+        with self.assertRaises(ValueError):
+            co.fake_q_complete(c1, '2026-09-30')
+
+    def test_publication_journal_proofs_survive_cas_but_reject_drift(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        row = dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        path = co.evidence / 'delivery-publication.json'
+        self.assertEqual(json.loads(path.read_text()), row)
+        with patch.object(co, 'invoke', side_effect=AssertionError('must not dispatch')):
+            self.assertEqual(dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json), row)
+        root, revision, live = dj.verify(co, row)
+        scratch = ct._git_env(GIT_DIR=str(root.git_dir))
+        pack = ct._git_bytes(['pack-objects', '--stdout', '--revs'], env=scratch,
+                             input_bytes=(row['intent']['c2'] + '\n').encode())
+        ct._git_bytes(['index-pack', '--strict', '--stdin'], env=live, input_bytes=pack)
+        ct._git(['update-ref', row['intent']['ref'], row['intent']['c2'], row['intent']['parent']], env=live)
+        with self.assertRaisesRegex(ValueError, 'parent changed'):
+            ct.verify_candidate_revision(root, revision)
+        dj.verify(co, row)
+        self.assertEqual(dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json), row)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+        proof_path = co.evidence / 'delivery-acceptance.json'
+        saved = proof_path.read_bytes()
+        proof_path.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'proof changed'):
+            dj.verify(co, row)
+        proof_path.write_bytes(saved)
+        saved_state = rc.copy.deepcopy(co.state)
+        co.state['sequence'] += 1
+        with self.assertRaisesRegex(ValueError, 'proof changed'):
+            dj.verify(co, row)
+        co.state = saved_state
+        changed = rc.copy.deepcopy(row)
+        changed['bundle']['status'] = 'UNREVIEWED'
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.verify(co, changed)
+        atomic = co.evidence / 'delivery-publication.json'
+        old = atomic.read_bytes()
+        atomic.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ValueError, 'proof changed'):
+            dj.verify(co, changed)
+        atomic.write_bytes(old)
+        root.index.write_bytes(b'invalid index')
+        with self.assertRaises(ValueError):
+            dj.verify(co, row)
+
+    def test_publication_journal_needs_operator_acceptance_and_no_later_writer(self):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        saved = rc.copy.deepcopy(co.state)
+        co.state['acceptance_state'] = 'PENDING'
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertFalse((co.evidence / 'delivery-publication.json').exists())
+        co.state = saved
+        row = dj.prepare(co, rc.observed_test_succeeded, rc.atomic_json)
+        co._fake_lifecycle = False
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.verify(co, row)
+        co._fake_lifecycle = True
+        co.state['status'] = 'HOLD'
+        with self.assertRaisesRegex(ValueError, 'attributed acceptance'):
+            dj.verify(co, row)
+        co.state['status'] = 'ACCEPTED'
+        subprocess.run(['git', 'config', 'core.filemode', 'false'], cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            dj.verify(co, row)
+
+    def test_candidate_contents_verify_after_cas_without_weakening_prepublication_guard(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        bundle, root, revision = rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        scratch = ct._git_env(GIT_DIR=str(root.git_dir))
+        live = ct._git_env(GIT_DIR=str(self.workspace / '.git'))
+        pack = ct._git_bytes(['pack-objects', '--stdout', '--revs'], env=scratch,
+                             input_bytes=(intent['c2'] + '\n').encode())
+        ct._git_bytes(['index-pack', '--strict', '--stdin'], env=live, input_bytes=pack)
+        ct._git(['update-ref', intent['ref'], intent['c2'], intent['parent']], env=live)
+        with self.assertRaisesRegex(ValueError, 'parent changed'):
+            ct.verify_candidate_revision(root, revision)
+        ct.verify_candidate_contents(root, revision)
+        backlog = root.root / 'BACKLOG.md'
+        saved = backlog.read_bytes()
+        backlog.write_bytes(saved + b'foreign change\n')
+        with self.assertRaises(ValueError):
+            ct.verify_candidate_contents(root, revision)
+        backlog.write_bytes(saved)
+        ct.verify_candidate_contents(root, revision)
+        with patch.object(ct, '_assert_live_unchanged', side_effect=AssertionError('pre-CAS only')):
+            ct.verify_candidate_contents(root, revision)
+
+    def test_delivery_seal_rejected_closeout_leaves_no_state_or_evidence(self):
+        self.test_closeout_freeze_refuses_stale_lifecycle_and_backlog_writer_grant()
+        for run in self.root.glob('closeout-*'):
+            self.assertFalse((run / 'evidence/delivery-seal.json').exists())
+        result = subprocess.run([sys.executable, str(MODULE_PATH), '--help'],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_delivery_seal_binds_c1_metadata_and_hook_inventory(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        bundle, root, revision = rc.q_evidence.review_bundle(co, c1, '2026-09-30', rc.observed_test_succeeded)
+        proposal = bundle['source']['proposal']
+        seal = rc.delivery_seal.verify(co, root, proposal)
+        self.assertEqual(seal, json.loads((co.evidence / 'delivery-seal.json').read_text()))
+        env = rc.delivery_seal.environment(co, root)
+        raw = ct._git_bytes(['cat-file', 'commit', c1], env=env)
+        for label, altered in [
+                ('author', raw.replace(b'author paired-session ', b'author forged ')),
+                ('committer', raw.replace(b'committer paired-session ', b'committer forged ')),
+                ('message', raw + b'unsigned extra message\n'),
+                ('date', raw.replace(seal['date'][1:].encode(), b'1 +0000')),
+                ('encoding', raw.replace(b'\n\n', b'\nencoding ISO-8859-1\n\n', 1))]:
+            with self.subTest(metadata=label):
+                oid = ct._git_bytes(['hash-object', '-w', '-t', 'commit', '--stdin'],
+                                    env=env, input_bytes=altered).decode().strip()
+                changed = {**proposal, 'c1': oid, 'c1_sha256': hashlib.sha256(altered).hexdigest()}
+                with self.assertRaisesRegex(ValueError, 'metadata/tree/parent'):
+                    rc.delivery_seal.verify(co, root, changed)
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(intent['publication_seal'], seal)
+        hook = self.workspace / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 0\n')
+        hook.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            rc.delivery_seal.verify(co, root, proposal)
+        hook.unlink()
+        subprocess.run(['git', 'config', 'core.filemode', 'false'], cwd=self.workspace, check=True)
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            rc.delivery_seal.verify(co, root, proposal)
+
+    def test_delivery_seal_refuses_active_hooks_and_non_fake_freeze(self):
+        co = self.coordinator()
+        with self.assertRaisesRegex(ValueError, 'fake-only'):
+            rc.delivery_seal.freeze(co, rc.atomic_json)
+        co._fake_lifecycle = True
+        hook = self.workspace / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 0\n')
+        hook.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'runner not implemented'):
+            rc.delivery_seal.freeze(co, rc.atomic_json)
+        self.assertNotIn('publication_seal', co.state)
+        hook.unlink()
+        rc.delivery_seal.freeze(co, rc.atomic_json)
+        saved = rc.copy.deepcopy(co.state['publication_seal'])
+        (co.evidence / 'delivery-seal.json').write_text('{}')
+        root = type('Root', (), {'git_dir': self.workspace / '.git'})()
+        with self.assertRaisesRegex(ValueError, 'protected evidence'):
+            rc.delivery_seal.verify(co, root, {})
+        self.assertEqual(co.state['publication_seal'], saved)
+
+    def test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        head = co._head_commit()
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        again = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(intent, again)
+        self.assertEqual(co._head_commit(), head)
+        self.assertEqual(co.state['status'], 'DONE')
+        root = ct.baseline_from_binding(co.state['fake_ingest_receipt']['baseline'])
+        raw = ct._git_bytes(['cat-file', 'commit', intent['c2']], env=ct._git_env(GIT_DIR=str(root.git_dir)))
+        self.assertIn(('tree ' + intent['q_oid'] + '\n').encode(), raw)
+        self.assertIn(('parent ' + c1 + '\n').encode(), raw)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), intent['c2_sha256'])
+        for expected in (None, 'stale'):
+            with self.subTest(expected=expected):
+                co.args.expect = expected
+                with self.assertRaisesRegex(ValueError, 'current intent digest'):
+                    co.accept()
+                self.assertNotIn('fake_delivery_acceptance', co.state)
+        co.args.expect = intent['digest']
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        record = co.state['fake_delivery_acceptance']
+        self.assertEqual(record['author'], 'operator')
+        self.assertEqual(record['uid'], os.getuid())
+        self.assertEqual(record['intent_digest'], intent['digest'])
+        self.assertEqual(record['q_oid'], intent['q_oid'])
+        self.assertIn(record, co.state['events'])
+        events = len(co.state['events'])
+        self.assertEqual(rc.delivery_intent.prepare(
+            co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json), intent)
+        self.assertEqual(co.state['status'], 'ACCEPTED')
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        self.assertEqual(len(co.state['events']), events)
+        self.assertEqual(co._head_commit(), head)
+        self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_delivery_intent_refuses_drift_and_unreviewed_bundle(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        saved = rc.copy.deepcopy(co.state)
+        for case in ('unreviewed', 'pending', 'live-work', 'intent-file', 'intent-state', 'q-root'):
+            with self.subTest(case=case):
+                co.state = rc.copy.deepcopy(saved)
+                path = co.evidence / 'delivery-intent.json'
+                if path.exists():
+                    path.unlink()
+                changed = self.workspace / 'tracked.txt'
+                raw = changed.read_bytes()
+                q_root = Path(co.state['fake_q_review']['root']) / 'tracked.txt'
+                q_raw = q_root.read_bytes()
+                if case == 'unreviewed':
+                    co.state['fake_q_bundle']['status'] = 'UNREVIEWED'
+                elif case == 'pending':
+                    co.state['fake_q_bundle_pending'] = {'interrupted': True}
+                elif case == 'live-work':
+                    changed.write_bytes(raw + b'user change\n')
+                elif case == 'intent-file':
+                    path.write_text('{}')
+                elif case == 'intent-state':
+                    co.state['fake_delivery_intent'] = {'relabel': True}
+                else:
+                    q_root.write_bytes(q_raw + b'post-security change\n')
+                try:
+                    with self.assertRaises(ValueError):
+                        rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+                finally:
+                    changed.write_bytes(raw)
+                    q_root.write_bytes(q_raw)
+                self.assertNotIn('fake_delivery_acceptance', co.state)
+                self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def test_fake_delivery_abort_never_revives_on_prepare_or_accept(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        co.hold('aborted by operator')
+        held = rc.copy.deepcopy(co.state)
+        for expected in (None, 'stale', intent['digest']):
+            with self.subTest(expected=expected):
+                co.args.expect = expected
+                with self.assertRaisesRegex(ValueError, 'DONE/PENDING'):
+                    co.accept()
+                self.assertEqual(co.state, held)
+        with self.assertRaisesRegex(ValueError, 'refuses this HOLD'):
+            rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(co.state, held)
+        co.state['fake_delivery_intent'] = None
+        with self.assertRaisesRegex(ValueError, 'refuses this HOLD'):
+            rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(co.state['status'], 'HOLD')
+
+    def test_fake_delivery_reject_refuses_without_entering_legacy_recovery(self):
+        self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
+        co, c1, before = self.q_test_fixture
+        intent = rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
+        co.args.expect = intent['digest']
+        state = rc.copy.deepcopy(co.state)
+        with patch.object(co, 'invoke', side_effect=AssertionError('must not dispatch')):
+            with self.assertRaisesRegex(ValueError, 'abort/new run or use --scope-change'):
+                co.reject('Needs repair', None)
+        self.assertEqual(co.state, state)
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertNotIn('pending_rejection_id', co.state)
 
     def test_q_materialization_refuses_normal_non_fake_coordinator(self):
         co = self.coordinator()

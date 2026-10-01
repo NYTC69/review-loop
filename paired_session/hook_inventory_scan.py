@@ -2,7 +2,9 @@ import hashlib
 import os
 import stat
 from pathlib import Path
-from paired_session.hook_inventory_git import HookInventoryError, git_bytes, worktree_root
+from importlib import import_module
+_git = import_module(('paired_session.' if __package__ else '') + 'hook_inventory_git')
+HookInventoryError, git_bytes, worktree_root = _git.HookInventoryError, _git.git_bytes, _git.worktree_root
 _RUNNABLE = {'pre-commit', 'prepare-commit-msg', 'commit-msg'}
 def inventory(workspace):
     root = worktree_root(workspace)
