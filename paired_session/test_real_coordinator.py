@@ -4326,6 +4326,114 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(co.state['invocations_used'], used)
         self.assertNotIn('fake_delivery_day', co.state)
 
+    def reload_fake_drive(self, co):
+        args = rc.argparse.Namespace(**vars(co.args).copy())
+        return rc.Coordinator(args, _fake_lifecycle=True)
+
+    def exercise_m4_resume_boundary(self, stage):
+        co = self.close_drive_fixture()
+        class BoundaryCrash(BaseException):
+            pass
+        original_save = co.save
+        crashed = False
+        def save():
+            nonlocal crashed
+            result = original_save()
+            hit = (co.state['lifecycle']['stage'] == stage if stage not in ('DELIVERY', 'CLOSE') else
+                   bool(co.state.get('publication_hold')) if stage == 'DELIVERY' else
+                   co.state['status'] == 'CLOSED')
+            if hit and not crashed:
+                crashed = True
+                raise BoundaryCrash(stage)
+            return result
+        with patch.object(co, 'save', side_effect=save):
+            if stage in ('DELIVERY', 'CLOSE'):
+                intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+                co.args.expect = intent['digest']
+                co.accept()
+                with self.assertRaises(BoundaryCrash):
+                    co.fake_finish_delivery(intent['digest'])
+            else:
+                with self.assertRaises(BoundaryCrash):
+                    co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertTrue(crashed)
+        co = self.reload_fake_drive(co)
+        before = list(co.state['turns'])
+        if stage not in ('DELIVERY', 'CLOSE'):
+            intent = co.fake_prepare_delivery(day='2026-10-01')
+            co.args.expect = intent['digest']
+            co.accept()
+        else:
+            intent = co.state['fake_delivery_intent']
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co.state['turns'][:len(before)], before)
+        sequence = co.state['sequence']
+        co = self.reload_fake_drive(co)
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co.state['sequence'], sequence)
+        self.assertEqual(co._head_commit(), intent['c2'])
+        self.assertEqual(co.state['lifecycle']['candidate_oid'], intent['q_oid'])
+        self.assertEqual(len({r['request_id'] for r in co.state['lifecycle']['receipts']}),
+                         len(co.state['lifecycle']['receipts']))
+
+    def test_m4_resume_finish_boundary(self):
+        self.exercise_m4_resume_boundary('FINISH')
+
+    def test_m4_resume_polish_boundary(self):
+        self.exercise_m4_resume_boundary('POLISH-Q')
+
+    def test_m4_resume_docs_boundary(self):
+        self.exercise_m4_resume_boundary('DOCS')
+
+    def test_m4_resume_security_boundary(self):
+        self.exercise_m4_resume_boundary('SECURITY')
+
+    def test_m4_resume_delivery_boundary(self):
+        self.exercise_m4_resume_boundary('DELIVERY')
+
+    def test_m4_resume_close_boundary(self):
+        self.exercise_m4_resume_boundary('CLOSE')
+
+    def test_m4_plan_to_close_has_two_exact_commits_without_hand_built_approvals(self):
+        co = self.close_drive_fixture()
+        parent = co._head_commit()
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        with patch.object(dr, 'reconcile', side_effect=AssertionError('digest check must precede publication')):
+            with self.assertRaisesRegex(ValueError, 'exact accepted intent'):
+                co.fake_finish_delivery('wrong')
+        self.assertEqual(co._head_commit(), parent)
+        with self.assertRaisesRegex(ValueError, 'frozen item'):
+            co.fake_prepare_delivery(backlog_item=2)
+        co.args.expect = intent['digest']
+        co.accept()
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co._git(['rev-list', '--count', parent + '..HEAD']).strip(), '2')
+        self.assertEqual(co._git(['rev-parse', intent['c2'] + '^']).strip(), intent['c1'])
+        self.assertEqual(co._git(['rev-parse', 'HEAD^{tree}']).strip(), intent['q_oid'])
+        done = (self.workspace / 'BACKLOG.md').read_text().split('## Done\n', 1)[1]
+        self.assertIn('Fix sums', done)
+        self.assertIn(intent['c1'], done)
+        phases = [r['stage'] for r in co.state['lifecycle']['receipts']]
+        for phase in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY', 'DELIVERY', 'CLOSE'):
+            self.assertIn(phase, phases)
+
+    def test_m4_security_error_cannot_reach_q_or_delivery(self):
+        co = self.close_drive_fixture()
+        original = co.invoke
+        def failed_security(role, phase, *args, **kwargs):
+            result = original(role, phase, *args, **kwargs)
+            if phase == 'SECURITY':
+                turn = next(t for t in co.state['turns'] if t['sequence'] == result['sequence'])
+                turn['error'] = 'injected transport failure after actual provider result'
+                co.save()
+            return result
+        with patch.object(co, 'invoke', side_effect=failed_security):
+            with self.assertRaisesRegex(ValueError, 'error-free test evidence'):
+                co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertNotIn('fake_q_bundle', co.state)
+        self.assertNotIn('fake_delivery_intent', co.state)
+        self.assertNotEqual(co.state['status'], 'DONE')
+
     def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture

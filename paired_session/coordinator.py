@@ -4710,6 +4710,46 @@ class Coordinator:
             if route != 'EXEC': return route
         return 'HOLD'
 
+    def _fake_resume_p(self):
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise ValueError('P resume is fake-only')
+        for _ in range(3):
+            if self.state['lifecycle']['stage'] == 'EXEC' and not self._fake_reentry():
+                return 'HOLD'
+            ingest = self.state['fake_ingest_receipt']
+            baseline = candidate_tree.replace(
+                candidate_tree.baseline_from_binding(ingest['baseline']), separate_filesystems=True)
+            revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
+            def dispatch(role, phase, prompt, schema, root, env=None):
+                self._fake_dispatching = True
+                try: return self.invoke(role, phase, prompt, schema, fresh=True,
+                                        workspace_override=root, env_overrides=env)
+                finally: self._fake_dispatching = False
+            def finish(request):
+                result = dispatch('author', 'FINISH', 'Role: persistent finisher. Phase: FINISH.',
+                                  author_schema(), baseline.root)
+                return {'sandbox_id': str(result['sequence']), 'request_sha256': request['sha256'],
+                        'status': result['answer']['status']}
+            def specialist(request):
+                prompt = ('Role: reviewer, fresh. Phase: POLISH.\nRun this test command exactly as written '
+                          'in one Bash call: ' + self.args.test_command)
+                result = dispatch('reviewer', 'POLISH', prompt,
+                                  review_schema(), baseline.root)
+                return {'candidate_oid': request['candidate_oid'], 'status': result['answer']['status'],
+                        'findings': result['answer']['full_review']}
+            def write_docs(root, path):
+                result = dispatch('author', 'DOCS', 'Role: persistent docs writer. Phase: DOCS.',
+                                  author_schema(), root, {'FAKE_LIFECYCLE_DOCS_FILE': path})
+                if result['answer']['status'] != 'READY': raise RuntimeError('DOCS author did not report READY')
+            finish_context = {'baseline': baseline, 'revision': revision, 'launch': finish,
+                              'sandbox_stopped': lambda sandbox: True, 'tested_oid': revision.tree_oid}
+            docs_context = {'baseline': baseline, 'before': revision, 'write': write_docs}
+            route = self.fake_lifecycle_route(
+                None, finish_context=finish_context, polish_context={'python-reviewer': specialist},
+                docs_context=docs_context, chain_only=True)
+            if route != 'EXEC': return route
+        return 'HOLD'
+
     def fake_materialize_q(self, c1, day):
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise ValueError('Q objects are fake-only and never authorize delivery')
@@ -4817,6 +4857,9 @@ class Coordinator:
     def fake_prepare_delivery(self, backlog_item=None, day=None):
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise ValueError('delivery drive is fake-only')
+        frozen_item = self.state.get('closeout_item')
+        if frozen_item and backlog_item is not None and backlog_item != frozen_item['item_id']:
+            raise ValueError('backlog item differs from frozen item; use the original ID')
         existing = self.state.get('fake_delivery_intent')
         if existing:
             if self.state['status'] == 'CLOSED':
@@ -4841,23 +4884,29 @@ class Coordinator:
         if self.state['lifecycle']['candidate_oid'] is None:
             if self.fake_lifecycle_drive(backlog_item) != 'STOP_BEFORE_SECURITY':
                 raise ValueError('delivery drive requires completed P stages')
+        if self.state['lifecycle']['stage'] in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS'):
+            self._fake_resume_p()
         ingest = self.state['fake_ingest_receipt']
         baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
         revision = candidate_tree.CandidateRevision(self.state['lifecycle']['candidate_oid'],
                                                    tuple(ingest['manifest']), 0)
-        if self.state['lifecycle']['stage'] == 'STOP_BEFORE_SECURITY':
+        if self.state['lifecycle']['stage'] in ('STOP_BEFORE_SECURITY', 'SECURITY'):
             def security(request):
                 self._fake_dispatching = True
                 try:
                     result = self.invoke('reviewer', 'SECURITY',
-                        'Role: reviewer, fresh. Phase: SECURITY.\n'
+                        f'Role: reviewer, fresh. Phase: SECURITY. Candidate OID: {revision.tree_oid}.\n'
                         'Run this test command exactly as written in one Bash call: ' + self.args.test_command,
                         review_schema(),
                         fresh=True, workspace_override=baseline.root)
                 finally:
                     self._fake_dispatching = False
                 turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
-                return {'status': result['answer']['status'], 'candidate_oid': request['candidate_oid'],
+                if (turn.get('error') or turn['role'] != 'reviewer' or turn['phase'] != 'SECURITY' or
+                        turn['workspace'] != str(baseline.root) or not self.configured_test_succeeded(turn) or
+                        self.configured_test_failed(turn)):
+                    raise ValueError('SECURITY turn lacks current-OID error-free test evidence; retry or abort')
+                return {'status': result['answer']['status'], 'candidate_oid': revision.tree_oid,
                         'findings': result['answer']['full_review'], 'observed_tools': turn['observed_tool_calls']}
             self.fake_lifecycle_route(None, chain_only=True,
                 security_context={'baseline': baseline, 'revision': revision, 'review': security})
@@ -4873,6 +4922,8 @@ class Coordinator:
     def fake_finish_delivery(self, expected_digest):
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
             raise ValueError('delivery drive is fake-only')
+        if not expected_digest or expected_digest != (self.state.get('fake_delivery_intent') or {}).get('digest'):
+            raise ValueError('delivery finish requires the exact accepted intent digest')
         try:
             from paired_session import delivery_recover
         except ModuleNotFoundError:

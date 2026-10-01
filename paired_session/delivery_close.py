@@ -17,7 +17,10 @@ def close(co, expected_digest, atomic_json, external_delivery=False):
     if external_delivery is not False or co.state['config'].get('external_delivery', False) is not False:
         raise ValueError('external delivery activation unavailable; use local CLOSE only')
     with protocol.run_lease(co.run_dir), protocol.workspace_lease(co.workspace, co.run_dir):
-        if json.loads(co.state_path.read_text()) != json.loads(json.dumps(co.state)):
+        disk = json.loads(co.state_path.read_text())
+        if 'pending_reviewer_result_sequence' not in disk and co.state.get('pending_reviewer_result_sequence') is None:
+            co.state.pop('pending_reviewer_result_sequence', None)
+        if disk != json.loads(json.dumps(co.state)):
             raise ValueError('saved state changed; reload before CLOSE')
         journal = json.loads((co.evidence / 'delivery-publication.json').read_text())
         intent, source = journal['intent'], journal['proof_state']['lifecycle']
