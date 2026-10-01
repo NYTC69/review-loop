@@ -2,6 +2,31 @@
 
 ## 2026-10-01
 
+### v2.9.2：真实 CLI 修复（poker-tools 首批真实运行发现的问题）与跨厂商 gate（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：升级后，所有已有的 permission-probe 报告、probe-skip 接受记录和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本，用开跑时的同一份代码跑完。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.2` 运行。
+- **feat（G-a1/G-a2）**：gate 可以和 reviewer 不同厂商。不同厂商时，permission-probe 多跑一个只读的 gate-probe 回合，测的就是真实 gate 的派发表面。gate flags 绑定进探测报告、跳过记录和缓存。删除了旧的「gate 厂商必须等于 reviewer 厂商」拒绝规则。gate 默认改用 author 的厂商（G-b）放在下一版。
+- **fix（CG）**：
+  - 每次派发 Codex（author、reviewer、gate、probe）都带 `-c features.plugins=false`。只有当生效的 `$CODEX_HOME/config.toml` 自己写了 `[features] plugins = false` 时，缓存里的插件 bundle 才视为不会加载；其他情况仍然 HOLD。推荐用专用的 `CODEX_HOME`，配方见 `paired_session/README.md`。
+  - `config.toml` 不存在时，按空配置处理。
+  - permission-probe 跑完自己的回合后，再检查一遍 Codex 能力。
+  - trust 归因改为精确移除信任块，并且只认 TOML 顶层的块；linked worktree 接受主 checkout 根目录。
+  - Claude 作者探测不再把 CLI 自己建的空目录 `.claude/.cc-writes/` 当成越界写入。
+- **fix（RF）**：
+  - gate 与 reviewer 不同厂商、又没有通过的 gate probe 时，拒绝 `--accept-probe-skip`。
+  - Claude 子进程一律设置 `DISABLE_AUTOUPDATER=1`，并去掉 `FORCE_AUTOUPDATE_PLUGINS`，避免插件市场在 run 中途自动更新、触发误报 HOLD。如果只有插件版本变化，HOLD 会提示用 `resume`。
+  - reviewer 给出 APPROVE 但还有阻断项或安全标记的问题没关时，改为按 REVISE 交回作者处理（受轮数上限约束），不再 HOLD 循环。
+  - linked worktree 中断后恢复时，可以确认同时新增的两段信任块。
+- **审查**：Sonnet 5.5 执行，gpt-6.1-sol 逐批审查；G-a 另由 Opus 5.5 做了一轮跨厂商发版前复审（APPROVE_WITH_MINORS，那条 MINOR 已在 RF 修复）。
+- **已知限制**：
+  - 两处 `claude --version` 子进程没有使用子进程环境（MEDIUM advisory）。
+  - POLISH 阶段的 APPROVE + 阻断项还是旧的处理方式。
+  - `gate_surface_issue` 空函数还留着。
+  - 「每次派发都关插件，所以完全不扫描 bundle」这个更彻底的方案，需要先改一条旧断言。
+  - Codex 作者在 workspace-write 沙箱里编不了 iOS，也跑不了 Postgres initdb。
+  - APPROVE 之后的生命周期仍只在 fake harness 中可用。
+
+
 ### v2.9.1：修 poker-news-bob 的 bug report（paired-session 仍是可选入口，默认 legacy）
 
 - **发布范围**：B 道 v2.9.1 分支（P0-1 至 PR1c）与 A 道（至 `2fc2bea`）。APPROVE 之后的生命周期（Step 3.4 之后的 FINISH、quality polish、DOCS、SECURITY、DELIVERY、CLOSE）仍只在 fake harness 中可用，真实 CLI 仍拒绝 `--lifecycle-mode on`；这些步骤由操作者自己完成。
