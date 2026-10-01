@@ -23,6 +23,7 @@ from paired_session import delivery_publish as dp
 from paired_session import delivery_recovery_state as drs
 from paired_session import delivery_recovery_lock as drl
 from paired_session import delivery_recover as dr
+from paired_session import delivery_close_proof as dcp
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -4163,6 +4164,40 @@ raise AssertionError('fault window was not reached')
             co._publication_guard()
         with self.assertRaisesRegex(ValueError, 'publication intent missing'):
             dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+
+    def test_close_proof_requires_exact_accepted_reconciled_tree_and_compass_blob(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        original = rc.copy.deepcopy(co.state)
+        proof = dcp.verify(co)
+        self.assertEqual(proof['c2'], co._head_commit())
+        self.assertEqual(proof['intent_digest'], co.state['publication_complete'])
+        self.assertEqual(proof['backlog_sha256'], hashlib.sha256((self.workspace / 'BACKLOG.md').read_bytes()).hexdigest())
+        self.assertEqual(co.state, original)
+        mutations = [('completion', lambda: co.state.pop('publication_complete')),
+                     ('acceptance', lambda: co.state.update(acceptance_state='PENDING')),
+                     ('pending', lambda: co.state['lifecycle'].update(pending={'id': 'unreviewed'})),
+                     ('blockers', lambda: co.state.update(finding_ledger=[{'id': 'F001', 'status': 'open',
+                                      'severity': 'MAJOR', 'source': 'security-reviewer'}])),
+                     ('program', lambda: co.state['operator_programs'].update(path_env='/foreign'))]
+        for name, mutate in mutations:
+            with self.subTest(guard=name):
+                co.state = rc.copy.deepcopy(original)
+                mutate()
+                with self.assertRaises((ValueError, RuntimeError)):
+                    dcp.verify(co)
+        co.state = rc.copy.deepcopy(original)
+        backlog = self.workspace / 'BACKLOG.md'
+        raw = backlog.read_bytes()
+        backlog.write_bytes(raw + b'foreign edit\n')
+        with self.assertRaises(ValueError):
+            dcp.verify(co)
+        self.assertEqual(backlog.read_bytes(), raw + b'foreign edit\n')
+        backlog.write_bytes(raw)
+        with patch.object(co, '_fake_lifecycle', False):
+            with self.assertRaisesRegex(ValueError, 'fake-only'):
+                dcp.verify(co)
+        self.assertEqual(dcp.verify(co), proof)
 
     def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
