@@ -76,6 +76,17 @@ class ClaudeAutoUpdateTests(unittest.TestCase):
         self.assertEqual(env['DISABLE_AUTOUPDATER'], '1')
         self.assertNotIn('FORCE_AUTOUPDATE_PLUGINS', env)
 
+    def test_claude_cli_version_runs_in_the_claude_child_env(self):   # G-b, RF follow-up (a)
+        seen = []
+        def fake(argv, **kwargs):
+            seen.append((list(argv), kwargs.get('env')))
+            return type('R', (), {'stdout': 'claude 1.0\n'})()
+        with patch.dict(os.environ, {'FORCE_AUTOUPDATE_PLUGINS': '1'}), patch.object(rc.subprocess, 'run', fake):
+            self.assertEqual(rc.claude_cli_version('claude'), 'claude 1.0')
+        (argv, env), = seen
+        self.assertEqual((argv, env['DISABLE_AUTOUPDATER']), (['claude', '--version'], '1'))
+        self.assertNotIn('FORCE_AUTOUPDATE_PLUGINS', env)
+
     def test_the_claude_flags_digests_bind_the_child_env_and_codex_only_runs_do_not(self):
         co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude')
         self.assertEqual(co.reviewer_flags()['claude_child_env'], rc.CLAUDE_CHILD_ENV)
@@ -103,6 +114,16 @@ class ClaudeAutoUpdateTests(unittest.TestCase):
         self.assertFalse(check([{'file': 'claude_settings', 'reason': 'unexpected-content-change'}], old, bumped))
         self.assertFalse(check(only, old, {'document': None, 'error': 'ValueError'}))
         self.assertIn('`resume` re-runs the turn on a fresh baseline', rc.PLUGIN_UPDATE_HINT)
+
+    def test_a_dropped_or_added_version_key_is_not_a_bump(self):   # G-b, RF follow-up (b): the key structure is kept, only the values are ignored
+        entry = {'version': '1.0', 'lastUpdated': '1', 'installPath': '/p/a'}
+        old = self.plugins(a=[entry])
+        only = [{'file': 'claude_plugins', 'reason': 'unexpected-content-change'}]
+        check = lambda before, after: rc.plugin_version_bump_only(only, {'claude_plugins': before}, {'claude_plugins': after})
+        self.assertTrue(check(old, self.plugins(a=[{**entry, 'version': '2.0', 'lastUpdated': '9'}])))
+        self.assertFalse(check(old, self.plugins(a=[{k: v for k, v in entry.items() if k != 'version'}])))          # version key dropped
+        self.assertFalse(check(old, self.plugins(a=[{k: v for k, v in entry.items() if k != 'lastUpdated'}])))      # lastUpdated key dropped
+        self.assertFalse(check(self.plugins(a=[{'installPath': '/p/a'}]), self.plugins(a=[{**entry, 'installPath': '/p/a'}])))   # version keys added
 
 
 class ApproveWithOpenBlockingFindingsTests(unittest.TestCase):

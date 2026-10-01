@@ -240,6 +240,7 @@ def main():
         answer = {'verdict': 'needs-attention' if findings else 'approve',
                   'findings': findings,
                   'self_run_evidence': [{'command': configured_test}]}
+        command_events = [{'command': configured_test, 'exit_code': 0, 'output': 'OK'}] if vendor == 'codex' else None   # G-b: a Codex gate observes the configured test like the Claude fake
     elif 'Role: permission-system probe' in prompt:
         if os.environ.get('FAKE_PROBE_MUTATE') and os.environ.get('FAKE_PROBE_MUTATE_VENDOR', vendor) == vendor:   # G-a: the vendor filter lets a test mutate in one probe turn only
             (Path.cwd() / 'probe-mutation.txt').write_text('mutation\n')

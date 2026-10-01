@@ -88,7 +88,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip() or 'UNAVAILABLE'
+    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
@@ -406,7 +406,7 @@ PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re
 
 
 def _plugin_entries_without_bump(value):
-    if isinstance(value, dict): return {k: _plugin_entries_without_bump(v) for k, v in value.items() if k not in ('version', 'lastUpdated')}
+    if isinstance(value, dict): return {k: None if k in ('version', 'lastUpdated') and not isinstance(v, (dict, list)) else _plugin_entries_without_bump(v) for k, v in value.items()}   # G-b: the keys stay, only scalar values are ignored
     if isinstance(value, list): return [_plugin_entries_without_bump(v) for v in value]
     return value
 
@@ -1172,6 +1172,21 @@ def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
     return '\n'.join(lines)
 
 
+def progress_line(row: dict) -> str:
+    """PL: the one human-readable rendering of a progress.jsonl row, shared by the live stdout line and status --brief."""
+    f = {k: v for k, v in row.items() if k not in ('ts', 'seq')}
+    kind, label = f.pop('kind'), f.pop('label', '')
+    when = time.strftime('%H:%M:%S', time.localtime(calendar.timegm(time.strptime(row['ts'], UTC_FORMAT))))
+    if 'role' in f: f['role'] = f"{f['role']} {f.pop('vendor')}/{f.pop('model')} {f.pop('effort')} " + ('fresh' if f.pop('fresh') else 'persistent')
+    if 'seconds' in f: f['seconds'] = f"{f['seconds']}s"
+    if 'security' in f: f['severity'] = f['severity'] + ('+sec' if f.pop('security') else '')
+    if 'invocation_cap' in f: f['invocations_used'] = f"{f.pop('invocations_used')}/{f.pop('invocation_cap')} invocations"
+    if 'rf5_converted' in f: f['verdict'] += ' (RF-5: APPROVE converted)' if f.pop('rf5_converted') else ''
+    if f.get('raw'): f['raw'] = 'raw ' + f['raw']
+    if isinstance(f.get('open'), list): f['open'] = f"({len(f['open'])} open: {', '.join(f['open'])})"
+    return f'[{when}] ' + ' · '.join(str(x) for x in [label, kind, *f.values()] if x not in (None, '', False))
+
+
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -1408,7 +1423,7 @@ class Coordinator:
 
     def _restore_role_policy(self, explicit) -> dict:
         """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
-        saved = {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), **self.state['config']}
+        saved = self._saved_config()
         for key in explicit:
             if getattr(self.args, key) != saved[key]:
                 raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
@@ -1416,14 +1431,18 @@ class Coordinator:
         if getattr(self.args, 'allowed_models', None) not in (None, policy):
             raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
         self.args.allowed_models = policy
-        for key in ROLE_DESTS:
+        for key in (*ROLE_DESTS, 'gate_vendor_source'):
             setattr(self.args, key, saved[key])
         return saved
+
+    def _saved_config(self) -> dict:
+        """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
+        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived', **self.state['config']}
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
-                'gate_vendor', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
+                'gate_vendor', 'gate_vendor_source', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
@@ -2589,6 +2608,7 @@ class Coordinator:
                 entry['owner_role'] = 'specialist:' + specialist_owner
             if source == 'security-reviewer': entry['owner_role'] = 'security-reviewer'
             self.state['finding_ledger'].append(entry)
+            self._progress_finding(entry)
             recorded.append({'id': finding_id, **finding})
             changed = True
         if changed:
@@ -2631,10 +2651,76 @@ class Coordinator:
                                               'evidence': row['evidence']})
             if disposition in ('fixed', 'withdrawn'):
                 finding['status'] = disposition
+                self._progress_finding(finding)
             changed = True
         if changed:
             self.write_ledger()
         return []
+
+    _progress_seq_n, _progress_label, _progress_warned = None, None, False
+
+    def progress(self, kind: str, **fields) -> None:
+        """PL: one event as a stdout line and a RUN/progress.jsonl row. Callers pass ids, counts and ledger summaries only; this never raises and never touches state."""
+        try:
+            if not kind.startswith('probe'): fields.setdefault('label', self._progress_label)
+            row = {'ts': time.strftime(UTC_FORMAT, time.gmtime()), 'kind': kind, **fields}
+            fd = os.open(self.run_dir / 'progress.jsonl', os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0), 0o600)
+            with os.fdopen(fd, 'r+b') as log:
+                if not stat.S_ISREG(os.fstat(fd).st_mode): raise OSError('not a regular file')
+                if self._progress_seq_n is None: self._progress_seq_n = log.read().count(b'\n')
+                self._progress_seq_n += 1
+                row['seq'] = self._progress_seq_n
+                log.write((json.dumps(row, ensure_ascii=False) + '\n').encode())
+            if not getattr(self.args, 'quiet_progress', False): sys.stdout.write(progress_line(row) + '\n'); sys.stdout.flush()   # not print(): the final status line stays the only print of a run
+        except Exception as exc:
+            if not self._progress_warned:
+                self._progress_warned = True
+                try: sys.stdout.write('WARNING: progress log unavailable: ' + type(exc).__name__ + '\n'); sys.stdout.flush()
+                except Exception: pass   # a closed stdout must not turn a progress failure into a run failure
+
+    def _progress_phase(self, role: str, phase: str) -> None:
+        rounds = self.state.get(f'{phase.lower()}_rounds', 0) + (role == 'author')
+        label = 'gate' if role == 'gate' else 'polish' if phase == 'POLISH' else f'{phase} r{rounds}'
+        if label != self._progress_label:
+            self._progress_label = label
+            self.progress('phase')
+
+    def _progress_finding(self, row: dict) -> None:
+        self.progress('finding', id=row['id'], severity=row['severity'], source=row['source'], security=bool(row.get('security')),
+                      status=row['status'], summary=' '.join(str(row['summary']).split())[:120])
+
+    def _progress_open(self) -> list[str]:
+        return [f"{row['id']} {row['severity']}" + ('+sec' if row.get('security') else '') for row in self.open_findings()]
+
+    def _progress_terminal(self, status: str, reason: str = '') -> None:
+        reason = ' '.join(reason.split())
+        if reason.startswith(('implementer: ', 'polish implementer: ')): reason = reason.split(':')[0] + ': (author text withheld)'
+        self.progress('terminal', status=status, reason=reason[:120], invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
+
+    def _progress_dispatch(self, role: str, phase: str, fresh: bool, call):
+        kind = {'probe': 'probe:reviewer', 'gate-probe': 'probe:gate'}.get(role) or ('probe:author-escape' if phase == 'AUTHOR_PERMISSION_PROBE' else 'dispatch')
+        if kind == 'dispatch': self._progress_phase(role, phase)
+        model, effort = self._model_effort(role)
+        who = dict(role=role, vendor=self._role_vendor(role), model=model, effort=effort, fresh=fresh)
+        self.progress(kind, step='start', **who)
+        started, outcome = time.time(), 'error'
+        try:
+            result = call()
+            outcome = 'ok'
+            return result
+        except BaseException:
+            last = (self.state['turns'] or [{}])[-1]
+            if last.get('sequence') == self.state.get('sequence'):
+                outcome = 'timeout' if last.get('timed_out') else 'rate-limited' if last.get('error_kind') else 'error'
+            if self.state.get('active'): outcome = 'uncertain'
+            raise
+        finally:
+            self.progress(kind, step='end', seconds=round(time.time() - started), outcome=outcome, **who)
+
+    def refused(self, message: str) -> int:
+        self._progress_terminal('REFUSED', message)
+        print('REFUSED: ' + message)
+        return 2
 
     def write_ledger(self) -> None:
         atomic_json(self.run_dir / 'findings-ledger.json', self.state['finding_ledger'])
@@ -2661,7 +2747,8 @@ class Coordinator:
                                       ADVISORY_REVIEW_SEVERITIES and not row.get('security')
                                       for row in findings)
 
-    def record_review_verdict(self, sequence: int, phase: str, raw: str, effective: str) -> None:
+    def record_review_verdict(self, sequence: int, phase: str, raw: str, effective: str, rf5=False) -> None:
+        self.progress('verdict', verdict=effective, raw=raw if raw != effective else '', rf5_converted=rf5, open=self._progress_open())
         records = self.state.setdefault('review_verdicts', [])
         row = next((item for item in records if item.get('sequence') == sequence), None)
         data = {'sequence': sequence, 'phase': phase, 'reviewer_raw_verdict': raw,
@@ -2786,6 +2873,7 @@ class Coordinator:
         self.write_comparison()
         self.write_open_findings()
         self.write_usage()
+        self._progress_terminal('HOLD', reason)
         return 'HOLD'
 
     def rejection_limit_hold(self) -> str:
@@ -2838,7 +2926,7 @@ class Coordinator:
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
-        atomic_json(config_path, {k: v for k, v in self.state['config'].items() if k in CONFIGURABLE_DESTS and v is not None and
+        atomic_json(config_path, {k: v for k, v in self._saved_config().items() if k in CONFIGURABLE_DESTS and v is not None and
                     not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:'))})
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
                 'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
@@ -2931,6 +3019,7 @@ class Coordinator:
         self.state['accepted_at'] = record['timestamp']
         self.save()
         self.write_comparison()
+        self._progress_terminal('ACCEPTED')
         return 'ACCEPTED'
 
     def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
@@ -3062,6 +3151,7 @@ class Coordinator:
         self.write_comparison()
         self.write_open_findings()
         self.write_usage()
+        self._progress_terminal('DONE')
         return 'DONE'
 
     def set_effective_verdict(self, verdict: str) -> None:
@@ -3642,8 +3732,8 @@ class Coordinator:
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
-            result = self._invoke_once(role, phase, turn_prompt, schema, fresh, allow_mutation_report,
-                                       workspace_override, env_overrides)
+            result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
+                role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
             if role not in ('reviewer', 'shadow', 'gate'):
                 return result
             answer = result['answer']
@@ -4158,7 +4248,7 @@ class Coordinator:
             for receipt in self.state.get('turns', []):
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
-        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict)
+        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal))
         if phase == 'EXEC':
             previous_comparison = next((row for row in self.state['exec_comparisons']
                                         if row.get('review_sequence') == result['sequence']), None)
@@ -4361,10 +4451,12 @@ class Coordinator:
         for index in discarded_indexes:
             ledger = next(row for row in self.state['finding_ledger'] if row['id'] == recorded[index]['id'])
             ledger['status'] = 'withdrawn'
+            self._progress_finding(ledger)
             ledger['status_history'].append({'round': result['sequence'], 'status': 'withdrawn',
                                              'evidence': 'program rejected malformed blocking rubric'})
         self.write_ledger()
         self.render(result, 'adversarial', 'EXEC')
+        self.progress('verdict', verdict=answer['verdict'].upper(), source='gate', open=self._progress_open())
         self.state['gate_ran'] = True
         self.state['force_gate_after_reject'] = False
         if self.state['exec_comparisons']:
@@ -4506,7 +4598,7 @@ class Coordinator:
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10).stdout.strip() or 'UNAVAILABLE'
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10, env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -4523,6 +4615,9 @@ class Coordinator:
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
             out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made)
+            # Classification only: the verdict above never reads the model's answer. No prescribed call made and a HOLD answer = the model declined.
+            out['model_refused'] = (out['status'] == 'UNKNOWN' and not unexpected and not any(r['tool_use_seen'] for r in out['attempts'].values())
+                                    and str(((result or {}).get('answer') or {}).get('status', '')).upper() == 'HOLD')
             if reason: out['reason'] = reason
         except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
             out.update(status='FAIL', reason=type(exc).__name__ + ': ' + str(exc))
@@ -5041,7 +5136,12 @@ class Coordinator:
             report['failure_reasons'].append('author-permission-probe-failed')
         elif author_probe['status'] == 'PASS_RESIDUAL_RISK' and report['status'] == 'PASS':
             report['status'] = 'PASS_RESIDUAL_RISK'; report['residual_risk'] = author_probe['residual_risk']
-        elif author_probe['status'] == 'UNKNOWN' and report['status'] == 'PASS': report['status'] = 'UNKNOWN'; report['failure_reasons'].append('author-model-escape-unknown')
+        elif author_probe['status'] == 'UNKNOWN' and report['status'] == 'PASS':
+            report['status'] = 'UNKNOWN'
+            if author_probe.get('model_refused') is True:
+                report['failure_reasons'].append('author-model-refused')
+                report['message'] = 'The Claude author model declined to run the author probe (HOLD, no tool call made); the sandbox was not tested, no escape was observed. Re-run the probe.'
+            else: report['failure_reasons'].append('author-model-escape-unknown')
         if author_probe.get('model_escape_failed_targets'): report['failure_reasons'].append('author-escape-write-observed: ' + ', '.join(author_probe['model_escape_failed_targets']))
         if not report['snapshot_unchanged']:
             report['status'] = 'FAIL'
@@ -5078,7 +5178,7 @@ class Coordinator:
         self.state['residual_risk'] = report.get('residual_risk')
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
                                      if report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else
-                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '') + ('; ' + report['residual_risk'] if report.get('residual_risk') else '')
+                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '') + ('; ' + report['residual_risk'] if report.get('residual_risk') else '') + ('; ' + report['message'] if report.get('message') else '')
         self.save()
         self.write_usage()
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
@@ -5978,7 +6078,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
     p.add_argument('--reviewer-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--reviewer-effort', default='medium')
-    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help='defaults to the vendor opposite the author')
+    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help="defaults to the author's vendor (ADR-10); an explicit value is recorded as operator")
     p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
@@ -6035,6 +6135,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--expect', help='operator intent digest required by accept/reject')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
+    p.add_argument('--quiet-progress', action='store_true', help='suppress the per-event progress lines (the final status line and RUN/progress.jsonl stay)')
+    p.add_argument('--brief', nargs='?', type=int, const=20, default=None, metavar='N', help='status: print the last N (default 20) progress events instead of state.json')
     p.set_defaults(allowed_models=None)
     return p
 
@@ -6053,7 +6155,7 @@ ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_mode
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
-def old_gate_vendor(author_vendor: str) -> str:
+def old_gate_vendor(author_vendor: str) -> str:   # legacy opposite-vendor rule: only saved runs without gate_vendor (ADR-10 M3) and M4
     return 'claude' if author_vendor == 'codex' else 'codex'
 
 
@@ -6061,11 +6163,36 @@ def restores_run(args: argparse.Namespace) -> bool:
     return args.action in ('accept', 'reject', 'note', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
+def validate_allowed_models(allowed) -> None:
+    if allowed is not None and not (
+            isinstance(allowed, dict) and set(allowed) <= {'codex', 'claude'} and all(
+                isinstance(v, list) and all(isinstance(m, str) for m in v) for v in allowed.values())):
+        raise ValueError('allowed_models must be an object {"codex": [...], "claude": [...]} of string lists')
+
+
+def refuse_foreign_gate_model(args: argparse.Namespace) -> None:
+    """ADR-10 M4: an explicit gate_model of the other vendor needs an explicit --gate-vendor (never applies to a restored run)."""
+    model, given = getattr(args, 'gate_model', None), getattr(args, 'gate_vendor', None)
+    vendor = given or args.author_vendor
+    other = old_gate_vendor(vendor)
+    if model is None or restores_run(args): return
+    validate_allowed_models(getattr(args, 'allowed_models', None))   # structure first: a list or a null vendor value is a configuration refusal, never an AttributeError
+    allowed = getattr(args, 'allowed_models', None) or {}
+    if model in allowed.get(vendor, []): return
+    if model in allowed.get(other, []) or model.startswith({'claude': 'claude-', 'codex': 'gpt-'}[other]):
+        raise ValueError(f'gate_model {model} belongs to {other}, but the gate ' + (
+            f'vendor is {vendor}; pass --gate-vendor {other} or a {vendor} model' if given else
+            f"now defaults to the author's vendor {vendor}; pass --gate-vendor {other} to keep it"))
+
+
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
     model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
+    refuse_foreign_gate_model(args)
+    if getattr(args, 'gate_vendor_source', None) is None:
+        args.gate_vendor_source = 'default' if getattr(args, 'gate_vendor', None) is None else 'operator'
     if getattr(args, 'gate_vendor', None) is None:
-        args.gate_vendor = old_gate_vendor(args.author_vendor)
+        args.gate_vendor = args.author_vendor   # ADR-10: the gate defaults to the author's vendor
     role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
                     'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
@@ -6077,10 +6204,7 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 def validate_role_models(args: argparse.Namespace) -> None:
     """ADR-9: each role needs a well-formed model id, listed in allowed_models when that key is set."""
     allowed = getattr(args, 'allowed_models', None)
-    if allowed is not None and not (
-            isinstance(allowed, dict) and set(allowed) <= {'codex', 'claude'} and all(
-                isinstance(v, list) and all(isinstance(m, str) for m in v) for v in allowed.values())):
-        raise ValueError('allowed_models must be an object {"codex": [...], "claude": [...]} of string lists')
+    validate_allowed_models(allowed)
     role_vendors = {'author_model': args.author_vendor, 'reviewer_model': args.reviewer_vendor,
                     'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
@@ -6166,6 +6290,21 @@ def normalize_cli_paths(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def status_brief(run_dir: Path, count: int) -> int:
+    """PL: the last `count` progress events as readable lines; read-only, so it works while a run holds the lease."""
+    try:
+        with os.fdopen(os.open(run_dir / 'progress.jsonl', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)), 'rb') as log:
+            if not stat.S_ISREG(os.fstat(log.fileno()).st_mode): raise OSError('not a regular file')
+            lines = log.read().splitlines()
+    except OSError: lines = []
+    shown = 0
+    for line in lines[max(len(lines) - count, 0):]:
+        try: print(progress_line(json.loads(line))); shown += 1
+        except (ValueError, KeyError, TypeError): continue
+    if not shown: print('no progress events yet')
+    return 0
+
+
 def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
@@ -6181,8 +6320,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
                 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
             co.save()
         if not (claude_ok := co.claude_author_verified())[0]:
-            print('REFUSED: ' + claude_ok[1])
-            return 2
+            return co.refused(claude_ok[1])
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -6203,8 +6341,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
-        print('REFUSED: ' + issue)
-        return 2
+        return co.refused(issue)
     if (args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
@@ -6213,22 +6350,18 @@ def _execute_locked(args: argparse.Namespace) -> int:
                 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
             co.save()
         if not (verified := co.codex_contract_verified())[0]:
-            print('REFUSED: ' + verified[1])
-            return 2
+            return co.refused(verified[1])
     if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
         if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
-            print(f'REFUSED: the current permission probe is {negative}; fix the cause and re-run permission-probe')
-            return 2
+            return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
         if not co._gate_probe_covered():
-            print(f'REFUSED: gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
-            return 2
+            return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
         co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}; co.save()
     if args.action == 'reject':
         if not args.skip_probe:
             passed, reason = co.probe_gate()
             if not passed:
-                print('REFUSED: ' + reason + '; run permission-probe before continuing')
-                return 2
+                return co.refused(reason + '; run permission-probe before continuing')
         status = co.reject(args.text, args.file)
         if status == 'ACTIVE':
             status = co.drive()
@@ -6245,8 +6378,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action in ('run', 'resume') and not args.skip_probe:
         passed, reason = co.probe_gate()
         if not passed and not changed_codex:
-            print('REFUSED: ' + reason + '; run permission-probe before continuing')
-            return 2
+            return co.refused(reason + '; run permission-probe before continuing')
     co._probe_gate_required = not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
         if co.state.get('status') == 'ACCEPTED':
@@ -6257,6 +6389,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         co.hold('aborted by operator' + suffix)
         print('HOLD: ' + co.state['hold_reason'])
         return 2
+    print(f'GATE: {args.gate_vendor} {args.gate_model} (gate_vendor_source: {args.gate_vendor_source})')   # ADR-10 M2
     status = (co.drive() if args.action == 'run' else
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
     print(status + (' (acceptance pending)' if status == 'DONE' else
@@ -6332,6 +6465,8 @@ def main(argv=None) -> int:
         except ValueError as exc:
             print('REFUSED: ' + str(exc))
             return 2
+    if args.action == 'status' and args.brief is not None:
+        return status_brief(run_dir, args.brief)
     try:
         with run_lease(Path(args.run_dir)):
             if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note'):

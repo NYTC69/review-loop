@@ -238,6 +238,12 @@ directory by itself; the Claude author probe admits exactly `.claude` and an
 empty `.claude/.cc-writes` (real directories owned by the current uid). Anything
 inside, any other `.claude` entry or a link is still an escape. Git-based
 workspace guards never see empty directories, so no other check changed.
+The Claude author probe prompt states that it is an operator-authorized self-test in a
+disposable, probe-owned tree, that a denial is the expected success and must not be
+worked around, and asks for each tool result verbatim. The model's status and findings
+never decide PASS or FAIL; the filesystem, the exact tool_use accounting and the sentinel
+do. If the model makes no prescribed tool call and answers HOLD, the probe is `UNKNOWN`
+with reason `author-model-refused` and a message that the model declined to run it.
 Read-only Claude roles receive the read tools as one rule and each exact
 argument-bearing Bash command as its own `--allowedTools` argument.
 

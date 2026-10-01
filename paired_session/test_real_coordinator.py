@@ -399,14 +399,14 @@ class RealCoordinatorTests(unittest.TestCase):
         for unexpected in (False, True):
             with self.subTest(unexpected=unexpected):
                 self.run_dir = self.root / ('product-global-' + str(unexpected).lower())
-                probe_command = self.command('--exercise-revisions')
+                probe_command = self.command('--exercise-revisions', '--gate-vendor', 'claude')   # explicit: default moved by owner decision 2026-09-30 (a codex gate-probe turn would take the one-time trust warning)
                 probe_command[2] = 'permission-probe'
                 base_env = {**os.environ, 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'}
                 probe = subprocess.run(probe_command, cwd=self.root, env=base_env,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
                 run_env = {**base_env, **({'FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE': '1'} if unexpected else {})}
-                run = subprocess.run(self.command('--exercise-revisions'), cwd=self.root, env=run_env,
+                run = subprocess.run(self.command('--exercise-revisions', '--gate-vendor', 'claude'), cwd=self.root, env=run_env,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 state = json.loads((self.run_dir / 'state.json').read_text())
                 if unexpected:
@@ -1186,7 +1186,7 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['config']['exec_turn_timeout'], 7200)
 
     def test_exec_author_uses_exec_timeout_but_plan_and_reviewer_use_general_timeout(self):
-        co = self.coordinator('--timeout', '31', '--exec-turn-timeout', '45')
+        co = self.coordinator('--gate-vendor', 'claude', '--timeout', '31', '--exec-turn-timeout', '45')   # explicit: default moved by owner decision 2026-09-30
         co.state['started']['gate'] = False
         co.state['sessions']['gate'] = 'gate-session'
         for role, phase, expected in (('author', 'EXEC', 45), ('author', 'PLAN', 31),
@@ -2975,7 +2975,7 @@ sys.exit(result.returncode)
     def test_codex_readonly_roles_do_not_inherit_execpolicy_bypass_grants(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--gate-model', 'gpt-6-luna'])   # explicit: default moved by owner decision 2026-09-30
         co = rc.Coordinator(args)
         schema = self.root / 'schema.json'
         for role in ('reviewer', 'shadow', 'gate', 'probe'):
@@ -3029,7 +3029,7 @@ sys.exit(result.returncode)
     def test_all_claude_roles_use_strict_fail_closed_bash_sandbox(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'codex', '--reviewer-vendor', 'claude'])
+            '--author-vendor', 'codex', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30
         co = rc.Coordinator(args)
         schema = self.root / 'sandbox-schema.json'
         rc.atomic_json(schema, rc.review_schema())
@@ -3117,7 +3117,7 @@ sys.exit(result.returncode)
     def test_claude_author_routes_gate_to_fresh_readonly_codex(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--gate-model', 'gpt-6-luna'])   # explicit: default moved by owner decision 2026-09-30
         co = rc.Coordinator(args)
         schema = self.root / 'gate-schema.json'
         rc.atomic_json(schema, rc.gate_schema())
@@ -3219,6 +3219,11 @@ sys.exit(result.returncode)
             command = co.command(role, schema, role != 'reviewer')
             if '--allowedTools' in command:
                 self.assertIn('Bash(node corpus.js)', allowed_tool_values(command))
+        self.assertEqual(co._role_vendor('gate'), 'codex')   # G-b: the default gate is no Claude role, so the loop above skips its argv check
+        claude_gate = rc.Coordinator(rc.parser().parse_args(['run', '--workspace', str(self.workspace),
+            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'claude-gate-run'),
+            '--reviewer-command', 'node corpus.js', '--gate-vendor', 'claude']))
+        self.assertIn('Bash(node corpus.js)', allowed_tool_values(claude_gate.command('gate', schema, True)))
         self.assertIn('node corpus.js', co._review_prompt('shadow', 'snapshot'))
         self.assertIn('node corpus.js', co._gate_prompt('snapshot'))
         digest = co.reviewer_flags_digest()
@@ -3307,13 +3312,13 @@ sys.exit(result.returncode)
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         rc.Coordinator(args)
         self.assertEqual((args.author_model, args.reviewer_model, args.gate_model),
-                         ('gpt-6-luna', 'claude-opus-5-5', 'claude-opus-5-5'))
+                         ('gpt-6-luna', 'claude-opus-5-5', 'gpt-6-luna'))   # default moved by owner decision 2026-09-30
         swapped = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'swapped-model-run'),
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex'])
         rc.Coordinator(swapped)
         self.assertEqual((swapped.author_model, swapped.reviewer_model, swapped.gate_model),
-                         ('claude-opus-5-5', 'gpt-6-luna', 'gpt-6-luna'))
+                         ('claude-opus-5-5', 'gpt-6-luna', 'claude-opus-5-5'))   # default moved by owner decision 2026-09-30
 
     def test_adr9_accepts_explicit_non_default_codex_author_model(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -6680,7 +6685,7 @@ sys.exit(result.returncode)
     def test_codex_plan_receives_full_inputs_without_requiring_shell_reads(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6-luna'])
+            '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--gate-model', 'gpt-6-luna'])   # explicit: default moved by owner decision 2026-09-30
         co = rc.Coordinator(args)
         (co.context / 'plan.md').write_text('Unique plan body with verification.')
         prompt = co._review_prompt('reviewer', 'snapshot')
@@ -7169,7 +7174,7 @@ sys.exit(result.returncode)
         # Generate a completed, pre-polish run using only fake CLIs. A live run
         # is mutable and may already have consumed its one-time polish round.
         fixture_options = ('--polish-round', 'off', '--shadow', 'off',
-                           '--max-invocations', '40')
+                           '--max-invocations', '40', '--gate-vendor', 'claude')   # explicit: default moved by owner decision 2026-09-30 (a codex gate would add a gate-probe turn)
         generated = self.run_coordinator(*fixture_options,
                                          env={'FAKE_GATE_MINOR': '1'})
         self.assertEqual(generated.returncode, 0, generated.stderr + generated.stdout)
@@ -7396,7 +7401,7 @@ sys.exit(result.returncode)
                     self.assertTrue(all(row['reported_model_source'] == source for row in receipts))
 
     def test_permission_probe_runs_exact_allowed_and_checks_writes(self):
-        command = self.command('--exercise-revisions')
+        command = self.command('--exercise-revisions', '--gate-vendor', 'claude')   # explicit gate (here and below): default moved by owner decision 2026-09-30
         command[2] = 'permission-probe'
         sandbox_log = self.root / 'codex-sandbox-invocations.jsonl'
         result = subprocess.run(command, cwd=self.root,
@@ -7448,7 +7453,7 @@ sys.exit(result.returncode)
                                              '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                                              '--author-effort', 'low', '--reviewer-effort', 'low',
                                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest',
-                                             '--timeout', '10', '--exercise-revisions',
+                                             '--timeout', '10', '--exercise-revisions', '--gate-vendor', 'claude',
                                              '--codex-bin', str(self.fake_codex_cli()),
                                              '--claude-bin', str(self.fake_claude_cli())])
         self.assertEqual(report['author_flags_digest'], rc.Coordinator(probe_args).author_flags_digest())
@@ -7478,7 +7483,7 @@ sys.exit(result.returncode)
         self.assertIn('MUST attempt every command', probe_prompt)
         self.assertIn('Exactly one dedicated run-directory touch command', probe_prompt)
         self.assertNotIn('read-only permission probe', probe_prompt)
-        main = self.run_coordinator('--exercise-revisions', skip_probe=False)
+        main = self.run_coordinator('--exercise-revisions', '--gate-vendor', 'claude', skip_probe=False)
         self.assertEqual(main.returncode, 0, main.stderr + main.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(len(state['turns']), 15)
@@ -8404,7 +8409,7 @@ sys.exit(result.returncode)
     def test_stopped_permission_probe_requires_explicit_retry_before_new_probe(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli())])
+            '--codex-bin', str(self.fake_codex_cli()), '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30 (a codex gate adds a gate-probe turn)
         co = rc.Coordinator(args)
         active = {'pid': 987654321, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
                   'sequence': 2}
@@ -8956,7 +8961,7 @@ sys.exit(result.returncode)
     def test_probe_retries_after_real_group_leader_exits_but_descendant_lives(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli())])
+            '--codex-bin', str(self.fake_codex_cli()), '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30 (a codex gate adds a gate-probe turn)
         co = rc.Coordinator(args)
         parent_signal, descendant_signal = socket.socketpair()
         descendant_signal.set_inheritable(True)
