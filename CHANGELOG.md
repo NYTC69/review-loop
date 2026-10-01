@@ -2,6 +2,24 @@
 
 ## 2026-10-01
 
+### v2.9.4：沙箱拒绝建硬链接也能让 Claude 作者探测通过；作者放行只豁免作者那部分探测；FAIL 后探测缓存作废（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：升级后已有的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.4` 运行。
+- **fix（HL-FIX）**：Claude 作者探测中，沙箱拒绝创建硬链接现在算通过：
+  - 拒绝创建，作者自建硬链接这条路就从源头关上了；
+  - 前提是拒绝有真实证据，且事后 `hl` 不在 sentinel 的 inode 上；
+  - 两个硬链接写入行记为 `not_applicable: link denied`，原始结果照录。
+  v2.9.3 上真实 CLI（Opus 5.5）拒绝 `ln`，探测因此只能停在 UNKNOWN，永远无法 PASS。任何 escape、sentinel 被改、意外的 tool_use 仍然是 FAIL。符号链接链不变。
+- **fix（HL-FIX）**：`--accept-unverified-claude-author --reason` 现在只豁免作者探测这一部分：
+  - reviewer 探测通过（需要 gate 探测时 gate 也要通过），只差作者探测时，run、resume 和 reject 都能过探测关；
+  - reviewer 或 gate 探测失败、配置变更、任何 escape 仍然拦截，`--accept-probe-skip` 对这些情形仍被拒绝；
+  - 放行仍绑定 actor、理由和 author flags 的 digest，flags 一变就永久作废。
+  v2.9.3 上放行记录了，但 run 仍被「permission probe status is not PASS」拒绝，operator 只能换一个从没探测过的 run 目录。
+- **fix（F4）**：同一个 key 的探测之后没通过（FAIL、UNKNOWN 等）时，旧的探测通过缓存会被作废（写 VOID 墓碑，之后拒绝复用）。作废写不进去也删不掉时，报告和终端会给出显眼的 `PROBE CACHE ENTRY NOT VOIDED` 警告；探测的结论不受影响。
+- **docs（DOC-SBX）**：README 新增一节，说明 Codex 作者在 workspace-write 沙箱里做不了的事（例如编 iOS、跑 Postgres initdb）。
+- **审查**：B 道由 Sonnet 5.5 执行，gpt-6.1-sol 逐批审查。F4 经过 3 轮（R1、R2 各 1 个 MAJOR，R3 通过），DOC-SBX 和 HL-FIX 都是 R1 通过。
+- **已知限制**：新的硬链接判定和放行范围只用 fake CLI 验证过，真实 CLI 上能否 PASS 要 operator 重新跑一次探测确认。A 道 Round 47 及之后的提交不在这次发版里，真实生命周期仍然关闭。
+
 ### v2.9.3：Claude 作者探测改写、实时进度日志、gate 默认用作者厂商；并入 fake PLAN→close 生命周期（paired-session 仍是可选入口，默认 legacy）
 
 - **升级须知**：升级后已有的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.3` 运行。
