@@ -2472,7 +2472,7 @@ class Coordinator:
 
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
         self._publication_guard()
-        if self.state.get('status') in ('ACCEPTED', 'ABORTED'):
+        if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED'):
             return self.state['status']
         if reason == 'rejected-tree':
             author = next((r for r in reversed(self.state['turns']) if r.get('role') == 'author'), {})
@@ -5860,8 +5860,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return 2
     co._probe_gate_required = not args.skip_probe
     if args.action == 'abort':
-        if co.state.get('status') == 'ACCEPTED':
-            print('ACCEPTED')
+        if co.state.get('status') in ('ACCEPTED', 'CLOSED'):
+            print(co.state['status'])
             return 0
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
                   if co.state.get('active') or co.state.get('uncertain_active') else '')

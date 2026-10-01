@@ -1,4 +1,5 @@
 import importlib.util
+import copy
 import dataclasses
 import errno
 import hashlib
@@ -4417,6 +4418,44 @@ raise AssertionError('fault window was not reached')
         phases = [r['stage'] for r in co.state['lifecycle']['receipts']]
         for phase in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY', 'DELIVERY', 'CLOSE'):
             self.assertIn(phase, phases)
+
+    def test_closed_generic_hold_preserves_proofs_without_provider_or_publication(self):
+        co = self.close_drive_fixture()
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        co.args.expect = intent['digest']
+        co.accept()
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        before = copy.deepcopy(co.state)
+        disk = co.state_path.read_bytes()
+        receipts = {path: path.read_bytes() for path in co.evidence.glob('delivery-*.json')}
+        head = co._head_commit()
+        with patch.object(co, 'invoke', side_effect=AssertionError('no provider after CLOSE')) as invoke:
+            with patch.object(dr, 'reconcile', side_effect=AssertionError('no publication after CLOSE')) as publish:
+                for reason in ('injected generic failure', 'rejected-tree'):
+                    self.assertEqual(co.hold(reason), 'CLOSED')
+                invoke.assert_not_called()
+                publish.assert_not_called()
+        self.assertEqual(co.state, before)
+        self.assertEqual(co.state_path.read_bytes(), disk)
+        self.assertEqual({path: path.read_bytes() for path in receipts}, receipts)
+        self.assertEqual(co._head_commit(), head)
+        argv = self.command()[2:]
+        argv[0] = 'abort'
+        output = io.StringIO()
+        with patch.object(rc, 'Coordinator', return_value=co), patch('sys.stdout', output):
+            self.assertEqual(rc.main(argv), 0)
+        self.assertEqual(output.getvalue().strip(), 'CLOSED')
+        self.assertEqual(co.state, before)
+        self.assertEqual(co.state_path.read_bytes(), disk)
+        self.assertEqual(co._head_commit(), head)
+        journal = co.evidence / 'delivery-publication.json'
+        row = json.loads(journal.read_text())
+        row['phase'] = 'CAS'
+        journal.write_text(json.dumps(row))
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co.hold('corrupt journal must not bypass publication guard')
+        self.assertEqual(co.state, before)
+        self.assertEqual(co.state_path.read_bytes(), disk)
 
     def test_m4_security_error_cannot_reach_q_or_delivery(self):
         co = self.close_drive_fixture()
