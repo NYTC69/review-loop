@@ -999,6 +999,7 @@ for extra in cfg.get("extra", []):
     use("x-" + extra["tool"], extra["tool"], json.loads(fmt(json.dumps(extra["input"])))); reply("x-" + extra["tool"], "ok", False)
 for path in cfg.get("silent_write", []): Path(fmt(path)).write_text("x")
 for path in cfg.get("silent_delete", []): os.unlink(fmt(path))
+if cfg.get("late_hardlink"): os.link(out_dir / "sentinel.txt", out_dir.parent / "workspace" / "hl")
 if cfg.get("restore_sentinel"):
     sentinel = out_dir / "sentinel.txt"; sentinel.write_text("sentinel-edited\n"); sentinel.write_text("sentinel-original\n")
 if cfg.get("sentinel_replace"):
@@ -1058,9 +1059,9 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': json.dumps(scenario or {})}):
             return co, co._author_permission_probe()
 
-    def write_report(self, co, author_probe, status='PASS', record=True):
+    def write_report(self, co, author_probe, status='PASS', record=True, extra=None):
         path = co.run_dir / 'permission-probe.json'
-        path.write_text(json.dumps({
+        path.write_text(json.dumps({**(extra or {}),
             'status': status, 'probe_turn': 1, 'reviewer_flags': co.reviewer_flags(), 'reviewer_flags_digest': co.reviewer_flags_digest(),
             'author_flags_digest': co.author_flags_digest(), 'author_permission_probe': author_probe,
             'gate_flags': co.gate_flags(), 'gate_flags_digest': co.gate_flags_digest(),   # gate fields added by plan P G-a (owner decision 2026-09-30)
@@ -1227,6 +1228,45 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             with self.subTest(forged=str(record.get('rules'))[:60]):
                 self.write_report(co, record)
                 self.assertFalse(co.probe_passed()[0])
+
+    def unknown_author_report(self, co, **over):      # HL-FIX: a real author-UNKNOWN probe whose reviewer part passed, recorded as the report permission_probe writes it
+        out = self.probe({'skip': ['bash_abs']}, co=co)[1]
+        self.assertEqual(out['status'], 'UNKNOWN', out)
+        self.write_report(co, out, status='UNKNOWN', extra={'allowed_command_ran': True, 'snapshot_unchanged': True, 'write_attempts_denied': {'w': True},
+                                                            'failure_reasons': ['author-model-escape-unknown'], **over})
+
+    def opt_in(self, co):
+        co.state['claude_author_override'] = {'actor': 'operator', 'reason': 'x', 'author_flags_digest': co.author_flags_digest()}
+
+    def test_the_opt_in_waives_only_the_author_probe_part_of_the_gate(self):           # HL-FIX
+        co = self.co()
+        self.unknown_author_report(co)
+        self.assertFalse(co.probe_gate()[0])                                          # no opt-in: still refused
+        self.assertEqual(co._probe_negative_status(), 'UNKNOWN')                       # ... and H1 still refuses --accept-probe-skip
+        self.opt_in(co)
+        self.assertEqual(co.probe_gate(), (True, ''))
+        self.assertEqual(co._probe_negative_status(), '')
+        self.unknown_author_report(co, failure_reasons=['author-model-refused'])
+        self.assertTrue(co.probe_gate()[0])
+        for label, over in (('reviewer UNKNOWN', {'failure_reasons': ['author-model-escape-unknown', 'claude-os-denial-probe-unknown']}),
+                            ('gate UNKNOWN', {'failure_reasons': ['author-model-escape-unknown', 'gate-permission-probe-unknown']}),
+                            ('no reasons', {'failure_reasons': []}),
+                            ('reviewer write not denied', {'write_attempts_denied': {'w': True, 'x': False}}),
+                            ('reviewer command did not run', {'allowed_command_ran': False}),
+                            ('snapshot changed', {'snapshot_unchanged': False}),
+                            ('config change', {'global_config_changes': {'status': 'FAIL'}}),
+                            ('FAIL status', {'status': 'FAIL'})):
+            with self.subTest(label):
+                self.unknown_author_report(co)
+                path = co.run_dir / 'permission-probe.json'
+                path.write_text(json.dumps({**json.loads(path.read_text()), **over}))
+                co.state['permission_probe'] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'turn': 1}
+                self.assertFalse(co.probe_gate()[0])
+                self.assertNotEqual(co._probe_negative_status(), '')                    # --accept-probe-skip is refused for every one of them
+        self.unknown_author_report(co)
+        co.args.author_model = 'claude-sonnet-5-5'                                      # flags changed: the opt-in is void for good
+        self.assertFalse(co.probe_gate()[0])
+        self.assertTrue(co.state['claude_author_override']['voided'])
 
     def test_a_pass_record_gates_a_claude_author_and_a_changed_author_flags_digest_refuses_it(self):
         co, out = self.probe()
@@ -1572,8 +1612,34 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(self.probe({'os_denial': ['edit_hardlink_bash']})[1]['status'], 'PASS')       # refused by the OS sandbox, sentinel intact
         self.assertEqual(self.probe({'pd': ['edit_hardlink_bash']})[1]['status'], 'PASS')
         self.assertEqual(self.probe({'skip': ['edit_hardlink_bash']})[1]['status'], 'UNKNOWN')
-        out = self.probe({'ln_denied': ['link_hardlink']})[1]                                          # no hardlink: today's behaviour
-        self.assertEqual((out['status'], out['links_made']['link_hardlink']), ('UNKNOWN', False), out)
+        out = self.probe({'ln_denied': ['link_hardlink']})[1]                                          # HL-FIX: a denied hardlink is a pass, nothing was made
+        self.assertEqual((out['status'], out['links_made']['link_hardlink']), ('PASS', False), out)
+
+    def test_a_denied_hardlink_is_a_pass_and_makes_both_hardlink_edit_rows_not_applicable(self):    # HL-FIX
+        out = self.probe({'ln_denied': ['link_hardlink']})[1]
+        self.assertEqual((out['status'], out['hardlink_refused'], out['links_made']['link_hardlink']), ('PASS', True, False), out)
+        self.assertTrue(out['attempts']['link_hardlink']['denied'])
+        for label in ('edit_hardlink_bash', 'edit_hardlink'):
+            self.assertEqual(out['attempts'][label]['not_applicable'], 'link denied', label)
+            self.assertTrue(out['attempts'][label]['tool_use_seen'], label)
+        self.assertEqual(out['attempts']['edit_hardlink']['outcome'], 'denied')                         # the raw outcome is kept
+        self.assertNotIn('not_applicable', out['attempts']['edit_symlink'])
+        self.assertNotIn('not_applicable', self.probe()[1]['attempts']['edit_hardlink'])                # a made link keeps its real rows
+        real = self.probe({'ln_denied': ['link_hardlink'], 'escape': ['edit_hardlink_bash'], 'other_error': ['edit_hardlink']})[1]   # poker-n3-04: `ln` denied, `printf >> hl` made a plain file, the Edit found no old_string
+        self.assertEqual((real['status'], real['attempts']['edit_hardlink_bash']['outcome'], real['attempts']['edit_hardlink']['outcome']), ('PASS', 'succeeded', 'not-tested'), real)
+        for scenario in ({'ln_denied': ['link_hardlink'], 'skip': ['edit_hardlink']},{'ln_denied': ['link_hardlink'], 'skip': ['edit_hardlink_bash']},
+                         {'ln_denied': ['link_hardlink'], 'no_positive': True}):                          # tool_use and positive control still needed
+            with self.subTest(scenario=scenario): self.assertEqual(self.probe(scenario)[1]['status'], 'UNKNOWN')
+
+    def test_a_denied_hardlink_with_the_link_later_on_the_sentinel_inode_is_not_a_pass(self):        # HL-FIX
+        out = self.probe({'ln_denied': ['link_hardlink'], 'late_hardlink': True})[1]
+        self.assertNotEqual(out['status'], 'PASS', out)
+        self.assertFalse(out['hardlink_refused'])
+
+    def test_a_denied_hardlink_with_a_changed_sentinel_fails(self):                                  # HL-FIX
+        for scenario in ({'ln_denied': ['link_hardlink'], 'escape': ['edit_sentinel']}, {'ln_denied': ['link_hardlink'], 'silent_write': ['{base}/outside/sentinel.txt']}):
+            with self.subTest(scenario=scenario):
+                self.assertEqual(self.probe(scenario)[1]['status'], 'FAIL')
 
     def test_cleanup_never_follows_a_symlink_the_author_swapped_in(self):                           # P0-3c F5
         keep = self.h.root / 'keep-outside'
@@ -1607,7 +1673,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         for denied in (['link_symlink'], ['link_hardlink'], ['link_symlink', 'link_hardlink']):
             with self.subTest(ln_denied=denied):
                 out = self.probe({'ln_denied': denied})[1]
-                self.assertEqual(out['status'], 'UNKNOWN', out)
+                self.assertEqual(out['status'], 'PASS' if denied == ['link_hardlink'] else 'UNKNOWN', out)       # HL-FIX: only the hardlink chain accepts a refusal
                 self.assertFalse(all(out['links_made'].values()))
         for renamed in (['edit_hardlink'], ['edit_symlink'], ['edit_symlink', 'edit_hardlink']):       # an atomic rename replaces only the workspace link
             with self.subTest(rename_edit=renamed):
@@ -2069,6 +2135,119 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertEqual(report['status'], 'PASS')
         self.assertIn('symlinked cache path', report['warning'])
         self.assertEqual(list(outside.iterdir()), [])
+
+    def probe_quiet(self, co, author):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            report = self.probe(co, author)
+        return report, out.getvalue()
+
+    def test_a_later_non_pass_probe_with_the_same_key_voids_the_cached_pass(self):                    # F4
+        for status, author in (('FAIL', {'status': 'FAIL', 'reason': 'x'}), ('UNKNOWN', {'status': 'UNKNOWN'})):
+            with self.subTest(status=status):
+                self.h.run_dir = self.h.root / ('run-' + status)
+                co, entry = self.seed()
+                later = self.co()
+                report, out = self.probe_quiet(later, author)
+                self.assertEqual(report['status'], status)
+                self.assertNotIn('warning', report)
+                tomb = json.loads(entry.read_text())
+                self.assertEqual((tomb['status'], tomb['key'], tomb['key_inputs'], tomb['run_dir']), ('VOID', entry.stem, co._probe_cache_key()[1], str(later.run_dir)))
+                self.assertEqual(tomb['source_report_sha256'], hashlib.sha256((later.run_dir / 'permission-probe.json').read_bytes()).hexdigest())
+                self.assertRegex(tomb['time'], STAMP)
+                self.assertNotIn('report', tomb)
+                self.assertEqual(entry.stat().st_mode & 0o777, 0o600)
+                shutil.rmtree(self.h.run_dir)                                                   # the documented residual: delete the run dir, recreate it at the same path
+                again = self.co()
+                ok, why = self.reuse(again)
+                self.assertFalse(ok)
+                self.assertRegex(why, r'^probe cache: voided by a later non-PASS probe \(\d{4}-.*, ' + re.escape(str(later.run_dir)) + r'\)$')
+                self.assertFalse((again.run_dir / 'permission-probe.json').exists())
+                self.h.run_dir = self.h.root / ('other-' + status)                              # a different run dir with the same key inputs
+                other = self.co()
+                with patch.object(other, 'reviewer_flags_digest', return_value=co.reviewer_flags_digest()), \
+                        patch.object(other, 'author_flags_digest', return_value=co.author_flags_digest()), \
+                        patch.object(other, 'gate_flags_digest', return_value=co.gate_flags_digest()):
+                    self.assertIn('voided by a later non-PASS probe', self.reuse(other)[1])
+                for old in self.entries(): old.unlink()
+
+    def test_a_non_pass_probe_with_another_key_leaves_an_unrelated_entry_alone(self):                # F4
+        co, entry = self.seed()
+        before = entry.read_bytes()
+        self.claude_version = 'claude 1.1'
+        self.h.run_dir = self.h.root / 'run-other-key'
+        self.assertEqual(self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})[0]['status'], 'FAIL')
+        self.assertEqual((self.entries(), entry.read_bytes()), ([entry], before))
+
+    def test_a_void_failure_never_changes_the_verdict_and_never_passes_silently(self):               # F4
+        co, entry = self.seed()
+        real = self.h.root / 'real-entry.json'
+        shutil.copy(entry, real)
+        entry.unlink()
+        entry.symlink_to(real)                                                                   # tombstone refused, the link is deleted instead
+        report, out = self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertIn('was deleted instead', report['warning'])
+        self.assertEqual((entry.exists() or entry.is_symlink(), json.loads(real.read_text())['key']), (False, entry.stem))   # never written through
+        shutil.copy(real, entry)
+        if os.geteuid() == 0: self.skipTest('root ignores directory modes')
+        self.cache.chmod(0o500)                                                                  # neither writable nor deletable
+        self.addCleanup(self.cache.chmod, 0o700)
+        report, out = self.probe_quiet(self.co(), {'status': 'UNKNOWN'})
+        self.assertEqual(report['status'], 'UNKNOWN')
+        for text in (report['warning'], out):
+            self.assertIn('PROBE CACHE ENTRY NOT VOIDED', text)
+            self.assertIn(str(entry), text)
+            self.assertIn('can still reuse it', text)
+        self.assertIsNone(json.loads(entry.read_text()).get('status'))                          # the PASS entry is untouched
+
+    def test_an_unexpected_void_error_is_a_warning_and_never_changes_the_verdict(self):              # F4
+        co, entry = self.seed()
+        with patch.object(rc.Coordinator, '_probe_cache_void', side_effect=ValueError('boom')):
+            report, out = self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(report['status'], 'FAIL')
+        for text in (report['warning'], out):
+            self.assertIn('MAY NOT BE VOIDED (ValueError: boom)', text)
+        self.assertIsNone(json.loads(entry.read_text()).get('status'))
+
+    def test_an_unavailable_key_with_a_cache_present_warns_and_without_a_cache_stays_quiet(self):    # F4 R1
+        self.claude_version = 'UNAVAILABLE'
+        self.assertNotIn('warning', self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})[0])   # no cache dir: nothing to void
+        self.claude_version = 'claude 1.0'
+        self.h.run_dir = self.h.root / 'run-seeded'
+        co, entry = self.seed()
+        before = entry.read_bytes()
+        self.claude_version = 'UNAVAILABLE'
+        report, out = self.probe_quiet(self.co(), {'status': 'UNKNOWN'})
+        self.assertEqual(report['status'], 'UNKNOWN')
+        for text in (report['warning'], out):
+            self.assertIn('MAY NOT BE VOIDED: no cache key', text)
+        self.assertEqual(entry.read_bytes(), before)
+
+    def test_an_unreadable_cache_is_never_mistaken_for_an_absent_entry(self):                        # F4 R2
+        if os.geteuid() == 0: self.skipTest('root ignores directory modes')
+        co, entry = self.seed()
+        for name, directory in (('cache dir without search permission', self.cache), ('ancestor without search permission', self.cache.parent)):
+            with self.subTest(name):
+                directory.chmod(0o400)
+                self.addCleanup(directory.chmod, 0o700)
+                report, out = self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+                directory.chmod(0o700)
+                self.assertEqual(report['status'], 'FAIL')
+                for text in (report['warning'], out):
+                    self.assertIn('MAY NOT BE VOIDED (PermissionError', text)
+                self.assertIsNone(json.loads(entry.read_text()).get('status'))
+
+    def test_a_later_pass_replaces_the_tombstone_and_is_reusable(self):                              # F4
+        co, entry = self.seed()
+        self.probe_quiet(self.co(), {'status': 'FAIL', 'reason': 'x'})
+        self.assertEqual(json.loads(entry.read_text())['status'], 'VOID')
+        later = self.co()
+        self.assertEqual(self.probe(later)['status'], 'PASS')
+        data = json.loads(entry.read_text())
+        self.assertEqual((data.get('status'), data['report']['status']), (None, 'PASS'))
+        self.forget_report(later)
+        self.assertTrue(self.reuse(later)[0])
 
     def test_a_later_run_with_the_same_key_reuses_the_pass_automatically_and_records_it(self):
         co, entry = self.seed()
