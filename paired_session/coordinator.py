@@ -36,7 +36,7 @@ try:
     from paired_session import closeout_policy
     from paired_session import q_proposal
     from paired_session import q_evidence
-    from paired_session import delivery_intent, delivery_seal, delivery_close
+    from paired_session import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     import closeout_policy
     import q_proposal
     import q_evidence
-    import delivery_intent, delivery_seal, delivery_close
+    import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -4813,16 +4813,19 @@ class Coordinator:
         pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
                    'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
                    'review_after_sequence': self.state['sequence'], 'binding_sha256': q_evidence.binding(self)}
+        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5)
         self.state['fake_q_pending'] = pending
         self.save()
-        test = subprocess.run(command, cwd=checkout.root, timeout=self.args.timeout, capture_output=True,
+        test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
+                              timeout=self.args.timeout, capture_output=True,
                               env={'PATH': os.defpath, 'HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
                                    'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'})
         candidate_tree.verify_candidate_revision(checkout, revision)
         receipt = {**pending, 'oid': oid, 'command': command, 'returncode': test.returncode,
                    'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
                    'stderr_sha256': hashlib.sha256(test.stderr).hexdigest(),
-                   'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
+                   'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
+                   'write_boundary': test.write_boundary}
         atomic_json(self.evidence / (test_id + '-q-test.json'), receipt)
         if test.returncode:
             raise ValueError('Q tests failed; abort and start a new run')
@@ -4836,7 +4839,7 @@ class Coordinator:
             candidate_tree.verify_candidate_revision(checkout, revision)
             turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
             if (turn.get('error') or turn['phase'] != 'Q' or turn['workspace'] != str(checkout.root) or
-                    turn['sequence'] <= pending['review_after_sequence'] or
+                    turn['sequence'] <= pending['review_after_sequence'] or self.configured_test_failed(turn) or
                     not any(observed_test_succeeded(c, self.args.test_command)
                     for c in turn.get('observed_commands', [])) or
                     not self.q_review_verdict(result['answer'])):
@@ -5085,9 +5088,10 @@ class Coordinator:
                     'GIT_CEILING_DIRECTORIES': str(checkout.root.parent),
                     'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
         test_id = str(uuid.uuid4())
+        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5)
         self.state['fake_candidate_test_pending'] = test_id
         self.save()
-        test = subprocess.run(command, cwd=checkout.root,
+        test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
                               env=test_env,
                               capture_output=True, timeout=self.args.timeout)
         candidate_tree.verify_candidate_revision(checkout, revision)
@@ -5101,6 +5105,7 @@ class Coordinator:
                             self.state['config'], sort_keys=True).encode()).hexdigest(),
                         'env_sha256': hashlib.sha256(json.dumps(test_env, sort_keys=True).encode()).hexdigest(),
                         'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        'write_boundary': test.write_boundary,
                         'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
                         'stderr_sha256': hashlib.sha256(test.stderr).hexdigest()}
         atomic_json(self.evidence / (test_id + '-oid-test.json'), test_receipt)

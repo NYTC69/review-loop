@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import patch
 from paired_session import candidate_tree as ct
 from paired_session import delivery_journal as dj
+from paired_session import candidate_test_sandbox as cts
 from paired_session import delivery_publish as dp
 from paired_session import delivery_recovery_state as drs
 from paired_session import delivery_recovery_lock as drl
@@ -1789,7 +1790,7 @@ sys.exit(result.returncode)
         self.assertNotEqual(rc.git_snapshot(self.workspace)[0], co.state['approved_snapshot'])
         self.assertEqual(co.resume(), 'DONE')
 
-    def test_legacy_partial_author_tree_can_resume_as_author(self):
+    def test_legacy_partial_author_tree_resume_is_refused(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
@@ -1804,7 +1805,7 @@ sys.exit(result.returncode)
                 self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
                 self.assertEqual(path.read_bytes(), before)
 
-    def test_legacy_hold_skips_final_error_receipt_during_snapshot_recovery(self):
+    def test_legacy_hold_snapshot_recovery_is_refused(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
@@ -1819,7 +1820,7 @@ sys.exit(result.returncode)
                 self.assertIn('run was created by an older paired-session build; start a new run', result.stdout)
                 self.assertEqual(path.read_bytes(), before)
 
-    def test_legacy_rejection_limit_hold_can_accept_without_snapshot(self):
+    def test_legacy_rejection_limit_accept_without_snapshot_is_refused(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
@@ -4637,6 +4638,128 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(co._head_commit(), parent)
         self.assertEqual((self.workspace / 'user.txt').read_text(), 'foreign work')
         self.assertEqual(co.state['status'], 'HOLD')
+
+    def test_candidate_test_sandbox_executes_controls_and_denies_workspace_refs_and_aliases(self):
+        command = self.command('--lifecycle-mode', 'on', '--skip-probe')
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
+        root = self.root / 'candidate-test-root'
+        root.mkdir()
+        (root / 'BACKLOG.md').write_text('sealed candidate backlog')
+        (root / '.compass').mkdir()
+        original = self.workitem.read_bytes()
+        head = co._head_commit()
+        ref = 'refs/heads/qs-denied'
+        git = '/usr/bin/git'
+        control = [git, '-C', str(self.workspace), '-c', 'core.hooksPath=/dev/null', 'update-ref', ref, head]
+        subprocess.run(control, check=True, capture_output=True)
+        subprocess.run([git, '-C', str(self.workspace), 'update-ref', '-d', ref], check=True)
+        script = """import json, os, pathlib, subprocess, tempfile
+print('EXECUTED', flush=True)
+results = {}
+for name in ('BACKLOG.md', '.compass/proof', '.git/ref'):
+    try:
+        pathlib.Path(name).parent.mkdir(exist_ok=True)
+        pathlib.Path(name).write_text('escaped metadata')
+        results[name] = 'WRITTEN'
+    except PermissionError:
+        results[name] = 'DENIED'
+pathlib.Path('positive').write_text('candidate write')
+pathlib.Path(tempfile.gettempdir(), 'positive').write_text('temp write')
+try:
+    pathlib.Path(TARGET).write_text('escaped')
+    results['workspace'] = 'WRITTEN'
+except PermissionError:
+    results['workspace'] = 'DENIED'
+pathlib.Path('alias').symlink_to(TARGET)
+try:
+    pathlib.Path('alias').write_text('escaped alias')
+    results['alias'] = 'WRITTEN'
+except PermissionError:
+    results['alias'] = 'DENIED'
+try:
+    os.link(TARGET, 'linked')
+    results['hardlink'] = 'CREATED'
+except PermissionError:
+    results['hardlink'] = 'DENIED'
+child = subprocess.run(CONTROL, capture_output=True, text=True)
+results['git_returncode'] = child.returncode
+results['git_stderr'] = child.stderr
+print(json.dumps(results))
+"""
+        script = 'TARGET=' + repr(str(self.workitem)) + '\nCONTROL=' + repr(control) + '\n' + script
+        result = cts.run(co, [sys.executable, '-c', script], cwd=root,
+                         env={'PATH': os.defpath, 'HOME': os.devnull}, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        lines = result.stdout.decode().splitlines()
+        self.assertEqual(lines[0], 'EXECUTED')
+        observed = json.loads(lines[-1])
+        for name in ('BACKLOG.md', '.compass/proof', '.git/ref'):
+            self.assertEqual(observed[name], 'DENIED')
+        self.assertEqual((root / 'BACKLOG.md').read_text(), 'sealed candidate backlog')
+        self.assertEqual(observed['workspace'], 'DENIED')
+        self.assertEqual(observed['alias'], 'DENIED')
+        self.assertEqual(observed['hardlink'], 'DENIED')
+        self.assertNotEqual(observed['git_returncode'], 0)
+        self.assertIn('Operation not permitted', observed['git_stderr'])
+        self.assertEqual(self.workitem.read_bytes(), original)
+        self.assertEqual((root / 'positive').read_text(), 'candidate write')
+        self.assertFalse((self.workspace / '.git/refs/heads/qs-denied').exists())
+        self.assertFalse(Path(result.write_boundary['tmpdir']).exists())
+        self.assertEqual(result.write_boundary['root'], str(root.resolve()))
+        with self.assertRaisesRegex(RuntimeError, 'invalid; refuse'):
+            cts.run(co, [sys.executable, '-c', 'pass'], cwd=self.workspace, env={}, timeout=30)
+        co._fake_lifecycle = False
+        with self.assertRaises(RuntimeError):
+            cts.run(co, [sys.executable, '-c', 'pass'], cwd=root, env={}, timeout=30)
+
+    def test_oid_sandbox_preflight_failure_is_retryable_without_pending(self):
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
+        co = rc.Coordinator(args, _fake_lifecycle=True)
+        self.assertEqual(co.fake_drive(), 'HOLD')
+        co.fake_candidate_author_turn()
+        with patch.object(cts.sys, 'platform', 'unsupported'):
+            with self.assertRaisesRegex(RuntimeError, 'sandbox unavailable'):
+                co.fake_candidate_oid_test()
+        self.assertNotIn('fake_candidate_test_pending', co.state)
+        self.assertNotIn('fake_candidate_test_pending', json.loads((co.run_dir / 'state.json').read_text()))
+        real_popen = cts.subprocess.Popen
+        sandbox_calls = []
+
+        def sandbox_failure(argv, **kwargs):
+            if argv[0] == '/usr/bin/sandbox-exec':
+                sandbox_calls.append(argv)
+                return real_popen([sys.executable, '-c', 'import sys; sys.exit(71)'], **kwargs)
+            return real_popen(argv, **kwargs)
+
+        with patch.object(cts.subprocess, 'Popen', side_effect=sandbox_failure):
+            with self.assertRaisesRegex(RuntimeError, 'sandbox unavailable'):
+                co.fake_candidate_oid_test()
+        self.assertEqual(len(sandbox_calls), 1)
+        self.assertEqual(sandbox_calls[0][-1], '/usr/bin/true')
+        self.assertNotIn('fake_candidate_test_pending', co.state)
+        self.assertEqual(co.fake_candidate_oid_test()['returncode'], 0)
+
+    def test_q_failed_then_passed_test_never_yields_source_or_reviewed_bundle(self):
+        self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
+        co, c1, before = self.q_test_fixture
+        self.assertIn('write_boundary', co.state['fake_candidate_test'])
+        self.assertEqual(co.state['fake_q_review']['write_boundary']['root'], co.state['fake_q_review']['root'])
+        co.state = rc.copy.deepcopy(before)
+        with patch.object(cts.sys, 'platform', 'unsupported'):
+            with self.assertRaisesRegex(RuntimeError, 'sandbox unavailable'):
+                co.fake_q_review(c1, '2026-09-30')
+        self.assertNotIn('fake_q_pending', co.state)
+        with patch.dict(os.environ, {'FAKE_Q_FAILED_THEN_PASSED': '1'}):
+            with self.assertRaisesRegex(ValueError, 'reviewer did not approve'):
+                co.fake_q_review(c1, '2026-09-30')
+        turn = co.state['turns'][-1]
+        self.assertTrue(co.configured_test_failed(turn))
+        self.assertTrue(co.configured_test_succeeded(turn))
+        self.assertNotIn('fake_q_review', co.state)
+        self.assertNotIn('fake_q_bundle', co.state)
+        self.assertIn('fake_q_pending', co.state)
+        with self.assertRaises(ValueError):
+            co.fake_q_complete(c1, '2026-09-30')
 
     def test_publication_journal_proofs_survive_cas_but_reject_drift(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()

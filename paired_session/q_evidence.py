@@ -31,7 +31,7 @@ def review_source(co, c1, day, observed_test):
             raise ValueError('Q sequence is not fresh and unique')
         turn = turns[0]
         if (turn['phase'] != 'Q' or turn['role'] != 'reviewer' or turn['workspace'] != row['root'] or
-                turn.get('error') or not co.q_review_verdict(turn['answer']) or
+                turn.get('error') or co.configured_test_failed(turn) or not co.q_review_verdict(turn['answer']) or
                 row.get('proof') != co.q_proof(turn, proposal['q_oid']) or
                 not any(observed_test(c, co.args.test_command) for c in turn.get('observed_commands', []))):
             raise ValueError('Q reviewer phase/workspace/result/check evidence differs')
