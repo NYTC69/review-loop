@@ -2,6 +2,33 @@
 
 ## 2026-10-01
 
+### v2.9.3：Claude 作者探测改写、实时进度日志、gate 默认用作者厂商；并入 fake PLAN→close 生命周期（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：升级后已有的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.3` 运行。
+- **fix（PR-REF）**：Claude 作者的权限探测指令改写为 operator 授权的一次性自测：
+  - 说明预期结果是 harness 拒绝每一次越界写入，被拒绝就是测试要的成功；
+  - 要求逐字回报每次尝试的工具结果；
+  - 不再要求「无 findings 的 APPROVE」。v2.9.2 上 Opus 5.5 把旧指令当成越狱加作假证而拒绝执行。
+  模型一个工具都没调就回答 HOLD 时，探测保持 UNKNOWN，原因标为 `author-model-refused`，并提示沙箱没有被测试，不再报成 `author-model-escape-unknown`。判定仍只看文件系统状态、tool_use 计数、拒绝证据和 sentinel。Codex 作者的探测指令不变。
+- **feat（PL）**：真实运行时的实时进度：
+  - 每个阶段、派发、finding、verdict 和终态在终端打一行（`--quiet-progress` 可关）；
+  - 同样的事件追加写入 `RUN/progress.jsonl`（不含 prompt、输出、diff 或密钥；写失败不影响 verdict 和状态）；
+  - 新增 `status --brief [N]`。
+  探测回合有单独的事件类型，不会被标成真实的作者或审查回合。最后一行状态输出格式不变。
+- **feat（G-b，ADR-10）**：Step 3.4 gate 默认使用作者的厂商。格式不对的 `allowed_models` 现在会明确拒绝，不再抛未捕获的异常。
+- **lane A（Round 43–46）**：在 fake harness 中打通 PLAN→close 生命周期（M4）：
+  - 密封的发布记录、崩溃后的恢复入口、CLOSE 前核对证明、幂等的 CLOSE；
+  - Q/OID 测试子进程运行在写沙箱里。
+  这些代码只有 fake 测试路径会走到，真实生命周期仍然关闭，A1–A5 启用前检查都还是默认关闭。
+- **审查**：
+  - B 道由 Sonnet 5.5 执行，gpt-6.1-sol 逐批审查；
+  - A 道由 gpt-6.1-sol 执行，Opus 5.5 逐批审查，发版前另由 Opus 5.5 做了一轮跨厂商复审（APPROVE_WITH_MINORS；唯一的 MINOR 只在 fake 路径上，见下）。
+- **已知限制**：
+  - 新的探测措辞能不能避免模型拒绝，只有在真实 CLI 上重新探测才能确认。
+  - Python 3.9.6 清理临时目录时会跟随符号链接修改权限，这只影响 fake 路径上的候选测试沙箱，修复在 Round 47 进行中。
+  - 真实生命周期启用前的检查（A1–A5）还没有完成。
+  - Codex 作者在 workspace-write 沙箱里编不了 iOS，也跑不了 Postgres initdb。
+
 ### v2.9.2：真实 CLI 修复（poker-tools 首批真实运行发现的问题）与跨厂商 gate（paired-session 仍是可选入口，默认 legacy）
 
 - **升级须知**：升级后，所有已有的 permission-probe 报告、probe-skip 接受记录和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本，用开跑时的同一份代码跑完。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.2` 运行。
