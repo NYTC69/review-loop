@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import copy
 from contextlib import contextmanager, nullcontext
-from datetime import datetime
+from datetime import date, datetime
 import errno
 import difflib
 import fcntl
@@ -4814,6 +4814,80 @@ class Coordinator:
             self._fake_dispatching = False
             self.state.pop('pending_reviewer_result_sequence', None)
             self.save()
+    def fake_prepare_delivery(self, backlog_item=None, day=None):
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise ValueError('delivery drive is fake-only')
+        existing = self.state.get('fake_delivery_intent')
+        if existing:
+            if self.state['status'] == 'CLOSED':
+                self.fake_close(existing['digest'])
+            return copy.deepcopy(existing)
+        if not self.state.get('closeout_item'):
+            life = self.state['lifecycle']
+            if life != lifecycle_spine.initial(life['item_uuid'], life['parent']):
+                raise ValueError('closeout item can only be frozen on a fresh lifecycle; abort and start a new run')
+            if backlog_item is None:
+                raise ValueError('delivery requires a backlog item ID; supply it before starting')
+        day = day or self.state.get('fake_delivery_day') or datetime.now().date().isoformat()
+        try:
+            if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+                raise ValueError('noncanonical day')
+        except (ValueError, TypeError) as error:
+            raise ValueError('invalid delivery day; supply YYYY-MM-DD before starting') from error
+        if self.state.get('fake_delivery_day') not in (None, day):
+            raise ValueError('delivery day changed; use the frozen day')
+        self.state['fake_delivery_day'] = day
+        self.save()
+        if self.state['lifecycle']['candidate_oid'] is None:
+            if self.fake_lifecycle_drive(backlog_item) != 'STOP_BEFORE_SECURITY':
+                raise ValueError('delivery drive requires completed P stages')
+        ingest = self.state['fake_ingest_receipt']
+        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
+        revision = candidate_tree.CandidateRevision(self.state['lifecycle']['candidate_oid'],
+                                                   tuple(ingest['manifest']), 0)
+        if self.state['lifecycle']['stage'] == 'STOP_BEFORE_SECURITY':
+            def security(request):
+                self._fake_dispatching = True
+                try:
+                    result = self.invoke('reviewer', 'SECURITY',
+                        'Role: reviewer, fresh. Phase: SECURITY.\n'
+                        'Run this test command exactly as written in one Bash call: ' + self.args.test_command,
+                        review_schema(),
+                        fresh=True, workspace_override=baseline.root)
+                finally:
+                    self._fake_dispatching = False
+                turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+                return {'status': result['answer']['status'], 'candidate_oid': request['candidate_oid'],
+                        'findings': result['answer']['full_review'], 'observed_tools': turn['observed_tool_calls']}
+            self.fake_lifecycle_route(None, chain_only=True,
+                security_context={'baseline': baseline, 'revision': revision, 'review': security})
+        if self.state['lifecycle']['stage'] != 'STOP_BEFORE_DELIVERY':
+            raise ValueError('delivery drive requires fresh SECURITY completion')
+        c1 = delivery_seal.c1(self, baseline, revision)
+        if not self.state.get('fake_q_review'):
+            self.fake_q_review(c1, day)
+        if not self.state.get('fake_q_bundle'):
+            self.fake_q_complete(c1, day)
+        return delivery_intent.prepare(self, c1, day, observed_test_succeeded, atomic_json)
+
+    def fake_finish_delivery(self, expected_digest):
+        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
+            raise ValueError('delivery drive is fake-only')
+        try:
+            from paired_session import delivery_recover
+        except ModuleNotFoundError:
+            import delivery_recover
+        if self.state['status'] != 'CLOSED':
+            if delivery_recover.reconcile(self, observed_test_succeeded, atomic_json) == 'HOLD':
+                return 'HOLD'
+        result = self.fake_close(expected_digest)
+        facts = self.state['close_receipt']['facts']
+        with run_lease(self.run_dir):
+            atomic_text(self.run_dir / 'delivery-report.md',
+                        f'已关闭工作项 {facts["item_uuid"]}。\nC1: {facts["c1"]}\nC2: {facts["c2"]}\n'
+                        f'Q: {facts["q_oid"]}\n外部交付：关闭。\n')
+        return result
+
     def fake_close(self, expected_digest, *, external_delivery=False):
         return delivery_close.close(self, expected_digest, atomic_json, external_delivery)
 

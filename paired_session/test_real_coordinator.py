@@ -4254,6 +4254,78 @@ raise AssertionError('fault window was not reached')
             with self.assertRaisesRegex(ValueError, 'fake-only'):
                 co.fake_close(digest)
 
+    def close_drive_fixture(self):
+        docs = self.workspace / 'docs/guide.md'
+        docs.parent.mkdir()
+        docs.write_text('# Draft guide\n')
+        backlog = self.workspace / 'BACKLOG.md'
+        backlog.write_text('# Backlog\n**Last updated**: 2026-10-01\n\n## P0\n(none)\n## P1\n'
+                           '- Fix sums. (added 2026-09-29)\n  - Keep details.\n## P2\n(none)\n'
+                           '## P3\n(none)\n## Done\n(none)\n')
+        ignore = self.workspace / '.gitignore'
+        ignore.write_text(ignore.read_text() + '\n.compass/\n')
+        subprocess.run(['git', 'add', 'docs/guide.md', 'BACKLOG.md', '.gitignore'], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'close fixture'], cwd=self.workspace, check=True)
+        view = self.workspace / '.compass/backlog-last-view.json'
+        view.parent.mkdir()
+        view.write_text(json.dumps({'generated_at': rc.datetime.now().astimezone().isoformat(),
+                                    'source_path': str(backlog),
+                                    'items': [{'id': 1, 'section': 'P1', 'title_span': 'Fix sums'}]}))
+        args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
+            '--skip-probe', '--docs-file', 'docs/guide.md', '--test-command', 'python3 -c pass',
+            '--max-invocations', '64')[2:])
+        return rc.Coordinator(args, _fake_lifecycle=True)
+
+    def test_coordinator_prepares_and_finishes_fake_delivery_without_test_stage_outputs(self):
+        co = self.close_drive_fixture()
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertEqual(co.state['fake_q_bundle']['status'], 'REVIEWED')
+        self.assertIn('SECURITY', [r['stage'] for r in co.state['lifecycle']['receipts']])
+        self.assertEqual(co.fake_prepare_delivery(), intent)
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            with patch.object(co, '_head_commit', side_effect=AssertionError('recovery before fake guard')):
+                with self.assertRaisesRegex(ValueError, 'fake-only'):
+                    co.fake_finish_delivery(intent['digest'])
+        co.args.expect = intent['digest']
+        self.assertEqual(co.accept(), 'ACCEPTED')
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co._head_commit(), intent['c2'])
+        self.assertIn('已关闭工作项', (co.run_dir / 'delivery-report.md').read_text())
+        sequence = co.state['sequence']
+        self.assertEqual(co.fake_prepare_delivery(), intent)
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        self.assertEqual(co.state['sequence'], sequence)
+        with patch.object(co, '_fake_lifecycle', False):
+            with self.assertRaisesRegex(ValueError, 'fake-only'):
+                co.fake_prepare_delivery()
+
+    def test_delivery_drive_rejects_invalid_parameters_before_freeze_or_dispatch(self):
+        co = self.close_drive_fixture()
+        saved = co.state_path.read_bytes()
+        with patch.object(co, 'invoke', side_effect=AssertionError('parameters must precede dispatch')):
+            with self.assertRaisesRegex(ValueError, 'backlog item ID'):
+                co.fake_prepare_delivery(day='2026-10-01')
+            with self.assertRaisesRegex(ValueError, 'invalid delivery day'):
+                co.fake_prepare_delivery(backlog_item=1, day='2026-1-1')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertNotIn('fake_delivery_day', co.state)
+        self.assertEqual(co.state['invocations_used'], 0)
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertEqual(intent['day'], '2026-10-01')
+
+    def test_delivery_drive_refuses_unfrozen_item_after_supported_m3_without_spending_or_saving(self):
+        co = self.close_drive_fixture()
+        self.assertEqual(co.fake_lifecycle_drive(), 'STOP_BEFORE_SECURITY')
+        saved, used = co.state_path.read_bytes(), co.state['invocations_used']
+        with patch.object(co, 'invoke', side_effect=AssertionError('late ID must not dispatch SECURITY')):
+            with self.assertRaisesRegex(ValueError, 'abort and start a new run'):
+                co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.state['invocations_used'], used)
+        self.assertNotIn('fake_delivery_day', co.state)
+
     def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
