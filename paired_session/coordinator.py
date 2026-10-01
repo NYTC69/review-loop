@@ -13,7 +13,7 @@ import copy
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 import errno
-import difflib
+import itertools
 import fcntl
 import hashlib
 import json
@@ -64,6 +64,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 PROBE_SURFACE_VERSION = 9
+CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
     try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
@@ -309,52 +310,59 @@ def _changed_mapping_key_paths(before, after, key: str, path='$') -> list[str]:
     return changes
 
 
+def _codex_trust_paths(workspace) -> list[str]:
+    """The paths Codex may record trust for: the workspace and, in a linked worktree, the main checkout root of its own repository."""
+    ws = Path(workspace).resolve()
+    paths = [str(ws)]
+    try:
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--path-format=absolute', '--git-common-dir', cwd=ws), cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        common = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
+        if common is not None and common.is_absolute() and common.name == '.git' and (ws / '.git').is_file():
+            paths.append(str(common.resolve().parent))
+    except Exception:
+        pass   # no readable repository: only the workspace itself can be an expected trust path
+    return paths
+
+
+def _trust_block_variants(path: str) -> list[str]:
+    entry = '[projects.' + json.dumps(path) + ']\ntrust_level = "trusted"\n'
+    return [lead + entry + trail for lead, trail in (('\n', ''), ('', '\n'), ('\n', '\n'), ('', ''))]
+
+
 def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) -> list[str]:
-    expected_workspaces = {str(Path(path).resolve()) for path in workspaces}
+    """Exact block removal: `after` minus one trust block per trusted expected path (optional one blank line) must equal `before` byte for byte."""
     if after.get('raw') is None:
         return []
-    inserted = []
-    before_lines = (before.get('raw') or '').splitlines(keepends=True)
-    after_lines = after['raw'].splitlines(keepends=True)
-    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
-    insertion_count = 0
-    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
-        if tag == 'equal':
-            continue
-        if tag != 'insert' or old_start != old_end:
-            return []
-        following = next((line.strip() for line in before_lines[old_start:] if line.strip()), None)
-        if following is not None and not following.startswith('['): return []
-        insertion_count += 1
-        block = [line.strip() for line in after_lines[new_start:new_end] if line.strip()]
-        if not block or len(block) % 2: return []
-        inserted.extend(block)
-    if not insertion_count:
-        return []
-    if not inserted or len(inserted) % 2:
-        return []
-    added = []
-    for index in range(0, len(inserted), 2):
-        header, setting = inserted[index:index + 2]
-        path = next((path for path in expected_workspaces
-                     if header == '[projects.' + json.dumps(path) + ']'), None)
-        if (path is None or setting != 'trust_level = "trusted"' or path in added
-                or any(line.strip() == header for line in before_lines)):
-            return []
-        added.append(path)
-    return sorted(added)
+    before_raw, found = before.get('raw') or '', []
+    for path in sorted({p for workspace in workspaces for p in _codex_trust_paths(workspace)}):
+        header = '[projects.' + json.dumps(path) + ']'
+        if any(line.strip() == header for line in before_raw.splitlines()):
+            continue   # an older entry stays in place; a second one is a leftover below
+        if any(block in after['raw'] for block in _trust_block_variants(path)):
+            found.append(path)
+    for chosen in itertools.product(*([block for block in _trust_block_variants(path) if block in after['raw']] for path in found)):
+        rest, at_boundary = after['raw'], True
+        for block in chosen:   # a block that starts a line and is followed by a table header (or the end) cannot adopt the keys of the table around it
+            pos = rest.find(block)
+            start, tail = pos + block.startswith('\n'), next((line.strip() for line in rest[pos + len(block):].splitlines() if line.strip()), '[')
+            at_boundary = at_boundary and (start == 0 or rest[start - 1] == '\n') and tail.startswith('[')
+            rest = rest.replace(block, '', 1)
+        if found and at_boundary and rest == before_raw:
+            return found
+    return []
 
 
 def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path) -> bool:
     raw = path.read_bytes()
-    entry = ('[projects.' + json.dumps(str(workspace.resolve())) + ']\ntrust_level = "trusted"\n').encode()
-    if raw.count(entry) != 1: return False
-    for leading in (b'', b'\n'):
-        for trailing in (b'', b'\n'):
-            block = leading + entry + trailing
-            if block in raw:
-                before = raw.replace(block, b'', 1)
-                if hashlib.sha256(before).hexdigest() == before_sha256 and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace]) == [str(workspace.resolve())]: return True
+    for root in _codex_trust_paths(workspace):
+        entry = ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode()
+        if raw.count(entry) != 1: continue
+        for leading in (b'', b'\n'):
+            for trailing in (b'', b'\n'):
+                block = leading + entry + trailing
+                if block in raw:
+                    before = raw.replace(block, b'', 1)
+                    if (hashlib.sha256(before).hexdigest() == before_sha256 or (before_sha256 is None and not before)) and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace]): return True
     return False
 
 
@@ -1497,6 +1505,7 @@ class Coordinator:
             flags['claude_os_denial_probe'] = str(self._claude_os_probe_path('gate-probe' if prefix == 'gate' else 'probe'))
         if vendor == 'codex':
             flags['ignore_execpolicy_rules'] = True
+            flags['codex_plugins_argv'] = list(CODEX_PLUGINS_OFF)
         return flags
 
     def author_flags(self) -> dict:
@@ -1512,6 +1521,7 @@ class Coordinator:
         if self.args.author_vendor == 'codex':
             flags.update({
                 'ignore_execpolicy_rules': True,
+                'codex_plugins_argv': list(CODEX_PLUGINS_OFF),
                 **self._author_sandbox_overrides(),
                 'author_escape_probe': 'codex-exec-model-filesystem-v2',
                 'codex_cli_version': self._codex_cli_version(),
@@ -1537,11 +1547,16 @@ class Coordinator:
         except (OSError, subprocess.SubprocessError):
             return 'UNAVAILABLE'
 
+    def _codex_config_bytes(self) -> bytes:
+        """CG-2: a missing $CODEX_HOME/config.toml (a fresh login home has only auth.json) is an empty config everywhere it is read or digested."""
+        try: return (self.global_codex_home / 'config.toml').read_bytes()
+        except FileNotFoundError: return b''
+
     def _codex_policy_digest(self) -> Optional[str]:
-        path = self.global_codex_home / 'config.toml'
-        if not path.is_file(): return None
-        roots = re.escape(str(self.workspace)) + '|' + re.escape(str(self.run_dir)) + r'/paired-session-author-probe-[^"]+/workspace'
-        raw = re.sub(r'(?m)^\[projects\."(?:' + roots + r')"\]\ntrust_level = "trusted"\n', '', path.read_text())
+        try: text = self._codex_config_bytes().decode()
+        except (OSError, UnicodeError): return None
+        roots = '|'.join(re.escape(path) for path in dict.fromkeys([str(self.workspace), *_codex_trust_paths(self.workspace)])) + '|' + re.escape(str(self.run_dir)) + r'/paired-session-author-probe-[^"]+/workspace'
+        raw = re.sub(r'(?m)^\[projects\."(?:' + roots + r')"\]\ntrust_level = "trusted"\n', '', text)
         return hashlib.sha256('\n'.join(line for line in raw.splitlines() if line.strip()).encode()).hexdigest()
 
     def _author_sandbox_overrides(self) -> dict:
@@ -3116,7 +3131,7 @@ class Coordinator:
         model, effort = self._model_effort(role)
         cmd = [self.args.codex_bin, 'exec', '-m', model, '--json', '--output-schema', str(schema_path),
                '-c', f'model_reasoning_effort="{effort}"',
-               '-c', 'approval_policy="never"', '-c', 'features.hooks=false']
+               '-c', 'approval_policy="never"', '-c', 'features.hooks=false', *CODEX_PLUGINS_OFF]
         if role == 'author':
             cmd += self._author_sandbox_config_args()
         else:
@@ -4332,7 +4347,7 @@ class Coordinator:
                    'target_present_after_command': False, 'denial_target_observed': False,
                    'policy_observed': False, 'cleanup_ok': True, 'stdout': '', 'stderr': ''}
         try:
-            source = (self.global_codex_home / 'config.toml').read_bytes()
+            source = self._codex_config_bytes()
             with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.run_dir) as sandbox_home:
                 copied = Path(sandbox_home) / 'config.toml'
                 if copied.write_bytes(source) != len(source) or copied.read_bytes() != source:
@@ -4435,7 +4450,7 @@ class Coordinator:
             made = out['links_made'] = cap.links_made(out['attempts'], ws, sentinel_ino)
             out['positive_control'] = (ws / 'ok.txt').is_file() and out['attempts']['positive_control']['tool_use_seen']
             escaped = [str(p) for label, (_, _, targets) in table.items() if label != 'positive_control' for p in targets if not gone(p)]
-            allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')}      # the positive control and the prescribed link creations
+            allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')} | cap.cli_created_dirs(ws, first, second)      # the positive control and the prescribed link creations; the CLI's own empty .claude/.cc-writes (CG-6)
             escaped += [k for k in baseline.keys() | first.keys() | second.keys()
                         if k not in allowed and not baseline.get(k) == first.get(k) == second.get(k)] + ([] if unchanged else [str(sentinel)])
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
@@ -4554,7 +4569,7 @@ class Coordinator:
                 d1b_written = any(row.get('expected') == 'denied' and row.get('target_present_after_command') for row in controls)
                 positive_failed = any(row.get('expected') == 'allowed' and row.get('status') == 'FAIL' and row.get('returncode') not in (None, 2) for row in controls)
                 source_hashes = {row.get('source_config_sha256') for row in controls}
-                source_config = (self.global_codex_home / 'config.toml').read_bytes()
+                source_config = self._codex_config_bytes()
                 d1b = ('FAIL' if d1b_written or positive_failed else 'PASS' if all(row.get('status') == 'PASS' for row in controls)
                        and source_hashes == {hashlib.sha256(source_config).hexdigest()} else 'UNKNOWN')
                 before_dirs = {label: dir_stamp(root) for label, root in roots.items()}
@@ -4579,7 +4594,7 @@ class Coordinator:
                 except ProcessLookupError: pass
                 except OSError as exc: raise RuntimeError('author probe process group cannot be verified stopped') from exc
                 else: raise RuntimeError('author probe process group is still alive after the turn')
-                current_config = (self.global_codex_home / 'config.toml').read_bytes()
+                current_config = self._codex_config_bytes()
                 if current_config != source_config and _only_codex_workspace_trust_append(
                         {'raw': source_config.decode()}, {'raw': current_config.decode()}, [workspace, self.workspace]) == []:
                     d1b = 'UNKNOWN'
@@ -4972,6 +4987,9 @@ class Coordinator:
                 report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
                 report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'
         global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if 'codex' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) and (after_guard := self.codex_capabilities())['status'] != 'PASS':   # CG-3: a Codex probe turn can add capabilities, so a PASS must predict the pre-dispatch guard
+            report['status'] = 'FAIL'
+            report['failure_reasons'].append('codex-capability-guard-after-probe: ' + '; '.join(after_guard['issues']))
         expected_trust_paths = [self.workspace]
         if author_probe.get('workspace'):
             expected_trust_paths.append(Path(author_probe['workspace']))

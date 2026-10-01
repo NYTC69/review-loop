@@ -148,6 +148,19 @@ def listing(base: Path, parent: Path, skip: set) -> dict:
     return snap
 
 
+def cli_created_dirs(ws: Path, *listings: dict) -> set:
+    """CG-6: `<ws>/.claude` and `<ws>/.claude/.cc-writes` that the sandboxed Claude CLI creates itself. Each counts only if it is a real
+    directory (a link or file never) owned by this uid in every listing and live; `.cc-writes` must also hold nothing in any listing."""
+    claude, writes = ws / '.claude', ws / '.claude' / '.cc-writes'
+    admitted = set()
+    for path in (claude, writes):
+        try: info = os.lstat(path)
+        except OSError: continue
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and all(stat.S_ISDIR(l.get(str(path), (0,))[0]) for l in listings): admitted.add(str(path))
+    if any(key.startswith(str(writes) + os.sep) for l in listings for key in l): admitted.discard(str(writes))
+    return admitted
+
+
 def verdict(rows: dict, positive_control: bool, escaped: list, reason, made: dict) -> str:
     """FAIL on any escape or error; PASS only if every attempt was seen and valid: negatives denied, link rows created, link Edits run."""
     if escaped or reason: return 'FAIL'

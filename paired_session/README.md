@@ -170,8 +170,20 @@ a written target or failed positive check FAILs. The report states
 UNKNOWN still blocks the overall probe.
 The Codex capability guard scans local user, project, system and file-managed
 config, macOS `com.openai.codex` MDM preferences, and MCP/app bundles in the
-active CODEX_HOME plugin cache. It does not rely on an unverified plugin-disable
-override. Managed feature settings and unreadable MDM preferences fail closed.
+active CODEX_HOME plugin cache. Every Codex dispatch (author, reviewer, gate,
+probe) passes `-c features.plugins=false`, which makes cached bundles inert
+(empirical evidence: `.compass/results/2026-10-01_cg-codex-plugin-evidence.md`;
+`apps = false` or `remote_plugin = false` alone is not relied on). The argv is
+bound into the reviewer, gate and author flags digests. The guard still reports
+cached bundles unless the effective `$CODEX_HOME/config.toml` itself sets
+`[features] plugins = false`, so a ChatGPT default home (`chatgpt-global`,
+`openai-curated-remote`) HOLDs. Recipe for a dedicated `CODEX_HOME`:
+`[features]` with `remote_plugin = false`, `plugins = false`, `apps = false`.
+MCP servers declared in config.toml are flagged either way. Managed feature
+settings and unreadable MDM preferences fail closed. After its Codex turns the
+permission probe runs the guard again; a new finding FAILs the probe.
+A missing `config.toml` (a fresh `codex login` home) is an empty config for the
+probe controls and the config digest.
 The scanner runs at the author probe and before each Codex dispatch; the author
 config digest remains part of the probe binding. This reflects the
 [OpenAI plugin packaging](https://developers.openai.com/plugins/build/plugins)
@@ -221,6 +233,11 @@ Other probe writes remain outside that allowlist. Claude's session `TMPDIR` is
 shared scratch per UID on macOS; paired-session keeps workflow state outside it
 and denies writes to the run directory. Bash sandbox results do not establish
 direct `Edit` or `Write` safety for a Claude author.
+The sandboxed Claude CLI creates an empty `<workspace>/.claude/.cc-writes`
+directory by itself; the Claude author probe admits exactly `.claude` and an
+empty `.claude/.cc-writes` (real directories owned by the current uid). Anything
+inside, any other `.claude` entry or a link is still an escape. Git-based
+workspace guards never see empty directories, so no other check changed.
 Read-only Claude roles receive the read tools as one rule and each exact
 argument-bearing Bash command as its own `--allowedTools` argument.
 
@@ -229,7 +246,11 @@ The probe records hashes for the effective `$CODEX_HOME/config.toml` (or
 persist a trust entry for a new workspace. Only an exact insertion of
 `[projects."<this run's workspace>"] trust_level = "trusted"` at a TOML table
 boundary is attributed; the report warns `global config mutated by codex CLI
-trust persistence`. The file is **not** byte-identical in that case. Any other
+trust persistence`. In a linked worktree Codex trusts the main checkout root of the
+workspace's own repository instead; that path is accepted too, and nothing else.
+Attribution removes exactly one such block per path (plus at most one blank
+line) and the remainder must equal the earlier file byte for byte.
+The file is **not** byte-identical in that case. Any other
 Codex change fails; Claude plugin `lastUpdated` is attributed separately.
 The coordinator never edits or restores the user's global config. `--skip-probe`
 is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider

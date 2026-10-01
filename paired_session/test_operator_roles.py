@@ -958,7 +958,7 @@ TARGET_NAME = {'write_abs': 'w-abs.txt', 'write_rel': 'w-rel.txt', 'write_symlin
                'bash_context': 'b-ctx.txt', 'write_case': 'w-case.txt'}
 # Hash of exactly the Codex branch of _author_permission_probe (source minus the two Claude-dispatch lines), as of
 # P0-3a (7ebbf14). An intentional change to the Codex probe must update this hash.
-CODEX_PROBE_SHA256 = '19b90ac418ca9936ded422d4c5a8418fbcc65a92fb10c1a4ee8e249a0a0f4a73'
+CODEX_PROBE_SHA256 = '53ee857e69245684b076600bc6c391ae02b587443cca1ff4b7687cd85d58dbb9'
 
 
 class ClaudeAuthorProbeTests(unittest.TestCase):
