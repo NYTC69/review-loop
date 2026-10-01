@@ -315,6 +315,10 @@ def main():
             revise = True
             findings = [{'severity': 'MINOR', 'file': 'plan.md', 'summary': 'plan advisory',
                          'failure_scenario': 'plan omits a small design detail'}]
+        if (role == 'reviewer' and phase == 'PLAN' and os.environ.get('FAKE_PLAN_APPROVE_SECURITY')   # APPROVE that opens a MINOR security finding: first review only, or every review with 'always'
+                and (not open_ids or os.environ['FAKE_PLAN_APPROVE_SECURITY'] == 'always')):
+            findings = [{'severity': 'MINOR', 'security': True, 'file': 'plan.md', 'summary': 'plan security note ' + str(len(open_ids)),
+                         'failure_scenario': 'plan leaves an unsafe path'}]
         if role == 'shadow' and os.environ.get('FAKE_SHADOW_CRITICAL'):
             findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
                          'summary': 'fresh shadow blocker', 'failure_scenario': 'wrong result remains'}]

@@ -64,6 +64,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 PROBE_SURFACE_VERSION = 9
+CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
     try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
@@ -166,6 +167,7 @@ def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
             'agent_body_sha256': agents, 'gate_prompt_path': str(prompt_path.resolve()),
             'gate_prompt_sha256': prompt_hash}
 REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
+APPROVE_CONVERSION_NOTE = ('An APPROVE that leaves any blocking or security-tagged finding open is never accepted (in PLAN and EXEC it is converted to REVISE): close the finding with evidence in prior_findings, or return REVISE.')   # persistent reviewer only: the shadow prompt must not mention prior_findings
 
 
 class RunLeaseError(RuntimeError):
@@ -329,6 +331,37 @@ def _trust_block_variants(path: str) -> list[str]:
     return [lead + entry + trail for lead, trail in (('\n', ''), ('', '\n'), ('\n', '\n'), ('', ''))]
 
 
+def _toml_top_level_at(text: str, offset: int) -> bool:
+    """RF-6: True only when `offset` starts a line at TOML top level (no string, comment or bracket open); anything ambiguous is False."""
+    i, depth = 0, 0
+    while i < offset:
+        c = text[i]
+        if c == '#':
+            i = text.find('\n', i)
+            if i < 0: return False
+            continue
+        if c in '"\'':
+            quote = text.startswith(c * 3, i)
+            j = i + (3 if quote else 1)
+            while True:
+                if j >= len(text) or (not quote and text[j] == '\n'): return False
+                if c == '"' and text[j] == '\\': j += 2; continue
+                if text.startswith(c * 3, j) if quote else text[j] == c:
+                    j += 3 if quote else 1
+                    break
+                j += 1
+            if quote and text[j:j + 1] == c: return False   # four or five closing quotes: ambiguous
+            if j > offset: return False
+            i = j
+            continue
+        if c in '[{': depth += 1
+        elif c in ']}':
+            depth -= 1
+            if depth < 0: return False
+        i += 1
+    return depth == 0 and (offset == 0 or text[offset - 1] == '\n')
+
+
 def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) -> list[str]:
     """Exact block removal: `after` minus one trust block per trusted expected path (optional one blank line) must equal `before` byte for byte."""
     if after.get('raw') is None:
@@ -345,7 +378,7 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
         for block in chosen:   # a block that starts a line and is followed by a table header (or the end) cannot adopt the keys of the table around it
             pos = rest.find(block)
             start, tail = pos + block.startswith('\n'), next((line.strip() for line in rest[pos + len(block):].splitlines() if line.strip()), '[')
-            at_boundary = at_boundary and (start == 0 or rest[start - 1] == '\n') and tail.startswith('[')
+            at_boundary = at_boundary and _toml_top_level_at(rest, start) and tail.startswith('[')
             rest = rest.replace(block, '', 1)
         if found and at_boundary and rest == before_raw:
             return found
@@ -354,16 +387,36 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
 
 def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path) -> bool:
     raw = path.read_bytes()
-    for root in _codex_trust_paths(workspace):
-        entry = ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode()
-        if raw.count(entry) != 1: continue
-        for leading in (b'', b'\n'):
-            for trailing in (b'', b'\n'):
-                block = leading + entry + trailing
-                if block in raw:
-                    before = raw.replace(block, b'', 1)
+    entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode() for root in _codex_trust_paths(workspace)}
+    present = [root for root, entry in entries.items() if raw.count(entry) == 1]
+    for count in range(1, len(present) + 1):   # RF-7: the expected set, each path at most once, in any order
+        for roots in itertools.permutations(present, count):
+            for variants in itertools.product(((b'', b''), (b'\n', b''), (b'', b'\n'), (b'\n', b'\n')), repeat=count):
+                before = raw
+                for root, (leading, trailing) in zip(roots, variants):
+                    block = leading + entries[root] + trailing
+                    if block not in before: break
+                    before = before.replace(block, b'', 1)
+                else:
                     if (hashlib.sha256(before).hexdigest() == before_sha256 or (before_sha256 is None and not before)) and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace]): return True
     return False
+
+
+PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re-runs the turn on a fresh baseline)'
+
+
+def _plugin_entries_without_bump(value):
+    if isinstance(value, dict): return {k: _plugin_entries_without_bump(v) for k, v in value.items() if k not in ('version', 'lastUpdated')}
+    if isinstance(value, list): return [_plugin_entries_without_bump(v) for v in value]
+    return value
+
+
+def plugin_version_bump_only(findings: list, before: dict, after: dict) -> bool:
+    """RF-4: the only finding is installed_plugins.json and it differs from the baseline only in version/lastUpdated values."""
+    if [row['file'] for row in findings] != ['claude_plugins']: return False
+    old, new = before['claude_plugins'], after['claude_plugins']
+    if old.get('error') or new.get('error') or old.get('document') is None or new.get('document') is None: return False
+    return old['document'] != new['document'] and _plugin_entries_without_bump(old['document']) == _plugin_entries_without_bump(new['document'])
 
 
 def attribute_global_config_changes(before: dict, after: dict, workspaces=()) -> dict:
@@ -1501,6 +1554,7 @@ class Coordinator:
             'sandbox': 'restricted-allowlist' if vendor == 'claude' else 'read-only',
         }
         if vendor == 'claude':
+            flags['claude_child_env'] = CLAUDE_CHILD_ENV
             flags['claude_bash_sandbox'] = self._claude_sandbox_settings(sandbox_role)
             flags['claude_os_denial_probe'] = str(self._claude_os_probe_path('gate-probe' if prefix == 'gate' else 'probe'))
         if vendor == 'codex':
@@ -1528,7 +1582,7 @@ class Coordinator:
                 'codex_config_sha256': self._codex_policy_digest(),
             })
         else:
-            flags.update({'plugin_version': plugin_version(), 'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
+            flags.update({'plugin_version': plugin_version(), 'claude_child_env': CLAUDE_CHILD_ENV, 'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
                           'author_subagents': self.args.author_subagents,
                           'claude_author_surface': cap.surface(self._claude_command('author', cap.NO_SCHEMA, True)),
                           'claude_bash_sandbox': self._claude_sandbox_settings('author'),
@@ -1740,7 +1794,15 @@ class Coordinator:
             if not isinstance(gate_probe, dict) or gate_probe.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'): return False, 'permission probe has no passing gate probe for gate vendor ' + self.args.gate_vendor
         return True, ''
 
+    def _gate_probe_covered(self) -> bool:   # RF-1: a gate vendor other than the reviewer's is covered only by a passing gate probe bound to the current gate flags digest
+        if self.args.gate_vendor == self.args.reviewer_vendor or lifecycle_spine.fake_dispatch_guard(self.args): return True
+        try:
+            report = json.loads((self.run_dir / 'permission-probe.json').read_bytes())
+            return report.get('gate_flags_digest') == self.gate_flags_digest() and report['gate_permission_probe']['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
+        except (OSError, ValueError, KeyError, TypeError, AttributeError): return False
+
     def _probe_skip_accepted(self) -> bool:   # P0-4 V2: the flag is command-line only; the recorded acceptance is honoured until a digest changes or a probe re-runs
+        if not self._gate_probe_covered(): return False   # RF-1: also for an acceptance saved earlier
         acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest()}
         if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
             acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen}; self.save()
@@ -3232,10 +3294,10 @@ class Coordinator:
     def open_findings_prompt(self) -> str:
         findings = self.open_findings()
         if not findings:
-            return 'Open finding ledger: none. Return an empty prior_findings array.'
+            return 'Open finding ledger: none. Return an empty prior_findings array.\n' + APPROVE_CONVERSION_NOTE
         rows = '\n'.join(f"- {finding['id']}: {finding['summary']}" for finding in findings)
         return ('Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
-                'fixed, still_open, or withdrawn, with evidence):\n' + rows)
+                'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n' + APPROVE_CONVERSION_NOTE)
 
     def _review_prompt(self, role: str, snapshot: str) -> str:
         base_phase = self.state['phase']
@@ -3810,8 +3872,8 @@ class Coordinator:
         try:
             if control_problem: raise ValueError(control_problem)
             if vendor_config_before is not None:
-                changes = attribute_global_config_changes(vendor_config_before,
-                    global_config_snapshot(self.global_config_home, self.global_codex_home), [active_workspace])
+                config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
+                changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace])
                 changes['other_vendor_changes'] = [key for key in changes['before'] if not key.startswith(vendor_prefix) and changes['before'][key]['sha256'] != changes['after'][key]['sha256']]
                 changes['findings'] = [row for row in changes['findings'] if row['file'].startswith(vendor_prefix)]
                 changes['expected_changes'] = [row for row in changes['expected_changes'] if row['file'].startswith(vendor_prefix)]
@@ -3819,7 +3881,8 @@ class Coordinator:
                 changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
                 receipt['global_config_changes'] = changes
                 if changes['status'] != 'PASS':
-                    raise ValueError(receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings']))
+                    raise ValueError(receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings'])
+                                     + (PLUGIN_UPDATE_HINT if plugin_version_bump_only(changes['findings'], vendor_config_before, config_after) else ''))
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -4085,6 +4148,15 @@ class Coordinator:
         if advisory_exit:
             self.mark_advisory_findings(answer['full_review'])
             answer['status'] = 'APPROVE'
+        refusal = None
+        if answer['status'] == 'APPROVE' and (blocking := self.blocking_open_findings()):
+            # RF-5: an APPROVE that leaves blocking findings open is a REVISE routed to the author (round limit and its HOLD apply), never DONE
+            refusal = 'APPROVE rejected with open blocking findings: ' + ', '.join(finding['id'] for finding in blocking)
+            answer['status'] = 'REVISE'
+            answer['full_review'] = list(answer['full_review']) + [row for row in blocking if row['id'] not in {item.get('id') for item in answer['full_review']}]
+            self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
+            for receipt in self.state.get('turns', []):
+                if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict)
         if phase == 'EXEC':
@@ -4112,12 +4184,6 @@ class Coordinator:
         if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence']:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
-            return
-        blocking = self.blocking_open_findings()
-        if answer['status'] == 'APPROVE' and blocking:
-            self.state['pending_reviewer_result_sequence'] = None
-            self.hold('APPROVE rejected with open blocking findings: ' +
-                      ', '.join(finding['id'] for finding in blocking))
             return
         if answer['status'] == 'REVISE':
             rounds = self.state[f'{phase.lower()}_rounds']
@@ -5879,6 +5945,9 @@ def cli_env() -> dict:
     # interim result before the subagent finishes and a second one afterwards. Foreground
     # subagents keep one authoritative result per turn and stream nested tool calls in order.
     env['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
+    # RF-4: a Claude child must not auto-update plugins mid-run (that rewrites installed_plugins.json and trips the global-config check).
+    env['DISABLE_AUTOUPDATER'] = '1'
+    env.pop('FORCE_AUTOUPDATE_PLUGINS', None)
     return env
 
 
@@ -6149,6 +6218,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
         if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
             print(f'REFUSED: the current permission probe is {negative}; fix the cause and re-run permission-probe')
+            return 2
+        if not co._gate_probe_covered():
+            print(f'REFUSED: gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
             return 2
         co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}; co.save()
     if args.action == 'reject':

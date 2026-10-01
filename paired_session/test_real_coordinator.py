@@ -9198,7 +9198,7 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['status'], 'HOLD')
 
     def test_exec_approve_allows_open_minor_but_not_open_critical(self):
-        for severity, expected in (('MINOR', 'DONE'), ('CRITICAL', 'HOLD')):
+        for severity, expected in (('MINOR', 'DONE'), ('CRITICAL', 'ACTIVE')):   # RF-5 (authorized): an APPROVE with an open blocking finding is a REVISE routed to the author, not a HOLD
             with self.subTest(severity=severity):
                 self.run_dir = self.root / ('open-' + severity.lower())
                 args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -9209,7 +9209,7 @@ sys.exit(result.returncode)
                 co.state['finding_ledger'] = [{
                     'id': 'F001', 'origin_round': 1, 'phase': 'EXEC',
                     'source': 'persistent-reviewer', 'severity': severity, 'file': 'sum_ints.py',
-                    'summary': 'open issue', 'status': 'open',
+                    'summary': 'open issue', 'failure_scenario': 'issue stays open', 'status': 'open',
                     'status_history': [{'round': 1, 'status': 'open', 'evidence': 'test'}]}]
                 co.state['next_finding_id'] = 2
                 co.save()
@@ -9223,6 +9223,9 @@ sys.exit(result.returncode)
                 with patch.object(co, 'invoke', return_value=result), patch.object(co, 'render'):
                     co.reviewer_turn()
                 self.assertEqual(co.state['status'], expected)
+                if severity == 'CRITICAL':
+                    self.assertEqual(co.state['next'], 'author')
+                    self.assertIn('F001', co.state['delivered_review'])
 
     def test_write_attempts_are_detected_and_fail_round(self):
         for mode in ('echo', 'checkout', 'rm'):
