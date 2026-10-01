@@ -562,15 +562,16 @@ class RoleModelTests(unittest.TestCase):
         for text in ('allowed_models', 'role models are fixed', 'role policy is fixed'):
             self.assertNotIn(text, resumed)
 
-    def test_a_gate_vendor_that_differs_from_the_reviewer_is_refused_before_state(self):
+    def test_a_gate_vendor_that_differs_from_the_reviewer_is_refused_without_a_covering_gate_probe(self):   # replaced by plan P G-a, owner decision 2026-09-30
         def cli(*flags):
             self.h.run_dir = self.h.root / ('gate-' + '-'.join(flags).replace('-', ''))
             with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
                 return self.main('run', *flags), self.h.run_dir
         refused, run_dir = cli('--gate-vendor', 'codex')          # codex author, claude reviewer
-        self.assertIn('REFUSED: gate vendor codex differs from reviewer vendor claude; '
-                      'its read-only surface is not covered by permission-probe', refused.stdout)
-        self.assertFalse(run_dir.exists())
+        self.assertIn('REFUSED: permission-probe.json is missing (gate vendor codex differs from reviewer vendor claude: '
+                      'only a passing gate probe covers it)', refused.stdout)   # replaced by plan P G-a, owner decision 2026-09-30
+        state = run_dir / 'state.json'
+        self.assertEqual(json.loads(state.read_text())['turns'] if state.exists() else [], [])   # still refused before any dispatch
         for flags in ([], ['--reviewer-vendor', 'codex', '--gate-vendor', 'codex'],
                       ['--reviewer-vendor', 'claude', '--gate-vendor', 'claude']):
             with self.subTest(flags=flags):
@@ -580,13 +581,13 @@ class RoleModelTests(unittest.TestCase):
         with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
             self.assertIsNone(rc.gate_surface_issue(a))          # bug-report: gate == reviewer == codex
             a = self.resolved('--author-vendor', 'claude')        # claude author default: claude reviewer, codex gate
-            self.assertIn('not covered by permission-probe', rc.gate_surface_issue(a))
+            self.assertIsNone(rc.gate_surface_issue(a))          # replaced by plan P G-a, owner decision 2026-09-30: the probe gate refuses it, not gate_surface_issue
         self.assertIsNone(rc.gate_surface_issue(self.resolved('--author-vendor', 'claude')))   # fake harness
         # a restore is refused as well (saved run whose gate differs from its reviewer)
         self.h.run_dir = self.h.root / 'gate-saved'
         self.h.coordinator('--gate-vendor', 'codex')
         with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
-            self.assertIn('not covered by permission-probe', self.main('reject', '--text', 'x').stdout)
+            self.assertIn('only a passing gate probe covers it', self.main('reject', '--text', 'x').stdout)   # replaced by plan P G-a, owner decision 2026-09-30
 
     def test_probe_passed_binds_the_probed_reviewer_vendor_to_the_gate_vendor(self):
         co = self.h.coordinator()
@@ -1706,6 +1707,75 @@ class ProbeSkipTests(unittest.TestCase):
                     self.assertNotEqual(co._probe_cache_key()[0], key)
                     self.assertFalse(co._probe_skip_accepted())
                     self.assertIn('voided', co.state['probe_skip_override'])
+
+    GATE_DIRECTIONS = (('--reviewer-vendor', 'codex', '--gate-vendor', 'claude'), ('--reviewer-vendor', 'claude', '--gate-vendor', 'codex'))
+
+    def test_a_different_gate_vendor_gets_a_second_read_only_probe_turn_in_both_directions(self):        # G-a K2/K3
+        for flags in self.GATE_DIRECTIONS:
+            with self.subTest(flags=flags):
+                self.h.run_dir = self.h.root / ('gate-' + flags[1] + '-' + flags[3])
+                co = self.co(*flags)
+                report = self.probe(co)
+                turns = [(t['role'], t['vendor']) for t in co.state['turns']]
+                self.assertEqual(turns, [('probe', flags[1]), ('author', 'codex'), ('gate-probe', flags[3])])
+                self.assertEqual((report['status'], report['gate_permission_probe']['status'], report['gate_permission_probe']['vendor']), ('PASS', 'PASS', flags[3]))
+                self.assertEqual(report['gate_flags_digest'], co.gate_flags_digest())
+                argv = co.state['turns'][-1]['command']
+                if flags[3] == 'codex': self.assertIn('sandbox_mode="read-only"', argv)
+                else: self.assertEqual((argv[argv.index('--permission-mode') + 1], '--restricted' in argv, 'acceptEdits' in argv), ('dontAsk', True, False))
+                with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+                    self.assertEqual(co.probe_passed(), (True, ''))
+        self.h.run_dir = self.h.root / 'gate-same'
+        co = self.co('--reviewer-vendor', 'codex', '--gate-vendor', 'codex')                        # same vendor: no second turn
+        report = self.probe(co)
+        self.assertEqual(([t['role'] for t in co.state['turns']], report['gate_permission_probe']['status']), (['probe', 'author'], 'NOT_NEEDED'))
+
+    def test_a_gate_probe_turn_that_writes_fails_the_report_and_refuses_the_run(self):                 # G-a K2/K4
+        for flags, env in ((self.GATE_DIRECTIONS[0], {'FAKE_SANDBOX_WRITE': '1'}),
+                           (self.GATE_DIRECTIONS[1], {'FAKE_PROBE_MUTATE': '1', 'FAKE_PROBE_MUTATE_VENDOR': 'codex'})):
+            with self.subTest(flags=flags), patch.dict(os.environ, env):
+                self.h.run_dir = self.h.root / ('gate-escape-' + flags[1])
+                co = self.co(*flags)
+                report = self.probe(co)
+                self.assertEqual((report['status'], report['gate_permission_probe']['status']), ('FAIL', 'FAIL'))
+                self.assertIn('gate-permission-probe-fail', report['failure_reasons'])
+                with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+                    self.assertEqual(co.probe_passed(), (False, 'permission probe status is not PASS'))
+                refused = self.cli('resume', *flags)
+                self.assertEqual(refused.returncode, 2, refused.stdout)
+                self.assertIn('REFUSED: permission probe status is not PASS', refused.stdout)
+
+    def test_a_reviewer_only_pass_does_not_cover_a_different_gate_vendor_and_permission_probe_is_allowed(self):   # G-a K4/K5
+        flags = self.GATE_DIRECTIONS[0]
+        self.h.run_dir = self.h.root / 'gate-refused'
+        refused = self.cli('run', *flags)                                                          # no probe at all
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('only a passing gate probe covers it', refused.stdout)
+        co = self.co(*flags)
+        report = self.probe(co)
+        report['gate_permission_probe'] = {'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'}   # a report that carries no gate turn
+        (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
+        co.state['permission_probe'] = {'sha256': hashlib.sha256((co.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': report['probe_turn']}
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            self.assertEqual(co.probe_passed(), (False, 'permission probe has no passing gate probe for gate vendor claude'))
+        self.h.run_dir = self.h.root / 'gate-allowed'
+        allowed = self.cli('permission-probe', *flags)                                              # the real CLI runs the probe that produces the proof
+        self.assertEqual(allowed.returncode, 0, allowed.stdout)
+        self.assertEqual(json.loads((self.h.run_dir / 'permission-probe.json').read_text())['gate_permission_probe']['status'], 'PASS')
+
+    def test_the_gate_probe_is_its_own_role_with_its_own_os_only_path(self):                          # G-a K2
+        co = self.co('--reviewer-vendor', 'codex', '--gate-vendor', 'claude')
+        self.assertEqual(co._role_vendor('gate-probe'), 'claude')
+        self.assertEqual(co._model_effort('gate-probe'), (co.args.gate_model, co.args.gate_effort))
+        reviewer_path, gate_path = co._claude_os_probe_path('probe'), co._claude_os_probe_path('gate-probe')
+        self.assertNotEqual(reviewer_path, gate_path)
+        self.assertEqual(co.gate_flags()['claude_os_denial_probe'], str(gate_path))
+        self.assertEqual(co._probe_targets('gate-probe', 'claude')[0][3], gate_path)
+        self.assertEqual(co._probe_targets('probe', 'claude')[0][3], reviewer_path)
+        deny = lambda role: co._claude_sandbox_settings(role)['sandbox']['filesystem']['denyWrite']
+        self.assertIn(str(gate_path), deny('gate-probe'))
+        self.assertNotIn(str(reviewer_path), deny('gate-probe'))
+        self.assertNotIn(str(gate_path), deny('gate'))                                                # the real gate role has no probe injection
 
     def test_the_acceptance_does_not_bypass_the_codex_contract_or_the_claude_author_gate(self):
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
