@@ -4199,6 +4199,61 @@ raise AssertionError('fault window was not reached')
                 dcp.verify(co)
         self.assertEqual(dcp.verify(co), proof)
 
+    def test_fake_close_is_bound_to_operator_intent_exact_tree_and_idempotent_receipt(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        digest = co.state['fake_delivery_intent']['digest']
+        saved = co.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'explicit operator intent'):
+            co.fake_close('wrong')
+        with self.assertRaisesRegex(ValueError, 'external delivery'):
+            co.fake_close(digest, external_delivery=True)
+        self.assertEqual(co.state_path.read_bytes(), saved)
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+        self.assertEqual(co.state['lifecycle']['stage'], 'CLOSED')
+        self.assertEqual([r['stage'] for r in co.state['lifecycle']['receipts'][-2:]], ['DELIVERY', 'CLOSE'])
+        self.assertEqual(co.state['close_receipt'], json.loads((co.evidence / 'delivery-close.json').read_text()))
+        self.assertEqual(co.state['close_receipt']['facts']['c2'], co._head_commit())
+        self.assertFalse(co.state['close_receipt']['facts']['external_delivery'])
+        events = rc.copy.deepcopy(co.state['events'])
+        sequence = co.state['sequence']
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+        self.assertEqual(co.state['events'], events)
+        self.assertEqual(co.state['sequence'], sequence)
+        backlog = self.workspace / 'BACKLOG.md'
+        raw = backlog.read_bytes()
+        backlog.write_bytes(raw + b'foreign\n')
+        with self.assertRaises(ValueError):
+            co.fake_close(digest)
+        self.assertEqual(backlog.read_bytes(), raw + b'foreign\n')
+        backlog.write_bytes(raw)
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+
+    def test_fake_close_replays_receipt_write_crash_and_refuses_stale_disk_and_relabel(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        digest = co.state['fake_delivery_intent']['digest']
+        original = rc.copy.deepcopy(co.state)
+        co.state['extra'] = 'stale'
+        with self.assertRaisesRegex(ValueError, 'saved state changed'):
+            co.fake_close(digest)
+        co.state = rc.copy.deepcopy(original)
+        with patch.object(co, 'save', side_effect=RuntimeError('crash before state write')):
+            with self.assertRaisesRegex(RuntimeError, 'crash before'):
+                co.fake_close(digest)
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'ACCEPTED')
+        co.state = rc.copy.deepcopy(original)
+        self.assertEqual(co.fake_close(digest), 'CLOSED')
+        record = co.evidence / 'delivery-close.json'
+        raw = record.read_bytes()
+        record.write_text(record.read_text().replace('CLOSED', 'UNREVIEWED'))
+        with self.assertRaisesRegex(ValueError, 'protected receipt'):
+            co.fake_close(digest)
+        record.write_bytes(raw)
+        with patch.object(co, '_fake_lifecycle', False):
+            with self.assertRaisesRegex(ValueError, 'fake-only'):
+                co.fake_close(digest)
+
     def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture

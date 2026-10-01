@@ -36,7 +36,7 @@ try:
     from paired_session import closeout_policy
     from paired_session import q_proposal
     from paired_session import q_evidence
-    from paired_session import delivery_intent, delivery_seal
+    from paired_session import delivery_intent, delivery_seal, delivery_close
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import finish_dispatch
@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     import closeout_policy
     import q_proposal
     import q_evidence
-    import delivery_intent, delivery_seal
+    import delivery_intent, delivery_seal, delivery_close
     import codex_capability_guard
     import docs_policy
     import finish_dispatch
@@ -4814,6 +4814,9 @@ class Coordinator:
             self._fake_dispatching = False
             self.state.pop('pending_reviewer_result_sequence', None)
             self.save()
+    def fake_close(self, expected_digest, *, external_delivery=False):
+        return delivery_close.close(self, expected_digest, atomic_json, external_delivery)
+
     def fake_q_complete(self, c1, day):
         source, root, revision = q_evidence.review_source(self, c1, day, observed_test_succeeded)
         if (self._program_state()[1] or self.state.get('fake_q_bundle_pending') or
