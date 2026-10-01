@@ -2,7 +2,7 @@ import json, os, stat
 from importlib import import_module
 dj = import_module(('paired_session.' if __package__ else '') + 'delivery_journal')
 ct = dj.ct
-def inspect(co):
+def inspect(co, exact_q=False):
     row = json.loads((co.evidence / 'delivery-publication.json').read_text())
     if (co.state.get('publication_hold') not in (None, row['intent']['digest']) or
             co.state['status'] not in ('HOLD', 'ACCEPTED') or co.state['acceptance_state'] != 'ACCEPTED' or
@@ -46,7 +46,7 @@ def inspect(co):
                     info.st_dev, info.st_ino, after.st_mtime_ns, after.st_ctime_ns):
                 raise ValueError('recovery bytes changed while reading: ' + p)
             value = ('100755' if info.st_mode & 0o111 else '100644', ct._object_oid(raw, root.object_format))
-        if value not in (maps[0].get(p), maps[1].get(p)):
+        if value not in (maps[0].get(p), maps[1].get(p)) or (exact_q and value != maps[1].get(p)):
             raise ValueError('foreign recovery bytes: ' + p)
     others = ct._git(['ls-files', '--others', '--exclude-standard', '-z'], env=live).split(chr(0))
     if any(p and p not in maps[0] and p not in maps[1] for p in others):

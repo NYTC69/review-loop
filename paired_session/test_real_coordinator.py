@@ -22,6 +22,7 @@ from paired_session import delivery_journal as dj
 from paired_session import delivery_publish as dp
 from paired_session import delivery_recovery_state as drs
 from paired_session import delivery_recovery_lock as drl
+from paired_session import delivery_recover as dr
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -3996,6 +3997,172 @@ sys.exit(result.returncode)
                     turn_path.write_bytes(original_turn)
                     bundle_path.write_bytes(original_bundle)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
+
+    def hard_crash_publication_recovery(self, window):
+        self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
+        co, c1, before = self.q_test_fixture
+        args_path = self.root / 'publish-args.json'
+        payload = vars(co.args).copy()
+        payload.update({k: v for k, v in co.state['config'].items() if k in payload and k != 'gate_prompt'})
+        args_path.write_text(json.dumps(payload))
+        script = """
+import argparse, json, os, signal, sys
+from pathlib import Path
+from paired_session import coordinator as rc, delivery_publish as dp, delivery_recover as dr
+co = rc.Coordinator(argparse.Namespace(**json.loads(Path(sys.argv[1]).read_text())), _fake_lifecycle=True)
+window = sys.argv[2]
+original_git, original_replace = dp.ct._git, os.replace
+original_bytes = dp.ct._git_bytes
+def git_bytes(args, **kwargs):
+    result = original_bytes(args, **kwargs)
+    if window == 'pre-cas' and args[0] == 'index-pack':
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+def git(args, **kwargs):
+    result = original_git(args, **kwargs)
+    if window == 'cas' and args[0] == 'update-ref' and args[1] == co.state['fake_delivery_intent']['ref']:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+def replace(source, target):
+    result = original_replace(source, target)
+    if window == 'index' and Path(target) == co.workspace / '.git/index':
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+dp.ct._git, dp.ct._git_bytes, os.replace = git, git_bytes, replace
+dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+raise AssertionError('fault window was not reached')
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(args_path), window],
+                                cwd=MODULE_PATH.parent.parent, env=os.environ.copy(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        self.assertEqual(result.returncode, -9, result.stderr.decode())
+        co = rc.Coordinator(rc.argparse.Namespace(**payload), _fake_lifecycle=True)
+        lock = self.workspace / '.git/index.lock'
+        self.assertTrue(lock.exists())
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        self.assertEqual(lock.read_text(), row['lock']['nonce'])
+        self.assertEqual(co.state['publication_hold'], row['intent']['digest'])
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co._publication_guard()
+        original = ct._git
+        cas_calls = []
+        def no_cas(args, **kwargs):
+            if args[0] == 'update-ref' and args[1] == row['intent']['ref']:
+                if window == 'pre-cas':
+                    cas_calls.append(tuple(args))
+                else:
+                    self.fail('recovery repeated CAS')
+            return original(args, **kwargs)
+        with patch.object(ct, '_git', side_effect=no_cas):
+            self.assertEqual(dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)['phase'], 'RECONCILED')
+        self.assertFalse(lock.exists())
+        self.assertEqual(co._head_commit(), row['intent']['c2'])
+        drs.inspect(co, exact_q=True)
+        if window == 'pre-cas':
+            self.assertEqual(len(cas_calls), 1)
+            dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+            self.assertEqual(len(cas_calls), 1)
+
+    def test_reconcile_after_sigkill_immediately_after_cas(self):
+        self.hard_crash_publication_recovery('cas')
+
+    def test_reconcile_after_sigkill_immediately_after_index_replace(self):
+        self.hard_crash_publication_recovery('index')
+
+    def test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        row = json.loads((co.evidence / 'delivery-publication.json').read_text())
+        index = self.workspace / '.git/index'
+        lock = index.with_name('index.lock')
+        self.assertTrue(lock.exists())
+        self.assertEqual(lock.read_text(), row['lock']['nonce'])
+        calls = []
+        original = ct._git
+        def observed(args, **kwargs):
+            if (args[0] in ('read-tree', 'update-ref') and
+                    kwargs.get('env', {}).get('GIT_DIR') == str(self.workspace / '.git')):
+                self.assertTrue(lock.exists())
+                calls.append(tuple(args))
+            return original(args, **kwargs)
+        with patch.object(ct, '_git', side_effect=observed):
+            result = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(result['phase'], 'RECONCILED')
+        self.assertEqual(co.state['publication_complete'], row['intent']['digest'])
+        self.assertNotIn('publication_hold', co.state)
+        self.assertFalse(lock.exists())
+        self.assertTrue(calls)
+        self.assertTrue(all(args[0] != 'update-ref' for args in calls))
+        before_calls = list(calls)
+        with patch.object(ct, '_git', side_effect=observed):
+            again = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(again['intent'], result['intent'])
+        self.assertEqual(calls, before_calls)
+        self.assertFalse(lock.exists())
+        co._publication_guard()
+        drs.inspect(co, exact_q=True)
+
+    def test_reconcile_retries_zero_side_effect_hold_without_journal(self):
+        self.test_fake_publication_refuses_unaccepted_and_dirty_workspace()
+        co, c1, before = self.q_test_fixture
+        (self.workspace / 'user.txt').unlink()
+        self.assertFalse((co.evidence / 'delivery-publication.json').exists())
+        result = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(result['phase'], 'RECONCILED')
+        self.assertEqual(co._head_commit(), result['intent']['c2'])
+        self.assertEqual(co.state['publication_complete'], result['intent']['digest'])
+        co._publication_guard()
+        self.assertEqual(dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)['phase'], 'RECONCILED')
+        self.assertFalse((self.workspace / '.git/index.lock').exists())
+
+    def test_reconcile_after_sigkill_before_cas(self):
+        self.hard_crash_publication_recovery('pre-cas')
+
+    def test_reconcile_preserves_explicit_pending_null(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        co.state['pending_reviewer_result_sequence'] = None
+        co.save()
+        result = dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(result['phase'], 'RECONCILED')
+        self.assertIsNone(co.state['pending_reviewer_result_sequence'])
+        self.assertIn('pending_reviewer_result_sequence', json.loads(co.state_path.read_text()))
+        self.assertNotIn('hold_reason', co.state)
+        co._publication_guard()
+
+    def test_reconcile_refuses_foreign_bytes_immediately_before_checkout(self):
+        self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
+        co, c1, before = self.q_test_fixture
+        original = ct._check_attributes
+        target = self.workspace / 'tracked.txt'
+
+        def edit(attrs_env, entries):
+            result = original(attrs_env, entries)
+            if attrs_env.get('GIT_DIR') == str(self.workspace / '.git'):
+                target.write_text('foreign operator edit\n')
+            return result
+
+        with patch.object(ct, '_check_attributes', side_effect=edit):
+            with self.assertRaisesRegex(ValueError, 'foreign recovery bytes'):
+                dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
+        self.assertEqual(target.read_text(), 'foreign operator edit\n')
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertNotEqual(json.loads((co.evidence / 'delivery-publication.json').read_text())['phase'],
+                            'RECONCILED')
+
+    def test_publication_guard_refuses_completed_state_with_leftover_lock_and_missing_intent(self):
+        self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
+        co, c1, before = self.q_test_fixture
+        lock = self.workspace / '.git/index.lock'
+        lock.write_text('foreign lock')
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co._publication_guard()
+        lock.unlink()
+        co.state['fake_delivery_intent'] = None
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co._publication_guard()
+        with self.assertRaisesRegex(ValueError, 'publication intent missing'):
+            dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
 
     def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()

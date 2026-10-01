@@ -2459,7 +2459,15 @@ class Coordinator:
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
     def _publication_guard(self):
-        if self.state.get('publication_hold') or (self.evidence / 'delivery-publication.json').exists():
+        journal_path = self.evidence / 'delivery-publication.json'
+        intent = self.state.get('fake_delivery_intent') or {}
+        digest = intent.get('digest')
+        complete = bool(digest) and self.state.get('publication_complete') == digest
+        if journal_path.exists():
+            journal = json.loads(journal_path.read_text())
+            lock = Path(journal.get('lock', {}).get('path', str(self.workspace / '.git/index.lock')))
+            complete = complete and journal.get('phase') == 'RECONCILED' and not (lock.exists() or lock.is_symlink())
+        if self.state.get('publication_hold') or (journal_path.exists() and not complete):
             raise ValueError('publication incomplete; use locked publication recovery before operator commands')
 
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
