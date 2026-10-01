@@ -419,7 +419,12 @@ in the permission probe. Options for the operator:
 1. Pick a Claude author (`--author-vendor claude`) for that item. It needs a
    passing Claude-author permission-probe, or the documented
    `--accept-unverified-claude-author --reason` opt-in, which is the operator's
-   own decision (see the probe section above).
+   own decision (see the probe section above). The opt-in waives only the
+   Claude author's probe part: a report that is UNKNOWN solely because the author
+   probe could not prove the sandbox (author-model-escape-unknown or
+   author-model-refused) then passes the run/resume/reject gate, while a reviewer
+   or gate probe failure, a config change or any escape still blocks and
+   `--accept-probe-skip` is still refused for them.
 2. Split out the step that needs the capability and keep the rest in the work item.
 3. Run that step outside paired-session, by hand, and feed the result back as
    ordinary workspace content.

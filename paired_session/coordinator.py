@@ -1678,14 +1678,31 @@ class Coordinator:
         return False, (f'unverified codex sandbox contract: {version}{voided}; run permission-probe on this version '
                        'or pass --accept-unverified-codex-cli --reason TEXT')
 
-    def claude_author_verified(self) -> tuple[bool, str]:
-        """A Claude author dispatches only on a Claude author probe PASS (P0-3b) or a current operator opt-in."""
+    def _claude_optin_current(self) -> bool:   # a recorded operator opt-in bound to the current author flags; a flags change voids it for good
         digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
         if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
             optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest}
             self.save()
-        if optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided'):
+        return optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided')
+
+    def _author_probe_waived(self, report: dict) -> bool:
+        """HL-FIX: the opt-in waives only the Claude author probe: the report is UNKNOWN solely for the author's model-escape-unknown / refused
+        reasons, the reviewer probe passed (allowed command ran, every write denied, snapshot unchanged) and no gate or other cause is recorded."""
+        author_probe = report.get('author_permission_probe')
+        reasons = report.get('failure_reasons')
+        return bool(self.args.author_vendor == 'claude' and isinstance(author_probe, dict) and author_probe.get('status') == 'UNKNOWN'
+                    and report.get('status') == 'UNKNOWN' and not author_probe.get('model_escape_failed_targets')
+                    and isinstance(reasons, list) and reasons and set(reasons) <= {'author-model-escape-unknown', 'author-model-refused'}
+                    and report.get('allowed_command_ran') is True and report.get('snapshot_unchanged') is True
+                    and (report.get('global_config_changes') or {}).get('status') == 'PASS'
+                    and isinstance(report.get('write_attempts_denied'), dict) and all(v is True for v in report['write_attempts_denied'].values())
+                    and self._claude_optin_current())
+
+    def claude_author_verified(self) -> tuple[bool, str]:
+        """A Claude author dispatches only on a Claude author probe PASS (P0-3b) or a current operator opt-in."""
+        if self._claude_optin_current():
             return True, ''
+        optin = self.state.get('claude_author_override') or {}
         try:
             probed = json.loads((self.run_dir / 'permission-probe.json').read_text()).get(
                 'author_permission_probe', {}).get('claude_author_status') == 'PASS'
@@ -1796,7 +1813,8 @@ class Coordinator:
         # A Claude author's PASS must be the very file permission_probe wrote (state.json shares run_dir's write protection).
         if self.args.author_vendor == 'claude' and self.state.get('permission_probe') != {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}:
             return False, 'permission-probe.json is not the report this run recorded'
-        if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'):
+        waived = self._author_probe_waived(report)   # HL-FIX: only the author's part of an UNKNOWN report, only under the operator opt-in
+        if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK') and not waived:
             return False, 'permission probe status is not PASS'
         if report.get('reviewer_flags_digest') != self.reviewer_flags_digest():
             return False, 'permission probe reviewer flags do not match this run'
@@ -1806,7 +1824,7 @@ class Coordinator:
         expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'PASS'
         if self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
             return False, 'permission probe Claude author rules do not match this run'
-        if author_probe.get('status') != expected_author_status or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
+        if (not waived and author_probe.get('status') != expected_author_status) or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
             return False, 'permission probe author permission status is not current'
         if report.get('global_config_changes', {}).get('status') != 'PASS':
             return False, 'permission probe global config changes were not fully attributed'
@@ -1905,7 +1923,7 @@ class Coordinator:
             current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
                        and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
                        and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
-            return str(report.get('status')) if current and report.get('status') != 'PASS' else ''
+            return str(report.get('status')) if current and report.get('status') != 'PASS' and not self._author_probe_waived(report) else ''   # HL-FIX: the opted-in author part is not negative evidence
         except (OSError, ValueError, AttributeError): return ''
 
     def probe_gate(self) -> tuple[bool, str]:   # run/resume/reject: a passing report, an accepted skip or a verified cache reuse (noted on stdout)
@@ -4666,7 +4684,10 @@ class Coordinator:
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
-            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made)
+            out['hardlink_refused'] = refused = cap.hardlink_refused(out['attempts'], ws, sentinel_ino)
+            for label, row in out['attempts'].items():
+                if refused and 'hardlink' in label and label != 'link_hardlink': row['not_applicable'] = 'link denied'     # raw outcome kept
+            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made, refused)
             # Classification only: the verdict above never reads the model's answer. No prescribed call made and a HOLD answer = the model declined.
             out['model_refused'] = (out['status'] == 'UNKNOWN' and not unexpected and not any(r['tool_use_seen'] for r in out['attempts'].values())
                                     and str(((result or {}).get('answer') or {}).get('status', '')).upper() == 'HOLD')

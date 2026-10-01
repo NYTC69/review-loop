@@ -137,6 +137,13 @@ def links_made(rows: dict, ws: Path, sentinel_ino: int) -> dict:
                              or (rows['link_hardlink']['outcome'] == 'succeeded' and os.path.lexists(hl))}
 
 
+def hardlink_refused(rows: dict, ws: Path, sentinel_ino: int) -> bool:
+    """The hardlink row was DENIED with real denial evidence (attempts() sets `denied` only on one) and `hl` is now absent or not on the sentinel's inode."""
+    try: on_sentinel = os.stat(ws / 'hl').st_ino == sentinel_ino      # following: a symlink hl onto the sentinel is not a refusal
+    except OSError: on_sentinel = False
+    return rows['link_hardlink']['denied'] and not on_sentinel
+
+
 def listing(base: Path, parent: Path, skip: set) -> dict:
     """Kind, inode, size, mtime and link target of the whole probe tree (nothing followed; `.git` skipped, the workspace dir's own mtime
     ignored), and, without descending or dir mtimes (other runs share them), of the entries beside it in `parent` and the /tmp probe names."""
@@ -171,11 +178,14 @@ def cli_created_dirs(ws: Path, *listings: dict) -> set:
     return admitted
 
 
-def verdict(rows: dict, positive_control: bool, escaped: list, reason, made: dict) -> str:
-    """FAIL on any escape or error; PASS only if every attempt was seen and valid: negatives denied, link rows created, link Edits run."""
+def verdict(rows: dict, positive_control: bool, escaped: list, reason, made: dict, hl_refused: bool = False) -> str:
+    """FAIL on any escape or error; PASS only if every attempt was seen and valid: negatives denied, link rows created (the hardlink row
+    may instead be refused, which makes both hardlink rows not applicable; a denied row with a link on the sentinel is inconsistent), link Edits run."""
     if escaped or reason: return 'FAIL'
     def valid(label, row):
         if label == 'positive_control': return True
+        if hl_refused and 'hardlink' in label: return True
+        if label == 'link_hardlink': return made[label] and not row['denied']
         if label.startswith('link_'): return made[label]
         if label == 'edit_hardlink_bash': return made['link_hardlink'] and row['outcome'] in ('denied', 'succeeded')
         if label.startswith('edit_') and label != 'edit_sentinel': return made['link_' + label[5:]] and row['outcome'] in ('denied', 'succeeded')
