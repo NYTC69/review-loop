@@ -1,6 +1,7 @@
 import hashlib, json, os, signal, subprocess, sys, tempfile
 from pathlib import Path
 from importlib import import_module
+safe_temp = import_module(('paired_session.' if __package__ else '') + 'safe_temp')
 spine = import_module(('paired_session.' if __package__ else '') + 'lifecycle_spine')
 def run(co, command, *, cwd, env, timeout, capture_output=True):
     root = Path(cwd).resolve(strict=True)
@@ -10,7 +11,7 @@ def run(co, command, *, cwd, env, timeout, capture_output=True):
             fake_root not in root.parents or any(p == root or p in root.parents
             for p in (co.workspace, co.run_dir)) or sys.platform != 'darwin' or not engine.is_file()):
         raise RuntimeError('candidate test write sandbox unavailable or invalid; refuse dispatch')
-    with tempfile.TemporaryDirectory(dir=co.evidence, prefix='test-tmp-') as scratch:
+    with safe_temp.directory(dir=co.evidence, prefix='test-tmp-') as scratch:
         tmp = Path(scratch).resolve()
         paths = ' '.join('(subpath ' + json.dumps(str(p), ensure_ascii=False) + ')' for p in (root, tmp))
         protected = ' '.join('(subpath ' + json.dumps(str(root / p), ensure_ascii=False) + ')'

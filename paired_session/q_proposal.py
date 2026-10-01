@@ -1,5 +1,6 @@
 import hashlib
 from importlib import import_module
+safe_temp = import_module(('paired_session.' if __package__ else '') + 'safe_temp')
 from pathlib import Path
 import tempfile
 prefix = 'paired_session.' if __package__ else ''
@@ -30,7 +31,7 @@ def materialize(baseline, revision, frozen, c1, day):
             not line.startswith(('## ', '- ', ' ', '\t')) for line in body.splitlines()):
         raise ValueError('Q requires final newline and indented child text; repair the source and re-review P')
     q_bytes = ca.close_blob(raw, frozen, c1, day)
-    with tempfile.TemporaryDirectory(dir=baseline.index.parent) as scratch:
+    with safe_temp.directory(dir=baseline.index.parent) as scratch:
         env = {**env, 'GIT_INDEX_FILE': str(Path(scratch) / 'index')}
         ct._git(['read-tree', revision.tree_oid], env=env)
         blob = ct._git_bytes(['hash-object', '-w', '--stdin'], env=env, input_bytes=q_bytes).decode().strip()
