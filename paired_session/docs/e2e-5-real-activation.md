@@ -2,10 +2,13 @@
 
 ## Scope and authority
 
-This is the activation plan for the lifecycle in docs 1–4, not permission to activate it.
-Round 47 permits offline/fake work only. The real-provider refusal and fake-only double lock remain.
-The operator delegate prepares evidence and gate disposition; activation requires recorded owner authorization.
-A provider role owns none of these actions.
+Superseded as the activation route by D12 (ADR-11, 2026-10-03): the real lifecycle will open as the
+worktree lifecycle W of [doc 6](e2e-6-worktree-lifecycle.md) (not yet implemented), under exactly the
+safety bar already accepted for real EXEC. This document now describes **post-v2.10.0 hardening** of the candidate-tree lifecycle in docs 2a–4:
+the A1–A5 gates, the activation aggregator, CW-b, A2C, A3 and the pending-dispatch window no longer block
+the default switch (the switch still needs W3b and the other ADR-6 conditions). The candidate-tree route keeps its real-provider refusal and fake-only double lock.
+The operator delegate prepares evidence and gate disposition; candidate-tree activation still requires
+recorded owner authorization. A provider role owns none of these actions.
 A fake receipt, simulated separation, passing unit test or renamed status is not real-provider evidence.
 Existing M3/M4 acceptance proves coordinator flow, not the OS isolation of real actors.
 
@@ -21,7 +24,7 @@ Evidence is stored outside every tested actor's writable roots. No role may supp
 Offline verification can establish a component contract only at the tested environment/configuration.
 Provider-bound gates additionally require an actual installed provider turn using the intended launch path.
 An activation aggregator must consume all current component and provider evidence and fail closed on drift.
-That aggregator is a later owner batch; Round 47 never changes the unconditional real-lifecycle refusal.
+That aggregator is a later owner batch; Round 47 never changes the candidate-tree real-lifecycle refusal.
 Any recorded hash, identity or version change invalidates that record and all dependent gates deterministically.
 VERIFIED never substitutes for per-run/per-dispatch checks, including teardown and hook VM firewall rechecks.
 
@@ -113,6 +116,9 @@ Dependencies: TMP, A3 and publication leases/journals. A last-minute path hash a
 
 ## Ordered implementation and activation plan
 
+Step 1 is done (R47-TMP; its error-path evidence MEDIUM is carried). Steps 2–8 are post-v2.10.0 hardening of the candidate-tree route (ADR-11);
+they do not gate the worktree lifecycle W of doc 6.
+
 1. TMP safe local cleanup; test link/error controls, no gate promotion.
 2. A3 private root allocation, transport/cache wiring and identity validation; verify only full placement evidence.
 3. A4 root guard/stdin and write-boundary receipt consumer; keep actor-lifetime requirement CLOSED.
@@ -122,7 +128,7 @@ Dependencies: TMP, A3 and publication leases/journals. A last-minute path hash a
 7. Separately authorized installed-provider probes and M6 re-check for every writer/fresh role and A3 compliance.
    Lane B owns the separate probe entry and reserved builders; it cannot advance lifecycle or emit stage receipts.
    Probe and intended production launch share an audited argv/env/policy construction with matching hashes;
-   absent equivalence evidence refuses gate verification. Probes do not bypass the real-lifecycle refusal.
+   absent equivalence evidence refuses gate verification. Probes do not bypass the candidate-tree real-lifecycle refusal.
 8. Separate activation-aggregator review consumes every gate and hook/blindness prerequisite; missing/UNKNOWN
 or residual evidence requiring an owner decision refuses activation. No implementation in Round 47 opens it.
 

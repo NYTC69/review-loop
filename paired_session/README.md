@@ -84,9 +84,11 @@ into the external profile because the two files are not layered. The CLI loads t
 and resume; explicit CLI options override it. On resume, effective settings
 must still match the saved run configuration. A changed binary or PATH requires
 a fresh permission probe before the run can continue.
-Models follow ADR-8 vendor pins (Claude: `claude-opus-5-5`; Codex:
-`gpt-6-luna`). Changing a role's vendor without updating incompatible model
-values is rejected before run state is created.
+Role models are operator-set (ADR-9); unset roles take the vendor default
+(Claude: `claude-opus-5-5`; Codex: `gpt-6-luna`), and the gate defaults to the
+author's vendor (ADR-10). Changing a role's vendor without updating incompatible model
+values is rejected before run state is created only when `allowed_models` is set, or
+for an explicit gate model of the other vendor (ADR-10 M4).
 `lifecycle_mode` defaults to `off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
 outside-workspace or wildcard doc paths are refused. `lifecycle_mode=on` is
@@ -94,6 +96,8 @@ currently refused before any model dispatch, including resume of a saved
 lifecycle state: FINISH through CLOSE and their isolation checks are not yet
 implemented. Legacy DONE/ACCEPTED, gate-off and `resume --polish` cannot enter
 the incomplete lifecycle. No real lifecycle run is enabled by these fields.
+Planned (D12, ADR-11): the real lifecycle will run as the worktree lifecycle of
+`docs/e2e-6-worktree-lifecycle.md`; it is not usable before batch W3b lands.
 
 The disabled E2E candidate-tree module can materialize a clean HEAD into an
 external scratch checkout with a separate scratch Git directory and index. It

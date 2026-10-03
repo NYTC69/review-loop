@@ -2,6 +2,8 @@
 
 Design only; lifecycle disabled. Inputs: [doc 1](e2e-1-stages-and-roles.md), [2a](e2e-2a-tree-binding.md), [2b-i](e2e-2b1-budgets.md), [2b-ii](e2e-2b2-findings-replay.md); legacy `docs/protocol/execution.md` §Quality-agent tool-use guard, §§3.6–3.7; R12-4 R1 M5/S1, R2 M8–M10. Commit/close is doc 4.
 
+Real-path note (ADR-11, D12): the real lifecycle will open as the worktree lifecycle W of [doc 6](e2e-6-worktree-lifecycle.md) (not yet implemented); the candidate-tree design here stays fake-only hardening.
+
 ## DOCS: bounded writes and a current-tree review
 
 1. Enter with current-OID POLISH-Q and no upstream blocker. A frozen docs-consistency role compares project docs with implementation and **always** checks changed comments/docstrings; record `project_docs=none` if needed (legacy §§3.6.1–3.6.2). Coordinator dispatches docs writer/reviewer and independent full-diff reviewer.
@@ -14,7 +16,7 @@ Design only; lifecycle disabled. Inputs: [doc 1](e2e-1-stages-and-roles.md), [2a
 
 For every quality/DOCS/SECURITY agent, coordinator checks provider-observed nonzero tool use **including a read of candidate diff or manifest**, current OID, frozen model/body hash and tool trace. Self-report is insufficient. Zero/missing evidence discards the result, allows one budgeted fresh retry, then records skip/failure and HOLD; it never passes (legacy tool-use guard). Legal actions: bounded extension, repair/retry or abort.
 
-M4 must provide frozen `agents/*.md` bodies for docs-consistency inspector, docs writer/reviewer, independent final reviewer, security reviewer and fixer before lifecycle activation; a missing body HOLDs before dispatch. Writers use the configured author vendor; read-only reviewers/inspector use the opposite ADR-8 vendor/model, in separate sessions. The final reviewer owns its own findings and must inspect the full candidate diff; role ownership follows doc 2b-ii.
+M4 must provide frozen `agents/*.md` bodies for docs-consistency inspector, docs writer/reviewer, independent final reviewer, security reviewer and fixer before lifecycle activation; a missing body HOLDs before dispatch. Writers use the configured author vendor; read-only reviewers/inspector use the configured reviewer vendor/model (ADR-9; same vendor allowed per ADR-11 D-8), in separate sessions. The final reviewer owns its own findings and must inspect the full candidate diff; role ownership follows doc 2b-ii.
 
 ## SECURITY: whole-repo preflight, fresh review and repair
 
