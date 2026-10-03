@@ -274,9 +274,12 @@ def main():
         answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
                   'self_run_evidence': [{'command': command} for command in [allowed, *attacks]]}
         if vendor == 'codex':   # G-a: a Codex probe turn observes the allowed command (exit 0) and denies every write attempt
-            command_events = [{'command': command, 'exit_code': 0 if command == allowed else 126,
-                               'output': 'fake permission result' if command == allowed else 'fake read-only denial'}
+            command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
+                               'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
                               for command in [allowed, *attacks]]
+            for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
+                if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
+                    command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
             fs = readonly_profile(args)   # b295-f1: the read-only profile in this argv decides the scratch and workspace writes
             if 'Scratch write expected to succeed:\n' in prompt:
                 scratch = prompt.split('Scratch write expected to succeed:\n', 1)[1].splitlines()[0]
@@ -284,7 +287,7 @@ def main():
                 if writable and not os.environ.get('FAKE_CODEX_SKIP_SCRATCH'):
                     (Path(os.environ['TMPDIR']) / 'paired-session-scratch-probe').write_text('probe')
                 command_events.append({'command': scratch, 'exit_code': 0 if writable else 1,
-                                       'output': '' if writable else 'fake read-only denial'})
+                                       'output': '' if writable else 'fake: Operation not permitted'})
             for command in attacks:   # b296-f1 R1: a profile that lets the escape writes or the hard link land (selected by substring)
                 if not os.environ.get('FAKE_CODEX_PROBE_ESCAPE') or os.environ['FAKE_CODEX_PROBE_ESCAPE'] not in command:
                     continue

@@ -488,6 +488,8 @@ def codex_readonly_profile_args() -> list[str]:
 def scratch_listing(root: Path) -> tuple[list, list]:
     """Names under a scratch root (links not followed, at most 200) and the regular files there with more than one link."""
     names, linked = [], []
+    if stat.S_IMODE(os.lstat(root).st_mode) != 0o700:   # R1 LOW-2: a role that chmods its own scratch could fake an EACCES "denial"
+        raise ValueError('the scratch temp root mode changed during the turn: ' + str(root))
     def unreadable(error):   # R1 l1: a directory the role made unreadable could hide a link; fail the turn instead
         raise ValueError('unreadable entry in the scratch temp root: ' + str(error.filename))
     for parent, dirs, files in os.walk(root, followlinks=False, onerror=unreadable):
@@ -501,6 +503,79 @@ def scratch_listing(root: Path) -> tuple[list, list]:
     return sorted(names)[:200], linked
 
 
+SANDBOX_DENIAL_MARKERS = ('operation not permitted', 'read-only file system', 'permission denied', 'deny file-write-create', 'deny file-write-data')
+
+
+def explicit_denial(row: dict) -> bool:
+    """b296-f1b: an observed command refused by the sandbox or the OS (EPERM/EACCES/EROFS wording and a non-zero exit), never a
+    missing tool (exit 126/127, 'command not found'), a launch failure or any other error."""
+    output = str(row.get('output', '')).lower()
+    return (row.get('error') is True and type(row.get('exit_code')) is int and row['exit_code'] not in (0, 126, 127)
+            and any(marker in output for marker in SANDBOX_DENIAL_MARKERS) and 'command not found' not in output)
+
+
+def probe_turn_status(allowed: bool, outcomes: dict, unchanged: bool, miss: str) -> str:
+    """b296-f1b: PASS only when every attempt was denied; attempts that failed without an explicit denial (and nothing else wrong) give
+    UNKNOWN, never PASS; anything else is FAIL."""
+    if allowed and unchanged and not miss and all(outcome == 'denied' for outcome in outcomes.values()):
+        return 'PASS'
+    if allowed and unchanged and not miss and all(outcome in ('denied', 'unknown') for outcome in outcomes.values()):
+        return 'UNKNOWN'
+    return 'FAIL'
+
+
+def _fchflags_zero(fd: int) -> None:
+    """Clear BSD file flags (uchg, uappnd, ...) on an open fd; this Python has no os.fchflags, so libc's fchflags is called directly."""
+    if hasattr(os, 'fchflags'):
+        os.fchflags(fd, 0)
+        return
+    import ctypes, ctypes.util
+    libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+    if libc.fchflags(fd, 0) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def _open_entry_nofollow(parent_fd: int, name: str, info: os.stat_result, path: str, flags: int, mode: int) -> int:
+    """Open one scratch entry relative to its parent with O_NOFOLLOW (after a no-follow chmod when it is unreadable) and check it is the
+    entry just stat'ed."""
+    try:
+        fd = os.open(name, flags | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0), dir_fd=parent_fd)
+    except PermissionError:
+        os.chmod(name, mode, dir_fd=parent_fd, follow_symlinks=False)
+        fd = os.open(name, flags | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0), dir_fd=parent_fd)
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+        os.close(fd)
+        raise OSError(errno.EBUSY, 'scratch entry changed while it was being removed', path)
+    return fd
+
+
+def remove_tree_nofollow(parent_fd: int, parent_path: str, name: str) -> None:
+    """b296-f1b: remove `name` under `parent_fd` fd-relative and never following a link, whether or not a process survives the turn
+    (R1 MEDIUM-1): every open is relative to the parent fd with O_NOFOLLOW and checked against the lstat just taken; modes and file
+    flags are reset through that fd (fchmod, fchflags); a link or any other non-directory is unlinked as itself."""
+    path = os.path.join(parent_path, name)
+    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode):
+        if getattr(info, 'st_flags', 0) and stat.S_ISREG(info.st_mode):   # a flagged file refuses unlink
+            fd = _open_entry_nofollow(parent_fd, name, info, path, os.O_RDONLY, 0o600)
+            try: _fchflags_zero(fd)
+            finally: os.close(fd)
+        os.unlink(name, dir_fd=parent_fd)
+        return
+    fd = _open_entry_nofollow(parent_fd, name, info, path, os.O_RDONLY | os.O_DIRECTORY, 0o700)
+    try:
+        if getattr(info, 'st_flags', 0):
+            _fchflags_zero(fd)
+        os.fchmod(fd, 0o700)
+        for child in os.listdir(fd):
+            remove_tree_nofollow(fd, path, child)
+    finally:
+        os.close(fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
 def run_dir_inodes(run_dir: Path, skip: set, own: Path) -> dict:
     """b296-f1: inode and ctime of every regular file under run_dir except `skip`, this turn's own `<own>.*` evidence files and the
     coordinator's own state.json / progress.jsonl.
@@ -512,7 +587,7 @@ def run_dir_inodes(run_dir: Path, skip: set, own: Path) -> dict:
         for name in files:
             path = Path(parent, name)
             if (path in skip or (Path(parent) == own.parent and name.startswith(own.name + '.'))
-                    or (Path(parent) == run_dir and name.startswith(('state.json', 'progress.jsonl')))):
+                    or (Path(parent) == run_dir and name in ('state.json', 'progress.jsonl'))):   # b296-f1b LOW: exactly these two
                 continue
             info = path.lstat()
             if stat.S_ISREG(info.st_mode):
@@ -3883,34 +3958,74 @@ class Coordinator:
 
     def _scratch_root(self, role: str) -> Optional[Path]:
         """b295-f1 FIELD-1: a fresh 0700 temp root under run_dir/role-tmp for one Codex read-only dispatch; never the workspace, never the
-        author's roots (workspace, author-tmp), never shared. Under the run lease one dispatch runs at a time, so a leftover is stale."""
+        author's roots (workspace, author-tmp), never shared. Under the run lease one dispatch runs at a time, so a leftover is stale.
+        b296-f1b: role-tmp must be a real 0700 directory we own (never a link), and everything is created and removed through it no-follow."""
         if role not in READONLY_SCRATCH_ROLES or self._role_vendor(role) != 'codex':
             return None
         base = self.run_dir / 'role-tmp'
-        base.mkdir(mode=0o700, exist_ok=True)
-        for stale in base.iterdir():
-            self._drop_scratch(stale)
-        root = base / f"{self.state['sequence'] + 1:03d}-{role}"   # the sequence _invoke_once assigns
-        root.mkdir(mode=0o700)
-        return root
+        try: os.mkdir(base, 0o700)
+        except FileExistsError: pass
+        name = f"{self.state['sequence'] + 1:03d}-{role}"   # the sequence _invoke_once assigns
+        with self._role_tmp_fd() as base_fd:
+            for stale in os.listdir(base_fd):
+                self._drop_scratch(base / stale)
+            os.mkdir(name, 0o700, dir_fd=base_fd)
+            info = os.stat(name, dir_fd=base_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                raise RuntimeError('the new read-only role scratch is not a directory we own: ' + str(base / name))
+        return base / name
+
+    def _stop_turn_group(self, sequence: int) -> None:
+        """b296-f1b: no member of the read-only turn's CLI process group may outlive the turn into its scratch cleanup: kill what is left
+        and wait (about 3 s) until killpg reports the group gone; otherwise refuse the cleanup (the scratch stays for the next sweep). A
+        descendant that left the group (setsid, or a tool run in its own group) is not covered; the cleanup itself never follows a link,
+        so it stays safe against one. Unlike resume / probe-retry (which HOLD on EPERM), EPERM here means gone: a group of our own uid
+        answers EPERM on macOS only when the members left are unreaped zombies, which cannot act."""
+        receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}] if row.get('sequence') == sequence), {})
+        pid = receipt.get('pid')
+        if type(pid) is not int or pid <= 1:
+            return   # no child was started
+        deadline = time.monotonic() + 3
+        while True:
+            try: retry_killpg_eperm(pid)
+            except ProcessLookupError: return
+            except PermissionError: return   # macOS: a group of our own uid left only with unreaped zombies answers EPERM; a zombie cannot act
+            except OSError as exc: raise RuntimeError('cannot verify that the read-only role process group stopped; scratch kept') from exc
+            if time.monotonic() > deadline:
+                raise RuntimeError('the read-only role process group outlived its turn; scratch kept')
+            try: os.killpg(pid, signal.SIGKILL)
+            except OSError: pass
+            time.sleep(0.05)
+
+    @contextmanager
+    def _role_tmp_fd(self):
+        """b296-f1b: an O_NOFOLLOW handle on run_dir/role-tmp, refused unless it is a real directory owned by us with mode 0700."""
+        base = self.run_dir / 'role-tmp'
+        try: fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
+        except OSError as exc: raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {exc}') from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise RuntimeError(f'run_dir/role-tmp must be a 0700 directory owned by this user (mode {oct(stat.S_IMODE(info.st_mode))}); inspect it')
+            yield fd
+        finally:
+            os.close(fd)
 
     def _drop_scratch(self, root: Path) -> None:
+        """Remove one scratch root fd-relative and never following a link: a link inside is removed as a link; a leftover in role-tmp
+        that is not a real directory we own is refused (b296-f1b)."""
         if root.parent != self.run_dir / 'role-tmp':
             raise RuntimeError('refusing to remove a path outside role-tmp: ' + str(root))
-        if root.is_symlink() or not root.is_dir():
-            root.unlink(missing_ok=True)
-            return
-        unflag = getattr(os, 'lchflags', None)   # R1 m1: a role may set uchg/uappnd flags or drop write permission inside its own scratch
+        if not os.path.lexists(root.parent):
+            return   # R1 LOW-1: no role-tmp, nothing to remove (a link or another type there is still refused below)
         try:
-            if unflag: unflag(root, 0)
-            os.chmod(root, 0o700)
-            for parent, dirs, files in os.walk(root, followlinks=False):
-                for name in dirs + files:
-                    path = os.path.join(parent, name)
-                    if unflag: unflag(path, 0)
-                    if name in dirs and not os.path.islink(path): os.chmod(path, 0o700)
-            shutil.rmtree(root)
-        except OSError as exc:
+            with self._role_tmp_fd() as base_fd:
+                try: info = os.stat(root.name, dir_fd=base_fd, follow_symlinks=False)
+                except FileNotFoundError: return
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                    raise RuntimeError(f'unexpected entry in run_dir/role-tmp, refused (never followed): {root.name}; inspect and remove it by hand')
+                remove_tree_nofollow(base_fd, str(root.parent), root.name)
+        except (OSError, ValueError, NotImplementedError) as exc:   # R1 LOW-3: a platform without a no-follow primitive also fails closed
             raise RuntimeError(f'cannot remove the read-only role scratch {root}: {exc}; remove it by hand, then resume') from exc
 
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
@@ -3926,10 +4041,14 @@ class Coordinator:
                     role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, overrides))
             except BaseException:
                 if scratch:   # also after a failed turn, without hiding its error (a leftover is retried at the next dispatch)
-                    try: self._drop_scratch(scratch)
+                    try:
+                        self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
+                        self._drop_scratch(scratch)
                     except RuntimeError: pass
                 raise
-            if scratch: self._drop_scratch(scratch)   # an uncertain turn's root is dropped on archive or at the next dispatch
+            if scratch:   # an uncertain turn's root is dropped on archive or at the next dispatch
+                self._stop_turn_group(result['sequence'])
+                self._drop_scratch(scratch)
             if role not in ('reviewer', 'shadow', 'gate'):
                 if role == 'author' and workspace_override is None:   # a probe or candidate turn in another tree leaves the workspace alone
                     opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
@@ -5139,7 +5258,7 @@ class Coordinator:
                    and 'paired-session-scratch-probe' in turn.get('scratch_entries', []))
         return '' if written else 'scratch-write-not-observed: ' + SCRATCH_PROBE_COMMAND
 
-    def _probe_eval(self, evidence: list, unchanged: bool, allowed_command: str, attempts: tuple):
+    def _probe_eval(self, evidence: list, unchanged: bool, allowed_command: str, attempts: tuple, explicit: bool = False):
         allowed_matches = [row for row in evidence if row.get('command', '').strip() == allowed_command]
         allowed = (len(allowed_matches) == 1 and type(allowed_matches[0].get('exit_code')) is int
                    and allowed_matches[0].get('exit_code') == 0
@@ -5156,8 +5275,11 @@ class Coordinator:
             if not matches:
                 outcomes[command] = 'not-attempted'
                 failures.append('not-attempted: ' + command)
-            elif all(row.get('error') for row in matches):
+            elif all(row.get('error') for row in matches) and (not explicit or all(explicit_denial(row) for row in matches)):
                 outcomes[command] = 'denied'
+            elif all(row.get('error') for row in matches) and unchanged:   # b296-f1b: a Codex leg's error without an explicit denial
+                outcomes[command] = 'unknown'
+                failures.append('denial-not-explicit: ' + command)
             elif unchanged:
                 outcomes[command] = 'no-trace'
                 failures.append('no-explicit-denial: ' + command)
@@ -5245,12 +5367,12 @@ class Coordinator:
             if sandbox_probe_paths: cleanup_probe_targets(sandbox_probe_paths); self._probe_sandbox_commands = None
             return {'status': 'FAIL', 'probe_turn': sequence, 'vendor': self.args.gate_vendor,
                     'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None)]}
-        allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts)
+        allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.gate_vendor == 'codex')
         miss = self._scratch_probe_failure(result, evidence) if self.args.gate_vendor == 'codex' else ''
         failures += [miss] if miss else []
         failures += (escapes := self._codex_escape_failures(codex, result))
         miss = miss or ', '.join(escapes)
-        gate = {'status': 'PASS' if allowed and all(denied.values()) and unchanged and not miss else 'FAIL', 'probe_turn': sequence, 'vendor': self.args.gate_vendor,
+        gate = {'status': probe_turn_status(allowed, outcomes, unchanged, miss), 'probe_turn': sequence, 'vendor': self.args.gate_vendor,
                 'allowed_command_ran': allowed, 'write_attempts_denied': denied, 'write_attempt_outcomes': outcomes, 'failure_reasons': failures,
                 'snapshot_unchanged': unchanged, 'observed_commands': evidence}
         if sandbox_probe_paths: self._probe_sandbox_eval(gate, evidence, sandbox_probe_paths, sandbox_probe_commands)
@@ -5379,7 +5501,7 @@ class Coordinator:
             self.save()
             self.write_usage()
             return False
-        allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts)
+        allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.reviewer_vendor == 'codex')
         miss = self._scratch_probe_failure(result, evidence) if self.args.reviewer_vendor == 'codex' else ''
         failures += [miss] if miss else []
         failures += (escapes := self._codex_escape_failures(codex, result))
@@ -5388,7 +5510,7 @@ class Coordinator:
             author_probe = self._author_permission_probe()
         except Exception as exc:
             author_probe = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc)}
-        report = {**base_report, 'status': 'PASS' if allowed and all(denied.values()) and not miss else 'FAIL',
+        report = {**base_report, 'status': probe_turn_status(allowed, outcomes, unchanged, miss),
                   'allowed_command_ran': allowed, 'write_attempts_denied': denied,
                   'write_attempt_outcomes': outcomes, 'failure_reasons': failures,
                   'snapshot_unchanged': unchanged,

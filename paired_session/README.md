@@ -240,17 +240,27 @@ workspace read-only, only `$TMPDIR` writable, network off) instead of
 `sandbox_mode="read-only"`, with TMPDIR/TMP/TEMP set to a fresh 0700
 `<run_dir>/role-tmp/<seq>-<role>` for that one dispatch, so a `tmp_path`-style
 test has a usable temp dir. The coordinator lists that root in the turn's
-receipt and removes it after the turn (also after a failed turn, clearing file
-flags and modes first; an uncertain turn's root when it is archived or at the
-next dispatch); a regular file with more than one link, or an unreadable
-directory, left there fails the turn. The reviewer and gate flags digests
+receipt and removes it after the turn (also after a failed turn; an uncertain
+turn's root when it is archived or at the next dispatch). Removal first stops what is
+left of the turn's CLI process group (a descendant that left the group is not
+covered; if the group cannot be confirmed gone the scratch is kept, and a
+successful turn then HOLDs), then works through directory handles, resetting
+modes and file flags through open file descriptors, and never follows a link
+even if a process survives: `role-tmp` must be a real 0700 directory owned by this user, a link or
+any other leftover entry there is refused, and inside a scratch a link is
+removed as a link while modes and file flags are reset without following one.
+A regular file with more than one link, an unreadable directory, or a changed
+mode of the scratch root itself, left in the scratch fails the turn. The reviewer and gate flags digests
 change, so an older probe PASS or probe-pass cache entry no longer matches:
 re-run `permission-probe`. A Codex probe or gate-probe turn must now write its
 own `$TMPDIR` and must be refused each of: a write to `/tmp`, to the user temp
 dir, to the run dir, to `role-tmp` beside its own scratch (`$TMPDIR/..`), to the
 context, every workspace write, and `ln <run-dir file> "$TMPDIR/..."` (a hard
 link into its scratch); every target must be absent and the link source keep a
-single link afterwards. Only that real probe shows that `codex exec` honours the
+single link afterwards. A leg counts as refused only on an explicit sandbox or
+OS denial (Operation not permitted, Permission denied, Read-only file system,
+a sandbox deny line) with a non-zero exit; `command not found` (exit 127), exit
+126 or any other error makes the probe UNKNOWN, never PASS. Only that real probe shows that `codex exec` honours the
 profile; the tests use fake CLIs, and the probe runs fresh turns only (see
 resume turns below).
 
@@ -263,7 +273,8 @@ every regular file under the run dir before the turn and fails the turn on any
 change until the CLI process exits (making a link, writing through it or
 changing mode, flags or times all move the ctime, which no process can set
 back), so a link made, written through and removed within one turn is caught.
-That check does not cover `state.json` and `progress.jsonl`, which the
+That check does not cover exactly `state.json` and `progress.jsonl` (no other
+names), which the
 coordinator writes during the turn (`state.json` is replaced atomically from
 the in-memory state after the turn; a write through a link survives only a
 coordinator crash before that save; `progress.jsonl` is display only), the

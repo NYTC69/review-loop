@@ -5,6 +5,7 @@ permission profile. Only a real permission-probe shows that."""
 import json
 import os
 import stat
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -146,6 +147,115 @@ class ScratchProbeTests(unittest.TestCase):
         self.h.run_dir = self.h.root / 'claude-roles'
         claude = self.co('--reviewer-vendor', 'claude', '--gate-vendor', 'claude')
         self.assertNotIn('codex_readonly_profile', claude.reviewer_flags())
+
+
+class NoFollowCleanupTests(unittest.TestCase):                                              # b296-f1b (v2.9.6 cross-vendor review)
+    locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
+
+    def outside(self):
+        target = self.root / 'outside'
+        (target / 'keep').mkdir(parents=True)
+        (target / 'keep' / 'child.txt').write_text('keep\n')
+        os.chmod(target, 0o755)
+        return target
+
+    def assert_untouched(self, target):
+        self.assertEqual(((target / 'keep' / 'child.txt').read_text(), stat.S_IMODE(target.stat().st_mode)), ('keep\n', 0o755))
+
+    def test_a_symlinked_or_loose_role_tmp_is_refused_and_nothing_outside_is_touched(self):
+        co = self.coordinator(*CODEX_ROLES)
+        target = self.outside()
+        (co.run_dir / 'role-tmp').symlink_to(target)
+        with self.assertRaisesRegex(RuntimeError, 'role-tmp is not a real directory'):
+            co._scratch_root('reviewer')
+        with self.assertRaisesRegex(RuntimeError, 'role-tmp is not a real directory'):
+            co._drop_scratch(co.run_dir / 'role-tmp' / 'keep')
+        self.assert_untouched(target)
+        self.assertEqual(sorted(os.listdir(target)), ['keep'])
+        (co.run_dir / 'role-tmp').unlink()
+        (co.run_dir / 'role-tmp').mkdir(mode=0o755)
+        os.chmod(co.run_dir / 'role-tmp', 0o755)
+        with self.assertRaisesRegex(RuntimeError, 'must be a 0700 directory'):
+            co._scratch_root('reviewer')
+
+    def test_a_symlinked_scratch_is_refused_and_a_link_inside_a_scratch_is_removed_as_a_link(self):
+        co = self.coordinator(*CODEX_ROLES)
+        target = self.outside()
+        os.mkdir(co.run_dir / 'role-tmp', 0o700)
+        (co.run_dir / 'role-tmp' / '001-reviewer').symlink_to(target)                       # a leftover scratch that is a link
+        with self.assertRaisesRegex(RuntimeError, 'unexpected entry in run_dir/role-tmp, refused'):
+            co._scratch_root('reviewer')
+        with self.assertRaisesRegex(RuntimeError, 'unexpected entry'):
+            co._drop_scratch(co.run_dir / 'role-tmp' / '001-reviewer')
+        self.assert_untouched(target)
+        (co.run_dir / 'role-tmp' / '001-reviewer').unlink()
+        scratch = co._scratch_root('shadow')
+        (scratch / 'to-dir').symlink_to(target)                                              # links inside the scratch pointing outside
+        (scratch / 'to-file').symlink_to(target / 'keep' / 'child.txt')
+        (scratch / 'sub').mkdir()
+        (scratch / 'sub' / 'deep').symlink_to(target / 'keep')
+        (scratch / 'sub' / 'locked').write_text('x')
+        os.chmod(scratch / 'sub' / 'locked', 0)                                               # R1: unreadable, flagged file and flagged dir
+        if hasattr(os, 'chflags'):
+            os.chmod(scratch / 'sub' / 'locked', 0o600)
+            os.chflags(scratch / 'sub' / 'locked', stat.UF_IMMUTABLE)
+            os.chflags(scratch / 'sub', stat.UF_IMMUTABLE)
+        co._drop_scratch(scratch)
+        self.assertFalse(scratch.exists() or scratch.is_symlink())
+        self.assert_untouched(target)
+        self.assertEqual(stat.S_IMODE((target / 'keep').stat().st_mode), 0o755)
+
+    def test_a_missing_role_tmp_needs_no_cleanup_and_a_chmod_of_the_scratch_root_fails_the_turn(self):   # R1 LOW-1, LOW-2
+        co = self.coordinator(*CODEX_ROLES)
+        co._drop_scratch(co.run_dir / 'role-tmp' / '001-reviewer')                            # nothing to remove, no error
+        scratch = co._scratch_root('reviewer')
+        os.chmod(scratch, 0o500)
+        with self.assertRaisesRegex(ValueError, 'scratch temp root mode changed'):
+            rc.scratch_listing(scratch)
+        co._drop_scratch(scratch)
+        self.assertFalse(scratch.exists())
+
+    def test_cleanup_first_stops_what_is_left_of_the_turns_process_group(self):
+        co = self.coordinator(*CODEX_ROLES)
+        left = subprocess.Popen(['sleep', '30'], start_new_session=True)
+        for _ in range(100):                                                                 # the child has become its group's leader
+            if os.getpgid(left.pid) == left.pid: break
+            __import__('time').sleep(0.02)
+        co.state['turns'].append({'sequence': 7, 'role': 'shadow', 'pid': left.pid})
+        co._stop_turn_group(7)
+        self.assertIsNotNone(left.wait(timeout=5))
+        co._stop_turn_group(8)                                                               # no child started: nothing to stop
+
+    def test_the_ctime_exemption_is_exactly_state_json_and_progress_jsonl(self):
+        co = self.coordinator(*CODEX_ROLES)
+        for name in ('state.json', 'progress.jsonl', 'state.json.backup', 'progress.jsonl.1'):
+            (co.run_dir / name).write_text('x')
+        seen = {Path(path).name for path in rc.run_dir_inodes(co.run_dir, set(), co.evidence / '001-exec-reviewer')}
+        self.assertTrue({'state.json.backup', 'progress.jsonl.1'} <= seen)
+        self.assertFalse({'state.json', 'progress.jsonl'} & seen)
+
+
+class ExplicitDenialTests(unittest.TestCase):                                               # b296-f1b
+    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
+
+    def test_only_an_explicit_sandbox_denial_counts_as_refused(self):
+        row = lambda code, output: {'error': code != 0, 'exit_code': code, 'output': output}
+        for code, output in ((1, 'ln: x: Operation not permitted'), (1, 'zsh: permission denied: x'), (2, 'Read-only file system')):
+            self.assertTrue(rc.explicit_denial(row(code, output)), output)
+        for code, output in ((127, 'zsh: command not found: ln'), (126, 'Permission denied'), (1, 'ln: invalid option'),
+                             (1, 'zsh: command not found: Operation not permitted'), (0, 'Operation not permitted'), (None, 'Operation not permitted')):
+            self.assertFalse(rc.explicit_denial(row(code, output)), (code, output))
+        for env, needle in (({'FAKE_CODEX_PROBE_NOT_FOUND': 'ln '}, 'ln '), ({'FAKE_CODEX_PROBE_OTHER_ERROR': '/tmp/paired-session-codex-escape-'}, '/tmp/'),
+                            ({'FAKE_CODEX_PROBE_OTHER_ERROR': 'forbidden-probe'}, 'forbidden-probe')):
+            with self.subTest(env=env), patch.dict(os.environ, env):
+                self.h.run_dir = self.h.root / ('unknown-' + needle.strip(' /'))
+                report = self.probe(self.co(*CODEX_ROLES))
+                self.assertEqual(report['status'], 'UNKNOWN', report['failure_reasons'])        # 127 / another error is never PASS
+                self.assertTrue(any(reason.startswith('denial-not-explicit: ') and needle in reason for reason in report['failure_reasons']))
+        with patch.dict(os.environ, {'FAKE_CODEX_PROBE_NOT_FOUND': 'ln '}):                  # the Codex gate probe too
+            self.h.run_dir = self.h.root / 'unknown-gate'
+            report = self.probe(self.co('--reviewer-vendor', 'claude', '--gate-vendor', 'codex'))
+            self.assertEqual((report['status'], report['gate_permission_probe']['status']), ('UNKNOWN', 'UNKNOWN'))
 
 
 if __name__ == '__main__':
