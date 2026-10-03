@@ -55,7 +55,7 @@ def parse_grep_chains(block):
 
 
 def protocol_grep_chains():
-    source = Path(__file__).resolve().parents[1] / 'docs/protocol/execution.md'
+    source = Path(__file__).resolve().parent / 'testdata/legacy-sensitive-3.7.1-v2.8.4.md'
     section = source.read_text(encoding='utf-8').split('### 3.7.1', 1)[1].split('### 3.7.2', 1)[0]
     return parse_protocol_section(section)
 

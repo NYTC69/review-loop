@@ -170,8 +170,20 @@ a written target or failed positive check FAILs. The report states
 UNKNOWN still blocks the overall probe.
 The Codex capability guard scans local user, project, system and file-managed
 config, macOS `com.openai.codex` MDM preferences, and MCP/app bundles in the
-active CODEX_HOME plugin cache. It does not rely on an unverified plugin-disable
-override. Managed feature settings and unreadable MDM preferences fail closed.
+active CODEX_HOME plugin cache. Every Codex dispatch (author, reviewer, gate,
+probe) passes `-c features.plugins=false`, which makes cached bundles inert
+(empirical evidence: `.compass/results/2026-10-01_cg-codex-plugin-evidence.md`;
+`apps = false` or `remote_plugin = false` alone is not relied on). The argv is
+bound into the reviewer, gate and author flags digests. The guard still reports
+cached bundles unless the effective `$CODEX_HOME/config.toml` itself sets
+`[features] plugins = false`, so a ChatGPT default home (`chatgpt-global`,
+`openai-curated-remote`) HOLDs. Recipe for a dedicated `CODEX_HOME`:
+`[features]` with `remote_plugin = false`, `plugins = false`, `apps = false`.
+MCP servers declared in config.toml are flagged either way. Managed feature
+settings and unreadable MDM preferences fail closed. After its Codex turns the
+permission probe runs the guard again; a new finding FAILs the probe.
+A missing `config.toml` (a fresh `codex login` home) is an empty config for the
+probe controls and the config digest.
 The scanner runs at the author probe and before each Codex dispatch; the author
 config digest remains part of the probe binding. This reflects the
 [OpenAI plugin packaging](https://developers.openai.com/plugins/build/plugins)
@@ -195,6 +207,8 @@ is `UNKNOWN`. A missing or malformed attempt stays `UNKNOWN` for that target;
 only the D1(b) filesystem and synthetic conditions above can qualify residual
 risk. `permission-probe.json`
 records per-target evidence and cleanup.
+What a Codex author cannot do inside this sandbox: see
+"Codex author sandbox: what a work item cannot do" below.
 Escape sentinels live in coordinator-created dedicated directories. The probe
 records each directory's before/after mtime, ctime, link count and sorted
 listing. A new entry FAILs; a changed directory with no entry stays UNKNOWN.
@@ -221,6 +235,17 @@ Other probe writes remain outside that allowlist. Claude's session `TMPDIR` is
 shared scratch per UID on macOS; paired-session keeps workflow state outside it
 and denies writes to the run directory. Bash sandbox results do not establish
 direct `Edit` or `Write` safety for a Claude author.
+The sandboxed Claude CLI creates an empty `<workspace>/.claude/.cc-writes`
+directory by itself; the Claude author probe admits exactly `.claude` and an
+empty `.claude/.cc-writes` (real directories owned by the current uid). Anything
+inside, any other `.claude` entry or a link is still an escape. Git-based
+workspace guards never see empty directories, so no other check changed.
+The Claude author probe prompt states that it is an operator-authorized self-test in a
+disposable, probe-owned tree, that a denial is the expected success and must not be
+worked around, and asks for each tool result verbatim. The model's status and findings
+never decide PASS or FAIL; the filesystem, the exact tool_use accounting and the sentinel
+do. If the model makes no prescribed tool call and answers HOLD, the probe is `UNKNOWN`
+with reason `author-model-refused` and a message that the model declined to run it.
 Read-only Claude roles receive the read tools as one rule and each exact
 argument-bearing Bash command as its own `--allowedTools` argument.
 
@@ -229,7 +254,11 @@ The probe records hashes for the effective `$CODEX_HOME/config.toml` (or
 persist a trust entry for a new workspace. Only an exact insertion of
 `[projects."<this run's workspace>"] trust_level = "trusted"` at a TOML table
 boundary is attributed; the report warns `global config mutated by codex CLI
-trust persistence`. The file is **not** byte-identical in that case. Any other
+trust persistence`. In a linked worktree Codex trusts the main checkout root of the
+workspace's own repository instead; that path is accepted too, and nothing else.
+Attribution removes exactly one such block per path (plus at most one blank
+line) and the remainder must equal the earlier file byte for byte.
+The file is **not** byte-identical in that case. Any other
 Codex change fails; Claude plugin `lastUpdated` is attributed separately.
 The coordinator never edits or restores the user's global config. `--skip-probe`
 is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider
@@ -368,6 +397,40 @@ as a comparison path during staged migration.
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
 protocol transitions and permissions-command construction; the runtime
 permission probe is the effective check against the installed Codex CLI.
+
+### Codex author sandbox: what a work item cannot do
+
+A Codex author runs under the `workspace-write` sandbox (writes confined to the
+workspace and the run-owned temp dir; `network_access` is off). Real runs on
+this machine (poker-tools, 2026-10-01) showed three things a work item cannot do
+there:
+
+- Postgres `initdb` fails (`shmget` returns EPERM), so a test database cannot be
+  created inside the sandbox.
+- Unix-socket connections to a server running outside the sandbox fail; they
+  work only with network access enabled, which the author policy keeps off.
+- iOS builds and the simulator are unavailable: the Swift macro plugin server
+  answers "malformed response" under the nested sandbox, and the connection to
+  CoreSimulatorService is refused.
+
+A work item that needs one of these will stall or fail in the author turn, not
+in the permission probe. Options for the operator:
+
+1. Pick a Claude author (`--author-vendor claude`) for that item. It needs a
+   passing Claude-author permission-probe, or the documented
+   `--accept-unverified-claude-author --reason` opt-in, which is the operator's
+   own decision (see the probe section above). The opt-in waives only the
+   Claude author's probe part: a report that is UNKNOWN solely because the author
+   probe could not prove the sandbox (author-model-escape-unknown or
+   author-model-refused) then passes the run/resume/reject gate, while a reviewer
+   or gate probe failure, a config change or any escape still blocks and
+   `--accept-probe-skip` is still refused for them.
+2. Split out the step that needs the capability and keep the rest in the work item.
+3. Run that step outside paired-session, by hand, and feed the result back as
+   ordinary workspace content.
+
+Do not loosen the sandbox to make such an item pass; the probe PASS and the
+safety rows in `docs/1c-safety-controls.md` are bound to the sandbox as probed.
 
 ### Fake closeout item admission (offline only)
 

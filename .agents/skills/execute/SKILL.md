@@ -8,11 +8,14 @@ description: "Codex Stage 1 execute skill. Run the execution + quality polish + 
 Read `docs/protocol/loading.md`, then run:
 
 ```bash
-python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-execute
+python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-execute --output .review-loop/tmp/protocol-entry-execute.md
 ```
 
 Resolve <support-root> to this plugin/repository, not the task workspace.
-Keep cwd in the user's workspace. Read the complete emitted text before acting.
+Keep cwd in the user's workspace. After exit 0, read the complete output file
+in bounded chunks before acting; stdout contains only a compact hash/size receipt,
+not the instruction body. A missing, unreadable, or incompletely read file blocks the action.
+Run every loader call as its own Bash command, never chained (rule in `docs/protocol/loading.md`).
 `docs/protocol/loading.json` is the action/prerequisite map for both runtimes.
 
 Validate the three mutually-exclusive entry modes before locking. Run session-init for a fresh plan/review-only target, or resume for an existing session; then execution → execution-review → gate → polish → docs → security → delivery. Honor every --stop-after boundary.
@@ -29,7 +32,7 @@ reviewer jobs (never in Claude Code or for local Codex Reviewer agents); load
 `context-persist` only when that optional substep is applicable.
 
 Single default Claude-CLI reviewer job:
-`python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --model {resolved_reviewer_model}`
+`python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model} --stage execution --role reviewer --timeout-seconds 570`
 Rules: `docs/protocol/runtime-codex.md` §Reviewer dispatch.
 
 The caller owns the session file and lock. Preserve unrelated dirty work;

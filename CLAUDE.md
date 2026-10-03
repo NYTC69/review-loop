@@ -6,11 +6,11 @@
 
 **Root cause (found 2026-09-19, fixed in v2.8.2):** `tools:` is a list of tool names. The old values `read-only` and `all` are not tool names, so Claude Code resolved every review-loop agent to **zero tools**. Older Claude Code versions spawned them anyway, giving `tool_uses: 0` and hallucinated output; Claude Code 2.1.278 refuses the spawn with `would be spawned with zero tools — unrecognized [read-only]` (or `[all]`). This was never a sandbox restriction on plugin agents.
 
-**Fix:** read-only agents declare `tools: Read, Grep, Glob, Bash` (no Edit/Write); agents that edit files (`executor`, `code-simplifier`) omit `tools` and inherit everything. Never put a policy word in `tools:` — valid values are tool names, `*`, or an omitted field.
+**Fix:** read-only agents declare `tools: Read, Grep, Glob, Bash` (no Edit/Write; `reviewer` declares `Read, Grep, Glob`); agents that edit files (`executor`, `code-simplifier`) omit `tools` and inherit everything. Never put a policy word in `tools:` — valid values are tool names, `*`, or an omitted field.
 
 **History:** first seen with Executor (`tools: all`) in commit `8506809`, then with `code-simplifier` (2026-04-06) and `rust-reviewer` (issue #3). Each time the conclusion was "plugin agent types are sandboxed", so the protocol switched to `subagent_type: general-purpose` with the agent body inlined in the prompt.
 
-**Rule**: When adding ANY new agent invocation, always use `subagent_type: general-purpose` with inlined body. Never use `subagent_type: review-loop:<name>`. The agents now resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work.
+**Rule**: Every writer-agent invocation uses `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. The agents resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work. Report-only reviewers instead use the enforced native CLI boundary in `docs/protocol/reviewer-runtime.md`; a writable general-purpose agent cannot serve as a permission boundary.
 
 ### README.md must stay intact (lint SSOT dependency)
 
@@ -62,7 +62,7 @@ natural-language only. Full step-by-step + verification:
 
 - Codex skills live under `.agents/skills/`.
 - Codex subagents live under `.codex/agents/*.toml`.
-- Codex invokes `python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}` with the script path resolved against the support repository and cwd kept in the task workspace. Its child contract is `claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model MODEL < prompt-file`; `--verbose` is required for print-mode stream-json.
+- Codex invokes `python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} --stage {planning|execution} --role reviewer --timeout-seconds 570` with the script path resolved against the support repository and cwd kept in the task workspace. Its child contract is `claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model MODEL < prompt-file`; `--verbose` is required for print-mode stream-json.
 - Run the wrapper and child outside the Codex sandbox. Poll only bounded heartbeat/status output; never stream or poll raw reviewer logs into the orchestrator context. Retain `.review-loop/tmp/{session_id}-reviewer-stream.jsonl` and `{session_id}-reviewer-stderr.log` as audit artifacts. On wrapper exit `0` only, read `{session_id}-reviewer-result.txt` in the same directory, then apply the existing schema and triage gates. Exits `1`, `2`, and `3` mean command execution, JSON parsing, and missing `result` respectively.
 - Sandbox diagnostic caveat: a sandboxed `claude -p` rehearsal is not a valid
   substitute for the real Codex reviewer path. If the sandboxed call fails,
@@ -85,8 +85,8 @@ natural-language only. Full step-by-step + verification:
   `claude -p` shell-out behind the wrapper, with the same required `--verbose`
   flag as parallel dispatch; only N>1 fans out via
   `python3 scripts/review_verification.py --jobs <path> --output <path>`.
-  Claude/plugin-side reviewer dispatch is in-process Agent-tool
-  dispatch and is not externally wrappable.
+  Both native reviewer transports use the same isolated, bounded launchers.
+  Parallel scheduling wraps those launchers and retains per-invocation usage.
 
 - **Stage-scoped instructions** — the six entry skills use
   `docs/protocol/loading.md` and `scripts/read_protocol.py` to read exact
@@ -119,7 +119,7 @@ This principle applies to: MemPalace context retrieval (Step 1.6), any future Gr
 
 ## Agent Invocation Pattern
 
-All Claude/plugin-side agents must follow this pattern:
+Claude/plugin-side writer agents follow this pattern:
 
 ```
 Agent tool parameters:
@@ -130,7 +130,7 @@ Agent tool parameters:
     <task-specific instructions here>
 ```
 
-This applies to the Claude/plugin-side agents: executor, reviewer, code-reviewer, silent-failure-hunter, comment-analyzer, type-design-analyzer, pr-test-analyzer, code-simplifier, go-reviewer, rust-reviewer, python-reviewer, frontend-security-reviewer.
+This applies to writer roles such as executor, code-simplifier and test-consolidation authors. Report-only reviewer/specialist roles use `scripts/run_claude_reviewer.py` or `scripts/run_codex_reviewer.py`, with caller-produced verification evidence.
 
 Codex Stage 1 runtime agents are defined separately under `.codex/agents/*.toml`
 and do not use this Claude-specific invocation pattern.
@@ -139,8 +139,8 @@ and do not use this Claude-specific invocation pattern.
 
 Even with `general-purpose`, agents may not use tools and fabricate output. Two defenses:
 
-1. **Agent-side**: All language agents (rust/go/python/frontend-security) have a `**MANDATORY**` tool-use instruction at the top of their `.md` body.
-2. **Orchestrator-side**: After every agent call, check `tool_uses` in metadata. If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report.
+1. **Agent-side**: All language agents (rust/go/python/frontend-security) open their `.md` body with an instruction to run the analysis commands and read every in-scope file before any analysis, and to base the report only on that output.
+2. **Orchestrator-side**: After every agent call, check `tool_uses` in the Agent metadata; after every report-only launcher call, check the integer `tool_uses` in the launcher summary (missing or `null` fails closed). If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report.
 
 <!-- 迁移自 README.md:1-4 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
 ## Migrated — README.md:1-4

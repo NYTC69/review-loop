@@ -15,12 +15,12 @@
     "planning_round_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Planner"
+      "needle": "### Round 1 \u2014 Planner"
     },
     "execution_round_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Executor"
+      "needle": "### Round 1 \u2014 Executor"
     },
     "execution_round_recorded_numbered": {
       "kind": "artifact_contains",
@@ -30,7 +30,7 @@
     "execution_round_recorded_appended_form": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Execution"
+      "needle": "### Round 1 \u2014 Execution"
     },
     "execution_round_recorded_exec_review_only_form": {
       "kind": "artifact_contains",
@@ -45,12 +45,12 @@
     "reviewer_round_1_recorded_roleform": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Reviewer"
+      "needle": "### Round 1 \u2014 Reviewer"
     },
     "reviewer_round_1_recorded_review_only_form": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "### Round 1 — Execution (review-only)"
+      "needle": "### Round 1 \u2014 Execution (review-only)"
     },
     "reviewer_round_1_recorded_execution_round_review_only_form": {
       "kind": "artifact_contains",
@@ -66,6 +66,20 @@
       "kind": "artifact_contains",
       "artifact": "session-final.md",
       "needle": "no-op execution round"
+    },
+    "orchestrator_direct_author_route_recorded": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "- Author route: orchestrator-direct"
+    },
+    "last_round_direct_noop_bound": {
+      "kind": "session_last_round_direct_noop",
+      "artifact": "session-final.md"
+    },
+    "attributable_delta_empty": {
+      "kind": "artifact_contains",
+      "artifact": "session-final.md",
+      "needle": "(no attributable change)"
     },
     "reviewer_backend_codex_metadata": {
       "kind": "artifact_contains",
@@ -84,7 +98,7 @@
     "reviewer_prompt_user_supplied_provenance_marker_advisory_phrase": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "(plan_source: user-supplied — plan conformance is advisory/MINOR)"
+      "needle": "(plan_source: user-supplied \u2014 plan conformance is advisory/MINOR)"
     },
     "reviewer_prompt_user_supplied_provenance_marker_plan_source_key": {
       "kind": "artifact_contains",
@@ -140,6 +154,11 @@
       "kind": "artifact_contains",
       "artifact": "response.txt",
       "needle": "Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle."
+    },
+    "codex_stage1_downstream_lifecycle_unicode_arrow": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "exec → polish → docs → security → delivery"
     },
     "codex_stage1_downstream_stop_points_mentioned": {
       "kind": "artifact_contains",
@@ -306,6 +325,36 @@
       "artifact": "response.txt",
       "needle": "Codex Stage 1 assumes a single orchestrator-owned workspace for the session."
     },
+    "workspace_authority_works_single": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 works in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_works_one": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 works in one orchestrator-owned workspace"
+    },
+    "workspace_authority_operates_single": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 operates in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_operates_one": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 operates in one orchestrator-owned workspace"
+    },
+    "workspace_authority_runs_single": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 runs in a single orchestrator-owned workspace"
+    },
+    "workspace_authority_runs_one": {
+      "kind": "artifact_contains",
+      "artifact": "response.txt",
+      "needle": "Codex Stage 1 runs in one orchestrator-owned workspace"
+    },
     "plan_source_reviewer_approved": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
@@ -324,7 +373,7 @@
     "review_only_sentinel_present": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "(none — review-only mode)"
+      "needle": "(none \u2014 review-only mode)"
     },
     "review_target_section_present": {
       "kind": "artifact_contains",
@@ -419,7 +468,7 @@
     "review_only_sentinel_line_1": {
       "kind": "artifact_contains",
       "artifact": "session-final.md",
-      "needle": "(none — review-only mode)"
+      "needle": "(none \u2014 review-only mode)"
     },
     "review_only_sentinel_line_2": {
       "kind": "artifact_contains",
@@ -582,7 +631,8 @@
       "members": [
         "codex_stage1_downstream_lifecycle_exact",
         "codex_stage1_downstream_lifecycle_paraphrase",
-        "codex_stage1_downstream_lifecycle_codeblock"
+        "codex_stage1_downstream_lifecycle_codeblock",
+        "codex_stage1_downstream_lifecycle_unicode_arrow"
       ]
     },
     "codex_stage1_downstream_stop_points_mentioned": {
@@ -649,7 +699,13 @@
         "workspace_authority_paraphrase",
         "workspace_authority_one_workspace",
         "workspace_authority_assumes_one_workspace",
-        "workspace_authority_uses_one_workspace"
+        "workspace_authority_uses_one_workspace",
+        "workspace_authority_works_single",
+        "workspace_authority_works_one",
+        "workspace_authority_operates_single",
+        "workspace_authority_operates_one",
+        "workspace_authority_runs_single",
+        "workspace_authority_runs_one"
       ]
     },
     "reviewer_prompt_user_supplied_provenance_marker": {
@@ -692,6 +748,21 @@
       "members": [
         "execution_round_recorded",
         "noop_execution_outcome_recorded"
+      ]
+    },
+    "orchestrator_direct_noop_round": {
+      "mode": "all",
+      "members": [
+        "orchestrator_direct_author_route_recorded",
+        "attributable_delta_empty",
+        "last_round_direct_noop_bound"
+      ]
+    },
+    "agent_calls_subagent_or_direct_noop": {
+      "mode": "any",
+      "members": [
+        "agent_calls_used_at_least_one_subagent",
+        "orchestrator_direct_noop_round"
       ]
     },
     "review_loop_planning_or_review_only_route_recorded": {
@@ -1049,7 +1120,7 @@
       },
       {
         "path": "docs/protocol/reviewer-output.md",
-        "needle": "- [CRITICAL] <description> — must be resolved before proceeding"
+        "needle": "- [CRITICAL] <description> \u2014 must be resolved before proceeding"
       },
       {
         "path": ".codex/agents/review-loop-reviewer.toml",
@@ -1057,7 +1128,7 @@
       },
       {
         "path": "docs/protocol/reviewer-output.md",
-        "needle": "- [MINOR] <description> — recommended improvement"
+        "needle": "- [MINOR] <description> \u2014 recommended improvement"
       },
       {
         "path": ".codex/agents/review-loop-reviewer.toml",
@@ -1199,13 +1270,13 @@
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "unless the user explicitly opts into the local Codex reviewer."
+        "needle": "`codex_reviewer_backend: codex` explicitly selects"
       }
     ],
     "codex_claude_reviewer_outside_sandbox": [
       {
         "path": "docs/protocol/planning.md",
-        "needle": "Run **outside** the Codex sandbox."
+        "needle": "Run the wrapper outside the parent Codex"
       },
       {
         "path": "README.md",
@@ -1213,7 +1284,7 @@
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "Run the Claude call outside the sandbox."
+        "needle": "run outside the parent Codex sandbox."
       }
     ],
     "codex_stage1_cheap_model_noop": [
@@ -1269,7 +1340,7 @@
       },
       {
         "path": ".agents/skills/review-loop/SKILL.md",
-        "needle": "after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone."
+        "needle": "after approval continue execution \u2192 execution-review \u2192 gate \u2192 polish \u2192 docs \u2192 security \u2192 delivery. Do not stop after exec alone."
       },
       {
         "path": "skills/guide/SKILL.md",
@@ -1277,7 +1348,7 @@
       },
       {
         "path": "skills/review-loop/SKILL.md",
-        "needle": "after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone."
+        "needle": "after approval continue execution \u2192 execution-review \u2192 gate \u2192 polish \u2192 docs \u2192 security \u2192 delivery. Do not stop after exec alone."
       }
     ],
     "codex_stage1_downstream_stop_points": [
@@ -1301,7 +1372,7 @@
     "codex_stage1_full_delivery_gate": [
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`."
+        "needle": "Codex Stage 1: `{exec, polish, docs, security} \u2286 completed_stages`."
       },
       {
         "path": "docs/protocol/session-file.md",
@@ -1309,7 +1380,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Codex Stage 1: `{exec, polish, docs, security} ⊆ completed_stages`."
+        "needle": "Codex Stage 1: `{exec, polish, docs, security} \u2286 completed_stages`."
       }
     ],
     "codex_stage1_quality_focus_real": [
@@ -1677,27 +1748,27 @@
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "never implement a CRITICAL that\n  failed triage"
+        "needle": "validate the shared schema, then the mandatory six-field rubric with"
       }
     ],
     "gate_rubric_revalidation": [
@@ -1805,7 +1876,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        "needle": "Run `python3 scripts/evidence_ledger.py --session {uuid} route --path\n   <each path the change will touch>...`"
       },
       {
         "path": "docs/protocol/planning.md",
@@ -1817,7 +1888,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        "needle": "Run `python3 scripts/evidence_ledger.py --session {uuid} route --path\n   <each path the change will touch>...`"
       },
       {
         "path": "docs/protocol/planning.md",
@@ -1875,11 +1946,11 @@
     "adversarial_gate_adapter_verdicts": [
       {
         "path": "docs/protocol/execution.md",
-        "needle": "| `0` | APPROVE — mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies."
+        "needle": "| `0` | APPROVE \u2014 mint `exec`, then proceed to Step 3.5 unless `--stop-after before-polish` applies."
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "| `1` | REQUEST_CHANGES — do not mint `exec`;"
+        "needle": "| `1` | REQUEST_CHANGES \u2014 do not mint `exec`;"
       }
     ],
     "route_facts_before_author_dispatch": [
@@ -1889,7 +1960,7 @@
       },
       {
         "path": "docs/protocol/execution.md",
-        "needle": "Run `python3 scripts/evidence_ledger.py route --session {uuid} --path\n   <each path the change will touch>...`"
+        "needle": "Run `python3 scripts/evidence_ledger.py --session {uuid} route --path\n   <each path the change will touch>...`"
       },
       {
         "path": "docs/protocol/execution.md",
@@ -1904,6 +1975,154 @@
       {
         "path": "docs/protocol/execution.md",
         "needle": "acceptance criteria is not automatically CRITICAL. A material change to\nuser intent, observable behavior, safety, authorization, data integrity,\nor an explicit constraint"
+      }
+    ],
+    "entry_implicit_legacy_notice": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+      }
+    ],
+    "entry_invalid_value_warning": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+      }
+    ],
+    "entry_unreadable_warning": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+      }
+    ],
+    "entry_experimental_routing_notice": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+      }
+    ],
+    "entry_non_fresh_state_warning": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry is paired-session but"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "review-loop: entry is paired-session but"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: entry is paired-session but"
+      }
+    ],
+    "entry_exact_values_only": [
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "exact values only"
+      },
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "exact values `legacy` and `paired-session` only"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "exact values `legacy` and `paired-session` are accepted"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "exact values `legacy` and `paired-session` only"
+      }
+    ],
+    "legacy_command_ignores_entry": [
+      {
+        "path": "skills/legacy/SKILL.md",
+        "needle": "ignore the `entry` key"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "`/review-loop:legacy <work item>` ignores `entry`"
+      }
+    ],
+    "entry_codex_implicit_legacy_notice": [
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or ask for \"the legacy review-loop workflow\" explicitly"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "its implicit-entry notice names that phrase instead of the slash command"
+      }
+    ],
+    "entry_codex_legacy_control_phrase": [
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "\"use the\n  legacy review-loop workflow\""
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "use the legacy review-loop workflow"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "use the legacy review-loop workflow"
+      }
+    ],
+    "entry_codex_handoff_target": [
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "`.agents/skills/paired-session`"
+      },
+      {
+        "path": "paired_session/docs/1d-entry-mapping.md",
+        "needle": "`.agents/skills/paired-session`"
+      }
+    ],
+    "paired_session_skill_configured_handoff_permitted": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`"
+      }
+    ],
+    "paired_session_skill_bare_request_prohibition_cases": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "(key absent, invalid, legacy, or"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "(key absent, invalid, legacy, or"
       }
     ]
   }

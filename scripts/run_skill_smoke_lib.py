@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -135,6 +136,60 @@ def select_primary_session_path(stdout: str, root: Path, before_sessions: set[Pa
     return None
 
 
+def claude_plugin_source(command: list, root: Path) -> dict:
+    """Meta fields for the plugin a claude case loads; {} when the command passes no --plugin-dir."""
+    root_text = root.as_posix()
+    if "--plugin-dir" in command:
+        index = command.index("--plugin-dir") + 1
+        target = command[index] if index < len(command) else ""
+    elif any('--plugin-dir "$WT"' in item for item in command):
+        target = command[-1]  # bash -lc script; WT="$1" is the last argument
+    else:
+        return {}
+    if target != root_text:
+        raise ValueError("--plugin-dir must be the worktree under test")
+    manifest = json.loads((root / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+    return {"plugin_dir": root_text, "plugin_version": manifest["version"]}
+
+
+def load_gate(events_path: Path, root: Path, meta: dict, status: str, reason: str) -> tuple[str, str]:
+    """Record plugins_loaded in meta; a review-loop plugin loaded from outside the worktree fails the case."""
+    try:
+        plugins = json.loads(events_path.read_text(encoding="utf-8")).get("plugins_loaded") or []
+    except (OSError, ValueError, AttributeError):
+        return status, reason
+    if plugins:
+        meta["plugins_loaded"] = plugins
+    for item in plugins:
+        if "review-loop" in str(item.get("name", "")) and Path(str(item.get("path", ""))).resolve() != root.resolve():
+            note = f"review-loop plugin loaded from {item.get('path')!r}, not the worktree"
+            return "fail", note + ("; " + reason if status == "fail" else "")
+    return status, reason
+
+
+def last_round_direct_noop(text: str) -> tuple[bool, str]:
+    """The LAST execution round records author route orchestrator-direct and its own delta table is empty."""
+    text = re.sub(r"^```.*?^```", "", text, flags=re.M | re.S)  # quoted headings in code fences never count
+    heads = list(re.finditer(r"^### Execution Round (\d+)[^\n]*$", text, re.M))
+    meta = re.search(r"^## Session Metadata\n(.*?)(?=^## |\Z)", text, re.M | re.S)  # only inside this section
+    if not heads or not (meta and re.search(r"^- entry_point: \S", meta.group(1), re.M)):
+        return False, "not a session file with an execution round"
+    last = max(heads, key=lambda m: (int(m.group(1)), m.start()))
+    body = text[last.end():]
+    section = body[:end.start()] if (end := re.search(r"^(?:## |### Execution Round )", body, re.M)) else body
+    if re.findall(r"^- Author route: (\S+)\s*$", section, re.M) != ["orchestrator-direct"]:
+        return False, f"round {last.group(1)} does not record author route orchestrator-direct"
+    if "### Attributable Delta" not in section:  # the packet is rewritten in full by each round
+        packets = re.findall(r"^## Current Review Packet\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+        section = packets[0] if len(packets) == 1 else ""  # zero or several candidates fail closed
+    table = re.search(r"^### Attributable Delta\n(.*?)(?=^#|\Z)", section, re.M | re.S)
+    rows = [[c.strip() for c in r.strip("| ").split("|")] for r in (table.group(1).splitlines() if table else [])
+            if r.startswith("|")][2:]
+    if not rows or any(len(c) < 5 or c[2] != "(no attributable change)" or set(c[3:]) != {"—"} for c in rows):
+        return False, f"round {last.group(1)} attributable delta is missing or has change rows"
+    return True, f"round {last.group(1)}: orchestrator-direct with an empty attributable delta"
+
+
 def _protocol_command(command: str):
     """Recognize only a direct loader invocation, never infer shell execution."""
     if "read_protocol.py" not in command:
@@ -170,7 +225,7 @@ def _protocol_command(command: str):
             if not re.fullmatch(r"[a-z0-9_-]+@[a-f0-9]{64}", value):
                 raise ValueError("invalid loaded fingerprint")
             loaded.append(value)
-        elif option in ("--runtime", "--stage", "--root") and option not in options:
+        elif option in ("--runtime", "--stage", "--root", "--output") and option not in options:
             options[option] = value
         else:
             raise ValueError("unknown or repeated loader argument")
@@ -178,7 +233,12 @@ def _protocol_command(command: str):
         raise ValueError("loader runtime/stage missing or invalid")
     if "--root" in options and (root / options["--root"]).resolve() != root:
         raise ValueError("loader source root differs from capture repository")
-    return options["--runtime"], options["--stage"], set(loaded)
+    output = options.get("--output")
+    if output is not None:
+        output_path = Path(output)
+        if output_path.is_absolute() or output_path.parts[:2] != (".review-loop", "tmp"):
+            raise ValueError("loader output is outside .review-loop/tmp")
+    return options["--runtime"], options["--stage"], set(loaded), output
 
 
 def _protocol_units(runtime, stage):
@@ -192,7 +252,7 @@ def _fingerprint(unit):
 
 
 def _verified_protocol_load(call, block, available):
-    runtime, stage, loaded = call["command"]
+    runtime, stage, loaded, output = call["command"]
     if block.get("is_error", False) is not False:
         raise ValueError("loader tool_result failed")
     content = block.get("content")
@@ -211,8 +271,22 @@ def _verified_protocol_load(call, block, available):
         f"<!-- {_fingerprint(unit)}; source: {unit['path']} -->\n{unit['body']}"
         for unit in emitted
     )
-    if content != expected:
-        raise ValueError("loader result differs from complete source bodies/fingerprints")
+    if output is None:
+        if content != expected:
+            raise ValueError("loader result differs from complete source bodies/fingerprints")
+    else:
+        try:
+            receipt = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError("loader output receipt is not JSON") from exc
+        expected_receipt = {
+            "protocol_output": output,
+            "sha256": hashlib.sha256(expected.encode("utf-8")).hexdigest(),
+            "bytes": len(expected.encode("utf-8")),
+            "lines": len(expected.splitlines()),
+        }
+        if receipt != expected_receipt:
+            raise ValueError("loader output receipt differs from resolved bundle")
     fingerprints = [_fingerprint(unit) for unit in units]
     return {"tool": "ProtocolLoad", "tool_use_id": call["id"],
             "runtime": runtime, "stage": stage, "context": call["context"],
@@ -220,7 +294,7 @@ def _verified_protocol_load(call, block, available):
             "emitted": [_fingerprint(unit) for unit in emitted],
             "reused": [fp for fp in fingerprints if fp in loaded],
             "instruction_bytes": sum(unit["bytes"] for unit in emitted),
-            "output_bytes": len(content.encode("utf-8"))}
+            "output_bytes": len(expected.encode("utf-8"))}
 
 
 def protocol_stages_loaded(payload, assertion):
@@ -292,6 +366,7 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
     assistant_seen = False
     result_seen = False
     parse_errors = 0
+    error_details, plugins_loaded, seen_errors, label = [], [], 0, ""
     protocol_errors = []
     pending = {}
     available: dict[str, set[str]] = {}
@@ -302,6 +377,8 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
         line = raw.strip()
         if not line:
             continue
+        error_details += [label] * (parse_errors - seen_errors)  # one entry per error since the last event
+        seen_errors, label = parse_errors, "invalid json line"
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -311,6 +388,9 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
             parse_errors += 1
             continue
         etype = event.get("type")
+        label = f"{etype}/{event.get('subtype')}"
+        if label == "system/init" and isinstance(event.get("plugins"), list):
+            plugins_loaded = [p for p in event["plugins"] if isinstance(p, dict)]
         context = event.get("context_id") or event.get("parent_tool_use_id") or "root"
         if not isinstance(context, str):
             parse_errors += 1
@@ -392,6 +472,7 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
         elif etype not in ("system", "stream_event", "rate_limit_event"):
             parse_errors += 1
 
+    error_details += [label] * (parse_errors - seen_errors)
     schema_errors = []
     if not assistant_seen:
         schema_errors.append("no 'type=assistant' events observed — possible CLI schema drift")
@@ -403,6 +484,8 @@ def parse_stream_json_capture(text: str) -> tuple[dict, str]:
         "events": tool_events,
         "schema_errors": schema_errors,
         "parse_errors": parse_errors,
+        "parse_error_details": error_details[:20],
+        "plugins_loaded": plugins_loaded,
         "protocol_errors": protocol_errors + [f"loader {tool_id} has no tool_result" for tool_id in pending],
     }
     return payload, result_text
@@ -437,6 +520,8 @@ def finalize_stream_capture_artifact(artifact_path: Path, text_path: Path) -> bo
     else:
         normalized, result_text = parse_stream_json_capture(text)
         _atomic_write_text(artifact_path, json.dumps(normalized, indent=2) + "\n")
+        raw_tail = text.encode("utf-8")[-5 * 1024 * 1024:].decode("utf-8", "ignore")  # size-capped, tail kept
+        _atomic_write_text(artifact_path.with_name("raw-stream.jsonl"), raw_tail)
 
     _atomic_write_text(text_path, result_text)
     return True

@@ -6,9 +6,8 @@ When the orchestrator decides to dispatch N>1 independent reviewer rounds in
 the same wall-clock window (for example a polish-stage parallel sweep),
 shell out once to the conflict-aware parallel scheduler in
 `scripts/review_verification.py` instead of looping the single-shot path
-serially. N=1 dispatch keeps the single-shot invocation above
-byte-identical — argv, stdin handoff, model resolution, and temp-file
-lifecycle are unchanged.
+serially. N=1 uses the same native launcher as parallel jobs; permissions,
+timeouts and usage semantics are shared through `reviewer-runtime.md`.
 
 Build `<jobs.json>` as a JSON list of objects with one entry per reviewer
 round, matching the schema accepted by `_load_jobs` in
@@ -30,67 +29,49 @@ round, matching the schema accepted by `_load_jobs` in
   only: a Codex model, or empty to omit `-m`. Never apply `judgment_model`
   or the Claude-tier fallback to these Codex CLI jobs.
 - `timeout_secs` (optional, default `300.0`)
-- `conflict_keys`, `capacity_keys`, `extra_argv`, `worktree` (optional;
-  omit unless overriding scheduler defaults)
+- `stage`, `role` (optional, default `review` and `reviewer`) — record the
+  actual stage and specialist name so cost is attributable.
+- `conflict_keys`, `capacity_keys`, `worktree` (optional; omit unless
+  overriding scheduler defaults)
+- `extra_argv` must be absent or empty: arbitrary native flags could defeat the
+  read-only permission boundary and are rejected.
 
-Inline `prompt_text` directly in the JSON object — do not write per-job
-prompt files yourself; the scheduler renders each job's `prompt_text` to
-`.review-loop/tmp/{session_id}-reviewer-prompt.{job_id}.txt` internally
-and hands the FD to the spawned `claude -p` via stdin redirection (per
-`scripts/review_verification.py:457-459` Scheduler docstring and
-`:648-651` `_run_one`). For `runtime: "codex"` jobs (the Codex Stage 1
-fan-out path documented in this section), per-job stdout is captured by
-the scheduler via `subprocess.PIPE` and surfaced through each
-`<results.json>` entry's `stdout` field — there is no per-job output
-file. For `runtime: "claude_code"` jobs (the Claude-Code orchestrator's
-`codex exec -o` fan-out, not used here), per-job stdout is written to
-`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt`.
+Inline `prompt_text` in each job. The scheduler creates a unique job directory
+and a wrapper-compatible prompt slot, then invokes `run_claude_reviewer.py`
+(`runtime: codex`) or `run_codex_reviewer.py` (`runtime: claude_code`). The
+historical runtime names identify the caller, not the child backend.
 
-Invoke the scheduler outside the sandbox:
+Invoke the scheduler outside the parent sandbox:
 
 `python3 scripts/review_verification.py --jobs .review-loop/tmp/{session_id}-jobs.json --output .review-loop/tmp/{session_id}-results.json`
 
-`<results.json>` is a JSON list of objects, one per job, each carrying
-`job_id`, `returncode`, `stdout`, `stderr`, `timed_out`, `parsed_verdict`,
-`parsed_issues`, and `error`. For every entry:
+Results contain `job_id`, `returncode`, `stdout`, `stderr`, `timed_out`,
+`parsed_verdict`, `parsed_issues`, `error`, `status`, `result_file`, `usage_file`,
+`tool_uses` and `invocation_id`. `stdout` is a bounded wrapper-status tail, never the raw
+model stream. If `error` is non-null, `timed_out` is true, `returncode` is nonzero
+or `status` is not `ok`, record the actual failure and do not accept a verdict.
+Every parallel reviewer requires a positive integer `tool_uses`; missing, `null`,
+or zero is a failed job and cannot pass `--fail-on-any`. The caller may retry a
+zero-tool job once where its stage policy allows it; quality, docs and security
+roles require exactly one such retry before reporting failure.
 
-- If the entry's `error` field is non-null, or `timed_out` is true, or
-  `returncode` is non-zero, classify as a **command-execution failure**
-  for the round's failure-mode taxonomy and record `error`, the last
-  4 KB of `stderr`, `timed_out`, and `returncode` in `## Review History`.
-  Do not attempt to parse `stdout` for that entry — the per-entry
-  diagnostic fields take precedence over stream-json parse outcome.
-- Treat the per-entry `stdout` field as the same stream-json byte stream
-  the single-shot path reads from `claude -p`. Find the line where
-  `type == "result"` and use its `result` field as the reviewer output.
-- Validate that `result` against the shared reviewer schema in
-  `docs/protocol/reviewer-output.md`. The orchestrator remains the single
-  authority for verdict extraction and schema validation; the scheduler's
-  own `parsed_verdict` / `parsed_issues` are best-effort metadata only
-  per `scripts/review_verification.py:12-17` and must not be substituted
-  for orchestrator-side validation.
-- Then run `python3 scripts/finding_triage.py check --input <result file>`
-  on every validated `result` (mandatory rubric gate); an `incomplete`
-  result is a reviewer schema validation failure for that entry, discarded
-  as malformed and recorded as `rubric_incomplete: finding #n missing
-  <fields>`.
-- Apply the same per-round failure-mode taxonomy as the single-shot path
-  (command execution / JSON parsing / missing `result` / reviewer schema
-  validation) when recording `## Review History`.
+A wrapper whose descendant cleanup failed or whose process tree could not be
+inspected reports `error: reviewer_cleanup_failed`, distinct from
+`reviewer_timeout`. The scheduler's schema check sets `error` only for
+`role: reviewer`; a specialist's raw report keeps best-effort parse metadata.
 
-After the round completes (success or failure), delete every per-job
-prompt file `.review-loop/tmp/{session_id}-reviewer-prompt.{job_id}.txt`,
-every `runtime: "claude_code"` per-job output file
-`.review-loop/tmp/{session_id}-reviewer-output.{job_id}.txt` (absent for
-the `runtime: "codex"` path used in this section), and the
-`.review-loop/tmp/{session_id}-jobs.json` /
-`.review-loop/tmp/{session_id}-results.json` artifacts, matching the
-single-shot prompt-cleanup discipline.
+Only after a clean invocation, read `result_file`; validate the shared schema
+and run `python3 scripts/finding_triage.py check --input <result file>`.
+`parsed_verdict` / `parsed_issues` are convenient metadata, not a replacement
+for the orchestrator's schema/rubric gate. Incomplete rubric fields invalidate
+that review and never authorize a code change.
 
-Per-job prompt files are scheduler-owned and may already be unlinked
-when the orchestrator's cleanup runs (the scheduler unlinks them in its
-own `finally:` per `scripts/review_verification.py:646`); treat ENOENT
-as success and do not surface it. The `<jobs.json>` / `<results.json>`
-artifacts are orchestrator-owned — a non-ENOENT failure to delete them
-should be logged as a warning in `## Review History` but must not block
-the round verdict.
+The outer scheduler allows bounded cleanup grace beyond the child's deadline,
+so timeouts/cancellation can publish failure usage. It forwards cancellation to
+wrappers and cleans remaining descendants. A late output cannot change a job's
+finished result. Parallel capacity/conflict controls still apply.
+
+Keep immutable invocation raw logs, prompts and usage records for audit. The
+scheduler retains them in a unique job directory for offline verification. Keep
+them in the ignored artifact area until the session is closed; do not delete
+another invocation's files or any unrelated session artifact.

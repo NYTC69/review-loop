@@ -7,9 +7,12 @@ argument-hint: "[aspects: code|errors|comments|types|tests|simplify|all] [parall
 # Comprehensive Code Review
 
 Run a comprehensive code review using multiple specialized agents, each focusing
-on a different aspect of code quality. Agents are invoked via the Agent tool and
-run with read-only access to the project (except code-simplifier which needs
-write access).
+on a different aspect of code quality. Report-only reviewers use fresh isolated
+native CLI processes; `code-simplifier` remains a writer via the Agent tool.
+
+At entry, read [the reviewer runtime contract](../../docs/protocol/reviewer-runtime.md).
+Its launcher, permission, completion, and accounting requirements apply to every
+report-only dispatch below. A general-purpose Agent is not a read-only boundary.
 
 **Review Aspects (optional):** "$ARGUMENTS"
 
@@ -76,31 +79,53 @@ When `all` is selected, determine applicable aspects based on the changed files:
 
 ## Step 3 — Launch Review Agents
 
-For each applicable aspect, invoke the corresponding agent via the **Agent tool**.
+For each applicable report-only aspect, use the isolated native launcher below.
+The `simplify` writer has its own Agent invocation after these reviews.
 
-### All agents (code, errors, comments, types, tests, simplify)
+### Report-only agents (code, errors, comments, types, tests)
 
-All agents are invoked via `subagent_type: general-purpose` with the agent's
-full body inlined in the prompt; the review-loop protocol does not use plugin
-agent types (before v2.8.2 their `tools:` frontmatter was invalid, so they got
-zero tools).
+Inline the selected role body into the raw report prompt below and save that
+same prompt to `.review-loop/tmp/{invocation_slot}-reviewer-prompt.txt`. Include
+the absolute target repository path. Give each aspect/attempt a unique slot.
+Keep cwd in the task workspace and resolve the launcher against the support
+repository:
 
-**Read-only agents** (code, errors, comments, types, tests):
+```sh
+python3 <support-root>/scripts/run_claude_reviewer.py --session-id <invocation_slot> --parent-session-id <session_id> --model <resolved-model> --stage polish --role <agent-name> --timeout-seconds 570
+```
+
+Keep the existing judgment/cheap tier rules in the dispatch inventory. Its
+`else omit` means no judgment-tier override: omit `--model` and use the Claude
+CLI runtime default. Record the actual model only when the CLI reports it. Do
+not silently select a different tier or launch a writable Agent.
+
+Reviewers only read/search. The caller materializes the diff and runs any
+required static analysis or tests, then supplies artifact paths, commands,
+exit statuses, and relevant output. The runtime boundary takes precedence over
+any role-body instruction to use Bash, install tools, or modify files. Preserve
+the aspect's raw report format; do not wrap it in a planning-review schema.
 
 ```
-Agent tool parameters:
-  subagent_type: general-purpose
+Native reviewer prompt:
   prompt: |
     {contents of agents/<agent-name>.md body}
 
     Review the following code changes. Focus on your area of expertise.
-    IMPORTANT: Report only, do not modify any files.
+    Report only; do not modify files.
+    Use read/search tools only; inspect the caller-provided verification
+    evidence and request missing checks instead of executing commands yourself.
+
+    ## Target Repository
+    {absolute task repository path}
 
     ## Changed Files
     {list of changed file paths}
 
     ## Diff
     {git diff output}
+
+    ## Caller Verification Evidence
+    {artifact paths, commands, exit statuses, relevant output, or no checks run}
 
     Provide your findings as a structured report with:
     - **Critical Issues** (must fix)
@@ -111,7 +136,7 @@ Agent tool parameters:
     Reference specific files and line numbers where possible.
 ```
 
-Agent name mapping (all use `subagent_type: general-purpose` with agent body inlined):
+Role mapping (inline each role body into the native launcher prompt):
 - `code` → inline `agents/code-reviewer.md` body
 - `errors` → inline `agents/silent-failure-hunter.md` body
 - `comments` → inline `agents/comment-analyzer.md` body
@@ -125,15 +150,21 @@ Concrete dispatch inventory:
 - `review_pr_type_design_analyzer_dispatch` -> `type-design-analyzer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
 - `review_pr_pr_test_analyzer_dispatch` -> `pr-test-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
 
-**Hallucination guard**: After each agent returns, check the Agent tool metadata. If `tool_uses: 0`, the agent did not actually read files or run commands — its output is fabricated. Discard the result and retry once. If the retry also has `tool_uses: 0`, skip this agent and report the failure.
+**Completion and inspection evidence**: Accept a report only when launcher exit
+is 0 and returned `status` is `ok`; read its returned `result_file` and validate
+the aspect's report. Retain `invocation_id`, `tool_uses`, `stream_file`, `stderr_file`, and `usage_file` from the
+native return metadata. Use the launcher’s `tool_uses` count; do not read the
+raw stream into context. A missing or null count is unverified and fails closed.
+If zero tool uses are confirmed, discard the report and retry once with a new
+slot; if still zero, skip this aspect and report the failure. Never reuse a previous result as fresh.
 
 ### The `simplify` aspect
 
 The `code-simplifier` agent modifies files to apply simplifications.
 
 **CRITICAL — single spawning path**: Do NOT use `subagent_type: review-loop:code-simplifier`.
-The protocol spawns every agent through `general-purpose` (see `CLAUDE.md`, plugin agent `tools:` frontmatter).
-Always use `subagent_type: general-purpose` with the agent's full body inlined in the
+This writer uses `general-purpose`; report-only reviewers use the native
+launcher above. Use `subagent_type: general-purpose` with the agent's full body inlined in the
 prompt:
 
 ```
@@ -175,8 +206,8 @@ to the next.
 
 ### Parallel mode
 
-Launch all read-only agents simultaneously (multiple Agent tool calls in one
-response). Wait for all to complete, then:
+Launch all report-only reviewers simultaneously through the same isolated
+native launcher, using distinct prompt/artifact slots. Wait for all to complete, then:
 1. Display all findings together
 2. Run `simplify` last if selected (never in parallel — it modifies files)
 
@@ -241,7 +272,7 @@ If `simplify` was run, also note:
 **Parallel review:**
 ```
 /review-loop:review-pr all parallel
-# Launches all applicable agents in parallel
+# Runs report-only aspects in parallel, then simplify last
 ```
 
 **Combine:**
@@ -254,44 +285,33 @@ If `simplify` was run, also note:
 
 ## Agent Descriptions
 
-**code-reviewer** (`review-loop:code-reviewer`):
+**code-reviewer**:
 - Checks CLAUDE.md / project guideline compliance
 - Detects bugs, logic errors, and anti-patterns
 - Reviews general code quality and style
 
-**silent-failure-hunter** (`review-loop:silent-failure-hunter`):
+**silent-failure-hunter**:
 - Finds silent failures and swallowed errors
 - Reviews catch blocks and error propagation
 - Checks error logging adequacy
 
-**comment-analyzer** (`review-loop:comment-analyzer`):
+**comment-analyzer**:
 - Verifies comment accuracy vs actual code
 - Identifies comment rot and stale docs
 - Checks documentation completeness
 
-**type-design-analyzer** (`review-loop:type-design-analyzer`):
+**type-design-analyzer**:
 - Analyzes type encapsulation and invariants
 - Reviews type design quality
 - Rates invariant expression strength
 
-**pr-test-analyzer** (`review-loop:pr-test-analyzer`):
+**pr-test-analyzer**:
 - Reviews behavioral test coverage
 - Identifies critical test gaps
 - Evaluates test quality and assertions
 
-**code-simplifier** (via `general-purpose` — has write access):
+**code-simplifier** (has write access):
 - Simplifies complex or verbose code
 - Improves clarity and readability
 - Applies project standards
 - Preserves all existing functionality
-
----
-
-## Tips
-
-- **Run early**: before creating a PR, not after
-- **Focus on changes**: agents analyze `git diff` by default
-- **Address critical first**: fix high-priority issues before lower priority
-- **Re-run after fixes**: verify issues are resolved
-- **Use specific aspects**: target what you care about to save time
-- **Parallel for speed**: use `parallel` when you want all results at once

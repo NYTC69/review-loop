@@ -1,5 +1,136 @@
 # Changelog
 
+## 2026-10-01
+
+### v2.9.4：沙箱拒绝建硬链接也能让 Claude 作者探测通过；作者放行只豁免作者那部分探测；FAIL 后探测缓存作废（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：升级后已有的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.4` 运行。
+- **fix（HL-FIX）**：Claude 作者探测中，沙箱拒绝创建硬链接现在算通过：
+  - 拒绝创建，作者自建硬链接这条路就从源头关上了；
+  - 前提是拒绝有真实证据，且事后 `hl` 不在 sentinel 的 inode 上；
+  - 两个硬链接写入行记为 `not_applicable: link denied`，原始结果照录。
+  v2.9.3 上真实 CLI（Opus 5.5）拒绝 `ln`，探测因此只能停在 UNKNOWN，永远无法 PASS。任何 escape、sentinel 被改、意外的 tool_use 仍然是 FAIL。符号链接链不变。
+- **fix（HL-FIX）**：`--accept-unverified-claude-author --reason` 现在只豁免作者探测这一部分：
+  - reviewer 探测通过（需要 gate 探测时 gate 也要通过），只差作者探测时，run、resume 和 reject 都能过探测关；
+  - reviewer 或 gate 探测失败、配置变更、任何 escape 仍然拦截，`--accept-probe-skip` 对这些情形仍被拒绝；
+  - 放行仍绑定 actor、理由和 author flags 的 digest，flags 一变就永久作废。
+  v2.9.3 上放行记录了，但 run 仍被「permission probe status is not PASS」拒绝，operator 只能换一个从没探测过的 run 目录。
+- **fix（F4）**：同一个 key 的探测之后没通过（FAIL、UNKNOWN 等）时，旧的探测通过缓存会被作废（写 VOID 墓碑，之后拒绝复用）。作废写不进去也删不掉时，报告和终端会给出显眼的 `PROBE CACHE ENTRY NOT VOIDED` 警告；探测的结论不受影响。
+- **docs（DOC-SBX）**：README 新增一节，说明 Codex 作者在 workspace-write 沙箱里做不了的事（例如编 iOS、跑 Postgres initdb）。
+- **审查**：B 道由 Sonnet 5.5 执行，gpt-6.1-sol 逐批审查。F4 经过 3 轮（R1、R2 各 1 个 MAJOR，R3 通过），DOC-SBX 和 HL-FIX 都是 R1 通过。
+- **已知限制**：新的硬链接判定和放行范围只用 fake CLI 验证过，真实 CLI 上能否 PASS 要 operator 重新跑一次探测确认。A 道 Round 47 及之后的提交不在这次发版里，真实生命周期仍然关闭。
+
+### v2.9.3：Claude 作者探测改写、实时进度日志、gate 默认用作者厂商；并入 fake PLAN→close 生命周期（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：升级后已有的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.3` 运行。
+- **fix（PR-REF）**：Claude 作者的权限探测指令改写为 operator 授权的一次性自测：
+  - 说明预期结果是 harness 拒绝每一次越界写入，被拒绝就是测试要的成功；
+  - 要求逐字回报每次尝试的工具结果；
+  - 不再要求「无 findings 的 APPROVE」。v2.9.2 上 Opus 5.5 把旧指令当成越狱加作假证而拒绝执行。
+  模型一个工具都没调就回答 HOLD 时，探测保持 UNKNOWN，原因标为 `author-model-refused`，并提示沙箱没有被测试，不再报成 `author-model-escape-unknown`。判定仍只看文件系统状态、tool_use 计数、拒绝证据和 sentinel。Codex 作者的探测指令不变。
+- **feat（PL）**：真实运行时的实时进度：
+  - 每个阶段、派发、finding、verdict 和终态在终端打一行（`--quiet-progress` 可关）；
+  - 同样的事件追加写入 `RUN/progress.jsonl`（不含 prompt、输出、diff 或密钥；写失败不影响 verdict 和状态）；
+  - 新增 `status --brief [N]`。
+  探测回合有单独的事件类型，不会被标成真实的作者或审查回合。最后一行状态输出格式不变。
+- **feat（G-b，ADR-10）**：Step 3.4 gate 默认使用作者的厂商。格式不对的 `allowed_models` 现在会明确拒绝，不再抛未捕获的异常。
+- **lane A（Round 43–46）**：在 fake harness 中打通 PLAN→close 生命周期（M4）：
+  - 密封的发布记录、崩溃后的恢复入口、CLOSE 前核对证明、幂等的 CLOSE；
+  - Q/OID 测试子进程运行在写沙箱里。
+  这些代码只有 fake 测试路径会走到，真实生命周期仍然关闭，A1–A5 启用前检查都还是默认关闭。
+- **审查**：
+  - B 道由 Sonnet 5.5 执行，gpt-6.1-sol 逐批审查；
+  - A 道由 gpt-6.1-sol 执行，Opus 5.5 逐批审查，发版前另由 Opus 5.5 做了一轮跨厂商复审（APPROVE_WITH_MINORS；唯一的 MINOR 只在 fake 路径上，见下）。
+- **已知限制**：
+  - 新的探测措辞能不能避免模型拒绝，只有在真实 CLI 上重新探测才能确认。
+  - Python 3.9.6 清理临时目录时会跟随符号链接修改权限，这只影响 fake 路径上的候选测试沙箱，修复在 Round 47 进行中。
+  - 真实生命周期启用前的检查（A1–A5）还没有完成。
+  - Codex 作者在 workspace-write 沙箱里编不了 iOS，也跑不了 Postgres initdb。
+
+### v2.9.2：真实 CLI 修复（poker-tools 首批真实运行发现的问题）与跨厂商 gate（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：升级后，所有已有的 permission-probe 报告、probe-skip 接受记录和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本，用开跑时的同一份代码跑完。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.2` 运行。
+- **feat（G-a1/G-a2）**：gate 可以和 reviewer 不同厂商。不同厂商时，permission-probe 多跑一个只读的 gate-probe 回合，测的就是真实 gate 的派发表面。gate flags 绑定进探测报告、跳过记录和缓存。删除了旧的「gate 厂商必须等于 reviewer 厂商」拒绝规则。gate 默认改用 author 的厂商（G-b）放在下一版。
+- **fix（CG）**：
+  - 每次派发 Codex（author、reviewer、gate、probe）都带 `-c features.plugins=false`。只有当生效的 `$CODEX_HOME/config.toml` 自己写了 `[features] plugins = false` 时，缓存里的插件 bundle 才视为不会加载；其他情况仍然 HOLD。推荐用专用的 `CODEX_HOME`，配方见 `paired_session/README.md`。
+  - `config.toml` 不存在时，按空配置处理。
+  - permission-probe 跑完自己的回合后，再检查一遍 Codex 能力。
+  - trust 归因改为精确移除信任块，并且只认 TOML 顶层的块；linked worktree 接受主 checkout 根目录。
+  - Claude 作者探测不再把 CLI 自己建的空目录 `.claude/.cc-writes/` 当成越界写入。
+- **fix（RF）**：
+  - gate 与 reviewer 不同厂商、又没有通过的 gate probe 时，拒绝 `--accept-probe-skip`。
+  - Claude 子进程一律设置 `DISABLE_AUTOUPDATER=1`，并去掉 `FORCE_AUTOUPDATE_PLUGINS`，避免插件市场在 run 中途自动更新、触发误报 HOLD。如果只有插件版本变化，HOLD 会提示用 `resume`。
+  - reviewer 给出 APPROVE 但还有阻断项或安全标记的问题没关时，改为按 REVISE 交回作者处理（受轮数上限约束），不再 HOLD 循环。
+  - linked worktree 中断后恢复时，可以确认同时新增的两段信任块。
+- **审查**：Sonnet 5.5 执行，gpt-6.1-sol 逐批审查；G-a 另由 Opus 5.5 做了一轮跨厂商发版前复审（APPROVE_WITH_MINORS，那条 MINOR 已在 RF 修复）。
+- **已知限制**：
+  - 两处 `claude --version` 子进程没有使用子进程环境（MEDIUM advisory）。
+  - POLISH 阶段的 APPROVE + 阻断项还是旧的处理方式。
+  - `gate_surface_issue` 空函数还留着。
+  - 「每次派发都关插件，所以完全不扫描 bundle」这个更彻底的方案，需要先改一条旧断言。
+  - Codex 作者在 workspace-write 沙箱里编不了 iOS，也跑不了 Postgres initdb。
+  - APPROVE 之后的生命周期仍只在 fake harness 中可用。
+
+
+### v2.9.1：修 poker-news-bob 的 bug report（paired-session 仍是可选入口，默认 legacy）
+
+- **发布范围**：B 道 v2.9.1 分支（P0-1 至 PR1c）与 A 道（至 `2fc2bea`）。APPROVE 之后的生命周期（Step 3.4 之后的 FINISH、quality polish、DOCS、SECURITY、DELIVERY、CLOSE）仍只在 fake harness 中可用，真实 CLI 仍拒绝 `--lifecycle-mode on`；这些步骤由操作者自己完成。
+- **feat（P0-1/1b）**：角色模型可配置：`--author-model`、`--reviewer-model`、`--gate-model`、`--gate-vendor`（默认取 author 的相反厂商），可选 `allowed_models` 白名单；默认模型仍按 ADR-9（Claude `claude-opus-5-5`，Codex `gpt-6-luna`）。
+- **feat（P0-2*）**：Codex CLI 版本契约。未验证的版本（当前只验证 `codex-cli 0.157.0`）需要 `--accept-unverified-codex-cli --reason TEXT`，记录操作者、理由、时间和版本，版本变化即失效。
+- **feat（P0-3*）**：Claude author 在真实 CLI 上可用：一次性 cwd、Edit/Write 路径拒绝规则、Bash 沙箱、真实越界探测（含硬链接 Bash 写入）；探测未 PASS 时需 `--accept-unverified-claude-author --reason TEXT`。
+- **feat（P0-4/4b）**：`--accept-probe-skip --reason TEXT` 记录式跳过 permission probe（不能推翻当前 FAIL/UNKNOWN）；完全 PASS 的探测结果自动缓存在 `~/.cache/review-loop/probe-pass/`，按 flags、CLI 版本和规则指纹复用，7 天过期，按 fd 安全读取。
+- **fix（PR1/1b/1c，发版前 Opus 对抗性审查）**：coordinator 在作者工作区运行的 git 调用不再执行工作区可控的程序（fsmonitor、hooks、pager、external diff、textconv、filter 驱动、lazy fetch、传输协议、全局/系统配置）；作者改动 git 控制文件或使其不可读时，run 持久化为 HOLD。workspace profile 的角色/模型选择在写入 state 之前被拒绝（关闭 BACKLOG MEDIUM-1）。`adversarial_gate_invoke.py` 默认超时 570 秒。
+- **fix（B15b）**：legacy 协议的跨厂商审查规则：只用 `[CRITICAL]`/`[MINOR]`，无效结果阻断交付，每次收敛只跑一次；launcher 超时统一 570 秒。
+- **test（B16c）**：smoke 加固：review packet 唯一且不在代码块里、no-op 行逐格校验、Metadata 限定在本节、所有 PASS 路径都检查加载的是被测插件。
+- **已知限制**：探测缓存没有 HMAC；Claude author 的 Bash 写 `/tmp` 未被探测；FAIL 后删除 run 目录再在同路径重建时缓存可能复活（v2.9.2）；fake Q 测试子进程没有写沙箱（打开真实 Q 交付前必须修，A 道 R44-QS）；gate 默认用 author 厂商的 WI 放在 v2.9.2。
+
+## 2026-09-30
+
+### v2.9.0 预览版：paired-session 可选入口（实验性，默认仍是 legacy）
+
+- **发布范围**：合并 paired-session 分支（A 道，至 `13c04f2`）与 B 道（至 `9e5395a`）。真实 CLI 支持 permission probe → PLAN 审查 → EXEC 与审查 → adversarial gate → DONE → accept/reject；APPROVE 之后的生命周期（FINISH、quality polish、DOCS、SECURITY、DELIVERY、CLOSE）仍只在 fake harness 中可用，真实 CLI 拒绝 `--lifecycle-mode on`。完整 PLAN→close 的 M4 E2E 改为 v2.10.0 的门槛。
+- **fix**：预览版在真实 CLI 上拒绝 Claude author（`--author-vendor claude`），包括从已保存 run 恢复的配置；原因是 Claude author 的原生 Write/Edit 没有路径限制（1C 3b）。默认 author 仍是 Codex。由 gpt-6.1-sol 跨厂商发版审查发现，两轮修复。
+- **已知限制**：operator reject 之后同一棵树的再放行加固（第 12 批）尚未合入；1C 安全清单仍 OPEN；M6 受控真实运行尚未完成。paired-session 的敏感路径分类器仍对齐 W02 之前的 legacy §3.7.1 规则（测试改读 v2.8.4 冻结副本，经 Yuan 批准），与 W02 扫描器对齐列为后续批次；该分类器只在 fake 生命周期中使用。
+
+#### 分支内容（原 Unreleased）
+
+由 Sonnet 5.5 实现、Opus 5.5 审查；未发布，未升版本。迁移指南见 `docs/paired-session-migration.md`。
+
+- **doc**：`paired_session/docs/1d-entry-mapping.md` 记录 `/review-loop` → paired-session 的入口设计（S1、S2、S4、S5：opt-in 开关、显式 legacy 控制、模式与配置键映射、放量门槛）。
+- **feat**：新增 `/review-loop:legacy` 控制技能，忽略 `entry` 键、强制走 legacy 流程（`disable-model-invocation: true`）。
+- **feat**：`.review-loop/config.md` 新增可选 `entry: legacy|paired-session`（默认 legacy）；仅全新工作项被路由，plan/代码/已有 session 仍走 legacy；非法值、重复键、读取失败均回落 legacy 并给出提示。
+- **feat**：隐式入口和路由时分别打印一行提示（含 experimental 提示）；路由在创建 session 文件/锁之前一次性决定。
+- **feat**：Codex 侧 `review-loop` 入口同样识别 `entry`，显式 legacy 控制为自然语言 "use the legacy review-loop workflow"。
+- **doc**：新增 `paired_session/docs/1c-safety-controls.md`，32 行安全控制清单（代码锚点、对应测试、状态、残余风险）；这是清单，不是 1C 关闭声明，1C 仍 OPEN。
+- **test**：新增 `paired_session/test_safety_controls.py`（provider hook 禁用与凭据 deny、invocation cap），均经变异验证；lint 新增并登记 `entry` / `legacy` 相关断言。
+- **注意**：`lifecycle_mode=on` 仍被真实 CLI 拒绝，APPROVE 之后（FINISH 起）的阶段仅 fake-CLI；M4/M6 未完成。
+
+## 2026-09-27
+
+### v2.8.10 第一批自查（W01/W06/W07/W12/W13）与第二批交付控制（W02/W04/W05）：交付身份、只读审查、调用边界、用量账本、原生回归与交付门禁
+
+- 新增只读 `delivery_scope.py`，分别绑定任务前后的 HEAD、index 和工作区内容，显式区分既有用户改动、任务范围、范围外变化及同文件所有权歧义。
+- report-only Reviewer 和质量检查角色统一通过受限原生 Claude/Codex launcher：Claude 仅开放 Read/Grep/Glob，Codex 使用干净配置上下文与 read-only sandbox；写入型 Executor/Simplifier 保持原路径。
+- 两个 launcher 具备总超时、取消、限额/格式/传输分类、不可覆盖的原始工件，以及跨独立进程组的有界后代清理；并行调度器复用同一边界。
+- 新增逐调用用量账本，记录角色、阶段、请求/实际模型、缓存/非缓存输入、cache write、输出、耗时、状态及运行时上报费用；恢复与不完整调用不重复累计，也不伪造未知值。
+- 新增 disposable repo 原生生命周期回归，覆盖 plan、execute、review-only、stop/resume 和非法参数失败；候选工作流仅作为被测对象，不负责批准自身改动，两个运行时均限制在 workspace sandbox。
+- 根据独立对抗审计，补齐原生 tool-use 计数、Claude 默认模型省略、session job 用量归属和非正容量拒绝；审计报告保存在本地忽略结果目录。
+- 第二批新增 W02/W04/W05 delivery consumers：安全扫描覆盖 manifest 中的 tracked/staged/nonignored-untracked 内容并只报规则/路径/行号；auto-commit 只提交 W01 明确归属的路径；W05 在提交前重新核验 manifest、完整安全扫描和 evidence-ledger stages。
+- 协议 loader 可将大 bundle 原子写入忽略目录并输出短 receipt，再分块读取，避免宿主截断；同时修复证据账本全局参数与子命令的错误顺序。
+
+## 2026-09-25
+
+### v2.8.8 按 claude-opus-5-5 清理过时的 prompt 写法
+
+依据 prompt 审计（`.compass/results/2026-09-25_prompt-audit/`）。约束一条不删，只改语气、补理由、去掉历史叙述。
+
+- reviewer / code-reviewer 不再在报告阶段过滤发现：非阻断项报为 `[MINOR]`，不再「或省略」；code-reviewer 改为具体的报告门槛。
+- 4 个语言 reviewer 的 `**MANDATORY**` 横幅改为正常语气的同一约束；orchestrator 侧 `tool_uses: 0` 检查不变。
+- 协议与技能：`DO NOT modify the context file` 补上理由（Orchestrator 是唯一写入者）；native Bash 规则写明原因；
+  去掉「now / today / as before / formerly inline / before v2.8.2」这类迁移与历史措辞；`parallel-review.md` 的失效行号改为符号锚点。
+- agent 正文：去掉结尾打气话和「non-negotiable / absolutely forbidden」；code-simplifier 不再写死上游项目的 JS/React 规范。
+- review-pr / reorganize：agent 标签去掉 `review-loop:<name>`，删掉给人看的 Tips，抽取规则改为判断式。
+
 ## 2026-09-20
 
 ### v2.8.4 降低跨模型 reviewer 的 token 浪费，修复 3 个派发 bug

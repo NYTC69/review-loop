@@ -89,6 +89,13 @@ is created (SPEC rev 14 architecture E').
 
 ---
 
+### <a id="L-review-loop-codex-resume-needs-permissions-full-access"></a> After resuming a Codex TUI thread, switch /permissions to Full access and confirm the next turn_context shows danger-full-access; launch flags alone are not enough
+- **Date**: 2026-09-26
+- **Task context**: 监工 Codex 做 paired-session Round 12。API key 过期后，Yuan 退出 TUI，用 `codex resume 01a0cfef-… --dangerously-bypass-approvals-and-sandbox` 重新接回原线程，由监工通过 `codex queue` 让它继续推进。
+- **What broke**: 界面看起来还是 yolo 模式，但 rollout 里每个新回合的 `turn_context` 都写着 `workspace-write`、`network_access: false`、`.git` 只读。结果 `claude -p` 的 Opus 审查报 DNS `ENOTFOUND`，`git add` 在创建 index.lock 时被拒。R12-0、R12-1 和 R12-3 的审查或提交因此被卡住，前后加起来约 4 小时。10:17 JST codex app-server 守护进程重启（升级到 0.157.1）后，线程权限又被改回 `:workspace`。Codex 一个正在进行的回合因此中断，之后的新回合也都拿到受限权限。
+- **Root cause**: Codex 线程自带一份保存的权限配置（`active_permission_profile`），resume 时带的启动参数不一定能覆盖它；app-server 守护进程重启时，也会用 `:workspace` 重新写一次线程设置。TUI 显示的是启动参数，模型实际拿到的是线程设置，两者可能不一致。只有在 TUI 里执行 `/permissions` → Full access，才会写入 `thread_settings_applied`，内容为 `:danger-full-access`，新回合随后才真正拿到完全权限。
+- **Rule going forward**: After resuming a Codex TUI thread, switch /permissions to Full access and confirm the next turn_context shows danger-full-access; launch flags alone are not enough
+- **Scope**: codex resume, yolo / dangerously-bypass-approvals-and-sandbox, /permissions Full access, turn_context sandbox_policy workspace-write, app-server daemon restart, 监工 codex queue 推进
 ### <a id="L-review-loop-checkpoint-helper-write-and-verify"></a> Write Compass checkpoints only through the state helper and re-read the saved Next after every write.
 - **Date**: 2026-09-25
 - **Task context**: Round 3/4 paired-session closeout while recording Compass checkpoint state and advancing batch plans.

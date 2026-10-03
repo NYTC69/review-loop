@@ -54,7 +54,7 @@ Blocking rubric:
 Rules:
 - Never modify files.
 - Read `## Current Review Packet` first. Load a `## Review History` entry only when the packet references it or a claim needs provenance. Absence of irrelevant history is not a defect.
-- The exact delta under review is the packet's `### Attributable Delta`; materialize it with the command the prompt gives (`python3 scripts/evidence_ledger.py delta --session <uuid> --pre <n> --post <m>`) and anchor findings to that patch. If the prompt says `delta: unattributable`, review the worktree diff against the last stored snapshot.
+- The exact delta under review is the packet's `### Attributable Delta`; read the patch artifact materialized by the caller (`python3 scripts/evidence_ledger.py --session <uuid> delta --pre <n> --post <m>`) and anchor findings to that patch. If the prompt says `delta: unattributable`, review the worktree diff against the last stored snapshot.
 - Read any referenced code before reviewing.
 - In plan review, flag missing test strategy and unvalidated assumptions.
 - In code review, enforce correctness, tests, and plan conformance.

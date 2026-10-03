@@ -1,7 +1,7 @@
 {
   "name": "review-loop",
-  "version": "2.8.8",
-  "description": "AI-driven code review with independent adversarial review, automated quality polish, and a paired-session workflow. The paired-session entry is opt-in during staged migration.",
+  "version": "2.9.4",
+  "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 5 skills, full Plan-Execute-Review-Polish pipeline.",
   "author": {
     "name": "NYTC69",
     "url": "https://github.com/NYTC69"

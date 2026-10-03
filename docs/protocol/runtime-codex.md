@@ -71,6 +71,7 @@
 - `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 - `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 - `codex_reviewer_model` applies only to the local Codex reviewer path.
+- `cross_vendor_review` is `auto` (default) or `off`; see reviewer-runtime.md §Cross-vendor review.
 - `executor_model` is ignored by the Codex runtime in Stage 1.
 - `codex_executor_model` is reserved only and ignored in Stage 1.
 - Local Codex Stage 1 agents are all `judgment` tier. If a tier is omitted,
@@ -79,97 +80,28 @@
 
 ## Reviewer dispatch
 
-### Default Reviewer Path
+Follow [reviewer-runtime.md](reviewer-runtime.md) for both CLI paths.
+The default remains Claude; `codex_reviewer_backend: codex` explicitly selects
+an isolated native Codex process with `codex_reviewer_model` when supplied.
+Both use fresh self-contained prompts and enforced read-only capabilities.
 
-Unless `codex_reviewer_backend: codex` is set, use this default reviewer path:
+The default launcher is `python3 scripts/run_claude_reviewer.py --session-id
+{session_id} --parent-session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else
+claude-sonnet-4-6} --stage {phase}`. Resolve the script against the support root,
+keep cwd in the task workspace, and run outside the parent Codex sandbox.
+The alternate launcher is `scripts/run_codex_reviewer.py`. The legacy
+`review_loop_reviewer` role is not the dispatch path for these reviews.
 
-```bash
-python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}
-```
+Poll bounded status only. Read `result_file` only on exit 0 and status `ok`;
+validate the shared schema, then the mandatory six-field rubric with
+`scripts/finding_triage.py check`. Preserve raw logs and `usage_file`, including
+on failure; never replay stream-json into the orchestrator context.
 
-Resolve the wrapper against the support repository and keep cwd in the task
-workspace. The wrapper runs this child command with the prompt file
-on stdin (this is the child contract, not a second orchestrator invocation):
-
-```bash
-claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} < .review-loop/tmp/{session_id}-reviewer-prompt.txt
-```
-
-Rules:
-
-- Keep `--verbose`: Claude Code requires it for print-mode stream-json output.
-- Run the Claude call outside the sandbox. Run its wrapper outside as well.
-- Do not treat a sandboxed `claude -p` rehearsal as representative of this
-  reviewer path. If the command fails inside the sandbox, rerun the same
-  command outside before declaring the Claude reviewer path unhealthy or
-  switching to fallback.
-- Render the full reviewer prompt into
-  `.review-loop/tmp/{session_id}-reviewer-prompt.txt`.
-- The rendered prompt must begin with the self-contained paragraph from the
-  applicable review content template, before the full `agents/reviewer.md` body
-  (everything below its frontmatter). Append the remaining review content
-  template without duplicating its opening paragraph. The agent body supplies the output schema
-  and complete six-field `[CRITICAL]` blocking rubric.
-- The wrapper writes the full stream to
-  `.review-loop/tmp/{session_id}-reviewer-stream.jsonl` and stderr to
-  `.review-loop/tmp/{session_id}-reviewer-stderr.log`. It prints a one-line
-  heartbeat roughly every 30 seconds (elapsed time, event count, last event
-  type), including while the child is silent, until a result event or stdout
-  EOF. Its final status includes artifact paths, child exit code, and
-  `invalid_lines` count. Never stream or poll the raw logs into the
-  orchestrator context; retain them as audit artifacts.
-- On a nonzero child exit, the final status also includes `stderr_head`, at
-  most the first 300 characters of stderr's first line, for CLI diagnostics.
-- On wrapper exit `0` only, read
-  `.review-loop/tmp/{session_id}-reviewer-result.txt`, containing the extracted
-  string `result` field of the `type == "result"` event. Wrapper failures map
-  to exit `1` = command execution, `2` = no valid result with invalid stream
-  lines, `3` = missing `result` without invalid stream lines. With child exit
-  `0`, a valid result survives unparseable lines; inspect the final status's
-  `invalid_lines` count without replaying the raw stream.
-  On any failure,
-  do not read or accept the result file on failure. The wrapper does not
-  validate the reviewer schema or run finding triage.
-- Validate the `result` field against the shared reviewer schema.
-- Then run `python3 scripts/finding_triage.py check --input <result file>`
-  (mandatory rubric gate per `docs/protocol/execution.md` §Mandatory rubric
-  gate: every `[CRITICAL]` carries the six fields `Trigger:`,
-  `Reachability:`, `Impact:`, `Likelihood:`, `Fix cost:`, `Cheaper
-  response:`). An `incomplete` result is a reviewer schema validation
-  failure for this round: discard the output as malformed, record
-  `rubric_incomplete: finding #n missing <fields>` in `## Review History`,
-  do not retry Claude for that round, and never implement a CRITICAL that
-  failed triage.
-- If Claude invocation fails or validation fails, do not guess and do not retry
-  Claude for that round.
-- If Claude invocation fails or validation fails, record a short failure reason
-  summary in `## Review History`. Include whether the
-  failure was command execution, JSON parsing, missing `result`, or reviewer
-  schema validation.
-- If `codex_reviewer_backend: codex` is not set, surface that Claude-path
-  failure to the user instead of auto-falling back. The default Stage 1
-  reviewer separation policy keeps review on the outside-sandbox Claude path
-  unless the user explicitly opts into the local Codex reviewer.
-
-### Optional Local Reviewer Path
-
-- Spawn `review_loop_reviewer` only if `codex_reviewer_backend: codex` is set,
-  or if the user has otherwise explicitly opted into the local Codex reviewer
-  path.
-- Invoke `review_loop_reviewer` with a fresh, self-contained prompt that
-  embeds the exact review content directly. Do not rely on inherited or forked
-  parent thread context.
-- Use the same review content and the same reviewer schema rules as the Claude
-  path.
-- Validate local reviewer output with the same schema rules.
-- If the local reviewer output is invalid, retry once with explicit
-  correction instructions.
-- If the local reviewer retry is still invalid, stop and surface the failure to the
-  user.
-- The local reviewer output also goes through `python3
-  scripts/finding_triage.py check`; `incomplete` counts as invalid output
-  for the one correction retry above, and a CRITICAL that failed triage is
-  never implemented.
+A Claude invocation/schema failure gets no Claude retry for that round and no
+automatic switch to Codex. On the explicit Codex path, allow one correction
+retry for invalid reviewer output, then surface failure. The original retry
+policy survives transport isolation. Timeout, cancellation, limits and missing
+isolation support are failures, never APPROVE or reusable evidence.
 
 ## Codex Hallucination Guard
 

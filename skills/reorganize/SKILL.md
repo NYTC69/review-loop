@@ -80,10 +80,7 @@ Separate functional sections with divider comments. First check if the project a
 
 #### 2.4 Extract Reusable Logic
 
-Check for duplicate code patterns **within the file being processed** (do not modify files outside the target scope):
-- 2+ occurrences of logic spanning 5+ lines -> extract into a standalone helper
-- 3+ occurrences regardless of length -> extract into a standalone helper
-- Name extracted helpers clearly, place them in the helper/utility section
+Check for duplicate code patterns **within the file being processed** (do not modify files outside the target scope). Extract a helper when the duplicated logic is substantial enough that one shared definition is easier to read and maintain than the copies; leave short, incidental repetition inline. Name extracted helpers clearly and place them in the helper/utility section.
 
 #### 2.5 Remove Redundancy
 

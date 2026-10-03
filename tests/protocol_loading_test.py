@@ -202,3 +202,36 @@ def test_invalid_loaded_fingerprint_fails_without_output(tmp_path):
 
     assert result.stdout == ""
     assert "invalid --loaded fingerprint" in result.stderr
+
+
+def test_output_file_avoids_stdout_truncation_and_is_complete(tmp_path):
+    root = tmp_path / "support"
+    body = "Instruction line.\n" * 5000
+    write(root, "instructions.md", body)
+    manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+
+    result = run(root, "--output", ".review-loop/tmp/bundle.md")
+
+    receipt = json.loads(result.stdout)
+    expected = bundle("instructions", "instructions.md", body)
+    assert receipt == {
+        "protocol_output": ".review-loop/tmp/bundle.md",
+        "sha256": hashlib.sha256(expected.encode("utf-8")).hexdigest(),
+        "bytes": len(expected.encode("utf-8")),
+        "lines": len(expected.splitlines()),
+    }
+    assert result.stderr == ""
+    assert (tmp_path / ".review-loop/tmp/bundle.md").read_text() == expected
+    assert not list((tmp_path / ".review-loop/tmp").glob(".protocol-*.tmp"))
+
+
+@pytest.mark.parametrize("target", ["bundle.md", "../bundle.md", ".review-loop/elsewhere/bundle.md"])
+def test_output_file_must_stay_in_workspace_protocol_tmp(tmp_path, target):
+    root = tmp_path / "support"
+    write(root, "instructions.md", "Instruction.\n")
+    manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+
+    result = run(root, "--output", target, expect=2)
+
+    assert result.stdout == ""
+    assert "read_protocol:" in result.stderr

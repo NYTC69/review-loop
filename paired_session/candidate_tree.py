@@ -6,8 +6,10 @@ before ingest; no live route calls these helpers today.
 """
 
 from dataclasses import dataclass, replace
+import functools
 import hashlib
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -19,6 +21,40 @@ import uuid
 
 class CandidateError(ValueError):
     pass
+
+
+# Git config that stops a repo (whose .git/config an author may have written) from choosing a program git runs.
+GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat',
+               '-c', 'diff.external=', '-c', 'core.sshCommand=false')
+NO_EXT_DIFF = ('--no-ext-diff', '--no-textconv')
+
+EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+@functools.lru_cache(maxsize=None)
+def _attr_source():   # git >= 2.40: read attributes from the empty tree, so no workspace .gitattributes can select a filter driver
+    try: version = tuple(int(part) for part in subprocess.run(['git', '--version'], stdout=subprocess.PIPE, text=True).stdout.split()[2].split('.')[:2])
+    except (OSError, IndexError, ValueError): return ()
+    return ('--attr-source=' + EMPTY_TREE,) if version >= (2, 40) else ()
+
+
+def git_env():
+    return {**os.environ, 'GIT_ATTR_NOSYSTEM': '1', 'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': 'none'}   # no lazy fetch, no transport helper (ext::)
+
+def _filter_overrides(cwd):   # G1: blank every filter driver the effective config defines, whatever attribute source selects it
+    proc = run_bounded(['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=/dev/null', 'config', '--includes', '--null', '--get-regexp',
+                        r'^filter\..*\.(clean|smudge|process|required)$'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace', timeout=10)
+    names = dict.fromkeys(row.split('\n', 1)[0][len('filter.'):].rsplit('.', 1)[0] for row in proc.stdout.split('\0') if row)
+    if not all(re.fullmatch(r'[A-Za-z0-9_.+-]+', name) for name in names):
+        raise RuntimeError('unsupported git filter driver name')   # a RuntimeError, so the drive loop HOLDs on it
+    return tuple(arg for name in names for arg in ('-c', f'filter.{name}.clean=', '-c', f'filter.{name}.smudge=', '-c', f'filter.{name}.process=', '-c', f'filter.{name}.required=false'))
+
+def run_bounded(command, timeout=60, **kwargs):   # a FIFO or a stuck read in the workspace ends as a RuntimeError (the drive loop HOLDs), never a hang
+    try: return subprocess.run(command, env=git_env(), timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired: raise RuntimeError('git call timed out in the workspace')
+
+
+def git_command(*args, cwd=None):   # a workspace call passes cwd so its filter drivers are neutralised too
+    return ['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=/dev/null', *_attr_source(), *(_filter_overrides(cwd) if cwd else ()), *args]
 
 
 @dataclass(frozen=True)
@@ -67,7 +103,7 @@ def _git_env(**overrides):
 
 
 def _git(args, *, cwd=None, env=None):
-    command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+    command = ['git', *GIT_NO_EXEC,
                '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
                '-c', 'core.attributesFile=/dev/null', '-c', 'core.ignorecase=false',
                '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=true',
@@ -82,7 +118,7 @@ def _git(args, *, cwd=None, env=None):
 
 
 def _git_bytes(args, *, env, input_bytes=None):
-    command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+    command = ['git', *GIT_NO_EXEC,
                '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
                '-c', 'core.attributesFile=/dev/null', '-c', 'core.ignorecase=false',
                '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=true',

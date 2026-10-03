@@ -122,3 +122,25 @@ entry; never edit history.
 - **Decision**: 采用 (B)。Codex author、reviewer、shadow、gate 的默认值与 enforcement 均固定为 gpt-6-luna；Claude 角色仍固定为 claude-opus-5-5。Yuan 2026-09-27 D9 决定。
 - **Consequences**: ADR-7 (sol) 期间记录的运行与 ADR-8 期间的运行不可直接比较；M6 复查使用 ADR-8 模型。R21-1 的 D1(b) 合成权限证据与模型无关，继续有效。旧 DONE 且未 accept 的 run 通过 reject 重新派发时仍会使用冻结模型；该已知路径记录在 BACKLOG.md，修复前不能声称历史 run 的每条再派发路径均已切到 ADR-8。
 - **Supersedes**: ADR-7
+
+---
+
+### ADR-9: paired-session role models are operator-configured
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: poker-news-bot 于 2026-09-30 提交 bug 报告（`~/3Cats/poker-news-bot/.compass/results/2026-09-24_ab_pipeline/review_loop_290_bug_report.md`）：v2.9.0 的真实 CLI 路径把各角色模型按厂商写死（ADR-5/ADR-8：codex=gpt-6-luna，claude=claude-opus-5-5），并强制 gate 厂商与 author 相反，导致 `--reviewer-model gpt-6.1-sol --gate-model gpt-6.1-sol` 与“Claude author + Codex reviewer + Codex gate”无法配置；每次新模型发布都要改代码。Yuan 于 2026-09-30 13:15 JST 批准 P0 计划：“三件都同意，按计划推进 P0.”，其中包括 supersede ADR-8。
+- **Options considered**: (A) 保持 ADR-8 的模型 pin，每次换模型开新 ADR 并发版；(B) 模型与 gate 厂商由运营者配置，pin 只保留为默认值，用可选 allowlist 和运行时身份检查兜底。
+- **Decision**: 采用 (B)。(M1) 默认值不变：未显式指定模型的角色取厂商默认（claude→claude-opus-5-5，codex→gpt-6-luna）；gate 厂商默认取 author 的相反厂商。(M2) 新增 `--gate-vendor {codex,claude}`，可在 paired-session.json 配置；所有 gate 厂商推导点使用解析后的 `args.gate_vendor`；允许与 reviewer 同厂商。(M3) `validate_role_models` 不再 pin 模型，只要求：每个角色的模型 id 形如 `^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$`；若配置了可选键 `allowed_models`（`{"codex": [...], "claude": [...]}`，字符串列表），则每个角色的模型必须在该角色厂商的列表中，格式错误的 allowlist 被拒绝，未设置即无 allowlist。(M4) CLI 上报的模型与该角色配置的模型不一致（`model_identity == MISMATCH`）时，run 进入 HOLD，原因含 “model identity mismatch”；未上报仍只记录为 UNREPORTED，不算错误。(M5) run state 记录每个角色解析后的厂商和模型（新增 `gate_vendor`）；run/resume/accept/reject/note 恢复时以保存值为准，显式给出不同的厂商或模型标志会被拒绝（“role models are fixed for this run”）；没有 `gate_vendor` 的旧 state 按旧规则推导。owner 2026-09-30 批准。
+- **Consequences**: ADR-8 的模型 pin 失效，但其默认值保留。benchmark/M7 的可比性改由“每次运行在 state 与 usage ledger 中记录各角色模型，benchmark 运行通过配置固定模型”维持；不同配置下的运行不可直接比较。Claude author 拒绝（1C row 3b）不在本 ADR 范围内，由 P0-3 处理。ADR-5 中“按厂商固定模型”的强制部分同样由本 ADR 取代，其默认模型值保留。
+- **Supersedes**: ADR-8
+
+---
+
+### ADR-10: paired-session 的 Step 3.4 gate 默认取 author 的厂商
+- **Date**: 2026-10-01
+- **Status**: Accepted
+- **Context**: ADR-9 (M1) 规定 gate 厂商默认取 author 的相反厂商。owner 于 2026-09-30 决定改为“A 执行 B review，A 家最后终审”，并批准按 P 方案（先扩展 permission-probe，再翻转默认）实施：G-a（v2.9.2）已让 permission-probe 覆盖与 reviewer 不同厂商的 gate 面（`gate_flags_digest` + 第二个 `gate-probe` 回合），G-b（本 ADR，v2.9.3）翻转默认。BACKLOG 中“每个阻塞发现都来自新鲜的对立厂商 gate”这一观察仍然成立：paired-session 中 author ≠ reviewer，所以 author 厂商的 gate 仍与 reviewer 厂商不同，gate 提供的“另一家厂商的新鲜视角”保留下来，只是现在它对立于 reviewer 而不是 author；这个面由 G-a 的 gate probe 证明。
+- **Options considered**: (A) 保持 ADR-9 M1（gate 取 author 的相反厂商）；(B) gate 默认取 author 的厂商，可显式覆盖并记录；(C) 只做运营者接受而不扩展 probe（已被 P 方案否决）。
+- **Decision**: 采用 (B)。(M1) 未给 `--gate-vendor` 且配置无 `gate_vendor` 键时，`resolve_role_model_defaults` 令 gate 厂商 = author 厂商，gate 模型再按该厂商取默认（codex→gpt-6-luna，claude→claude-opus-5-5）。(M2) run state 的 `config.gate_vendor_source` 记录 `default` 或 `operator`（命令行 `--gate-vendor` 或 `--config` 中的 `gate_vendor` 键即 operator）；没有该键的已保存 run 恢复为 `legacy-derived`；run/resume 输出在 gate 厂商旁打印 `GATE: <vendor> <model> (gate_vendor_source: ...)`。(M3) 恢复绝不静默切换 gate 厂商：没有 `gate_vendor` 的已保存 run 保持旧的“author 的相反厂商”推导（`old_gate_vendor` 只留给这条路径和 M4），其 scope-change successor 的配置注入该推导值，successor 因而保持同一 gate 厂商。(M4) 在创建 state 之前（run、resume、permission-probe）拒绝显式的 `gate_model`：它是另一厂商的已知 id（该厂商 `allowed_models` 中的 id，或 `claude-` / `gpt-` 前缀）而 `gate_vendor` 未显式给出时，提示 `pass --gate-vendor <vendor> to keep it`；显式 `gate_vendor` 搭配另一厂商的模型同样被拒绝。已保存 run 的恢复不受此检查影响。(M5) 示例配置 `paired-session-config.example.json` 加 `gate_vendor: claude`，保持其原有行为（claude gate + claude-opus-5-5）。
+- **Consequences**: 部分取代 ADR-9 的 M1（gate 默认取 author 的相反厂商）；ADR-9 其余各条（M2–M5，含“允许与 reviewer 同厂商”和旧 state 按旧规则推导）继续有效，ADR-8 的模型默认值也不变。真实 CLI 上默认配置（codex author + claude reviewer → codex gate）在没有覆盖该 gate 的 PASS gate probe 前被 probe 闸门拒绝，需要先跑一次 `permission-probe`。依赖旧默认的调用方（例如 poker-news-bot 的 Claude author + Codex reviewer + Codex gate）需要显式传 `--gate-vendor codex`。旧 legacy review-loop 协议不变，本 ADR 只适用于 paired-session。
+- **Supersedes**: ADR-9 (M1)

@@ -5,6 +5,7 @@
   "reviewer_vendor": "claude",
   "reviewer_model": "claude-opus-5-5",
   "reviewer_effort": "medium",
+  "gate_vendor": "claude",
   "gate_model": "claude-opus-5-5",
   "gate_effort": "medium",
   "shadow": "on",
