@@ -44,6 +44,21 @@ def unique_json_object(pairs):
     return result
 
 
+def assert_codex_readonly_profile(case, argv):
+    """b295-f1 (authorized replacement for `sandbox_mode="read-only"`): exactly one read-only permission profile: root read, workspace
+    read, only :tmpdir writable, network off, no sandbox_mode and no other permissions key."""
+    configs = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value in ('-c', '--config')]
+    case.assertFalse([value for value in configs if value.startswith(('sandbox_mode', 'sandbox_workspace_write', 'default_permissions'))], argv)
+    case.assertEqual(argv.count('-P'), 1, argv)
+    name = argv[argv.index('-P') + 1]
+    granted = [value for value in configs if value.startswith('permissions.')]
+    case.assertEqual(len(granted), 2, argv)
+    filesystem = json.loads(granted[0].split('=', 1)[1].replace('"=', '":'))
+    case.assertEqual((granted[0].split('=', 1)[0], filesystem), (f'permissions.{name}.filesystem',
+                     {':root': 'read', ':tmpdir': 'write', ':workspace_roots': {'.': 'read'}}), argv)
+    case.assertEqual(granted[1], f'permissions.{name}.network.enabled=false', argv)
+
+
 def allowed_tool_values(command):
     return [command[index + 1] for index, value in enumerate(command[:-1])
             if value == '--allowedTools']
@@ -2988,7 +3003,7 @@ sys.exit(result.returncode)
         for role in ('reviewer', 'shadow', 'gate', 'probe'):
             command = co._codex_command(role, schema, True)
             self.assertIn('--ignore-rules', command)
-            self.assertIn('sandbox_mode="read-only"', command)
+            assert_codex_readonly_profile(self, command)                     # b295-f1: was assertIn('sandbox_mode="read-only"', command)
             self.assertIn('approval_policy="never"', command)
         self.assertIn('--ignore-rules', co._codex_command('author', schema, False))
         self.assertTrue(co.reviewer_flags()['ignore_execpolicy_rules'])
@@ -3132,7 +3147,7 @@ sys.exit(result.returncode)
         gate = co.command('gate', schema, True)
         self.assertIn('acceptEdits', author)
         self.assertEqual(gate[0], 'codex')
-        self.assertIn('sandbox_mode="read-only"', gate)
+        assert_codex_readonly_profile(self, gate)                            # b295-f1: was assertIn('sandbox_mode="read-only"', gate)
         self.assertNotIn('resume', gate)
 
     def test_workitem_reviewer_allowlist_change_holds_without_widening(self):
@@ -7736,7 +7751,7 @@ print(json.dumps(results))
         self.assertTrue(any(row['command'] == "sed -n '1,20p' tracked.txt"
                             for row in result['answer']['observed_commands']))
         command = co.state['turns'][-1]['command']
-        self.assertIn('sandbox_mode="read-only"', command)
+        assert_codex_readonly_profile(self, command)                         # b295-f1: was assertIn('sandbox_mode="read-only"', command)
         self.assertIn('--ignore-rules', command)
         with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}):
             with self.assertRaisesRegex(RuntimeError, 'reviewer mutated workspace'):
