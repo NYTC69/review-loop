@@ -226,6 +226,26 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         self.assertIsNotNone(left.wait(timeout=5))
         co._stop_turn_group(8)                                                               # no child started: nothing to stop
 
+    def test_a_leftover_scratch_is_swept_only_after_its_turn_group_is_confirmed_gone(self):   # b296-f1c
+        co = self.coordinator(*CODEX_ROLES, '--quiet-progress')
+        left = co._scratch_root('reviewer')                                                  # a scratch kept by a turn whose group survived
+        (left / 'work.txt').write_text('x')
+        sequence = int(left.name.split('-', 1)[0])
+        co.state['turns'].append({'sequence': sequence, 'role': 'reviewer', 'phase': 'EXEC', 'vendor': 'codex', 'pid': 424242})
+        with patch.object(rc, 'retry_killpg_eperm', return_value=None), patch.object(rc.os, 'killpg') as killpg, \
+                self.assertRaisesRegex(RuntimeError, 'leftover read-only role scratch .*' + left.name + ' kept: the process group of that turn still answers'):
+            co._scratch_root('gate')                                                         # the group still answers: HOLD, directory kept
+        killpg.assert_not_called()                                                            # R1: an old pid is probed, never signalled
+        self.assertEqual((co.state['status'], (left / 'work.txt').read_text()), ('HOLD', 'x'))
+        self.assertIn(str(left), co.state['hold_reason'])
+        self.assertEqual(sorted(os.listdir(left.parent)), [left.name])                       # no new scratch either
+        dead = subprocess.Popen(['true'], start_new_session=True)
+        dead.wait()
+        co.state['turns'][-1]['pid'] = dead.pid                                               # the group is gone: swept, the new scratch made
+        fresh = co._scratch_root('gate')
+        self.assertEqual(sorted(os.listdir(left.parent)), [fresh.name])
+        self.assertFalse(left.exists())
+
     def test_the_ctime_exemption_is_exactly_state_json_and_progress_jsonl(self):
         co = self.coordinator(*CODEX_ROLES)
         for name in ('state.json', 'progress.jsonl', 'state.json.backup', 'progress.jsonl.1'):

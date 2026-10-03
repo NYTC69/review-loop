@@ -3967,7 +3967,15 @@ class Coordinator:
         except FileExistsError: pass
         name = f"{self.state['sequence'] + 1:03d}-{role}"   # the sequence _invoke_once assigns
         with self._role_tmp_fd() as base_fd:
-            for stale in os.listdir(base_fd):
+            for stale in os.listdir(base_fd):   # b296-f1c: a leftover is swept only once its turn's process group is confirmed gone
+                try:
+                    if not (match := re.fullmatch(r'(\d+)-[a-z-]+', stale)):
+                        raise RuntimeError('its name carries no turn sequence')
+                    self._stop_turn_group(int(match.group(1)), kill=False)   # R1: an old pid may be reused by now, so probe only, never kill
+                except RuntimeError as exc:
+                    reason = f'leftover read-only role scratch {base / stale} kept: {exc}; make sure no process of that turn is alive, remove it by hand, then resume'
+                    self.hold(reason)
+                    raise RuntimeError(reason) from exc
                 self._drop_scratch(base / stale)
             os.mkdir(name, 0o700, dir_fd=base_fd)
             info = os.stat(name, dir_fd=base_fd, follow_symlinks=False)
@@ -3975,13 +3983,15 @@ class Coordinator:
                 raise RuntimeError('the new read-only role scratch is not a directory we own: ' + str(base / name))
         return base / name
 
-    def _stop_turn_group(self, sequence: int) -> None:
+    def _stop_turn_group(self, sequence: int, kill: bool = True) -> None:
         """b296-f1b: no member of the read-only turn's CLI process group may outlive the turn into its scratch cleanup: kill what is left
         and wait (about 3 s) until killpg reports the group gone; otherwise refuse the cleanup (the scratch stays for the next sweep). A
         descendant that left the group (setsid, or a tool run in its own group) is not covered; the cleanup itself never follows a link,
         so it stays safe against one. Unlike resume / probe-retry (which HOLD on EPERM), EPERM here means gone: a group of our own uid
-        answers EPERM on macOS only when the members left are unreaped zombies, which cannot act."""
-        receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}] if row.get('sequence') == sequence), {})
+        answers EPERM on macOS only when the members left are unreaped zombies, which cannot act. kill=False (the sweep of a leftover from an
+        earlier dispatch, whose pid may have been reused since) only probes: a group that still answers is refused, never signalled."""
+        receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}, self.state.get('uncertain_active') or {}]
+                        if row.get('sequence') == sequence), {})
         pid = receipt.get('pid')
         if type(pid) is not int or pid <= 1:
             return   # no child was started
@@ -3991,6 +4001,8 @@ class Coordinator:
             except ProcessLookupError: return
             except PermissionError: return   # macOS: a group of our own uid left only with unreaped zombies answers EPERM; a zombie cannot act
             except OSError as exc: raise RuntimeError('cannot verify that the read-only role process group stopped; scratch kept') from exc
+            if not kill:
+                raise RuntimeError('the process group of that turn still answers (alive, or its pid reused)')
             if time.monotonic() > deadline:
                 raise RuntimeError('the read-only role process group outlived its turn; scratch kept')
             try: os.killpg(pid, signal.SIGKILL)
