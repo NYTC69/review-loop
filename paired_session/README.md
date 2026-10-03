@@ -106,13 +106,16 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
-outside-workspace or wildcard doc paths are refused. `lifecycle_mode=on` is
-currently refused before any model dispatch, including resume of a saved
-lifecycle state: FINISH through CLOSE and their isolation checks are not yet
-implemented. Legacy DONE/ACCEPTED, gate-off and `resume --polish` cannot enter
-the incomplete lifecycle. No real lifecycle run is enabled by these fields.
-Planned (D12, ADR-11): the real lifecycle will run as the worktree lifecycle of
-`docs/e2e-6-worktree-lifecycle.md`; it is not usable before batch W3b lands.
+outside-workspace or wildcard doc paths are refused. Planned (D12, ADR-11): the
+real lifecycle will run as the worktree lifecycle of
+`docs/e2e-6-worktree-lifecycle.md`; the full lifecycle is usable only after
+batch W3b lands. Since W1a, `lifecycle_mode=on` from the command line or an
+operator `--config` starts a worktree-lifecycle run that runs PLAN and EXEC and
+then HOLDs before FINISH (FINISH arrives in W1b; such a run cannot be accepted
+before W3b); a workspace profile cannot enable it, and the run refuses
+`--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy
+DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
+cannot enter it.
 
 The disabled E2E candidate-tree module can materialize a clean HEAD into an
 external scratch checkout with a separate scratch Git directory and index. It

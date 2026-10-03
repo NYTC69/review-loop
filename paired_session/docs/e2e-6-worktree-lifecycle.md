@@ -1,7 +1,7 @@
 # E2E lifecycle design 6: worktree lifecycle W (D12 legacy parity)
 
-Status: decided design (ADR-11), **not yet implemented**. `lifecycle_mode=on` is still refused on the real
-path until batch W1a lands, and the post-EXEC stages arrive in W1b–W3b. Sources: ADR-11, the lane A
+Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path
+and HOLDs after EXEC convergence; the post-EXEC stages arrive in W1b–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust

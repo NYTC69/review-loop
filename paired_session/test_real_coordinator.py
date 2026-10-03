@@ -199,6 +199,8 @@ class RealCoordinatorTests(unittest.TestCase):
                        separators=(',', ':')).encode()).hexdigest()
         with self.assertRaisesRegex(RuntimeError, 'author TMP is not isolated'):
             co._verify_frozen_role_dispatch()
+        co.state['lifecycle'] = rc.worktree_lifecycle.initial(co.state['item_uuid'], co.state['base_commit'])
+        co._verify_frozen_role_dispatch()   # ADR-11: the worktree lifecycle accepts the real-EXEC author TMP
 
     def test_global_hash_attribution_accepts_only_trust_and_last_updated_autochanges(self):
         home = self.root / 'global-state'
@@ -3396,7 +3398,10 @@ sys.exit(result.returncode)
 
     def test_lifecycle_on_and_old_done_are_refused_before_dispatch(self):
         self.run_dir = self.root / 'lifecycle-refusal'
-        for flags, message in ((['--lifecycle-mode', 'on'], 'lifecycle remains disabled'),
+        for flags, message in ((['--lifecycle-mode', 'on', '--accept-unverified-claude-author', '--reason', 'opt-in'],
+                                'worktree lifecycle refuses --accept-unverified-claude-author'),
+                               (['--lifecycle-mode', 'on', '--accept-probe-skip', '--reason', 'skip'],
+                                'worktree lifecycle refuses --accept-probe-skip'),
                                (['--lifecycle-mode', 'on', '--adversarial-gate', 'off'], 'lifecycle refuses --adversarial-gate off')):
             with self.subTest(flags=flags):
                 args = rc.parser().parse_args(self.command(*flags)[2:])
@@ -3416,8 +3421,8 @@ sys.exit(result.returncode)
     def test_fake_lifecycle_state_receipts_resume_idempotently_and_cli_stays_off(self):
         command = self.command('--lifecycle-mode', 'on')
         args = rc.parser().parse_args(command[2:])
-        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
-            rc.Coordinator(args)
+        plain = rc.Coordinator(rc.parser().parse_args(command[2:] + ['--run-dir', str(self.root / 'worktree-run')]))
+        self.assertEqual((plain._fake_lifecycle, plain.state['lifecycle']['format']), (False, 'worktree'))   # ADR-11: CLI opens W, never the fake route
         co = rc.Coordinator(args, _fake_lifecycle=True)
         life = co.state['lifecycle']
         self.assertEqual((life['stage'], life['epoch'], life['candidate_oid']), ('EXEC', 0, None))
@@ -3428,7 +3433,7 @@ sys.exit(result.returncode)
         co.fake_lifecycle_event('begin', request)
         self.assertEqual(json.loads(co.state_path.read_text())['lifecycle']['pending'], request)
         resume = command.copy(); resume[2] = 'resume'
-        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+        with self.assertRaisesRegex(ValueError, 'saved lifecycle run cannot resume'):   # fake-format state, real path
             rc.Coordinator(rc.parser().parse_args(resume[2:]))
         again = rc.Coordinator(rc.parser().parse_args(resume[2:]), _fake_lifecycle=True)
         self.assertEqual(again.state['lifecycle']['pending'], request)

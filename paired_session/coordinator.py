@@ -46,6 +46,7 @@ try:
     from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
+    from paired_session import worktree_lifecycle
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
@@ -62,6 +63,7 @@ except ModuleNotFoundError:
     import operator_verification as opv
     import sensitive_policy
     import security_repair_policy
+    import worktree_lifecycle
     from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
@@ -1214,8 +1216,9 @@ class Coordinator:
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
-            if not (_fake_lifecycle and lifecycle_spine.fake_guard(args)):
+            if _fake_lifecycle and not lifecycle_spine.fake_guard(args):
                 raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
+            if not _fake_lifecycle: worktree_lifecycle.refuse_waivers(args)   # W1a: the real path is the worktree lifecycle (ADR-11)
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
@@ -1243,8 +1246,7 @@ class Coordinator:
             self.state = json.loads(self.state_path.read_text())
             if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
                 raise ValueError('run was created by an older paired-session build; start a new run')
-            if self.state.get('config', {}).get('lifecycle_mode') == 'on' and not self._fake_lifecycle:
-                raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
+            if not self._fake_lifecycle: worktree_lifecycle.refuse_saved(self.state, args)
             self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
             self.state.setdefault('item_blockers', [])
             self.state.setdefault('item_blockers_complete', False)
@@ -1359,6 +1361,8 @@ class Coordinator:
             }
             if self._fake_lifecycle:
                 self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
+            elif args.lifecycle_mode == 'on':
+                self.state['lifecycle'] = worktree_lifecycle.initial(self.state['item_uuid'], self.state['base_commit'])
             self._freeze_role_dispatch()
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
@@ -1538,7 +1542,8 @@ class Coordinator:
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
             raise RuntimeError('frozen role dispatch changed; abort or start a new run')
-        if not current['role_flags']['author']['tmp_isolated'] and not self._fake_lifecycle:
+        if (not current['role_flags']['author']['tmp_isolated'] and not self._fake_lifecycle and
+                not worktree_lifecycle.is_worktree(self.state)):   # W accepts the real-EXEC author TMP (ADR-11)
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
     def reviewer_commands(self) -> list[str]:
@@ -3088,6 +3093,8 @@ class Coordinator:
 
     def accept(self) -> str:
         self._publication_guard()
+        if worktree_lifecycle.is_worktree(self.state):   # W3b adds lifecycle DELIVERY; no accept may skip FINISH-SECURITY
+            raise ValueError('worktree lifecycle accept is not available before W3b; abort or wait for the remaining stages')
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
@@ -3263,6 +3270,13 @@ class Coordinator:
         if self._fake_lifecycle:
             self._freeze_fake_exec_source()
             return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
+        if worktree_lifecycle.is_worktree(self.state):   # W1a: EXEC converged; FINISH arrives in W1b, never skip it
+            if blocking := self.blocking_open_findings():
+                self.state['gate_ran'] = False   # the repair is a new convergence and needs its own gate
+                return self.hold('worktree lifecycle refuses FINISH with open blocking findings: ' +
+                                 ', '.join(row['id'] for row in blocking))
+            self.state['lifecycle'].update(stage='FINISH', candidate_oid=git_snapshot(self.workspace)[0])
+            return self.hold(worktree_lifecycle.FINISH_PENDING)
         findings = self.nonblocking_open_findings()
         if (self.args.polish_round == 'off' and not force) or not findings:
             return self.done()
@@ -5301,6 +5315,8 @@ class Coordinator:
     def drive(self) -> str:
         if self._fake_lifecycle:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
+        if worktree_lifecycle.finish_pending(self.state):
+            return self.hold(worktree_lifecycle.FINISH_PENDING)
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
         if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
@@ -6475,12 +6491,23 @@ def gate_surface_issue(args: argparse.Namespace):
     return None   # G-a K5: a gate vendor other than the reviewer's is covered by the gate probe in permission-probe (probe_passed), not refused here
 
 
+def _author_writable_profile(profile: Path, workspace: Path, run_dir: Optional[str]) -> bool:
+    """ADR-11 D-4: a profile under the workspace or run dir (incl. author-tmp), compared by inode so case
+    and symlink aliases on case-insensitive filesystems are caught too."""
+    run_root = Path(run_dir).expanduser().resolve() if run_dir else None
+    roots = [root for root in (workspace, run_root, (run_root / 'author-tmp').resolve() if run_root else None)
+             if root is not None and root.exists()]   # author-tmp resolved too, as program_binding does
+    return any(os.path.samefile(candidate, root) for path in (profile, profile.resolve())
+               for candidate in (path, *path.parents) if candidate.exists() for root in roots)
+
+
 def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile: bool = False) -> argparse.ArgumentParser:
     """Load project defaults while preserving explicit CLI argument precedence."""
     if ignore_profile: return p
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument('--workspace', required=True)
     bootstrap.add_argument('--config')
+    bootstrap.add_argument('--run-dir')
     known, _ = bootstrap.parse_known_args(argv)
     workspace = Path(known.workspace).expanduser().resolve()
     config_path = (Path(known.config).expanduser() if known.config else
@@ -6491,6 +6518,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
         if known.config:
             raise ValueError(f'--config file does not exist: {config_path}')
         return p
+    writable_profile = _author_writable_profile(config_path, workspace, known.run_dir)   # decided before reading
     try:
         values = json.loads(config_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -6510,6 +6538,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     for key, value in values.items():
         if key in explicit:
             continue
+        if key == 'lifecycle_mode' and value == 'on' and writable_profile:
+            raise ValueError('lifecycle remains disabled from a workspace profile; pass --lifecycle-mode on '
+                             'or use an operator --config outside the workspace, run dir and author temp')
         if key == 'allowed_models':
             p.set_defaults(allowed_models=value)
             continue
