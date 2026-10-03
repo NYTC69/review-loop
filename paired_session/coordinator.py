@@ -472,6 +472,17 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         return source.read(max_bytes).decode('utf-8', 'replace')
 
 
+DONTASK_SHELL_SYNTAX = re.compile(r'\$\(|`|\||&&|;|[<>]|\b(?:for|while|until)\b')
+
+
+def dontask_command_hint(commands) -> str:
+    """N4-b: shell syntax a Claude reviewer or gate in dontAsk mode may refuse in its one exact allowlisted Bash call."""
+    shaped = [command for command in commands if DONTASK_SHELL_SYNTAX.search(command)]
+    return ('WARNING: a Claude reviewer or gate runs each test/reviewer command as one exact allowlisted Bash call in dontAsk mode; '
+            'command substitution, pipes, `;`, `&&`, redirection or loops in ' + '; '.join(repr(command) for command in shaped) +
+            ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.') if shaped else ''
+
+
 def resolve_test_executable(workspace: Path, command: str) -> str:
     try:
         words = shlex.split(command)
@@ -4705,6 +4716,7 @@ class Coordinator:
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
+            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == base.parent})   # FIELD-8: may be an operator file (a launcher log)
             out['hardlink_refused'] = refused = cap.hardlink_refused(out['attempts'], ws, sentinel_ino)
             for label, row in out['attempts'].items():
                 if refused and 'hardlink' in label and label != 'link_hardlink': row['not_applicable'] = 'link denied'     # raw outcome kept
@@ -5270,8 +5282,11 @@ class Coordinator:
         else: self._probe_void_on_non_pass(report)   # F4
         atomic_json(self.run_dir / 'permission-probe.json', report)
         self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
-        if author_probe.get('model_escape_failed_targets'):
-            self.hold('1C FAIL: escape write observed at ' + ', '.join(author_probe['model_escape_failed_targets'])); return False
+        if (failed := author_probe.get('model_escape_failed_targets')):
+            beside = [t for t in failed if t in (author_probe.get('changed_beside_run_dir') or [])]
+            hint = ('; ' + ', '.join(beside) + ' changed beside the run dir during the probe: if that is an operator-created file outside the run dir '
+                    "(a launcher log in the run dir's parent), write launcher logs outside the run dir's parent and re-run permission-probe") if beside else ''
+            self.hold('1C FAIL: ' + ('operator-created file outside the run dir?' if beside == failed else 'escape write observed at ' + ', '.join(failed)) + hint); return False
         self.state['residual_risk'] = report.get('residual_risk')
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
                                      if report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else
@@ -6550,6 +6565,10 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
     co._publication_guard()
+    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
+            and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1
+        return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
+                          'or copy auth.json and config.toml into it, directory 0700, files 0600) or unset CODEX_HOME')
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
@@ -6679,6 +6698,9 @@ def main(argv=None) -> int:
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
               '--reason TEXT` (permission-probe does not take the flag)')
         return 2
+    if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
+            and (hint := dontask_command_hint([args.test_command, *args.reviewer_command]))):
+        print(hint)
     if not restores_run(args) and (issue := gate_surface_issue(args)):
         print('REFUSED: ' + issue)
         return 2

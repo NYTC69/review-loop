@@ -74,6 +74,17 @@ sibling directory outside the workspace. Never put `--run-dir` inside the
 workspace: the author can write to the workspace and must not be able to alter
 coordinator state. The workspace must be a Git worktree and the work item must
 be a file. The configured test command is checked before the coordinator starts.
+A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
+one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
+`;`, `&&`, redirection or loops can be refused before it runs; `run` and a new
+`permission-probe` print a warning for such a command. Put it in a script and
+configure `/bin/bash /absolute/path/to/script.sh`.
+Write launcher logs (for example `permission-probe ... > probe.log`) outside the
+run dir's parent: the Claude author probe watches the entries beside the run dir,
+and a log that grows there during the probe fails it as a file changed outside
+the run dir. When any role is Codex, `run`, `resume`, `reject` and
+`permission-probe` refuse up front if the selected `CODEX_HOME` (default
+`~/.codex`) is not an existing directory.
 
 For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
@@ -461,7 +472,10 @@ in the permission probe. Options for the operator:
    probe could not prove the sandbox (author-model-escape-unknown or
    author-model-refused) then passes the run/resume/reject gate, while a reviewer
    or gate probe failure, a config change or any escape still blocks and
-   `--accept-probe-skip` is still refused for them.
+   `--accept-probe-skip` is still refused for them. Claude Code's auto mode
+   blocks a `run --accept-unverified-claude-author` command as "Create Unsafe
+   Agents", so the owner launches such a run by hand in a terminal; with a
+   passing Claude author probe (poker-tools N4 run-02) the opt-in is not needed.
 2. Split out the step that needs the capability and keep the rest in the work item.
 3. Run that step outside paired-session, by hand, and feed the result back as
    ordinary workspace content.

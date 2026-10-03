@@ -45,7 +45,9 @@ Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
    resolves `CODEX_HOME` at startup and passes it to Codex children (the Codex
    author sandbox check instead uses a temporary home under the run directory
    holding a copy of its `config.toml`). An unset value falls back
-   to the shared default home. A relative path is rejected.
+   to the shared default home. A relative path is rejected, and when any role
+   is Codex a home that is not an existing directory is refused before the
+   probe or any dispatch.
 4. Preserve the installed CLI/model defaults and all capability, program-binding,
    permission and probe checks. Perform the required preflight for each lane;
    do not copy a PASS receipt or override a failure because another lane passed.
