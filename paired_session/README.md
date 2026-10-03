@@ -67,11 +67,24 @@ plugin cache.
 
 ## Start a task
 
+For simultaneous lanes, read [Concurrent runs and isolated Codex homes](docs/concurrent-runs.md).
+
 Use a dedicated Git worktree for each product task and keep run artifacts in a
 sibling directory outside the workspace. Never put `--run-dir` inside the
 workspace: the author can write to the workspace and must not be able to alter
 coordinator state. The workspace must be a Git worktree and the work item must
 be a file. The configured test command is checked before the coordinator starts.
+A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
+one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
+`;`, `&&`, redirection or loops can be refused before it runs; `run` and a new
+`permission-probe` print a warning for such a command. Put it in a script and
+configure `/bin/bash /absolute/path/to/script.sh`.
+Write launcher logs (for example `permission-probe ... > probe.log`) outside the
+run dir's parent: the Claude author probe watches the entries beside the run dir,
+and a log that grows there during the probe fails it as a file changed outside
+the run dir. When any role is Codex, `run`, `resume`, `reject` and
+`permission-probe` refuse up front if the selected `CODEX_HOME` (default
+`~/.codex`) is not an existing directory.
 
 For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
@@ -84,9 +97,13 @@ into the external profile because the two files are not layered. The CLI loads t
 and resume; explicit CLI options override it. On resume, effective settings
 must still match the saved run configuration. A changed binary or PATH requires
 a fresh permission probe before the run can continue.
-Models follow ADR-8 vendor pins (Claude: `claude-opus-5-5`; Codex:
-`gpt-6-luna`). Changing a role's vendor without updating incompatible model
-values is rejected before run state is created.
+Role models are operator-set (ADR-9): a role without `--author-model`,
+`--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
+(Claude: `claude-opus-5-5`; Codex: `gpt-6-luna`). Before run state is created,
+every model id must be well formed and, when `allowed_models` is set, listed for
+that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
+`--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
+and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
 outside-workspace or wildcard doc paths are refused. `lifecycle_mode=on` is
@@ -321,6 +338,11 @@ bin/paired-session reject --intent-only --workspace "$WS" --workitem "$ITEM" --r
 bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --text 'Recheck this detail.' --expect <digest>
 ```
 
+`accept --reason TEXT` records the operator's acceptance reason; the intent
+digest covers it, so give the same `--reason` to `accept --intent-only` and to
+`accept`. `accept` refuses `--text` and `--file` (they belong to `reject` and
+`note`).
+
 Runs created without the acceptance snapshot and rejected-digest fields refuse
 mutating commands: `run was created by an older paired-session build; start a new run`.
 `status` reads such a run without migrating or modifying its state. Snapshots keep
@@ -340,7 +362,14 @@ bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" 
 
 The override requires `HOLD rejected-tree`, a non-empty reason and an unchanged
 held snapshot. It records operator UID/time, reason, digest and rationale pointer
-in state, events and acceptance evidence. Both leases and role run-dir write denials
+in state, events and acceptance evidence. The same command is the owner's ruling
+at a PLAN or EXEC round-limit HOLD (`PLAN round limit reached`, `EXEC round limit
+reached`, `EXEC round limit reached after adversarial gate`; RLO, v2.9.5): the
+HOLD records its tree, the override needs that HOLD to be the current one (any
+later HOLD cause, an operator-rejected tree, a changed tree, an active or
+uncertain turn or an empty reason is refused), and `acceptance.json` adds the
+recorded `round_limit_hold` and the findings still open (id, severity, source,
+security flag, one-line summary). Both leases and role run-dir write denials
 apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
 still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
 no receipt follows plain resume; a fresh author ingest is required for rejected trees.
@@ -360,6 +389,34 @@ The old run cannot resume or be accepted; a second chained scope change is
 refused. A scope-change note requires the named existing run. Author-produced
 plan/code remains visible to reviewers, while the operator note itself is not
 forwarded to their prompts.
+
+When the author's sandbox cannot run a check (for example xcodegen, XCTest or
+CoreSimulator under a Claude author), the operator can run it on the host and
+attach the result to an idle ACTIVE, HOLD or DONE run (OPV, v2.9.5; at DONE
+before `accept`):
+
+```sh
+bin/paired-session attach-verification --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
+  --command 'xcodebuild test -scheme App' --exit-code 0 --log /tmp/xcodebuild.log \
+  --log-sha256 "$(shasum -a 256 /tmp/xcodebuild.log | cut -d' ' -f1)" --note 'ran on the host simulator'
+```
+
+The record (command, cwd inside the workspace, exit code, log sha256, time,
+operator UID and a non-empty note) is bound to the current workspace snapshot
+digest; the log, which must lie outside the workspace and run dir and match
+`--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
+EXEC and POLISH reviewer, shadow and gate prompts show the command, cwd, exit
+code, log hash and the last 2,000 log characters (not the note) as
+operator-verified evidence for this exact tree. It is voided for good once the
+snapshot differs (an operator edit or an author turn in the workspace) or the
+log copy changes; the snapshot covers tracked and untracked non-ignored files,
+so a change to an ignored file does not void it. The persistent reviewer, whose
+thread saw a record, is told in its next prompt that it was withdrawn (id and
+reason only). `accept` lists the records still current for the accepted tree in
+`acceptance.json` and on stdout. Attaching is refused while a turn is active, on
+ACCEPTED, or when the shown text would fail the fresh-role history scan. It is
+evidence only: no verdict is derived from it.
+
 Each run now records an item UUID. A successor inherits it and copies the
 parent's OPEN blocking findings into its protected successor spec and state,
 with their original run/ID provenance. These records do not enter fresh-role
@@ -424,7 +481,10 @@ in the permission probe. Options for the operator:
    probe could not prove the sandbox (author-model-escape-unknown or
    author-model-refused) then passes the run/resume/reject gate, while a reviewer
    or gate probe failure, a config change or any escape still blocks and
-   `--accept-probe-skip` is still refused for them.
+   `--accept-probe-skip` is still refused for them. Claude Code's auto mode
+   blocks a `run --accept-unverified-claude-author` command as "Create Unsafe
+   Agents", so the owner launches such a run by hand in a terminal; with a
+   passing Claude author probe (poker-tools N4 run-02) the opt-in is not needed.
 2. Split out the step that needs the capability and keep the rest in the work item.
 3. Run that step outside paired-session, by hand, and feed the result back as
    ordinary workspace content.
