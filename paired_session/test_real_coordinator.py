@@ -75,12 +75,14 @@ class RealCoordinatorTests(unittest.TestCase):
         (self.test_home / '.claude' / 'settings.json').write_text('{}\n')
         (self.test_home / '.claude' / 'plugins' / 'installed_plugins.json').write_text(
             json.dumps({'plugins': []}))
-        self.original_home = os.environ.get('HOME')
-        os.environ['HOME'] = str(self.test_home)
+        # Start the env patch before changing HOME: its stop (an addCleanup, so after tearDown)
+        # restores the pre-test environment instead of re-installing this test's deleted HOME.
         self._fake_codex_env = patch.dict(os.environ, {
             'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root)})
         self._fake_codex_env.start()
         self.addCleanup(self._fake_codex_env.stop)
+        self.original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(self.test_home)
         self._unpatched_popen = subprocess.Popen
         self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')
                                      if (path := shutil.which(name))}
@@ -10461,6 +10463,22 @@ print(json.dumps(results))
         self.assertTrue(state['polish']['completed'])
         self.assertEqual(sum(t['role'] == 'shadow' for t in state['turns']), 2)
         self.assertTrue((self.run_dir / 'open-findings.md').is_file())
+
+
+class HarnessIsolationTests(unittest.TestCase):
+    def test_real_coordinator_setup_and_cleanup_restore_the_environment(self):
+        before, popen = dict(os.environ), subprocess.Popen
+        helper = RealCoordinatorTests()
+        try:
+            helper.setUp()
+            self.assertEqual(os.environ['HOME'], str(helper.test_home))
+        finally:
+            try:
+                helper.tearDown()
+            finally:
+                helper.doCleanups()
+        self.assertEqual(dict(os.environ), before)
+        self.assertIs(subprocess.Popen, popen)
 
 
 if __name__ == '__main__':
