@@ -70,11 +70,27 @@ def void_stale(co, tree_sha256, write_json) -> None:
         co.save()
 
 
-def prompt_block(co, tree_sha256: str, write_json) -> str:
-    """'' when no current record is bound to this exact tree, else the block appended to a reviewer, shadow or gate prompt."""
+def prompt_block(co, tree_sha256: str, write_json, role: str = '') -> str:
+    """'' when no current record is bound to this exact tree, else the block appended to a reviewer, shadow or gate prompt. The persistent
+    reviewer (role 'reviewer') also gets one Withdrawn line, id and reason only, for each voided record its thread was shown (OPV-M1)."""
     void_stale(co, tree_sha256, write_json)
-    shown = [row for row in co.state.get('operator_verifications', []) if row['status'] == 'current'][-SHOWN:]
-    return _block(tree_sha256, [_entry(row, Path(row['log_evidence']).read_bytes()) for row in shown]) if shown else ''
+    rows = co.state.get('operator_verifications', [])
+    shown = [row for row in rows if row['status'] == 'current'][-SHOWN:]
+    withdrawn = [f"\nWithdrawn operator verification: {row['id']} ({row['voided']['reason']}); do not rely on it." for row in rows
+                 if role == 'reviewer' and row['status'] == 'voided' and row.get('shown_to_reviewer')]
+    if role == 'reviewer' and shown:
+        for row in shown:
+            row['shown_to_reviewer'] = True
+        co.save()
+    block = _block(tree_sha256, [_entry(row, Path(row['log_evidence']).read_bytes()) for row in shown]) if shown else ''
+    return block + ''.join(withdrawn)
+
+
+def current_for_acceptance(co, tree_sha256: str, write_json) -> list:
+    """N4-e: the records still current for the accepted tree, as acceptance.json lists them."""
+    void_stale(co, tree_sha256, write_json)
+    return [{key: row[key] for key in ('id', 'command', 'cwd', 'exit_code', 'log_sha256', 'log_evidence', 'note', 'time', 'tree_sha256')}
+            for row in co.state.get('operator_verifications', []) if row['status'] == 'current']
 
 
 def _scan(co, text: str) -> None:   # the fresh-role history scan the shadow and gate prompts get, on the block alone
@@ -90,8 +106,8 @@ def _scan(co, text: str) -> None:   # the fresh-role history scan the shadow and
 
 def attach(co, args, tree_sha256: str, write_json) -> str:
     state = co.state
-    if state.get('status') not in ('ACTIVE', 'HOLD') or state.get('active') or state.get('uncertain_active'):
-        raise ValueError('attach-verification requires an idle ACTIVE or HOLD run')
+    if state.get('status') not in ('ACTIVE', 'HOLD', 'DONE') or state.get('active') or state.get('uncertain_active'):   # N4-e: DONE before accept too
+        raise ValueError('attach-verification requires an idle ACTIVE, HOLD or DONE run')
     command, note = (args.command or '').strip(), (args.note or '').strip()
     if not command or not note or args.exit_code is None or not args.log or not args.log_sha256:
         raise ValueError('attach-verification needs --command, --exit-code, --log, --log-sha256 and a non-empty --note')

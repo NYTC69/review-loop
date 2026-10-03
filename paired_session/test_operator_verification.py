@@ -91,14 +91,14 @@ class OperatorVerificationTests(unittest.TestCase):
     def test_attach_is_refused_while_a_turn_is_active_in_done_and_without_a_run(self):
         self.assertIn('REFUSED: attach-verification requires an existing coordinator run', self.attach_cli().stdout)
         co = self.coordinator()
-        for key, value in (('active', {'sequence': 1}), ('uncertain_active', {'sequence': 1}), ('status', 'DONE'), ('status', 'ACCEPTED')):
+        for key, value in (('active', {'sequence': 1}), ('uncertain_active', {'sequence': 1}), ('status', 'ACCEPTED')):   # N4-e: DONE is allowed now
             with self.subTest(**{key: value}):
                 saved = co.state.get(key)
                 co.state[key] = value
                 co.save()
                 done = self.attach_cli()
                 self.assertEqual(done.returncode, 2)
-                self.assertIn('REFUSED: attach-verification requires an idle ACTIVE or HOLD run', done.stdout)
+                self.assertIn('REFUSED: attach-verification requires an idle ACTIVE, HOLD or DONE run', done.stdout)
                 co.state[key] = saved
                 co.save()
         co.state['status'] = 'HOLD'

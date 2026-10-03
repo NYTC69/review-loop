@@ -472,7 +472,7 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         return source.read(max_bytes).decode('utf-8', 'replace')
 
 
-DONTASK_SHELL_SYNTAX = re.compile(r'\$\(|`|\||&&|;|[<>]|\b(?:for|while|until)\b')
+DONTASK_SHELL_SYNTAX = re.compile(r'''\$\(|`|\||&&|;|[<>]|(?:^|[\s'"(])(?:for|while|until)\s''')   # field-a L2: a loop keyword, not check-for-x or /for/
 
 
 def dontask_command_hint(commands) -> str:
@@ -3103,8 +3103,10 @@ class Coordinator:
                       rationale=self.state.get('rejected_tree_hold', {}).get('rationale_evidence'))
         if self.args.override_rejection and self.state.get('hold_reason') in ROUND_LIMIT_REASONS:   # RLO: the owner accepts the held tree with these findings open
             record.update(rationale=None, round_limit_hold=self.state['round_limit_hold'],
-                          open_findings=[{'id': row['id'], 'severity': row['severity'], 'summary': ' '.join(str(row.get('summary', '')).split())[:200]}
-                                         for row in self.open_findings()])
+                          open_findings=[{'id': row['id'], 'severity': row['severity'], 'source': row.get('source'), 'security': bool(row.get('security')),   # RLO LOW-1
+                                          'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
+        if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
+            record['operator_verifications'] = verified
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -3551,7 +3553,7 @@ class Coordinator:
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
             'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
             'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
-        ]) + opv.prompt_block(self, snapshot, atomic_json)
+        ]) + opv.prompt_block(self, snapshot, atomic_json, role)
 
     def _gate_prompt(self, snapshot: str) -> str:
         template = Path(self.args.gate_prompt).read_text()
@@ -5283,9 +5285,10 @@ class Coordinator:
         atomic_json(self.run_dir / 'permission-probe.json', report)
         self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
         if (failed := author_probe.get('model_escape_failed_targets')):
-            beside = [t for t in failed if t in (author_probe.get('changed_beside_run_dir') or [])]
+            beside = [t for t in failed if t in (author_probe.get('changed_beside_run_dir') or [])] if not author_probe.get('unexpected_tool_uses') else []   # field-a L1
             hint = ('; ' + ', '.join(beside) + ' changed beside the run dir during the probe: if that is an operator-created file outside the run dir '
-                    "(a launcher log in the run dir's parent), write launcher logs outside the run dir's parent and re-run permission-probe") if beside else ''
+                    "(a launcher log in the run dir's parent) or another lane's probe in the same parent, write launcher logs outside the run dir's parent, "
+                    'keep lanes in separate parents and re-run permission-probe') if beside else ''
             self.hold('1C FAIL: ' + ('operator-created file outside the run dir?' if beside == failed else 'escape write observed at ' + ', '.join(failed)) + hint); return False
         self.state['residual_risk'] = report.get('residual_risk')
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
@@ -6565,11 +6568,14 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
     co._publication_guard()
-    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
-            and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1
-        return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
-                          'or copy auth.json and config.toml into it, directory 0700, files 0600) or unset CODEX_HOME')
+    if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
+        raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
+    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
+            and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
+        return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
+                          'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
+                          + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
     if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
@@ -6599,6 +6605,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0 if passed else 2
     if args.action == 'accept':
         status = co.accept()
+        for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
+            print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
@@ -6682,7 +6690,7 @@ def main(argv=None) -> int:
         print('REFUSED: --scope-change requires note or reject')
         return 2
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
-    if bool(accepts) != bool((args.reason or '').strip()) and not (args.override_rejection and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):
+    if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action == 'accept') and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
         print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip needs --reason and run, resume or reject')
         return 2
     try:

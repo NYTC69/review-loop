@@ -338,6 +338,11 @@ bin/paired-session reject --intent-only --workspace "$WS" --workitem "$ITEM" --r
 bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --text 'Recheck this detail.' --expect <digest>
 ```
 
+`accept --reason TEXT` records the operator's acceptance reason; the intent
+digest covers it, so give the same `--reason` to `accept --intent-only` and to
+`accept`. `accept` refuses `--text` and `--file` (they belong to `reject` and
+`note`).
+
 Runs created without the acceptance snapshot and rejected-digest fields refuse
 mutating commands: `run was created by an older paired-session build; start a new run`.
 `status` reads such a run without migrating or modifying its state. Snapshots keep
@@ -363,8 +368,8 @@ reached`, `EXEC round limit reached after adversarial gate`; RLO, v2.9.5): the
 HOLD records its tree, the override needs that HOLD to be the current one (any
 later HOLD cause, an operator-rejected tree, a changed tree, an active or
 uncertain turn or an empty reason is refused), and `acceptance.json` adds the
-recorded `round_limit_hold` and the findings still open (id, severity, one-line
-summary). Both leases and role run-dir write denials
+recorded `round_limit_hold` and the findings still open (id, severity, source,
+security flag, one-line summary). Both leases and role run-dir write denials
 apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
 still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
 no receipt follows plain resume; a fresh author ingest is required for rejected trees.
@@ -387,7 +392,8 @@ forwarded to their prompts.
 
 When the author's sandbox cannot run a check (for example xcodegen, XCTest or
 CoreSimulator under a Claude author), the operator can run it on the host and
-attach the result to an idle ACTIVE or HOLD run (OPV, v2.9.5):
+attach the result to an idle ACTIVE, HOLD or DONE run (OPV, v2.9.5; at DONE
+before `accept`):
 
 ```sh
 bin/paired-session attach-verification --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
@@ -404,9 +410,12 @@ code, log hash and the last 2,000 log characters (not the note) as
 operator-verified evidence for this exact tree. It is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the
 log copy changes; the snapshot covers tracked and untracked non-ignored files,
-so a change to an ignored file does not void it. Attaching is refused while a
-turn is active, on DONE/ACCEPTED, or when the shown text would fail the
-fresh-role history scan. It is evidence only: no verdict is derived from it.
+so a change to an ignored file does not void it. The persistent reviewer, whose
+thread saw a record, is told in its next prompt that it was withdrawn (id and
+reason only). `accept` lists the records still current for the accepted tree in
+`acceptance.json` and on stdout. Attaching is refused while a turn is active, on
+ACCEPTED, or when the shown text would fail the fresh-role history scan. It is
+evidence only: no verdict is derived from it.
 
 Each run now records an item UUID. A successor inherits it and copies the
 parent's OPEN blocking findings into its protected successor spec and state,

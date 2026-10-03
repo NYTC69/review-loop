@@ -30,7 +30,8 @@ class RoundLimitOverrideTests(unittest.TestCase):
         self.assertEqual((state['status'], state['acceptance'], record['accepted_state']), ('ACCEPTED', record, 'HOLD'))
         self.assertEqual((record['override_rejection'], record['reason'], record['author'], record['rationale']), (True, REASON, 'operator', None))
         self.assertEqual((record['intent']['tree_sha256'], record['round_limit_hold']), (tree, held['round_limit_hold']))
-        self.assertEqual(record['open_findings'], [{'id': row['id'], 'severity': row['severity'], 'summary': ' '.join(row['summary'].split())[:200]}
+        self.assertEqual(record['open_findings'], [{'id': row['id'], 'severity': row['severity'], 'source': row['source'], 'security': bool(row.get('security')),
+                                                    'summary': ' '.join(row['summary'].split())[:200]}
                                                    for row in open_rows])
         return record
 
@@ -99,7 +100,8 @@ class RoundLimitOverrideTests(unittest.TestCase):
     def test_the_gate_round_limit_hold_is_covered_too(self):
         co = self.held('EXEC round limit reached after adversarial gate')
         self.assertEqual(co.accept(), 'ACCEPTED')
-        self.assertEqual(co.state['acceptance']['open_findings'], [{'id': 'F001', 'severity': 'MAJOR', 'summary': 'author verification evidence unavailable'}])
+        self.assertEqual(co.state['acceptance']['open_findings'], [{'id': 'F001', 'severity': 'MAJOR', 'source': 'persistent-reviewer', 'security': False,
+                                                                     'summary': 'author verification evidence unavailable'}])
 
 
 if __name__ == '__main__':
