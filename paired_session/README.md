@@ -346,7 +346,14 @@ bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" 
 
 The override requires `HOLD rejected-tree`, a non-empty reason and an unchanged
 held snapshot. It records operator UID/time, reason, digest and rationale pointer
-in state, events and acceptance evidence. Both leases and role run-dir write denials
+in state, events and acceptance evidence. The same command is the owner's ruling
+at a PLAN or EXEC round-limit HOLD (`PLAN round limit reached`, `EXEC round limit
+reached`, `EXEC round limit reached after adversarial gate`; RLO, v2.9.5): the
+HOLD records its tree, the override needs that HOLD to be the current one (any
+later HOLD cause, an operator-rejected tree, a changed tree, an active or
+uncertain turn or an empty reason is refused), and `acceptance.json` adds the
+recorded `round_limit_hold` and the findings still open (id, severity, one-line
+summary). Both leases and role run-dir write denials
 apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
 still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
 no receipt follows plain resume; a fresh author ingest is required for rejected trees.

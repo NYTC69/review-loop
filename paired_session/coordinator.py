@@ -109,6 +109,7 @@ def resolve_exec_turn_timeout(value, general_timeout):
     if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
+ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate')
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -2939,6 +2940,19 @@ class Coordinator:
         self._progress_terminal('HOLD', reason)
         return 'HOLD'
 
+    def round_limit_hold(self, reason: str) -> str:   # RLO: the held tree, so accept --override-rejection can rule on exactly it
+        self.state['round_limit_hold'] = {'hold_reason': reason, 'phase': self.state['phase'], 'tree_sha256': git_snapshot(self.workspace)[0],
+                                          'time': datetime.now().astimezone().isoformat()}
+        return self.hold(reason)
+
+    def _override_tree(self) -> Optional[str]:   # the tree accept --override-rejection may rule on; None for any other HOLD cause
+        if self.state.get('hold_reason', '').startswith('rejected-tree'):
+            return self.state.get('rejected_tree_hold', {}).get('tree_sha256')
+        held = self.state.get('round_limit_hold') or {}
+        if held.get('hold_reason') in ROUND_LIMIT_REASONS and held['hold_reason'] == self.state.get('hold_reason') and not self.rejected_tree(held['tree_sha256']):
+            return held['tree_sha256']
+        return None
+
     def rejection_limit_hold(self) -> str:
         maximum = self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
         return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
@@ -3076,6 +3090,10 @@ class Coordinator:
                   'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
         record.update(reason=self.args.reason, override_rejection=self.args.override_rejection,
                       rationale=self.state.get('rejected_tree_hold', {}).get('rationale_evidence'))
+        if self.args.override_rejection and self.state.get('hold_reason') in ROUND_LIMIT_REASONS:   # RLO: the owner accepts the held tree with these findings open
+            record.update(rationale=None, round_limit_hold=self.state['round_limit_hold'],
+                          open_findings=[{'id': row['id'], 'severity': row['severity'], 'summary': ' '.join(str(row.get('summary', '')).split())[:200]}
+                                         for row in self.open_findings()])
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -3104,10 +3122,9 @@ class Coordinator:
         data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         override = self.args.override_rejection
         if override and (action != 'accept' or not (self.args.reason or '').strip() or
-                self.state['status'] != 'HOLD' or not self.state.get('hold_reason', '').startswith('rejected-tree') or
-                self.state.get('active') or self.state.get('uncertain_active') or
-                tree_sha != self.state.get('rejected_tree_hold', {}).get('tree_sha256')):
-            raise ValueError('override requires HOLD rejected-tree, unchanged held tree, and non-empty --reason')
+                self.state['status'] != 'HOLD' or self.state.get('active') or self.state.get('uncertain_active') or
+                tree_sha != self._override_tree()):
+            raise ValueError('override requires HOLD rejected-tree or a round-limit HOLD, unchanged held tree, and non-empty --reason')
         if not override: self.refuse_rejected_tree(stale_done=True)
         if required and (not expected or expected != data['digest']): raise ValueError('intent is stale or missing')
         return {**data, 'tree_snapshot': tree_snapshot}
@@ -4353,7 +4370,7 @@ class Coordinator:
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold(f'{phase} round limit reached')
+                self.round_limit_hold(f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
             self.state['delivered_review'] = json.dumps({
@@ -4541,7 +4558,7 @@ class Coordinator:
                 self.state['gate_ran'] = False
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
-                self.hold('EXEC round limit reached after adversarial gate')
+                self.round_limit_hold('EXEC round limit reached after adversarial gate')
                 return
             advisory = [row for row in self.nonblocking_open_findings()
                         if row['id'] not in {finding['id'] for finding in valid}]
