@@ -25,6 +25,7 @@ not the instruction body. A missing, unreadable, or incompletely read file block
 Run every loader call as its own Bash command, never chained (rule in `docs/protocol/loading.md`).
 `docs/protocol/loading.json` is the action/prerequisite map for both runtimes.
 
+Fresh work may hand off to paired-session (the default when `entry` is absent) per the entry procedures.
 Detect fresh / plan-exists / code-exists / explicit-resume via the entry procedures. For fresh work run planning → planning-review; after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone.
 
 Before initialization load `session-init` AND `review-loop-init`; before a resume

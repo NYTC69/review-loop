@@ -3509,13 +3509,13 @@
       "id": "entry_implicit_legacy_notice_exact_text",
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
-      "needle": "`review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly`"
+      "needle": "`review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow`"
     },
     {
       "id": "entry_routing_only_fresh_work_hands_off",
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
-      "needle": "\"No prior state\" hands off: print `review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)`,"
+      "needle": "\"No prior state\" hands off: print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,"
     },
     {
       "id": "entry_routing_non_fresh_states_stay_legacy",
@@ -3581,6 +3581,18 @@
       "kind": "contains",
       "path": "skills/legacy/SKILL.md",
       "needle": "`<support-root>/skills/review-loop/SKILL.md` and\n`<support-root>/docs/protocol/loading.md` in full"
+    },
+    {
+      "id": "entry_absent_routes_to_paired_session_default",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "- Absent: paired-session, the default entry; route it exactly as `paired-session` below."
+    },
+    {
+      "id": "entry_fallback_only_before_first_coordinator_command",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "From the first `bin/paired-session` command on, every refusal or HOLD is reported verbatim and never falls back to legacy."
     },
     {
       "id": "entry_routing_decided_once_before_session_file",

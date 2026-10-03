@@ -1980,11 +1980,11 @@
     "entry_implicit_legacy_notice": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow"
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow"
       }
     ],
     "entry_invalid_value_warning": [
@@ -2018,11 +2018,11 @@
     "entry_experimental_routing_notice": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+        "needle": "review-loop: paired-session entry (entry set in .review-loop/config.md)"
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+        "needle": "review-loop: paired-session entry (entry set in .review-loop/config.md)"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
