@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-03
+
+### v2.9.5：operator 证据通道（attach-verification）、round-limit HOLD 可由 owner 裁决放行、一批来自真实 run 的 operator CLI 修复（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：插件版本绑定在 permission-probe 的 PASS 里，升级后已有的探测报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.5` 运行。
+- **feat（b295-opv）**：新增 `paired-session attach-verification`。operator 在 author 沙箱之外跑某项检查（例如 xcodegen、XCTest、CoreSimulator），再把结果附加到空闲的 ACTIVE、HOLD 或 DONE run 上：
+  - 记录包含命令、cwd、退出码、log sha256（log 复制进 evidence）、时间、actor 和非空 note，绑定当前工作树的快照 digest；
+  - EXEC/POLISH reviewer、shadow 和 gate 的 prompt 会把它作为「针对这棵树的 operator 验证证据」展示（含 log 尾部，不含 note）；
+  - 协调器看到树变化、author 回合改树或 log 副本被改时，记录永久作废；persistent reviewer 看到过的记录作废后，下一轮 prompt 会多一行 `Withdrawn operator verification: Vnnn (原因)`；
+  - 它只是 prompt 证据，不参与任何 verdict 判定。来源：poker-tools N3。
+- **feat（b295-rlo）**：`accept --override-rejection --reason TEXT` 现在也能在 PLAN 或 EXEC 的 round-limit HOLD（含 gate 之后的 EXEC round limit）上由 owner 裁决放行：
+  - 只接受 HOLD 时记录的那棵未变化的树，且该 HOLD 必须仍是当前 HOLD；
+  - 树变了、之后又出现其他原因的 HOLD、树已被 reject、有 active 或 uncertain 回合、reason 为空，都会被拒绝；probe、guard、lease 等原因造成的 HOLD 不能这样越过；
+  - `acceptance.json` 记录这次 HOLD 和当时仍 open 的全部 finding（id、severity、source、security、单行 summary）。
+- **fix（b295-field-a）**：
+  - 任一角色是 Codex 时，run、resume、reject、permission-probe 在派发前检查 `CODEX_HOME` 是否为已存在的目录，否则明确 REFUSED（原来只表现为探测的 "CLI exit 1"）；
+  - Claude author 探测期间 run dir 旁边出现文件变化时仍判 FAIL，HOLD 文案改为提示可能是 operator 自己的文件（例如启动日志），并建议把启动日志写到 run dir 的父目录之外；
+  - Claude reviewer 或 gate 遇到 dontAsk 下跑不了的测试命令（`$(...)`、管道、`;`、`&&`、重定向、循环）时打印 WARNING，README 写明 `/bin/bash /绝对路径/script.sh` 的写法；
+  - 文档：Claude Code 的 auto 模式会拦截 `--accept-unverified-claude-author`，需要 owner 手动启动；
+  - codex-cli 已验证版本表不变：poker-tools N4 的探测 PASS 是 Claude author 加 Codex gate，没有覆盖 Codex author 的沙箱契约。
+- **fix（b295-field-b，poker-tools N4 现场反馈）**：
+  - `accept --reason X` 不再要求 `--accept-*` 标志，`--reason` 作为接受理由记录并被 intent digest 覆盖；
+  - accept 拒绝 `--text`/`--file`（原来生成的 digest 永远对不上）；
+  - DONE 之后、accept 之前也可以 attach-verification，accept 会在 `acceptance.json` 和 stdout 列出对被接受的树仍然有效的 operator 证据。
+- **docs（b295-docs）**：新增 `paired_session/docs/concurrent-runs.md`，说明每条并发 lane 要用独立的绝对 `CODEX_HOME`（默认 `~/.codex` 也算共享），并写明 probe-pass 缓存键的组成；go-reviewer 改为遵从 report-only reviewer 运行时；ADR-8 的模型 pin 措辞改为 ADR-9（模型由 operator 配置）和 ADR-10（gate 默认取 author 的厂商）。
+- **审查**：B 道由 Opus 5.5 执行、Opus 5.5 逐批审查：docs 和 opv 各 2 轮，rlo、field-a、field-b 都是 R1 通过，全部 0 CRITICAL、0 MAJOR。发版前由 gpt-6.1-sol 做跨厂商审查：1 个 MEDIUM，见已知限制，下一版修。
+- **已知限制**：
+  - operator 证据只在协调器看到的树上作废。author 回合中途失败（CLI 非零退出）时，回合内观察到的新树不触发作废；之后树恢复到附加时那棵，旧记录会重新显示。记录内容仍对应当前这棵树，但「树一变就永久作废」的承诺在这条路径上不成立。v2.9.6 修。
+  - FIELD-1（只读角色的临时目录）不在这次发版里，v2.9.6 单独审查后发布。
+  - 以上改动只用 fake CLI 验证过。A 道的真实生命周期提交不在这次发版里，真实生命周期仍然关闭。
+
 ## 2026-10-01
 
 ### v2.9.4：沙箱拒绝建硬链接也能让 Claude 作者探测通过；作者放行只豁免作者那部分探测；FAIL 后探测缓存作废（paired-session 仍是可选入口，默认 legacy）
