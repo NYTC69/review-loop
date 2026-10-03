@@ -60,8 +60,9 @@ the first command that runs `bin/paired-session`):
    true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /
    `--max-exec-rounds`. Do not apply, but print a warning for, `auto_commit: true`
    (`review-loop: auto_commit in .review-loop/config.md is not applied by
-   paired-session; set it in the operator profile`) and `reviewer_model` /
-   `executor_model` (models come from the operator profile, ADR-9). Never pass
+   paired-session; set it in the operator profile`) and a `reviewer_model` /
+   `executor_model` set to anything other than empty or `inherit` (models come
+   from the operator profile, ADR-9). Never pass
    `--adversarial-gate off`.
 3. Create a UUID. Store the work item and run state under
    `${CLAUDE_PLUGIN_DATA}/runs/<UUID>/`; this location must remain outside the

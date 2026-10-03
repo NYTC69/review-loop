@@ -2133,6 +2133,10 @@
       {
         "path": ".agents/skills/review-loop/references/entry.md",
         "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
       }
     ],
     "paired_session_skill_lifecycle_mode_on": [
