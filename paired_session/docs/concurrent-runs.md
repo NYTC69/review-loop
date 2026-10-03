@@ -100,7 +100,11 @@ that parent except its own tree and its own run dir, plus every
 `/tmp/paired-session-author-probe-*` name. Entries in the parent are listed
 without descending into them and with directory mtimes ignored, so writes inside
 another run dir are not seen; an entry that is created, removed, replaced or (for a
-file) modified there is. A Codex author probe keeps its tree inside its own run dir.
+file) modified there is. A Codex author probe keeps its probe tree inside its own
+run dir, but it also makes scratch directories `ps-escape-*` in `/tmp`,
+`.paired-session-escape-*` in the home directory and `paired-session-external-*` in
+the temporary directory. A Claude author probe whose run dir's parent is one of
+those directories sees them.
 
 So a second Claude author probe whose run dir has the same parent always adds and
 later removes its own `paired-session-author-probe-*` tree there, and creating or
@@ -126,8 +130,9 @@ Until a fix lands:
 - run permission probes sequentially, one at a time on the host (the simplest
   option);
 - or give each run dir its own parent directory, where neither parent is `/tmp`
-  (or `/private/tmp`), so no other probe tree, run dir or operator file appears
-  beside it or under the `/tmp` probe names. The `/tmp` escape-target `.txt` names
+  (or `/private/tmp`), the home directory or the temporary directory, so no other
+  probe tree, scratch directory, run dir or operator file appears beside it or
+  under the `/tmp` probe names. The `/tmp` escape-target `.txt` names
   stay host-wide, but they appear only after an escape, and the probe that escaped
   fails too.
 
