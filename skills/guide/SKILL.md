@@ -13,7 +13,7 @@ Then display the following guide to the user, replacing `{VERSION}` with the ver
 
 # review-loop {VERSION} — Quick Reference
 
-## How it works
+## How it works (legacy workflow; fresh work goes to paired-session by default, see Entry below)
 
 ```
 /review-loop <work item description> [--handsfree]
@@ -42,7 +42,7 @@ one that matches where your work currently is:
 
 | Skill | When to pick | What it does |
 |---|---|---|
-| `/review-loop` | You want the full pipeline in one invocation (default; see Entry below) | Auto-routes based on state — fresh plan, existing plan, or code-already-done — then runs plan → execute → polish → delivery end-to-end |
+| `/review-loop` | You want the full pipeline in one invocation (default; fresh work goes to paired-session, see Entry below) | Fresh work → paired-session coordinator (Entry below); an existing plan or code → legacy execute → polish → docs → security → delivery |
 | `/review-loop:plan` | You only want to iterate on the plan; run the code later (possibly on a different runtime) | Runs the planning loop only. On approval, prints the session UUID and a hint: `Next: review-loop:execute --session <uuid>` |
 | `/review-loop:execute` | You already have a plan, or you just want a pure CR sweep over existing code | Runs execution + polish + delivery. Three entry modes: `--session <uuid>`, `--plan <text\|path>`, `--review-only` |
 
@@ -52,22 +52,35 @@ between runtimes — plan on one, execute on the other).
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
-## Entry: legacy default, paired-session opt-in
+## Entry: paired-session default, legacy on request
 
-In this version `/review-loop` runs the legacy workflow above by default. Two
-explicit entry commands sit beside it:
+From v2.10.0 a fresh `/review-loop <work item>` (Claude) or a fresh review-loop
+request (Codex) with no `entry` key in `.review-loop/config.md` hands off to the
+paired-session coordinator. The workflow drawn above is the legacy workflow; it
+runs with `entry: legacy`, with `/review-loop:legacy`, or when a plan, code or
+session already exists. Two explicit entry commands sit beside it:
 
 | Command | What it does |
 |---|---|
-| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: probe, independent PLAN review, EXEC implementation and review, adversarial gate. It ends at DONE (or HOLD); you accept or reject a DONE run yourself. `--plan-only` stops after the approved plan |
+| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: probe, independent PLAN review, EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
 | `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice) |
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
-With `entry: paired-session`, only fresh work (no existing plan, code target or
-session) is handed to paired-session; plan-exists, code-exists and resume stay
-legacy, and a paired-session HOLD is reported, never turned into a legacy run.
-Without the key, `/review-loop` prints a one-line implicit-entry notice and runs
-legacy. `/review-loop:plan`, `/review-loop:execute` and `/review-loop:review-pr` ignore
+With the key absent or `paired-session`, only fresh work (no existing plan, code
+target or session) is handed to paired-session; plan-exists, code-exists and
+resume stay legacy. With the key absent, `/review-loop` prints a one-line
+default-entry notice when it hands off, and a failed check before the
+coordinator starts (macOS host, required CLIs, background or outside-sandbox
+execution, Codex home, on Codex an installed plugin older than v2.10.0, or a
+declined or unanswered worktree or test-command question; under handsfree any
+such question counts as unanswered) falls back to legacy with a notice. With `entry: paired-session` the
+same failure refuses (there is no host check, and unavailable background or
+outside-sandbox execution is reported as HOLD). Once the coordinator has
+started, a refusal or HOLD is reported, never turned into a legacy run.
+`entry: legacy` keeps the legacy workflow without a notice. Roles come from the
+operator profile you name or `~/.config/review-loop/paired-session.json`;
+without one, Codex is the author and gate and Claude the reviewer.
+`/review-loop:plan`, `/review-loop:execute` and `/review-loop:review-pr` ignore
 `entry`. On Codex, ask "use paired-session for this task" or "use the legacy
 review-loop workflow". Details: `docs/paired-session-migration.md`.
 
@@ -80,11 +93,12 @@ contexts reload their prerequisites. This changes instruction transport only,
 not the required review, evidence, authorization or delivery gates.
 
 ```bash
-# Basic — starts full plan→review→implement→CR loop
+# Basic — starts full plan→review→implement→CR loop (paired-session by default; legacy with `entry: legacy`)
 /review-loop add rate limiting to the /api/upload endpoint
 
-# Handsfree — decision questions go to Reviewer, not you
-/review-loop refactor auth middleware --handsfree
+# Handsfree, legacy workflow — decision questions go to Reviewer, not you
+# (under the paired-session default, handsfree only means stage A questions cannot be asked)
+/review-loop:legacy refactor auth middleware --handsfree
 
 # If code is already written, it auto-detects and skips to CR
 /review-loop review the changes I just made to the parser
@@ -180,7 +194,7 @@ Create `.review-loop/config.md` in your project to customize:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `entry` | absent (legacy) | `legacy` \| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work (see Entry above) |
+| `entry` | absent (paired-session) | `legacy` \| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work (see Entry above) |
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
 | `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | "" | Shared tier override for judgment-tier agents |
@@ -199,6 +213,13 @@ Create `.review-loop/config.md` in your project to customize:
 | `quality_focus` | "" | `quality_focus` applies only when Step 3.5 Quality Polish actually runs. |
 | `review_style` | "" | Tone/rules for ALL reviews — adversarial + quality agents |
 | `skip_quality_polish` | false | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security. |
+
+Under the paired-session default entry only `docs_file`, `skip_quality_polish`
+and the soft limits are mapped (the limits become hard caps that HOLD);
+`auto_commit` and the model keys only warn, `handsfree` only blocks stage A
+questions and acceptance, and the other keys apply to the legacy workflow;
+unset paired-session caps are plan 3 / exec 4 rounds. See
+`docs/paired-session-migration.md` (Config mapping).
 
 Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path by
 default. The local Codex reviewer is explicit opt-in only via
@@ -233,7 +254,7 @@ review_focus: |
 - **Live Reports** — see what the Reviewer found after every round
 - **Plan Conformance** — flags unauthorized Executor deviations as CRITICAL
 - **Context file** — persistent session for traceability and fast agent startup
-- **Soft limits + stuck detection** — no hard cap, smart stopping
+- **Soft limits + stuck detection** — no hard cap, smart stopping (legacy workflow; paired-session caps are hard)
 - **Subagent mode** — no Codex needed; `reviewer: subagent` runs an isolated read-only Claude CLI reviewer
 - **Project-specific config** — tailor review priorities per project
 

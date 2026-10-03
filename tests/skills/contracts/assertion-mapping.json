@@ -2188,7 +2188,7 @@
     "guide_entry_key_and_commands": [
       {
         "path": "skills/guide/SKILL.md",
-        "needle": "| `entry` | absent (legacy) | `legacy` \\| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work"
+        "needle": "| `entry` | absent (paired-session) | `legacy` \\| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work"
       },
       {
         "path": "skills/guide/SKILL.md",
@@ -2197,6 +2197,10 @@
       {
         "path": "skills/guide/SKILL.md",
         "needle": "| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "with no `entry` key in `.review-loop/config.md` hands off to the paired-session coordinator"
       },
       {
         "path": "skills/guide/SKILL.md",
