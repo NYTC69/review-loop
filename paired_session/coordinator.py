@@ -1231,6 +1231,7 @@ class Coordinator:
         self.global_codex_home = Path(codex_home_text).expanduser().resolve()
         self.author_temp_dir = self.run_dir / 'author-tmp'
         self._probe_sandbox_commands = None
+        self._probe_env_names = None   # FIELD-10: set only while probe_passed() compares with the probe's own env-derived names
         self.rounds = self.run_dir / 'rounds'
         self.evidence = self.run_dir / 'evidence'
         self.context = self.run_dir / 'context'
@@ -1569,7 +1570,8 @@ class Coordinator:
             self.state['operator_programs'] = current
             self.save()
         elif frozen is not None and frozen != current:
-            issue = 'configured operator program or PATH changed since permission probe'
+            issue = ('configured operator program or PATH changed since permission probe (changed: '
+                     + ', '.join(sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))) + ')')   # FIELD-10: name it
         if issue and hold and self.state.get('status') != 'DONE': self.hold(issue)
         return current, issue
     def reviewer_flags(self) -> dict:
@@ -1693,6 +1695,10 @@ class Coordinator:
                        'or pass --accept-unverified-codex-cli --reason TEXT')
 
     def _claude_optin_current(self) -> bool:   # a recorded operator opt-in bound to the current author flags; a flags change voids it for good
+        if self._probe_env_names is not None:   # FIELD-10: inside probe_passed's env-name comparison, judge the opt-in in the current environment
+            saved, self._probe_env_names = self._probe_env_names, None
+            try: return self._claude_optin_current()
+            finally: self._probe_env_names = saved
         digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
         if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
             optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest}
@@ -1722,11 +1728,12 @@ class Coordinator:
                 'author_permission_probe', {}).get('claude_author_status') == 'PASS'
         except (OSError, ValueError, AttributeError):
             probed = False
-        if probed and self.probe_passed()[0]: return True, ''
+        if probed and (passed := self.probe_passed())[0]: return True, ''
         voided = '; the earlier operator opt-in is void (author flags changed)' if optin.get('voided') else ''
+        detail = ('; the recorded probe does not pass: ' + passed[1]) if probed else '; no Claude author probe PASS is recorded in permission-probe.json'   # FIELD-10
         return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
                        'author permission-probe passes (P0-3b) or the operator opts in with `run '
-                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided)
+                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided + detail)
 
     def _codex_sandbox_profile_args(self) -> list[str]:
         if not (verified := self.codex_contract_verified())[0]:
@@ -1768,7 +1775,7 @@ class Coordinator:
 
     def _claude_sandbox_settings(self, role: str) -> dict:
         """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
-        secret_names = {
+        secret_names = set(self._probe_env_names) if self._probe_env_names is not None else {
             name for name in os.environ
             if re.search(r'(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|'
                          r'(?:^|_)(?:KEY|PASS|PWD)(?:_|$))', name, re.I)
@@ -1814,6 +1821,27 @@ class Coordinator:
         return hashlib.sha256(raw).hexdigest()
 
     def probe_passed(self) -> tuple[bool, str]:
+        """FIELD-10: the credential env-name deny list follows each command's environment (every secret-looking name present is
+        denied), so it alone never voids a PASS: a flags/rules mismatch is re-checked once with the probe's own names; every other
+        input stays bound, and the real dispatch keeps the current names."""
+        ok, reason = self._probe_passed_once()
+        if ok or not (reason.endswith('flags do not match this run') or reason.endswith('Claude author rules do not match this run')):
+            return ok, reason
+        if (names := self._probe_report_env_names()) is None: return ok, reason
+        self._probe_env_names = names
+        try: again = self._probe_passed_once()
+        finally: self._probe_env_names = None
+        return (True, '') if again[0] else again   # the check that still fails once the env names are set aside
+
+    def _probe_report_env_names(self) -> Optional[set]:
+        try: report = json.loads((self.run_dir / 'permission-probe.json').read_bytes())
+        except (OSError, ValueError): return None
+        for key in ('reviewer_flags', 'author_flags', 'gate_flags'):
+            try: return {entry['name'] for entry in report[key]['claude_bash_sandbox']['sandbox']['credentials']['envVars']}
+            except (KeyError, TypeError): continue
+        return None
+
+    def _probe_passed_once(self) -> tuple[bool, str]:
         if (issue := self._program_state()[1]): return False, issue
         path = self.run_dir / 'permission-probe.json'
         if not path.exists():
@@ -6704,7 +6732,7 @@ def main(argv=None) -> int:
             and not restores_run(args):
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
-              '--reason TEXT` (permission-probe does not take the flag)')
+              '--reason TEXT` (permission-probe does not take the flag); no run state exists yet, so run permission-probe first')   # FIELD-10
         return 2
     if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
             and (hint := dontask_command_hint([args.test_command, *args.reviewer_command]))):

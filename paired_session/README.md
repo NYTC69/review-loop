@@ -99,7 +99,14 @@ holds. `--config` replaces the workspace profile; copy any desired limits
 into the external profile because the two files are not layered. The CLI loads the selected profile for run, probe,
 and resume; explicit CLI options override it. On resume, effective settings
 must still match the saved run configuration. A changed binary or PATH requires
-a fresh permission probe before the run can continue.
+a fresh permission probe before the run can continue; the refusal names what
+changed (for example `changed: path_env`), so run `reject`, `resume` and `accept`
+from the same shell setup as the probe. The names of secret-looking environment
+variables (for example a `*_TOKEN` set by an agent session) do not void a recorded
+permission-probe PASS: the Claude credential deny list always follows the current
+environment. They still bind an operator opt-in, an accepted probe skip, the
+probe-pass cache key and a lifecycle-on role manifest. A Claude-author refusal
+also names the failing probe check.
 Role models are operator-set (ADR-9): a role without `--author-model`,
 `--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
 (Claude: `claude-opus-5-5`; Codex: `gpt-6-luna`). Before run state is created,
