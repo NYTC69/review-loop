@@ -3989,10 +3989,21 @@ class Coordinator:
         descendant that left the group (setsid, or a tool run in its own group) is not covered; the cleanup itself never follows a link,
         so it stays safe against one. Unlike resume / probe-retry (which HOLD on EPERM), EPERM here means gone: a group of our own uid
         answers EPERM on macOS only when the members left are unreaped zombies, which cannot act. kill=False (the sweep of a leftover from an
-        earlier dispatch, whose pid may have been reused since) only probes: a group that still answers is refused, never signalled."""
+        earlier dispatch, whose pid may have been reused since) only probes and never signals: it returns only on ESRCH or a recorded
+        never-started turn; no pid, EPERM or any other error is refused (b296-f1d)."""
         receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}, self.state.get('uncertain_active') or {}]
                         if row.get('sequence') == sequence), {})
         pid = receipt.get('pid')
+        if not kill:   # b296-f1d: the sweep deletes only on an explicit ESRCH or a recorded never-started turn; any unknown state keeps it
+            if type(pid) is not int and any(row.get('sequence') == sequence and row.get('child_created') is False
+                                            for row in self.state.get('spawn_failures', [])):
+                return   # _invoke_once recorded that the CLI process was never created
+            if type(pid) is not int or pid <= 1:
+                raise RuntimeError('no verifiable pid is recorded for that turn')
+            try: retry_killpg_eperm(pid)   # a null-signal probe; no signal is ever sent on this path
+            except ProcessLookupError: return
+            except OSError as exc: raise RuntimeError(f'the process group of that turn cannot be verified gone ({exc}; its pid may be reused)') from exc
+            raise RuntimeError('the process group of that turn still answers (alive, or its pid reused)')
         if type(pid) is not int or pid <= 1:
             return   # no child was started
         deadline = time.monotonic() + 3
@@ -4001,8 +4012,6 @@ class Coordinator:
             except ProcessLookupError: return
             except PermissionError: return   # macOS: a group of our own uid left only with unreaped zombies answers EPERM; a zombie cannot act
             except OSError as exc: raise RuntimeError('cannot verify that the read-only role process group stopped; scratch kept') from exc
-            if not kill:
-                raise RuntimeError('the process group of that turn still answers (alive, or its pid reused)')
             if time.monotonic() > deadline:
                 raise RuntimeError('the read-only role process group outlived its turn; scratch kept')
             try: os.killpg(pid, signal.SIGKILL)

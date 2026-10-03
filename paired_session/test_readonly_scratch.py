@@ -33,6 +33,7 @@ class ScratchRootTests(unittest.TestCase):
         (root / 'scratch.txt').write_text('x')
         self.assertEqual(rc.git_snapshot(self.workspace)[0], before)                       # not in the workspace snapshot
         stale = root
+        co.state.setdefault('spawn_failures', []).append({'sequence': int(stale.name.split('-')[0]), 'child_created': False})   # f1d: a recorded never-started turn
         root = co._scratch_root('gate')                                                     # a leftover (crash, uncertain turn) is swept
         self.assertFalse(stale.exists())
         co._drop_scratch(root)
@@ -183,6 +184,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         target = self.outside()
         os.mkdir(co.run_dir / 'role-tmp', 0o700)
         (co.run_dir / 'role-tmp' / '001-reviewer').symlink_to(target)                       # a leftover scratch that is a link
+        co.state.setdefault('spawn_failures', []).append({'sequence': 1, 'child_created': False})   # f1d: its turn never started, so the type check decides
         with self.assertRaisesRegex(RuntimeError, 'unexpected entry in run_dir/role-tmp, refused'):
             co._scratch_root('reviewer')
         with self.assertRaisesRegex(RuntimeError, 'unexpected entry'):
@@ -245,6 +247,38 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         fresh = co._scratch_root('gate')
         self.assertEqual(sorted(os.listdir(left.parent)), [fresh.name])
         self.assertFalse(left.exists())
+
+    def test_only_esrch_or_a_never_started_record_lets_the_sweep_delete_a_leftover(self):   # b296-f1d
+        co = self.coordinator(*CODEX_ROLES, '--quiet-progress')
+        def leftover(pid=None, started=True):
+            scratch = co._scratch_root('reviewer')
+            (scratch / 'work.txt').write_text('x')
+            sequence = int(scratch.name.split('-', 1)[0])
+            if pid is not None:
+                co.state['turns'].append({'sequence': sequence, 'role': 'reviewer', 'phase': 'EXEC', 'vendor': 'codex', 'pid': pid})
+            if not started:
+                co.state.setdefault('spawn_failures', []).append({'sequence': sequence, 'child_created': False})
+            co.state['sequence'] = sequence                                                   # the next dispatch gets the next sequence
+            return scratch
+        for label, pid, probe in (('no receipt', None, None), ('invalid pid', 1, None),
+                                  ('EPERM', 4242, PermissionError(1, 'Operation not permitted')), ('other error', 4242, OSError(5, 'I/O error'))):
+            with self.subTest(label):
+                scratch = leftover(pid)
+                with patch.object(rc, 'retry_killpg_eperm', side_effect=probe) as probed, patch.object(rc.os, 'killpg') as killpg, \
+                        self.assertRaisesRegex(RuntimeError, 'leftover read-only role scratch .*' + scratch.name + ' kept'):
+                    co._scratch_root('gate')
+                killpg.assert_not_called()
+                self.assertEqual(((scratch / 'work.txt').read_text(), co.state['status']), ('x', 'HOLD'))
+                co._drop_scratch(scratch)                                                     # reset for the next case
+                co.state['status'] = 'ACTIVE'
+        for label, pid, started in (('ESRCH', 4242, True), ('never started', None, False)):
+            with self.subTest(label):
+                scratch = leftover(pid, started)
+                with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError(3, 'No such process')):
+                    fresh = co._scratch_root('gate')
+                self.assertFalse(scratch.exists())
+                self.assertEqual(os.listdir(scratch.parent), [fresh.name])
+                co._drop_scratch(fresh)
 
     def test_the_ctime_exemption_is_exactly_state_json_and_progress_jsonl(self):
         co = self.coordinator(*CODEX_ROLES)

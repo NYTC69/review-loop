@@ -244,7 +244,7 @@ receipt and removes it after the turn (also after a failed turn; an uncertain
 turn's root when it is archived or at the next dispatch). Removal first stops what is
 left of the turn's CLI process group (a descendant that left the group is not
 covered; if the group cannot be confirmed gone the scratch is kept, and a
-successful turn then HOLDs; a kept leftover is swept at the next dispatch only once its turn's group is confirmed gone (probed, never signalled, since its pid may have been reused), otherwise that dispatch HOLDs naming it), then works through directory handles, resetting
+successful turn then HOLDs; a kept leftover is swept at the next dispatch only on an explicit ESRCH for its turn's group (probed, never signalled, since its pid may have been reused) or a recorded never-started turn; no recorded pid, EPERM or any other error keeps it and that dispatch HOLDs naming it), then works through directory handles, resetting
 modes and file flags through open file descriptors, and never follows a link
 even if a process survives: `role-tmp` must be a real 0700 directory owned by this user, a link or
 any other leftover entry there is refused, and inside a scratch a link is
