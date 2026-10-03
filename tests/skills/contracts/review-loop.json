@@ -3684,7 +3684,7 @@
       "id": "claude_paired_session_description_keeps_bare_request_prohibition",
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
-      "needle": "Do not trigger on\n  a bare review-loop request in any other case (key absent, invalid, legacy, or\n  /review-loop:legacy)."
+      "needle": "Do not trigger on\n  a bare review-loop request in any other case (key invalid, `legacy`, or\n  /review-loop:legacy)."
     },
     {
       "id": "codex_paired_session_description_permits_configured_handoff",
@@ -3712,7 +3712,22 @@
       "id": "claude_paired_session_body_names_configured_handoff_target",
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
-      "needle": "key `entry` is exactly `paired-session` and the work is fresh"
+      "needle": "key `entry` is `paired-session` or absent and the work is fresh"
+    },
+    {
+      "id": "paired_session_skill_passes_lifecycle_mode_on",
+      "kind": "consistent_with",
+      "mapping_id": "paired_session_skill_lifecycle_mode_on"
+    },
+    {
+      "id": "paired_session_skill_resume_uses_saved_lifecycle_mode",
+      "kind": "consistent_with",
+      "mapping_id": "paired_session_skill_saved_lifecycle_mode"
+    },
+    {
+      "id": "paired_session_skill_never_passes_operator_waivers",
+      "kind": "consistent_with",
+      "mapping_id": "paired_session_skill_no_operator_waivers"
     },
     {
       "id": "cross_vendor_review_section_heading",
