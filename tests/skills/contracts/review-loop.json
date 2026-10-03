@@ -3672,7 +3672,7 @@
       "id": "codex_paired_session_skill_handoff_only_on_exact_entry_key",
       "kind": "contains",
       "path": ".agents/skills/paired-session/SKILL.md",
-      "needle": "key `entry` is exactly `paired-session` and the work is fresh"
+      "needle": "key `entry` is `paired-session` or absent and the work is fresh"
     },
     {
       "id": "claude_paired_session_description_permits_configured_handoff",
@@ -3696,7 +3696,7 @@
       "id": "codex_paired_session_description_keeps_bare_request_prohibition",
       "kind": "contains",
       "path": ".agents/skills/paired-session/SKILL.md",
-      "needle": "Generic review-loop requests in every other case (key absent, invalid, legacy, or explicit legacy) use the legacy entry."
+      "needle": "Generic review-loop requests in every other case (key invalid, `legacy`, or explicit legacy) use the legacy entry."
     },
     {
       "id": "paired_session_skills_configured_handoff_permitted_consistent",

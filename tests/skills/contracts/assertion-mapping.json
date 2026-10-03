@@ -2122,7 +2122,7 @@
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "(key absent, invalid, legacy, or"
+        "needle": "(key invalid, `legacy`, or"
       }
     ],
     "entry_default_notice": [
@@ -2147,17 +2147,37 @@
       {
         "path": "skills/paired-session/SKILL.md",
         "needle": "bin/paired-session\" run \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "bin/paired-session\" permission-probe \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "bin/paired-session\" run \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
       }
     ],
     "paired_session_skill_saved_lifecycle_mode": [
       {
         "path": "skills/paired-session/SKILL.md",
         "needle": "pass the saved `state.json` `config.lifecycle_mode` value"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "pass the saved `state.json` `config.lifecycle_mode` value"
       }
     ],
     "paired_session_skill_no_operator_waivers": [
       {
         "path": "skills/paired-session/SKILL.md",
+        "needle": "Never pass `--skip-probe`, `--accept-unverified-codex-cli`, `--accept-unverified-claude-author`, `--accept-probe-skip` or `--override-rejection` on your own initiative."
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
         "needle": "Never pass `--skip-probe`, `--accept-unverified-codex-cli`, `--accept-unverified-claude-author`, `--accept-probe-skip` or `--override-rejection` on your own initiative."
       }
     ],
