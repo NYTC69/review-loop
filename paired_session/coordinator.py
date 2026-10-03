@@ -43,6 +43,7 @@ try:
     from paired_session import docs_policy
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
+    from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
@@ -58,6 +59,7 @@ except ModuleNotFoundError:
     import docs_policy
     import finish_dispatch
     import lifecycle_spine
+    import operator_verification as opv
     import sensitive_policy
     import security_repair_policy
     from program_binding import snapshot as program_snapshot, safe_path
@@ -1259,7 +1261,7 @@ class Coordinator:
             if 'reason' in self.state and 'hold_reason' not in self.state:
                 self.state['hold_reason'] = self.state.pop('reason')
                 self.save()
-            if self.args.action in ('accept', 'reject', 'note'):
+            if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
                 saved = self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ()))
@@ -1303,7 +1305,7 @@ class Coordinator:
                 self.state['invocation_budget_version'] = 1
                 self.save()
         else:
-            if self.args.action in ('accept', 'reject', 'note'):
+            if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 raise ValueError(f'{self.args.action} requires an existing coordinator run')
             if not (self.workspace / '.git').exists():
                 raise ValueError('--workspace must be a git worktree')
@@ -3478,7 +3480,7 @@ class Coordinator:
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
-            ])
+            ]) + opv.prompt_block(self, snapshot, atomic_json)
         fresh_note = 'Use your persistent thread history across PLAN, EXEC, and POLISH.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -3521,7 +3523,7 @@ class Coordinator:
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
             'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
             'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
-        ])
+        ]) + opv.prompt_block(self, snapshot, atomic_json)
 
     def _gate_prompt(self, snapshot: str) -> str:
         template = Path(self.args.gate_prompt).read_text()
@@ -3536,7 +3538,7 @@ class Coordinator:
                 '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.' +
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
-                '\nNever edit, commit, push, or load skills.')
+                '\nNever edit, commit, push, or load skills.' + opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -3805,6 +3807,8 @@ class Coordinator:
             result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
                 role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
             if role not in ('reviewer', 'shadow', 'gate'):
+                if role == 'author' and workspace_override is None:   # a probe or candidate turn in another tree leaves the workspace alone
+                    opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
                 return result
             answer = result['answer']
             effective = answer
@@ -6277,7 +6281,7 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note', 'status'])
+                                      'accept', 'reject', 'note', 'status', 'attach-verification'])
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -6343,6 +6347,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
+    p.add_argument('--command', help='attach-verification: the command the operator ran outside the author sandbox')
+    p.add_argument('--cwd', help='attach-verification: where it ran, the workspace or a directory inside it (default the workspace)')
+    p.add_argument('--exit-code', type=int, help='attach-verification: its exit code')
+    p.add_argument('--log', help='attach-verification: its log file, outside the workspace and run dir (copied into the run evidence)')
+    p.add_argument('--log-sha256', help='attach-verification: sha256 of that log; a mismatch is refused')
+    p.add_argument('--note', help='attach-verification: non-empty operator note')
     p.add_argument('--expect', help='operator intent digest required by accept/reject')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
@@ -6371,7 +6381,7 @@ def old_gate_vendor(author_vendor: str) -> str:   # legacy opposite-vendor rule:
 
 
 def restores_run(args: argparse.Namespace) -> bool:
-    return args.action in ('accept', 'reject', 'note', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
+    return args.action in ('accept', 'reject', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
 def validate_allowed_models(allowed) -> None:
@@ -6539,6 +6549,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action == 'note':
         print('NOTE: ' + co.note(args.text, args.file))
         return 0
+    if args.action == 'attach-verification':
+        print('VERIFICATION: ' + opv.attach(co, args, git_snapshot(co.workspace)[0], atomic_json))
+        return 0
     if args.action == 'permission-probe':
         try:
             passed = co.permission_probe(retry_uncertain=args.retry_uncertain)
@@ -6681,7 +6694,7 @@ def main(argv=None) -> int:
         return status_brief(run_dir, args.brief)
     try:
         with run_lease(Path(args.run_dir)):
-            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note'):
+            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)

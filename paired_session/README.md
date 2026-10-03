@@ -366,6 +366,30 @@ The old run cannot resume or be accepted; a second chained scope change is
 refused. A scope-change note requires the named existing run. Author-produced
 plan/code remains visible to reviewers, while the operator note itself is not
 forwarded to their prompts.
+
+When the author's sandbox cannot run a check (for example xcodegen, XCTest or
+CoreSimulator under a Claude author), the operator can run it on the host and
+attach the result to an idle ACTIVE or HOLD run (OPV, v2.9.5):
+
+```sh
+bin/paired-session attach-verification --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
+  --command 'xcodebuild test -scheme App' --exit-code 0 --log /tmp/xcodebuild.log \
+  --log-sha256 "$(shasum -a 256 /tmp/xcodebuild.log | cut -d' ' -f1)" --note 'ran on the host simulator'
+```
+
+The record (command, cwd inside the workspace, exit code, log sha256, time,
+operator UID and a non-empty note) is bound to the current workspace snapshot
+digest; the log, which must lie outside the workspace and run dir and match
+`--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
+EXEC and POLISH reviewer, shadow and gate prompts show the command, cwd, exit
+code, log hash and the last 2,000 log characters (not the note) as
+operator-verified evidence for this exact tree. It is voided for good once the
+snapshot differs (an operator edit or an author turn in the workspace) or the
+log copy changes; the snapshot covers tracked and untracked non-ignored files,
+so a change to an ignored file does not void it. Attaching is refused while a
+turn is active, on DONE/ACCEPTED, or when the shown text would fail the
+fresh-role history scan. It is evidence only: no verdict is derived from it.
+
 Each run now records an item UUID. A successor inherits it and copies the
 parent's OPEN blocking findings into its protected successor spec and state,
 with their original run/ID provenance. These records do not enter fresh-role
