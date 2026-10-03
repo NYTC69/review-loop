@@ -89,6 +89,48 @@ Source anchors: `Coordinator.__init__`, `probe_passed`, `_probe_cache_key`,
 `_invoke_once` in `../coordinator.py`, and `inspect` in
 `../codex_capability_guard.py`.
 
+## Concurrent permission probes (FIELD-13, open)
+
+Two `permission-probe` commands running at the same time can fail each other when
+a Claude author probe is involved. The Claude author probe (`_claude_author_probe`
+in `../coordinator.py`) creates its probe tree `paired-session-author-probe-*`
+beside the run dir, in the run dir's parent. It judges writes outside its own tree
+by comparing listings (`listing` in `../claude_author_probe.py`) of every entry in
+that parent except its own tree and its own run dir, plus every
+`/tmp/paired-session-author-probe-*` name. Entries in the parent are listed
+without descending into them and with directory mtimes ignored, so writes inside
+another run dir are not seen; an entry that is created, removed, replaced or (for a
+file) modified there is. A Codex author probe keeps its tree inside its own run dir.
+
+So a second Claude author probe whose run dir has the same parent always adds and
+later removes its own `paired-session-author-probe-*` tree there, and creating or
+removing another run dir or file in that parent during the probe window counts as
+well, as does an operator file there that changes (for example a launcher log). The
+first probe records these as changes beside its run dir and fails, and the other
+probe can fail the same way. If a Claude-author run dir lies directly in `/tmp`
+(`/private/tmp` on macOS), its probe tree is itself a
+`/tmp/paired-session-author-probe-*` directory, which every concurrent Claude author
+probe on the host sees through its `/tmp` listing, whatever its own parent. A FAIL
+that lists only such sibling probe trees (directories), run dirs or operator files
+you can attribute says nothing about the sandbox; an unknown new file beside the
+run dir can still be this run's own escape.
+
+Two other names are not FIELD-13 noise. A `.paired-session-os-probe-*` entry in the
+parent is a Claude reviewer or gate OS-denial target (`_claude_os_probe_path`), and
+a `/tmp/paired-session-author-probe-*.txt` file is an author probe's `/tmp` escape
+target; both exist only when that write got past the sandbox. If either appears in
+a report, treat it as a possible escape by the other run and check both runs'
+probe reports.
+
+Until a fix lands:
+- run permission probes sequentially, one at a time on the host (the simplest
+  option);
+- or give each run dir its own parent directory, where neither parent is `/tmp`
+  (or `/private/tmp`), so no other probe tree, run dir or operator file appears
+  beside it or under the `/tmp` probe names. The `/tmp` escape-target `.txt` names
+  stay host-wide, but they appear only after an escape, and the probe that escaped
+  fails too.
+
 ## Validation boundary
 
 Offline fixtures can show that a combined A+B trust append is rejected when only

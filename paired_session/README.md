@@ -91,8 +91,10 @@ For operator-selected programs, role/vendor settings and test commands, copy
 workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
-settings, but program/role/test-command keys there cause HOLD when that profile
-is selected. `--config` replaces the workspace profile; copy any desired limits
+settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
+when that profile is selected, before any run state is created; `permission-probe`
+reports them in its result instead, and an existing run that later finds such keys
+holds. `--config` replaces the workspace profile; copy any desired limits
 into the external profile because the two files are not layered. The CLI loads the selected profile for run, probe,
 and resume; explicit CLI options override it. On resume, effective settings
 must still match the saved run configuration. A changed binary or PATH requires
