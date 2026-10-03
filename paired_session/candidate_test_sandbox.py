@@ -40,6 +40,16 @@ def run(co, command, *, cwd, env, timeout, capture_output=True):
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS refuses signals to a zombie-only group: reap our child, then use the
+                # coordinator's bounded EPERM retry until the group is gone (fail closed otherwise).
+                process.poll()
+                try:
+                    import_module(('paired_session.' if __package__ else '') + 'coordinator').retry_killpg_eperm(process.pid)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise RuntimeError('candidate test process group is still alive; refuse dispatch')
             if process.poll() is None:
                 process.wait()
         result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)

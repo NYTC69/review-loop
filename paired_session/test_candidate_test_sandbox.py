@@ -1,5 +1,7 @@
+import errno
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -81,6 +83,27 @@ class CandidateSandboxGuardTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         sandbox.run(self.co, None, cwd=self.root, env={}, timeout=5)
                     spawn.assert_not_called()
+
+    def test_killpg_eperm_on_exited_group_returns_result(self):
+        calls = []
+        def killpg(pid, sig):
+            calls.append(sig)
+            if sig == signal.SIGKILL:
+                raise PermissionError(errno.EPERM, 'Operation not permitted')
+            raise ProcessLookupError(errno.ESRCH, 'No such process')
+        with mock.patch.dict(os.environ, {'FAKE_CODEX_TEST_ROOT': str(self.base)}):
+            with mock.patch.object(sandbox.os, 'killpg', side_effect=killpg):
+                result = sandbox.run(self.co, None, cwd=self.root, env={}, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(calls, [signal.SIGKILL, 0])
+        coordinator = sandbox.import_module('paired_session.coordinator')
+        for probe, error, text in ((None, RuntimeError, 'still alive'),
+                                   (PermissionError(errno.EPERM, 'still EPERM'), PermissionError, 'still EPERM')):
+            with self.subTest(error=error), mock.patch.dict(os.environ, {'FAKE_CODEX_TEST_ROOT': str(self.base)}):
+                with mock.patch.object(sandbox.os, 'killpg', side_effect=PermissionError(errno.EPERM, 'EPERM')), \
+                        mock.patch.object(coordinator, 'retry_killpg_eperm', side_effect=probe):
+                    with self.assertRaisesRegex(error, text):
+                        sandbox.run(self.co, None, cwd=self.root, env={}, timeout=10)
 
     def test_executed_candidate_control_receives_eof_and_still_writes_inside(self):
         with mock.patch.dict(os.environ, {'FAKE_CODEX_TEST_ROOT': str(self.base)}):
