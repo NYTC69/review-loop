@@ -113,6 +113,14 @@ ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', '
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
+LEDGER_ID_RE = re.compile(r'\bF\d{3,}\b')
+# Ledger ids are upper-case F###; the scan is case-insensitive elsewhere, so scope that
+# alternative to upper case or an identifier such as `f720` (a 720p frame) trips it.
+FRESH_HISTORY_RE = re.compile(
+    r'\b(?-i:F\d{3,})\b|\bprior_findings\b|Open finding ledger|Delivered (?:plan )?review:'
+    r'|response[ -]to[ -](?:reviewer|review|F\d+)'
+    r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
+    r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
 
 
@@ -3622,6 +3630,16 @@ class Coordinator:
         spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
+    def _plan_history_issue(self) -> Optional[str]:
+        """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval."""
+        for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
+            text = path.read_text() if path.is_file() else ''
+            if ids := sorted(set(LEDGER_ID_RE.findall(text))):
+                return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
+            if match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):   # as the gate scan
+                return f'{label}: review-history wording {match.group(0)!r}'
+        return None
+
     def assert_fresh_prompt(self, role: str, prompt: str) -> None:
         if role not in ('shadow', 'gate'):
             return
@@ -3647,13 +3665,7 @@ class Coordinator:
                         for p in sorted(self.context.iterdir()) if p.is_file()})
         if role == 'gate':
             sources['gate-template'] = Path(self.args.gate_prompt).read_text()
-        # Ledger ids are upper-case F###; the scan is case-insensitive elsewhere, so scope that
-        # alternative to upper case or an identifier such as `f720` (a 720p frame) trips it.
-        history = re.compile(
-            r'\b(?-i:F\d{3,})\b|\bprior_findings\b|Open finding ledger|Delivered (?:plan )?review:'
-            r'|response[ -]to[ -](?:reviewer|review|F\d+)'
-            r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
-            r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
+        history = FRESH_HISTORY_RE
         checked = {}
         for name, content in sources.items():
             # Role/rubric instructions in prompts/templates are not prior verdicts.
@@ -4379,8 +4391,16 @@ class Coordinator:
             self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
             for receipt in self.state.get('turns', []):
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
-        effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
-        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal))
+        plan_history = (self._plan_history_issue() if phase == 'PLAN' and answer['status'] == 'APPROVE'
+                        and ('on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject'))
+                        else None)   # only when a fresh role (shadow, gate, or a gate forced by an operator note) will scan
+        if plan_history:   # FIELD-11: the fresh shadow/gate would refuse this plan after EXEC; refuse the approval now, recorded like RF-5
+            refusal = 'PLAN APPROVE rejected: ' + plan_history
+            self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
+            for receipt in self.state.get('turns', []):
+                if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
+        effective_verdict = 'REVISE' if plan_history else 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
+        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal) and not plan_history)
         if phase == 'EXEC':
             previous_comparison = next((row for row in self.state['exec_comparisons']
                                         if row.get('review_sequence') == result['sequence']), None)
@@ -4425,6 +4445,20 @@ class Coordinator:
                 'prior_findings': [{'id': row['id'], 'fixed': row['disposition'] != 'still_open',
                                     'evidence': row['evidence']} for row in answer['prior_findings']],
             }, ensure_ascii=False)
+            self.state['next'] = 'author'
+        elif plan_history:
+            # FIELD-11: the fresh shadow and gate refuse review history in their inputs (assert_fresh_prompt, unchanged);
+            # ask for the restatement now instead of failing at the gate after EXEC.
+            if plan_history.startswith('work item') or self.state['plan_rounds'] >= limit:
+                self.state['pending_reviewer_result_sequence'] = None
+                self.hold(f'approved plan input carries review history ({plan_history}); the independent shadow and gate '
+                          'refuse it' + ('' if plan_history.startswith('work item') else ', and no PLAN round is left to restate it')
+                          + '; abort and start a new run')
+                return
+            self.state['delivered_review'] = (
+                f'The reviewer approved the plan, but it carries review history ({plan_history}). The independent shadow '
+                'and gate refuse a plan that carries review history. Return the same plan with every finding id and every '
+                'reference to earlier reviews removed; change nothing else.')
             self.state['next'] = 'author'
         elif phase == 'PLAN':
             advisory = self.nonblocking_open_findings()
