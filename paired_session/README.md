@@ -90,7 +90,13 @@ A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
 one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
 `;`, `&&`, redirection or loops can be refused before it runs; `run` and a new
 `permission-probe` print a warning for such a command. Put it in a script and
-configure `/bin/bash /absolute/path/to/script.sh`.
+configure `/bin/bash /absolute/path/to/script.sh`. When the probe's run of the
+test command hits the Claude CLI's own Bash timeout (set per call, at most 10
+minutes by default), the probe fails with `allowed-command-timeout (<N> s)`
+instead of `allowed-command-failed` (a Codex reviewer's command timeout is still
+reported as `allowed-command-failed`);
+re-run the probe on a less loaded host, or configure a faster test command (the
+same one for probe and run).
 Write launcher logs (for example `permission-probe ... > probe.log`) outside the
 run dir's parent: the Claude author probe watches the entries beside the run dir,
 and a log that grows there during the probe fails it as a file changed outside

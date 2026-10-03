@@ -113,6 +113,17 @@ ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', '
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
+# FIELD-12: the CLI's own Bash timeout heads the tool result ("Exit code 143\nCommand timed out after 10m 0s").
+TOOL_TIMEOUT_RE = re.compile(r'\A(?:Exit code -?\d+\n)?Command timed out after ((?:\d+(?:\.\d+)?(?:ms|[hms])(?![a-z]) ?)+)')
+
+
+def tool_timeout_seconds(rows: list) -> Optional[int]:
+    """Seconds of the CLI tool timeout that ended one of these observed command rows, else None."""
+    for row in rows:
+        if match := TOOL_TIMEOUT_RE.match(str(row.get('output') or '')):
+            units = {'h': 3600, 'm': 60, 's': 1, 'ms': 0.001}
+            return -int(-sum(float(n) * units[u] for n, u in re.findall(r'([0-9.]+)(ms|[hms])', match.group(1))) // 1)   # whole seconds, rounded up
+    return None
 LEDGER_ID_RE = re.compile(r'\bF\d{3,}\b')
 # Ledger ids are upper-case F###; the scan is case-insensitive elsewhere, so scope that
 # alternative to upper case or an identifier such as `f720` (a 720p frame) trips it.
@@ -5096,7 +5107,9 @@ class Coordinator:
         if not any(row.get('command', '').strip() == allowed_command for row in evidence):
             failures.append('not-attempted: ' + allowed_command)
         elif not allowed:
-            failures.append('allowed-command-failed: ' + allowed_command)
+            timeout = tool_timeout_seconds(allowed_matches)   # FIELD-12: a CLI tool timeout is not an ordinary failure
+            failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}' if timeout is not None
+                            else 'allowed-command-failed: ' + allowed_command)
         for command in attempts:
             matches = [row for row in evidence if row.get('command', '').strip() == command]
             if not matches:
