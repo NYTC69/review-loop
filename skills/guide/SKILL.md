@@ -42,7 +42,7 @@ one that matches where your work currently is:
 
 | Skill | When to pick | What it does |
 |---|---|---|
-| `/review-loop` | You want the full pipeline in one invocation (default, unchanged UX) | Auto-routes based on state — fresh plan, existing plan, or code-already-done — then runs plan → execute → polish → delivery end-to-end |
+| `/review-loop` | You want the full pipeline in one invocation (default; see Entry below) | Auto-routes based on state — fresh plan, existing plan, or code-already-done — then runs plan → execute → polish → delivery end-to-end |
 | `/review-loop:plan` | You only want to iterate on the plan; run the code later (possibly on a different runtime) | Runs the planning loop only. On approval, prints the session UUID and a hint: `Next: review-loop:execute --session <uuid>` |
 | `/review-loop:execute` | You already have a plan, or you just want a pure CR sweep over existing code | Runs execution + polish + delivery. Three entry modes: `--session <uuid>`, `--plan <text\|path>`, `--review-only` |
 
@@ -51,6 +51,25 @@ All three skills write the same session-file schema under
 between runtimes — plan on one, execute on the other).
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
+
+## Entry: legacy default, paired-session opt-in
+
+In this version `/review-loop` runs the legacy workflow above by default. Two
+explicit entry commands sit beside it:
+
+| Command | What it does |
+|---|---|
+| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: probe, independent PLAN review, EXEC implementation and review, adversarial gate. It ends at DONE (or HOLD); you accept or reject a DONE run yourself. `--plan-only` stops after the approved plan |
+| `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice) |
+
+The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
+With `entry: paired-session`, only fresh work (no existing plan, code target or
+session) is handed to paired-session; plan-exists, code-exists and resume stay
+legacy, and a paired-session HOLD is reported, never turned into a legacy run.
+Without the key, `/review-loop` prints a one-line implicit-entry notice and runs
+legacy. `/review-loop:plan`, `/review-loop:execute` and `/review-loop:review-pr` ignore
+`entry`. On Codex, ask "use paired-session for this task" or "use the legacy
+review-loop workflow". Details: `docs/paired-session-migration.md`.
 
 ## Usage
 
@@ -161,6 +180,7 @@ Create `.review-loop/config.md` in your project to customize:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `entry` | absent (legacy) | `legacy` \| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work (see Entry above) |
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
 | `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | "" | Shared tier override for judgment-tier agents |
