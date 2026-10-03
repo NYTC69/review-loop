@@ -43,6 +43,7 @@ try:
     from paired_session import docs_policy
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
+    from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
@@ -58,6 +59,7 @@ except ModuleNotFoundError:
     import docs_policy
     import finish_dispatch
     import lifecycle_spine
+    import operator_verification as opv
     import sensitive_policy
     import security_repair_policy
     from program_binding import snapshot as program_snapshot, safe_path
@@ -107,6 +109,7 @@ def resolve_exec_turn_timeout(value, general_timeout):
     if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
+ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate')
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -467,6 +470,17 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         size = source.tell()
         source.seek(max(0, size - max_bytes), os.SEEK_SET)
         return source.read(max_bytes).decode('utf-8', 'replace')
+
+
+DONTASK_SHELL_SYNTAX = re.compile(r'''\$\(|`|\||&&|;|[<>]|(?:^|[\s'"(])(?:for|while|until)\s''')   # field-a L2: a loop keyword, not check-for-x or /for/
+
+
+def dontask_command_hint(commands) -> str:
+    """N4-b: shell syntax a Claude reviewer or gate in dontAsk mode may refuse in its one exact allowlisted Bash call."""
+    shaped = [command for command in commands if DONTASK_SHELL_SYNTAX.search(command)]
+    return ('WARNING: a Claude reviewer or gate runs each test/reviewer command as one exact allowlisted Bash call in dontAsk mode; '
+            'command substitution, pipes, `;`, `&&`, redirection or loops in ' + '; '.join(repr(command) for command in shaped) +
+            ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.') if shaped else ''
 
 
 def resolve_test_executable(workspace: Path, command: str) -> str:
@@ -1259,7 +1273,7 @@ class Coordinator:
             if 'reason' in self.state and 'hold_reason' not in self.state:
                 self.state['hold_reason'] = self.state.pop('reason')
                 self.save()
-            if self.args.action in ('accept', 'reject', 'note'):
+            if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
                 saved = self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ()))
@@ -1303,7 +1317,7 @@ class Coordinator:
                 self.state['invocation_budget_version'] = 1
                 self.save()
         else:
-            if self.args.action in ('accept', 'reject', 'note'):
+            if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 raise ValueError(f'{self.args.action} requires an existing coordinator run')
             if not (self.workspace / '.git').exists():
                 raise ValueError('--workspace must be a git worktree')
@@ -2937,6 +2951,19 @@ class Coordinator:
         self._progress_terminal('HOLD', reason)
         return 'HOLD'
 
+    def round_limit_hold(self, reason: str) -> str:   # RLO: the held tree, so accept --override-rejection can rule on exactly it
+        self.state['round_limit_hold'] = {'hold_reason': reason, 'phase': self.state['phase'], 'tree_sha256': git_snapshot(self.workspace)[0],
+                                          'time': datetime.now().astimezone().isoformat()}
+        return self.hold(reason)
+
+    def _override_tree(self) -> Optional[str]:   # the tree accept --override-rejection may rule on; None for any other HOLD cause
+        if self.state.get('hold_reason', '').startswith('rejected-tree'):
+            return self.state.get('rejected_tree_hold', {}).get('tree_sha256')
+        held = self.state.get('round_limit_hold') or {}
+        if held.get('hold_reason') in ROUND_LIMIT_REASONS and held['hold_reason'] == self.state.get('hold_reason') and not self.rejected_tree(held['tree_sha256']):
+            return held['tree_sha256']
+        return None
+
     def rejection_limit_hold(self) -> str:
         maximum = self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
         return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
@@ -3074,6 +3101,12 @@ class Coordinator:
                   'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
         record.update(reason=self.args.reason, override_rejection=self.args.override_rejection,
                       rationale=self.state.get('rejected_tree_hold', {}).get('rationale_evidence'))
+        if self.args.override_rejection and self.state.get('hold_reason') in ROUND_LIMIT_REASONS:   # RLO: the owner accepts the held tree with these findings open
+            record.update(rationale=None, round_limit_hold=self.state['round_limit_hold'],
+                          open_findings=[{'id': row['id'], 'severity': row['severity'], 'source': row.get('source'), 'security': bool(row.get('security')),   # RLO LOW-1
+                                          'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
+        if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
+            record['operator_verifications'] = verified
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -3102,10 +3135,9 @@ class Coordinator:
         data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         override = self.args.override_rejection
         if override and (action != 'accept' or not (self.args.reason or '').strip() or
-                self.state['status'] != 'HOLD' or not self.state.get('hold_reason', '').startswith('rejected-tree') or
-                self.state.get('active') or self.state.get('uncertain_active') or
-                tree_sha != self.state.get('rejected_tree_hold', {}).get('tree_sha256')):
-            raise ValueError('override requires HOLD rejected-tree, unchanged held tree, and non-empty --reason')
+                self.state['status'] != 'HOLD' or self.state.get('active') or self.state.get('uncertain_active') or
+                tree_sha != self._override_tree()):
+            raise ValueError('override requires HOLD rejected-tree or a round-limit HOLD, unchanged held tree, and non-empty --reason')
         if not override: self.refuse_rejected_tree(stale_done=True)
         if required and (not expected or expected != data['digest']): raise ValueError('intent is stale or missing')
         return {**data, 'tree_snapshot': tree_snapshot}
@@ -3478,7 +3510,7 @@ class Coordinator:
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
-            ])
+            ]) + opv.prompt_block(self, snapshot, atomic_json)
         fresh_note = 'Use your persistent thread history across PLAN, EXEC, and POLISH.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -3521,7 +3553,7 @@ class Coordinator:
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
             'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
             'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
-        ])
+        ]) + opv.prompt_block(self, snapshot, atomic_json, role)
 
     def _gate_prompt(self, snapshot: str) -> str:
         template = Path(self.args.gate_prompt).read_text()
@@ -3536,7 +3568,7 @@ class Coordinator:
                 '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.' +
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
-                '\nNever edit, commit, push, or load skills.')
+                '\nNever edit, commit, push, or load skills.' + opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -3805,6 +3837,8 @@ class Coordinator:
             result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
                 role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
             if role not in ('reviewer', 'shadow', 'gate'):
+                if role == 'author' and workspace_override is None:   # a probe or candidate turn in another tree leaves the workspace alone
+                    opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
                 return result
             answer = result['answer']
             effective = answer
@@ -4349,7 +4383,7 @@ class Coordinator:
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold(f'{phase} round limit reached')
+                self.round_limit_hold(f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
             self.state['delivered_review'] = json.dumps({
@@ -4537,7 +4571,7 @@ class Coordinator:
                 self.state['gate_ran'] = False
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
-                self.hold('EXEC round limit reached after adversarial gate')
+                self.round_limit_hold('EXEC round limit reached after adversarial gate')
                 return
             advisory = [row for row in self.nonblocking_open_findings()
                         if row['id'] not in {finding['id'] for finding in valid}]
@@ -4684,6 +4718,7 @@ class Coordinator:
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
+            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == base.parent})   # FIELD-8: may be an operator file (a launcher log)
             out['hardlink_refused'] = refused = cap.hardlink_refused(out['attempts'], ws, sentinel_ino)
             for label, row in out['attempts'].items():
                 if refused and 'hardlink' in label and label != 'link_hardlink': row['not_applicable'] = 'link denied'     # raw outcome kept
@@ -5249,8 +5284,12 @@ class Coordinator:
         else: self._probe_void_on_non_pass(report)   # F4
         atomic_json(self.run_dir / 'permission-probe.json', report)
         self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
-        if author_probe.get('model_escape_failed_targets'):
-            self.hold('1C FAIL: escape write observed at ' + ', '.join(author_probe['model_escape_failed_targets'])); return False
+        if (failed := author_probe.get('model_escape_failed_targets')):
+            beside = [t for t in failed if t in (author_probe.get('changed_beside_run_dir') or [])] if not author_probe.get('unexpected_tool_uses') else []   # field-a L1
+            hint = ('; ' + ', '.join(beside) + ' changed beside the run dir during the probe: if that is an operator-created file outside the run dir '
+                    "(a launcher log in the run dir's parent) or another lane's probe in the same parent, write launcher logs outside the run dir's parent, "
+                    'keep lanes in separate parents and re-run permission-probe') if beside else ''
+            self.hold('1C FAIL: ' + ('operator-created file outside the run dir?' if beside == failed else 'escape write observed at ' + ', '.join(failed)) + hint); return False
         self.state['residual_risk'] = report.get('residual_risk')
         self.state['hold_reason'] = ('permission probe passed; run resume to continue'
                                      if report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else
@@ -6277,7 +6316,7 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note', 'status'])
+                                      'accept', 'reject', 'note', 'status', 'attach-verification'])
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -6343,6 +6382,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
+    p.add_argument('--command', help='attach-verification: the command the operator ran outside the author sandbox')
+    p.add_argument('--cwd', help='attach-verification: where it ran, the workspace or a directory inside it (default the workspace)')
+    p.add_argument('--exit-code', type=int, help='attach-verification: its exit code')
+    p.add_argument('--log', help='attach-verification: its log file, outside the workspace and run dir (copied into the run evidence)')
+    p.add_argument('--log-sha256', help='attach-verification: sha256 of that log; a mismatch is refused')
+    p.add_argument('--note', help='attach-verification: non-empty operator note')
     p.add_argument('--expect', help='operator intent digest required by accept/reject')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
@@ -6371,7 +6416,7 @@ def old_gate_vendor(author_vendor: str) -> str:   # legacy opposite-vendor rule:
 
 
 def restores_run(args: argparse.Namespace) -> bool:
-    return args.action in ('accept', 'reject', 'note', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
+    return args.action in ('accept', 'reject', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
 def validate_allowed_models(allowed) -> None:
@@ -6523,7 +6568,14 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
     co = Coordinator(args)
     co._publication_guard()
+    if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
+        raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
+    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
+            and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
+        return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
+                          'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
+                          + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
     if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
@@ -6539,6 +6591,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action == 'note':
         print('NOTE: ' + co.note(args.text, args.file))
         return 0
+    if args.action == 'attach-verification':
+        print('VERIFICATION: ' + opv.attach(co, args, git_snapshot(co.workspace)[0], atomic_json))
+        return 0
     if args.action == 'permission-probe':
         try:
             passed = co.permission_probe(retry_uncertain=args.retry_uncertain)
@@ -6550,6 +6605,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0 if passed else 2
     if args.action == 'accept':
         status = co.accept()
+        for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
+            print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
@@ -6633,7 +6690,7 @@ def main(argv=None) -> int:
         print('REFUSED: --scope-change requires note or reject')
         return 2
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
-    if bool(accepts) != bool((args.reason or '').strip()) and not (args.override_rejection and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):
+    if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action == 'accept') and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
         print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip needs --reason and run, resume or reject')
         return 2
     try:
@@ -6649,6 +6706,9 @@ def main(argv=None) -> int:
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
               '--reason TEXT` (permission-probe does not take the flag)')
         return 2
+    if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
+            and (hint := dontask_command_hint([args.test_command, *args.reviewer_command]))):
+        print(hint)
     if not restores_run(args) and (issue := gate_surface_issue(args)):
         print('REFUSED: ' + issue)
         return 2
@@ -6681,7 +6741,7 @@ def main(argv=None) -> int:
         return status_brief(run_dir, args.brief)
     try:
         with run_lease(Path(args.run_dir)):
-            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note'):
+            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)

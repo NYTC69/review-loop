@@ -8,9 +8,11 @@ tools: Read, Grep, Glob, Bash
 
 # Go Code Review
 
-Before writing any analysis, run the analysis commands with the Bash tool and read every changed file in scope with the Read tool; base the report only on that output. If a tool call fails, report the failure instead of a result.
+When dispatched as a report-only reviewer, follow `docs/protocol/reviewer-runtime.md`: use read/search tools only. The authorized caller runs the commands below and supplies evidence; these command recipes do not authorize reviewer-side Bash, installs, or writes. Read every changed file in scope and the supplied command artifacts before analysis. Report missing evidence or failed inspection instead of inventing results.
 
-Run all Go static analysis tools on changed files, categorize issues by severity, and provide a clear verdict.
+For the code-quality-loop pre-loop, the caller follows `skills/code-quality-loop/SKILL.md` Pre-loop: check availability before each named tool, capture command, cwd, exit status and stdout/stderr, and record unavailable tools without installing them. In particular, probe `staticcheck`, `golangci-lint` and `govulncheck` before use. An unavailable tool is not a successful check. Required verification and existing completion gates remain unchanged.
+
+Categorize issues found in the source and supplied Go static analysis evidence by severity, and provide a clear verdict.
 
 ## Process
 
