@@ -1108,7 +1108,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(out['model_escape_failed_targets'], [])
         self.assertEqual(out['claude_version'], 'fake-claude 9.9')
         self.assertEqual((out['cleanup']['remaining'], out['cleanup']['errors'], out['cleanup']['base_removed']), ([], [], True))
-        self.assertEqual(list(co.run_dir.parent.glob('paired-session-author-probe-*')), [])
+        self.assertEqual(list(co.run_dir.parent.glob(cap.TREE_PREFIX + '*')), [])
         self.assertEqual(co.context, co.run_dir / 'context')                      # the real context was only swapped out
         self.assertEqual(co.state['turns'][-1]['phase'], 'AUTHOR_PERMISSION_PROBE')
 
@@ -1149,7 +1149,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         sibling_dir.mkdir()
         (sibling_dir / 'inner').write_text('i')
         sibling_file.write_text('f')
-        stale = co.run_dir.parent / 'paired-session-author-probe-stale'                # a foreign leftover is not ours to remove
+        stale = co.run_dir.parent / (cap.TREE_PREFIX + 'stale')                # a foreign leftover is not ours to remove
         stale.mkdir()
         seen, real_mkdtemp = [], tempfile.mkdtemp
         def spy(*args, **kwargs):
@@ -1160,12 +1160,12 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             out = self.probe(co=co)[1]
         self.assertEqual(out['status'], 'PASS', out)
         self.assertEqual([(Path(p).parent, mode, names) for p, mode, names in seen], [(co.run_dir.parent.resolve(), 0o700, [])])
-        self.assertTrue(Path(seen[0][0]).name.startswith('paired-session-author-probe-'))
+        self.assertTrue(Path(seen[0][0]).name.startswith(cap.TREE_PREFIX))
         self.assertFalse(Path(seen[0][0]).exists())
         self.assertEqual((sorted(p.name for p in sibling_dir.iterdir()), sibling_file.read_text(), stale.is_dir()), (['inner'], 'f', True))
 
     def test_the_probe_tree_is_removed_on_every_exit_path(self):
-        def leftovers(co): return [p for p in co.run_dir.parent.glob('paired-session-author-probe-*')]
+        def leftovers(co): return [p for p in co.run_dir.parent.glob(cap.TREE_PREFIX + '*')]
         for name, scenario, patches in (('timeout', None, ('invoke', RuntimeError('author CLI timed out'))),
                                         ('unknown', {'skip': ['bash_abs']}, None),
                                         ('fail', {'escape': ['write_abs']}, None),
@@ -1196,7 +1196,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         try:
             self.assertEqual((out['status'], out['claude_author_status'], out['cleanup']['base_removed']), ('FAIL', 'FAIL', False), out)
         finally:
-            for path in co.run_dir.parent.glob('paired-session-author-probe-*'):
+            for path in co.run_dir.parent.glob(cap.TREE_PREFIX + '*'):
                 shutil.rmtree(path)
 
     def test_a_cli_error_is_a_fail_with_the_reason(self):
@@ -1678,7 +1678,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         co = self.co()
         try:
             with patch.object(cap, 'glob', glob), during_turn(co, lambda: foreign.write_text('x')):  # the product's own host-wide listing still sees it;
-                out = self.probe(co=co)[1]                                                         # this pin flips by design when FIELD-13 lands
+                out = self.probe(co=co)[1]                                                         # FIELD-13 excuses no listing difference
         finally: foreign.unlink(missing_ok=True)
         self.assertEqual(out['status'], 'FAIL', out)
         self.assertIn(str(foreign), out['model_escape_failed_targets'])
@@ -1709,7 +1709,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             self.assertIn('rmtree-not-symlink-safe', str(out['cleanup']['errors']))
             rmtree.assert_not_called()
         finally:
-            for path in co.run_dir.parent.glob('paired-session-author-probe-*'): shutil.rmtree(path)
+            for path in co.run_dir.parent.glob(cap.TREE_PREFIX + '*'): shutil.rmtree(path)
 
     def test_a_link_row_needs_the_link_to_exist_and_passes_on_an_unchanged_sentinel(self):          # P0-3c F7
         for denied in (['link_symlink'], ['link_hardlink'], ['link_symlink', 'link_hardlink']):

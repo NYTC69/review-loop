@@ -691,6 +691,128 @@ def workspace_lease(workspace: Path, run_dir: Path):
         os.close(fd)
 
 
+class ProbeLockBusy(ValueError):
+    """FIELD-13: the parent lock stayed busy past its wait bound; main prints REFUSED before any state or report (and before the run dir,
+    unless the parent was missing: then the fresh, empty run dir stays)."""
+
+
+PROBE_LOCK_POLL_SECONDS, PROBE_LOCK_WAIT_FACTOR = 1.0, 3
+
+
+def probe_lock_dir() -> Path:   # FIELD-13: fixed and uid-keyed, so runs with any HOME, CODEX_HOME or workspace share it
+    return Path('/tmp') / f'paired-session-probe-locks-{os.getuid()}'
+
+
+def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
+    """FIELD-13: an existing run's saved author vendor and timeout (args keep the CLI/profile defaults until Coordinator restores the
+    saved roles); an unreadable state counts as a Claude author, which only costs a wait."""
+    vendor, timeout, path = args.author_vendor, args.timeout, Path(args.run_dir) / 'state.json'
+    if path.exists():
+        try: config = json.loads(path.read_text())['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError): vendor = 'claude'
+    if type(timeout) not in (int, float) or not 0 < timeout < float('inf'): timeout = args.timeout
+    return (vendor if vendor in ('codex', 'claude') else 'claude'), float(timeout)
+
+
+class ProbeParentLock:
+    """FIELD-13 (docs/field13-concurrent-probes.md): one POSIX lock per run-dir parent, taken in main before run_lease. A Claude author
+    permission-probe holds it for the whole command; any action on a fresh run dir holds it only until run_lease has made the dir. It only
+    schedules: no listing difference is excused because of it. POSIX locks belong to the process, so this process opens the file only here."""
+
+    def __init__(self, args: argparse.Namespace, workspace: Path, run_dir: Path):
+        self.run_dir, self.workspace = Path(run_dir).expanduser().resolve(), Path(workspace).expanduser().resolve()
+        vendor, timeout = _frozen_probe_config(args)
+        self.whole, self.fresh = args.action == 'permission-probe' and vendor == 'claude', not self.run_dir.exists()
+        self.estimate = 3 * timeout + 300   # at most three probe turns (reviewer, author, gate), plus settle and cleanup
+        self.payload = {'pid': os.getpid(), 'run_dir': str(self.run_dir), 'action': args.action, 'wait_bound_s': self.estimate if self.whole else 60}
+        self.fd = self.path = self.key_dir = None
+        self.start = time.monotonic()   # one wait cap for the whole command, across key moves
+
+    def _key_dir(self) -> Path:
+        key_dir = self.run_dir.parent
+        while not key_dir.is_dir() and key_dir.parent != key_dir: key_dir = key_dir.parent   # a missing parent: its first new entry lands here
+        return key_dir
+
+    def __enter__(self):
+        while self.whole or self.fresh:
+            self._acquire(key_dir := self._key_dir())
+            if self._key_dir() == key_dir: break
+            self.release()   # a deeper ancestor appeared while this waited: its mkdir now lands there
+            if time.monotonic() - self.start > PROBE_LOCK_WAIT_FACTOR * self.estimate:
+                raise ProbeLockBusy(f'the nearest existing parent of {self.run_dir} kept changing while waiting for its probe lock')
+            time.sleep(PROBE_LOCK_POLL_SECONDS)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+    def after_mkdir(self) -> None:
+        """Inside run_lease, once the run dir exists: a mkdir-only hold ends; a probe keyed on an ancestor moves to the parent."""
+        if not self.whole: self.release()
+        elif self.key_dir != self.run_dir.parent: self.release(); self._acquire(self.run_dir.parent)
+
+    def intact(self) -> bool:
+        """The lock path is still the regular file this process holds locked."""
+        if self.fd is None: return False
+        try: now, held = os.lstat(self.path), os.fstat(self.fd)
+        except OSError: return False
+        return stat.S_ISREG(now.st_mode) and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino)
+
+    def release(self) -> None:
+        if self.fd is None: return
+        try:
+            if self.intact(): os.unlink(self.path)   # unlinked while still locked: a waiter that then locks this inode sees it gone and reopens
+        except OSError: pass
+        finally: os.close(self.fd); self.fd = None
+
+    def _acquire(self, key_dir: Path) -> None:
+        lock_dir = probe_lock_dir()
+        if lock_dir.resolve() == self.workspace or self.workspace in lock_dir.resolve().parents:
+            raise RunLeaseError('the probe lock directory lies inside the workspace')
+        try: lock_dir.mkdir(mode=0o700)
+        except FileExistsError: pass
+        info = lock_dir.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise RunLeaseError('probe lock directory is not a private directory owned by this user')
+        ident = key_dir.stat()
+        self.key_dir, self.path = key_dir, lock_dir / (hashlib.sha256(f'{ident.st_dev}:{ident.st_ino}'.encode()).hexdigest() + '.lock')
+        start, holder_since, holder, noted = self.start, time.monotonic(), None, None
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        while True:
+            fd = os.open(self.path, flags, 0o600)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    raise RunLeaseError('probe lock path is not a private regular file owned by this user')
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raw = os.pread(fd, 4096, 0) if exc.errno in (errno.EAGAIN, errno.EACCES) else None
+                os.close(fd)   # this process holds no lock on the file while it waits
+                if raw is None: raise
+            except BaseException:
+                os.close(fd); raise
+            else:
+                self.fd = fd
+                if self.intact(): break
+                self.fd, raw = None, b''; os.close(fd)   # unlinked or replaced between open and lock: wait, then lock the current file
+            now = time.monotonic()
+            try: seen = json.loads(raw)
+            except ValueError: seen = {}
+            seen = seen if isinstance(seen, dict) else {}
+            if raw != holder: holder, holder_since = raw, now   # a new holder restarts its own bound
+            claimed = seen.get('wait_bound_s')
+            bound = max(self.estimate, claimed if type(claimed) in (int, float) and 0 < claimed < float('inf') else 0)   # a claim only lengthens
+            who = f"unverified holder pid {seen.get('pid', 'unknown')}, run_dir {seen.get('run_dir', 'unknown')}, action {seen.get('action', 'unknown')}"
+            if now - holder_since > bound or now - start > PROBE_LOCK_WAIT_FACTOR * self.estimate:
+                raise ProbeLockBusy(f'another command holds the probe lock of {key_dir} ({who}; lsof {self.path} shows the real holder); '
+                                    f'waited {int(now - start)} s')
+            if noted is None or now - noted >= 60:
+                print(f'waiting for the probe lock of {key_dir} ({who}; lsof {self.path} shows the real holder)', file=sys.stderr, flush=True); noted = now
+            time.sleep(PROBE_LOCK_POLL_SECONDS)
+        os.ftruncate(self.fd, 0)
+        os.pwrite(self.fd, json.dumps({**self.payload, 'started_at': datetime.now().astimezone().isoformat()}).encode(), 0)
+
+
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
@@ -4765,7 +4887,7 @@ class Coordinator:
         real_context, base, tmp, dirs, gone = self.context, None, None, [], lambda p: not (p.exists() or p.is_symlink())
         try:
             # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
-            base = Path(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir.parent)).resolve()
+            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.run_dir.parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
             for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
             (ws / 'tracked.txt').write_text('probe baseline\n')
@@ -4815,6 +4937,8 @@ class Coordinator:
             allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')} | cap.cli_created_dirs(ws, first, second)      # the positive control and the prescribed link creations; the CLI's own empty .claude/.cc-writes (CG-6)
             escaped += [k for k in baseline.keys() | first.keys() | second.keys()
                         if k not in allowed and not baseline.get(k) == first.get(k) == second.get(k)] + ([] if unchanged else [str(sentinel)])
+            if (lock := getattr(self.args, '_probe_lock', None)) is not None and not lock.intact():   # FIELD-13: no role may write the lock dir
+                escaped.append(str(lock.path)); reason = reason or 'probe-lock-tampered'
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
@@ -6843,7 +6967,9 @@ def main(argv=None) -> int:
     if args.action == 'status' and args.brief is not None:
         return status_brief(run_dir, args.brief)
     try:
-        with run_lease(Path(args.run_dir)):
+        with ProbeParentLock(args, workspace, run_dir) as probe_lock, run_lease(Path(args.run_dir)):   # FIELD-13: the parent lock first
+            probe_lock.after_mkdir()
+            args._probe_lock = probe_lock if probe_lock.whole else None
             if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)

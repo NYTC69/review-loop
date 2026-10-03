@@ -1,8 +1,9 @@
-# FIELD-13: concurrent Claude author probes (design, not implemented)
+# FIELD-13: concurrent Claude author probes
 
-Status: design for review. It makes no code change. Owner decisions are in §8.
-Today's behaviour and the operator workaround are described in
-[`concurrent-runs.md`, "Concurrent permission probes"](concurrent-runs.md#concurrent-permission-probes-field-13-open).
+Status: implemented in v2.9.7 (v297-f13) as E plus D. §9 lists where the
+implementation differs from this design. Owner decisions are in §8. The operator
+view is
+[`concurrent-runs.md`, "Concurrent permission probes"](concurrent-runs.md#concurrent-permission-probes-field-13).
 
 ## 1. Problem
 
@@ -394,3 +395,36 @@ the real host-wide listing still FAILs on a foreign name.
     in the same release as E, so that a Codex escape is no longer attributed to
     concurrent Claude probes.
   - This needs a `CODEX_PROBE_SHA256` ruling.
+
+## 9. Implementation notes (v297-f13)
+
+The code is `ProbeParentLock` in `../coordinator.py`, wired into `main` around `run_lease`, plus `TREE_PREFIX` in
+`../claude_author_probe.py`. The tests are in `../test_field13_probe_lock.py`.
+
+**The two open R3 MEDIUMs are resolved:**
+- **Vendor.** For an existing run, `main` reads the saved author vendor and timeout from `state.json`
+  (`_frozen_probe_config`). An unreadable state counts as a Claude author.
+- **Lock key when the parent is missing.** It is the nearest existing ancestor of `run_dir.parent`, the directory that
+  receives the first new entry. Once the run dir exists, a Claude probe that was keyed on an ancestor releases that lock
+  and takes the parent's. A waiter re-checks the key after acquiring the lock. If a deeper ancestor appeared while it
+  waited, it releases the lock and waits on that ancestor instead. One wait cap covers the whole command, across these
+  key moves.
+
+**Deviations from §4 and §5:**
+- **The lock file is unlinked on release, while still locked.** A waiter that then locks the unlinked inode sees that
+  the path no longer matches its fd and reopens. The identity check after acquiring loops until the wait bound instead
+  of retrying once. This keeps `/tmp` free of one leftover file per parent ever used. A file that another process
+  replaced is never unlinked.
+- **No `--probe-lock-wait-seconds` flag.** The bound is the module constant `PROBE_LOCK_WAIT_FACTOR` (3) times the
+  command's own estimate, which is 3 × `--timeout` + 300 s. A holder publishes `wait_bound_s` (the same estimate, or
+  60 s for a mkdir-only hold).
+- **No read-deny entry for the lock directory.** A measurement on this macOS host (Darwin 25.3) shows that an `flock`
+  taken through a read-only fd in another process blocks `lockf`. Any reader can therefore delay probes in a parent.
+  This costs availability only. The read-deny entry would change every Claude role surface and digest, so it stays
+  owner decision D3. A Codex reader could not be denied in any case.
+- **Codex `slash_tmp_path` is not renamed**, because that needs the `CODEX_PROBE_SHA256` ruling (D5).
+- **Changed tests.** The tree-prefix tests listed in §4.1 now use `cap.TREE_PREFIX`. These are fixture names only.
+- **Cross-OS testing.** Test 4 checks only that a read-only fd cannot take `lockf`. The macOS `flock` result is recorded
+  here, not asserted.
+- **fd inheritance.** Test 9 checks that the lock fd is not inheritable. It does not run a fake author that lists
+  `/dev/fd`.
