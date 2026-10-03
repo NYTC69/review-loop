@@ -2971,6 +2971,7 @@ class Coordinator:
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
         if self.state.get('active'):
+            self._void_opv_unknown_turn(self.state['active'])
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
@@ -3868,16 +3869,42 @@ class Coordinator:
                     rollout_stream.close()
                 return
 
+    def _void_opv_unknown_turn(self, turn: dict) -> None:
+        """v2.9.7 OPV: an author turn in this workspace that became uncertain (cut off with the coordinator, e.g. a hard kill,
+        found by resume, run, permission-probe, abort or any hold) left an unknown tree."""
+        if turn.get('role') == 'author' and turn.get('workspace') == str(self.workspace):
+            opv.void_stale(self, None, atomic_json)
+
+    def _void_opv_observed(self, seq0: int, failed: bool = False) -> None:
+        """OPV (v2.9.7): void on every tree the coordinator observed in the author turns after seq0 (start and end snapshot of
+        each recorded turn; a missing end snapshot is an unknown tree), and on an unknown tree when a failed turn's child ran
+        but left no recorded turn (an interrupted or uncertain dispatch)."""
+        if not self.state.get('operator_verifications'): return
+        turns = [t for t in self.state.get('turns', []) if t.get('sequence', 0) > seq0 and t.get('role') == 'author']
+        for turn in turns:
+            opv.void_stale(self, turn.get('snapshot_before'), atomic_json)
+            opv.void_stale(self, turn.get('snapshot_after'), atomic_json)
+        if failed and not turns and (self.state.get('active') or self.state.get('uncertain_active')):
+            opv.void_stale(self, None, atomic_json)
+
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
-            result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
-                role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
+            seq0 = self.state['sequence']
+            try:
+                result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
+                    role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
+            except BaseException:
+                if role == 'author' and workspace_override is None:   # v2.9.7: a failed author turn may have changed the tree
+                    try: self._void_opv_observed(seq0, failed=True)
+                    except Exception: pass   # the turn's failure is the error to report; void_stale marks the row before it writes, so only a failed evidence write can leave it current on disk until the next save
+                raise
             if role not in ('reviewer', 'shadow', 'gate'):
                 if role == 'author' and workspace_override is None:   # a probe or candidate turn in another tree leaves the workspace alone
+                    self._void_opv_observed(seq0)
                     opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
                 return result
             answer = result['answer']
@@ -6184,6 +6211,7 @@ class Coordinator:
         if self.state.get('active'):
             self.state['uncertain_active'] = self.state['active']
             self.state['active'] = None
+            self._void_opv_unknown_turn(self.state['uncertain_active'])
             if not retry_uncertain:
                 return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
             self.save()

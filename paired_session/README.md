@@ -430,8 +430,12 @@ EXEC and POLISH reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
 operator-verified evidence for this exact tree. It is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the
-log copy changes; the snapshot covers tracked and untracked non-ignored files,
-so a change to an ignored file does not void it. The persistent reviewer, whose
+log copy changes. Every tree the coordinator observes in an author turn counts,
+also when the turn fails: its start and end snapshots, and an unknown tree when
+the CLI ran but no end snapshot exists (also after the coordinator itself was
+killed during an author turn: the next command that finds the interrupted turn
+voids it). The snapshot covers tracked
+and untracked non-ignored files, so a change to an ignored file does not void it. The persistent reviewer, whose
 thread saw a record, is told in its next prompt that it was withdrawn (id and
 reason only). `accept` lists the records still current for the accepted tree in
 `acceptance.json` and on stdout. Attaching is refused while a turn is active, on
