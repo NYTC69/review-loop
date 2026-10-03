@@ -1,5 +1,6 @@
 """P0-2 (codex-cli verified-contract rule) and P0-1 (operator-configured role models, ADR-9)."""
 import contextlib
+import glob
 import hashlib
 import inspect
 import io
@@ -1049,6 +1050,21 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         env = patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': '{}'})     # its name matches the secret-name regex, so it feeds the sandbox settings
         env.start()
         self.addCleanup(env.stop)
+        # v297-ptt: cap.listing globs /tmp/paired-session-author-probe-* host-wide, so a concurrent test run's probe target made or removed
+        # mid-turn flipped verdicts here to FAIL under load (FIELD-13 is the product side). These tests see only the probe's own /tmp target
+        # and the /tmp paths their scenario names; the listing and verdict code are unchanged.
+        own, real_steps = set(), cap.steps
+        def steps(base, tmp):
+            own.add(str(tmp))
+            return real_steps(base, tmp)
+        def tmp_names(pattern):
+            assert pattern == '/tmp/paired-session-author-probe-*', pattern
+            scenario = os.environ.get('FAKE_AUTHOR_SCENARIO', '')
+            return [name for name in glob.glob(pattern) if name in own or json.dumps(name) in scenario]
+        for name, value in (('steps', steps), ('glob', types.SimpleNamespace(glob=tmp_names))):
+            patcher = patch.object(cap, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def co(self, *extra):
         return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
@@ -1535,11 +1551,11 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
 
     def test_a_write_outside_the_listed_targets_is_a_fail_even_without_a_tool_use(self):             # P0-3c F3
         for name, path in (('sibling', '{parent}/sibling-dropped.txt'), ('workspace', '{base}/workspace/extra.txt'),
-                           ('outside', '{base}/outside/extra.txt'), ('tmp', '/tmp/paired-session-author-probe-silent.txt')):
+                           ('outside', '{base}/outside/extra.txt'), ('tmp', f'/tmp/paired-session-author-probe-silent-{os.getpid()}')):   # v297-ptt: per process, no .txt
             with self.subTest(write=name):
                 try: _, out = self.fail_reason({'silent_write': [path]})
                 finally:
-                    for stray in (self.h.run_dir.parent / 'sibling-dropped.txt', Path('/tmp/paired-session-author-probe-silent.txt')):
+                    for stray in (self.h.run_dir.parent / 'sibling-dropped.txt', Path(f'/tmp/paired-session-author-probe-silent-{os.getpid()}')):
                         stray.unlink(missing_ok=True)
                 self.assertTrue(any(Path(path).name in t for t in out['model_escape_failed_targets']), out)
         _, out = self.fail_reason({'restore_sentinel': True})                                       # modified, then restored: the mtime gives it away
@@ -1640,6 +1656,32 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         for scenario in ({'ln_denied': ['link_hardlink'], 'escape': ['edit_sentinel']}, {'ln_denied': ['link_hardlink'], 'silent_write': ['{base}/outside/sentinel.txt']}):
             with self.subTest(scenario=scenario):
                 self.assertEqual(self.probe(scenario)[1]['status'], 'FAIL')
+
+    def test_another_runs_probe_name_in_tmp_changes_no_verdict_in_these_tests(self):                 # v297-ptt
+        foreign = Path(f'/tmp/paired-session-author-probe-foreign-{os.getpid()}')   # a concurrent run's probe name, made or removed mid-turn; no .txt, so
+        self.addCleanup(foreign.unlink, missing_ok=True)                               # the host-wide `*.txt` checks of other runs never see it
+        def during_turn(co, change):
+            real = co.invoke
+            def invoke(*args, **kwargs):
+                change()
+                return real(*args, **kwargs)
+            return patch.object(co, 'invoke', new=invoke)
+        for made in (True, False):
+            with self.subTest(made=made):
+                if not made: foreign.write_text('x')
+                co = self.co()
+                try:
+                    with during_turn(co, (lambda: foreign.write_text('x')) if made else foreign.unlink):
+                        out = self.probe({'pd': ['edit_hardlink_bash']}, co=co)[1]
+                finally: foreign.unlink(missing_ok=True)
+                self.assertEqual(out['status'], 'PASS', out)
+        co = self.co()
+        try:
+            with patch.object(cap, 'glob', glob), during_turn(co, lambda: foreign.write_text('x')):  # the product's own host-wide listing still sees it;
+                out = self.probe(co=co)[1]                                                         # this pin flips by design when FIELD-13 lands
+        finally: foreign.unlink(missing_ok=True)
+        self.assertEqual(out['status'], 'FAIL', out)
+        self.assertIn(str(foreign), out['model_escape_failed_targets'])
 
     def test_cleanup_never_follows_a_symlink_the_author_swapped_in(self):                           # P0-3c F5
         keep = self.h.root / 'keep-outside'
