@@ -3616,6 +3616,23 @@
       "mapping_id": "entry_codex_handoff_target"
     },
     {
+      "id": "codex_entry_absent_routes_to_paired_session_default",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "- Absent: paired-session, the default entry; route it exactly as `paired-session` below,"
+    },
+    {
+      "id": "codex_entry_fallback_only_before_first_coordinator_command",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "From the first `bin/paired-session` command on, every refusal or HOLD is reported verbatim and never falls back to legacy."
+    },
+    {
+      "id": "entry_default_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_default_notice"
+    },
+    {
       "id": "codex_entry_only_fresh_work_hands_off",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
