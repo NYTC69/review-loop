@@ -17,9 +17,9 @@ invoke the legacy review-loop workflow for this task.
    its absolute path with `--config` for probe and run. `--config` replaces the
    workspace profile; copy desired non-program limits into the external profile.
    CLI options can override
-   that profile, but models must match the
-   ADR-8 vendor pins (`claude-opus-5-5` for Claude; `gpt-6-luna` for Codex).
-   Without a profile, the coordinator selects those pins by role vendor.
+   that profile. Models are operator-set (ADR-9); a role without one gets its
+   vendor's default (`claude-opus-5-5` for Claude; `gpt-6-luna` for Codex), and
+   the gate defaults to the author's vendor (ADR-10).
    Determine the project's test command from its docs/manifests and ask only if
    it cannot be established safely.
 3. Run the setup, work-item write, permission probe, and coordinator run in one

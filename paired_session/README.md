@@ -67,6 +67,8 @@ plugin cache.
 
 ## Start a task
 
+For simultaneous lanes, read [Concurrent runs and isolated Codex homes](docs/concurrent-runs.md).
+
 Use a dedicated Git worktree for each product task and keep run artifacts in a
 sibling directory outside the workspace. Never put `--run-dir` inside the
 workspace: the author can write to the workspace and must not be able to alter
@@ -84,9 +86,13 @@ into the external profile because the two files are not layered. The CLI loads t
 and resume; explicit CLI options override it. On resume, effective settings
 must still match the saved run configuration. A changed binary or PATH requires
 a fresh permission probe before the run can continue.
-Models follow ADR-8 vendor pins (Claude: `claude-opus-5-5`; Codex:
-`gpt-6-luna`). Changing a role's vendor without updating incompatible model
-values is rejected before run state is created.
+Role models are operator-set (ADR-9): a role without `--author-model`,
+`--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
+(Claude: `claude-opus-5-5`; Codex: `gpt-6-luna`). Before run state is created,
+every model id must be well formed and, when `allowed_models` is set, listed for
+that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
+`--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
+and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
 outside-workspace or wildcard doc paths are refused. `lifecycle_mode=on` is
