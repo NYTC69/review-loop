@@ -4286,8 +4286,107 @@ class Coordinator:
                 self.hold('EXEC round limit reached after a FINISH write')
         else:
             self.state['next'] = 'polish-q'
-            self.hold(worktree_lifecycle.POLISH_PENDING)
         self.save()
+
+    def worktree_polish_turn(self) -> None:
+        """ADR-11 POLISH-Q (legacy Step 3.5): fresh report-only specialists over the FINISH-approved tree."""
+        life = self.state['lifecycle']
+        if git_snapshot(self.workspace)[0] != life['candidate_oid']:
+            raise RuntimeError('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        last = next((row for row in reversed(life['receipts']) if row['stage'] == 'POLISH-Q'), {})
+        blockers = [row['id'] for row in self.blocking_open_findings() if row.get('owner_role', '').startswith('specialist:')]
+        if blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
+            raise RuntimeError('POLISH-Q blockers need a fix on a new tree, not a re-review: ' + ', '.join(blockers))
+        request = worktree_lifecycle.stage_request(life, 'specialists')
+        if life['pending'] != request:   # a new attempt; a replay keeps the specialists it already completed
+            life['specialist_done'] = {}
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.save()
+        paths = [*self._git(['diff', '--name-only', '--diff-filter=d', 'HEAD']).splitlines(),
+                 *self._git(['ls-files', '--others', '--exclude-standard']).splitlines()]
+        names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(paths)
+        if names:
+            self.materialize_review_context()
+        done = self.state['lifecycle']['specialist_done']
+        for name in names:
+            if name not in done:
+                done[name] = self._specialist_turn(name, paths, request['candidate_oid'])
+                self.save()
+        blocking = self.blocking_open_findings()
+        tree = git_snapshot(self.workspace)[0]
+        receipt = {**request, 'status': 'HOLD' if blocking or tree != request['candidate_oid'] else 'READY',
+                   'output_oid': tree, 'specialists': list(names), 'specialist_turns': [done[name] for name in names],
+                   'skipped': not names}   # skip_quality_polish: a no-op receipt
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
+        self.state['lifecycle'].pop('specialist_done', None)
+        if blocking:
+            self.hold('POLISH-Q open blocking findings: ' + ', '.join(row['id'] for row in blocking))
+        elif tree != request['candidate_oid']:
+            self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        else:
+            self.state['lifecycle']['stage'] = 'DOCS'
+            self.state['next'] = 'docs'
+        self.save()
+
+    def _specialist_turn(self, name: str, paths: list[str], tree: str) -> dict:
+        life, caps = self.state['lifecycle'], budget_policy.BUDGET_CAPS
+        path = HERE.parent / 'agents' / (name + '.md')
+        try:
+            raw = _read_role_source(path)
+            body = worktree_lifecycle.agent_body(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise RuntimeError(f'specialist {name} body cannot be read: {exc}') from exc
+        body_sha256 = hashlib.sha256(raw).hexdigest()
+        if body_sha256 != self.state['role_dispatch_manifest']['agent_body_sha256'].get(path.name):
+            raise RuntimeError('specialist body differs from the frozen role manifest: ' + name)
+        owner = 'specialist:' + name
+        owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
+        protocol = '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
+            f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
+            f'Approved plan: {self.context / "plan.md"}',
+            f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat and status.txt.',
+            'Changed paths: ' + (', '.join(paths) or 'none'), self.inspection_prompt('reviewer'),
+            REVIEW_SEVERITY_GUIDANCE, self.verified_claims_prompt(), self.allowed_command_prompt(),
+            'A command the instructions above ask for that is not in this list is unavailable here; that is not a '
+            'failure and not a reason to HOLD. Analyse those concerns with Read/Grep/Glob instead.',
+            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
+            'Do not report exit codes; the coordinator reads tool results directly.'])
+        prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned, protocol) +
+                  opv.prompt_block(self, tree, atomic_json, 'reviewer'))
+        for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
+            counts = life.setdefault('specialist_counts', {})
+            if life.get('polish_calls', 0) + 2 > caps['POLISH-Q'][0] or counts.get(name, 0) + 2 > caps['specialist'][0]:
+                raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)   # invoke may dispatch twice
+            counts[name] = counts.get(name, 0) + 1
+            life['polish_calls'] = life.get('polish_calls', 0) + 1
+            self.save()
+            before = self.state['sequence']
+            try:
+                result = self.invoke('reviewer', 'POLISH-Q', prompt, review_schema(), fresh=True)
+            finally:   # invoke's own protocol retry is a dispatch too, also when it ends in an error
+                if (extra := self.state['sequence'] - before - 1) > 0:
+                    counts[name] += extra
+                    life['polish_calls'] += extra
+                    self.save()
+            turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+            if turn.get('snapshot_before') != tree:
+                raise RuntimeError(f'specialist {name} reviewed a tree other than the FINISH-approved one')
+            if turn.get('observed_tool_calls'):
+                break
+            turn['discarded'] = 'no tool calls'
+            self.save()
+            if attempt == 2:
+                raise RuntimeError(f'specialist {name} made no tool calls after one retry')
+        answer = result['answer']
+        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not answer['full_review']):
+            raise RuntimeError(f"specialist {name} returned {answer['status']} without a usable review")
+        findings = worktree_lifecycle.normalized_findings(name, answer['full_review'])   # validate before any ledger write
+        if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
+                                              [row['id'] for row in owned], owner):
+            raise RuntimeError(f'specialist {name} omitted dispositions for its findings: ' + ', '.join(missing))
+        self.record_findings(owner, 'POLISH-Q', result['sequence'], findings)
+        self.render(result, 'specialist-' + name, 'POLISH-Q')
+        return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree}
 
     def polish_author_turn(self) -> None:
         polish = self.state['polish']
@@ -6166,7 +6265,9 @@ class Coordinator:
                 elif self.state['next'] == 'finish' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_finish_turn()
                 elif self.state['next'] == 'polish-q' and worktree_lifecycle.is_worktree(self.state):
-                    return self.hold(worktree_lifecycle.POLISH_PENDING)
+                    self.worktree_polish_turn()
+                elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
+                    return self.hold(worktree_lifecycle.DOCS_PENDING)
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:

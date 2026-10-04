@@ -1,11 +1,19 @@
 """Worktree lifecycle W (ADR-11, docs/e2e-6): activation preconditions, receipts and stage routing."""
+from pathlib import Path
+
 try:
     from paired_session import lifecycle_spine
 except ModuleNotFoundError:
     import lifecycle_spine
 
 FORMAT = 'worktree'
-POLISH_PENDING = 'worktree lifecycle stage POLISH-Q not implemented yet (W2a)'
+DOCS_PENDING = 'worktree lifecycle stage DOCS not implemented yet (W2b)'
+LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
+                   **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),
+                                   'frontend-security-reviewer')}
+QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')   # legacy Steps 3.5.3 and 3.5.5
+SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM': 'MAJOR', 'SECURITY': 'SECURITY',
+            'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
 WAIVERS = (('accept_unverified_claude_author', '--accept-unverified-claude-author'),
            ('accept_probe_skip', '--accept-probe-skip'))
 PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'polish_round')   # E-4: operator-only
@@ -78,3 +86,43 @@ def finish_prompt(plan, test_command, docs_file):
             'only when a decision is missing or the environment cannot recover, with the reason. Return only '
             'JSON matching the supplied schema.\n\n'
             'Approved plan:\n' + plan)
+
+
+def specialists(paths):
+    """Language reviewers for the changed paths (legacy 3.5.1 map), then the code and test quality reviewers."""
+    languages = sorted({LANGUAGE_AGENTS[ext] for ext in (Path(path).suffix for path in paths) if ext in LANGUAGE_AGENTS})
+    return (*languages, *QUALITY_AGENTS)
+
+
+def normalized_findings(name, findings):
+    rows = []
+    for finding in findings:
+        severity = SEVERITY.get(str(finding.get('severity', '')).upper())
+        if severity is None:
+            raise RuntimeError(f'specialist {name} returned an unknown severity: {finding.get("severity")!r}')
+        rows.append({**finding, 'severity': severity})
+    return rows
+
+
+def agent_body(raw):
+    """The agent body without its YAML front matter, as legacy review-loop inlines it."""
+    text = raw.decode('utf-8')
+    if text.startswith('---\n') and '\n---\n' in text[4:]:
+        text = text[4:].split('\n---\n', 1)[1]
+    return text.strip()
+
+
+def specialist_prompt(name, body, test_command, owned, protocol):
+    ledger = ''
+    if owned:
+        ledger = (f'Open finding ledger ({len(owned)} open, owned by you): give each a prior_findings disposition '
+                  '(fixed, withdrawn or still_open) with evidence from the current tree, and do not repeat these '
+                  'findings in full_review.\n' + ''.join(f"- {row['id']}: {row['summary']}\n" for row in owned))
+    return (body + '\n\n'
+            f'Role: specialist {name}, fresh. Phase: POLISH-Q.\n'
+            'You are a report-only quality specialist (legacy review-loop Step 3.5). Review only the changed paths of '
+            'the uncommitted change in this worktree, with the instructions above. Do not modify any file. Report '
+            'every finding in full_review using only the schema severities: report HIGH and MEDIUM as MAJOR and LOW '
+            'as MINOR; CRITICAL and MAJOR block delivery.\n' + protocol + '\n'
+            f'Run this test command exactly as written in one Bash call: {test_command}\n' + ledger +
+            'Return only JSON matching the supplied schema.')

@@ -1,7 +1,9 @@
 # E2E lifecycle design 6: worktree lifecycle W (D12 legacy parity)
 
 Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
-W1b runs FINISH and HOLDs before POLISH-Q; the remaining stages arrive in W2a–W3b. Sources: ADR-11, the lane A
+W1b runs FINISH; W2a-1 runs the POLISH-Q specialists and HOLDs before DOCS (the POLISH-Q fix leg is W2a-2;
+the simplifier and test-consolidation writers are not implemented and not scheduled in W2a); the remaining
+stages arrive in W2b–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -39,7 +41,7 @@ depends on it.
   never start a replay loop.
 - Adopted (doc 1 §Gate): with lifecycle on, EXEC convergence routes to FINISH and never enters the legacy
   `start_polish_or_done` advisory round. Legacy `--polish-round on` maps to POLISH-Q; open advisory
-  findings feed POLISH-Q, whose fix leg reuses the existing polish author/reviewer turn implementations.
+  findings feed POLISH-Q, whose fix leg (W2a-2) reuses the existing polish author/reviewer turn implementations.
 - Replaced: candidate materialization and OS separation (docs 2a–4) by the live worktree; the same-vendor
   rejection by ADR-11 D-8; Compass CLOSE by no close (ADR-11 D-3).
 
@@ -62,6 +64,10 @@ including comment fixes in code (legacy 3.6.2), goes to EXEC replay.
 **POLISH-Q differences from legacy (intentional, stricter).** Legacy language agents and the test analyzer
 use the cheap model tier; W uses the configured reviewer model. Legacy 3.5.2 reports and continues at its
 cap; W HOLDs.
+Specialists get the EXEC reviewer protocol (program review views, changed paths, allowed commands,
+verified claims); a body command outside the reviewer allowlist is unavailable, not a failure. Each
+specialist costs at least one invocation (two with a protocol or tool-use retry), so a W run needs a
+larger `--max-invocations` than the default 25, e.g. 60.
 
 **SECURITY preflight input.** `scripts/security_preflight.py` reads a W01 `delivery-manifest` document
 whose `baseline` is captured before the task starts (`scripts/delivery_scope.py`); a `git_snapshot` list
@@ -99,8 +105,8 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   disabled" message substring.
 - Added in W1a: lifecycle runs refuse `--accept-unverified-claude-author` and `--accept-probe-skip`; a
   verified probe-cache reuse is allowed.
-- Added in W1a, moved by W1b: until W2a lands, a W run HOLDs after FINISH with the reason "worktree
-  lifecycle stage POLISH-Q not implemented yet (W2a)", so a real run never silently skips a stage.
+- Added in W1a, moved by W1b and W2a: until W2b lands, a W run HOLDs after POLISH-Q with the reason
+  "worktree lifecycle stage DOCS not implemented yet (W2b)", so a real run never silently skips a stage.
 - Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot and HOLDs (stale EXEC approval)
   when the tree differs; the docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs`,
   `skip_quality_polish`, `polish_round`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when

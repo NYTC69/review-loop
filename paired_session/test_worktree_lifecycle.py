@@ -74,14 +74,27 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def finish_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'FINISH']
 
-    def test_finish_no_op_advances_to_polish_q_and_resume_dispatches_nothing(self):
+    def test_finish_no_op_and_polish_q_specialists_advance_to_the_docs_hold(self):
         result = self.run_coordinator('--lifecycle-mode', 'on')
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('HOLD: ' + wl.POLISH_PENDING, result.stdout)
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         tree = rc.git_snapshot(self.workspace)[0]
         self.assertEqual((state['status'], state['hold_reason'], state['lifecycle']['stage'], state['next']),
-                         ('HOLD', wl.POLISH_PENDING, 'POLISH-Q', 'polish-q'))
+                         ('HOLD', wl.DOCS_PENDING, 'DOCS', 'docs'))
+        [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        names = ['python-reviewer', 'code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer']   # sum_ints.py is Python
+        self.assertEqual((polish['status'], polish['specialists'], polish['skipped'], polish['output_oid']),
+                         ('READY', names, False, tree))
+        turns = [row for row in state['turns'] if row['phase'] == 'POLISH-Q']
+        self.assertEqual([(row['role'], row['fresh']) for row in turns], [('reviewer', True)] * 4)
+        prompt = (self.run_dir / 'evidence' / f"{turns[0]['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text()
+        self.assertIn('Role: specialist python-reviewer, fresh. Phase: POLISH-Q.', prompt)
+        self.assertIn('# Python Code Review', prompt)   # the frozen agent body is inlined without front matter
+        self.assertNotIn('tier: cheap', prompt)
+        for needle in ('Changed paths: sum_ints.py', 'delta.patch', 'Commands you may run exactly as written',
+                       'Return verified_claims as an array', 'that is not a failure and not a reason to HOLD'):
+            self.assertIn(needle, prompt)   # the EXEC reviewer protocol travels with the inlined body
         self.assertEqual(state['lifecycle']['candidate_oid'], tree)   # bound to the last reviewed tree
         [finish] = self.finish_rows(state)
         self.assertEqual((finish['status'], finish['candidate_oid'], finish['output_oid'], finish['request_id'], finish['epoch']),
@@ -92,12 +105,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(state['acceptance_state'], 'IN_PROGRESS')
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
         self.assertEqual(again.returncode, 2, again.stdout + again.stderr)
-        self.assertIn('HOLD: ' + wl.POLISH_PENDING, again.stdout)
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, again.stdout)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
 
     def test_a_finish_write_reopens_exec_review_and_gate_before_finishing_again(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_WRITE': '1'})
-        self.assertIn('HOLD: ' + wl.POLISH_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.finish_rows(state)
         self.assertNotEqual(first['output_oid'], first['candidate_oid'])   # the finisher changed the reviewed tree
@@ -126,7 +139,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('uncertain in-flight', crashed.state['hold_reason'])
         with mock.patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
             self.assertEqual(crashed.resume(retry_uncertain=True), 'HOLD')
-        self.assertEqual(crashed.state['hold_reason'], wl.POLISH_PENDING)
+        self.assertEqual(crashed.state['hold_reason'], wl.DOCS_PENDING)
         rows = self.finish_rows(crashed.state)
         self.assertEqual([(row['request_id'], row['status']) for row in rows],
                          [('w-FINISH-0-0', 'HOLD'), (request['request_id'], 'READY')])
@@ -240,6 +253,95 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         abort = self.command('--lifecycle-mode', 'on')
         abort[2] = 'abort'   # operator actions that never read these keys still work
         rc.Coordinator(rc.configure_parser(rc.parser(), abort[2:]).parse_args(abort[2:]))
+
+    def test_a_specialist_blocker_cannot_pass_and_only_its_owner_can_close_it(self):
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
+        self.assertIn('HOLD: POLISH-Q open blocking findings: ', result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [finding] = [row for row in state['finding_ledger'] if row['status'] == 'open']
+        self.assertEqual((finding['source'], finding['owner_role'], finding['severity'], finding['phase']),
+                         ('specialist:code-reviewer', 'specialist:code-reviewer', 'CRITICAL', 'POLISH-Q'))
+        [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((polish['status'], state['lifecycle']['stage']), ('HOLD', 'POLISH-Q'))
+        self.assertEqual([row['name'] for row in polish['specialist_turns']], polish['specialists'])
+        turns = len(state['turns'])
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')   # no fix: no re-review may close it
+        self.assertIn('HOLD: POLISH-Q blockers need a fix on a new tree, not a re-review: ' + finding['id'],
+                      again.stdout, again.stdout + again.stderr)
+        self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), turns)
+        co = rc.Coordinator(self.args(action='resume'))
+        for role in (None, 'persistent-reviewer', 'specialist:python-reviewer'):   # None: the real persistent path
+            with self.subTest(role=role), self.assertRaisesRegex(RuntimeError, 'requires its owning specialist'):
+                co.apply_dispositions([{'id': finding['id'], 'disposition': 'fixed', 'evidence': 'not mine'}],
+                                      999, [finding['id']], role)
+
+    def test_a_specialist_without_tool_calls_is_retried_once_then_holds(self):
+        marker = self.root / 'no-tools-once'
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_NO_TOOLS_ONCE': str(marker)})
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['lifecycle']['specialist_counts']['python-reviewer'], 2)
+        self.assertEqual([row.get('discarded') for row in state['turns'] if row['phase'] == 'POLISH-Q'][:2],
+                         ['no tool calls', None])   # the discarded turn stays marked, the retry counts
+        self.run_dir = self.root / 'no-tools'
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_NO_TOOLS': 'code-reviewer'})
+        self.assertIn('HOLD: specialist code-reviewer made no tool calls after one retry', result.stdout,
+                      result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['lifecycle']['specialist_counts']['code-reviewer'], state['lifecycle']['stage']), (2, 'POLISH-Q'))
+        self.assertEqual(state['lifecycle']['pending']['stage'], 'POLISH-Q')   # no receipt for an incomplete POLISH-Q
+
+    def test_a_specialist_hold_or_unknown_severity_never_passes(self):
+        for env, reason in (({'FAKE_SPECIALIST_HOLD': 'silent-failure-hunter'},
+                             'specialist silent-failure-hunter returned HOLD without a usable review'),
+                            ({'FAKE_SPECIALIST_BLOCK': 'pr-test-analyzer', 'FAKE_SPECIALIST_SEVERITY': 'BLOCKER'},
+                             "specialist pr-test-analyzer returned an unknown severity: 'BLOCKER'")):
+            with self.subTest(env=env):
+                self.run_dir = self.root / ('hold' if 'FAKE_SPECIALIST_HOLD' in env else 'severity')
+                result = self.run_coordinator('--lifecycle-mode', 'on', env=env)
+                self.assertIn('HOLD: ' + reason, result.stdout, result.stdout + result.stderr)
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                self.assertEqual((state['lifecycle']['stage'], state['lifecycle']['pending']['stage']), ('POLISH-Q', 'POLISH-Q'))
+                self.assertFalse([row for row in state['finding_ledger'] if row['phase'] == 'POLISH-Q'])
+
+    def test_a_polish_q_replay_after_a_mid_stage_hold_reuses_completed_specialists(self):
+        env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_NO_TOOLS': 'silent-failure-hunter'}
+        held = self.run_coordinator('--lifecycle-mode', 'on', env=env)
+        self.assertIn('HOLD: specialist silent-failure-hunter made no tool calls after one retry', held.stdout,
+                      held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(sorted(state['lifecycle']['specialist_done']), ['code-reviewer', 'python-reviewer'])
+        [blocker] = [row['id'] for row in state['finding_ledger'] if row['status'] == 'open']
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')   # the owner is not asked again on this tree
+        self.assertIn('HOLD: POLISH-Q open blocking findings: ' + blocker, again.stdout, again.stdout + again.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        prompts = [(self.run_dir / 'evidence' / f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text()
+                   for row in state['turns'] if row['phase'] == 'POLISH-Q']
+        self.assertEqual(sum('Role: specialist code-reviewer,' in text for text in prompts), 1)
+        self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == blocker], ['open'])
+        [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((polish['status'], polish['request_id'], [row['name'] for row in polish['specialist_turns']]),
+                         ('HOLD', 'w-POLISH-Q-0-0', polish['specialists']))
+        self.assertNotIn('specialist_done', state['lifecycle'])
+
+    def test_skip_quality_polish_records_a_no_op_receipt(self):
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--skip-quality-polish', 'true')
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((polish['status'], polish['specialists'], polish['skipped']), ('READY', [], True))
+        self.assertFalse([row for row in state['turns'] if row['phase'] == 'POLISH-Q'])
+
+    def test_specialist_caps_hold_before_dispatch(self):
+        for counts, calls in (({'code-reviewer': 4}, 0), ({'code-reviewer': 3}, 0), ({}, 31)):   # room for 2 dispatches
+            with self.subTest(counts=counts, calls=calls):
+                self.run_dir = self.root / f'cap-{calls}'
+                co = rc.Coordinator(self.args())
+                co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=rc.git_snapshot(self.workspace)[0],
+                                             specialist_counts=dict(counts), polish_calls=calls)
+                with mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched past the cap')), \
+                        self.assertRaisesRegex(RuntimeError, 'POLISH-Q specialist budget exhausted: code-reviewer'):
+                    co.worktree_polish_turn()
 
     def test_accept_is_refused_for_worktree_runs_even_on_override_paths(self):
         co = rc.Coordinator(self.args())

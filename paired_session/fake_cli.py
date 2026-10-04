@@ -352,6 +352,11 @@ def main():
             findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
                          'summary': 'polish regression',
                          'failure_scenario': 'polish broke bool rejection'}]
+        specialist = prompt.split('Role: specialist ', 1)[1].split(',', 1)[0] if 'Role: specialist ' in prompt else None
+        if specialist and specialist == os.environ.get('FAKE_SPECIALIST_BLOCK'):   # worktree-lifecycle POLISH-Q
+            revise = True
+            findings = [{'severity': os.environ.get('FAKE_SPECIALIST_SEVERITY', 'CRITICAL'), 'file': 'sum_ints.py',
+                         'summary': 'specialist blocker', 'failure_scenario': 'a specialist found a blocking defect'}]
         disposition = ('still_open' if os.environ.get('FAKE_POLISH_DECLINE') and
                        'Phase: POLISH' in prompt else 'fixed')
         prior = [{'id': finding_id, 'disposition': disposition,
@@ -367,6 +372,12 @@ def main():
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):
                 answer['self_run_evidence'] = []
                 extra_observed_commands = [{'command': configured_test or 'python3 -m unittest'}]
+            once = os.environ.get('FAKE_SPECIALIST_NO_TOOLS_ONCE')
+            if specialist and (specialist in os.environ.get('FAKE_SPECIALIST_NO_TOOLS', '').split(',') or
+                               (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)):
+                answer['self_run_evidence'] = []   # a turn that made no tool calls
+            if specialist and specialist == os.environ.get('FAKE_SPECIALIST_HOLD'):
+                answer['status'] = 'HOLD'
         if phase in ('Q', 'SECURITY'):
             for finding in findings:
                 finding['severity'] = os.environ.get('FAKE_Q_SEVERITY', finding['severity'])
