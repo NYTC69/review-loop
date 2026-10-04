@@ -367,7 +367,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `codex_executor_model` | `""` | Reserved and ignored in Codex Stage 1 |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
-| `auto_commit` | `false` | Stage changed files and commit after delivery |
+| `auto_commit` | `false` | Stage changed files and commit after delivery. Legacy workflow only: paired-session reads `auto_commit` only from the operator profile and prints a warning when `auto_commit: true` is set here |
 | `commit_message_prefix` | `feat` | Conventional commit type prefix |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
