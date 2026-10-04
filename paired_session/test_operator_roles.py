@@ -1914,7 +1914,7 @@ class ProbeSkipTests(unittest.TestCase):
                 self.assertEqual((report['status'], report['gate_permission_probe']['status'], report['gate_permission_probe']['vendor']), ('PASS', 'PASS', flags[3]))
                 self.assertEqual(report['gate_flags_digest'], co.gate_flags_digest())
                 argv = co.state['turns'][-1]['command']
-                if flags[3] == 'codex': self.assertIn('sandbox_mode="read-only"', argv)
+                if flags[3] == 'codex': trc.assert_codex_readonly_profile(self, argv)   # b295-f1: was assertIn('sandbox_mode="read-only"', argv)
                 else: self.assertEqual((argv[argv.index('--permission-mode') + 1], '--restricted' in argv, 'acceptEdits' in argv), ('dontAsk', True, False))
                 with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
                     self.assertEqual(co.probe_passed(), (True, ''))

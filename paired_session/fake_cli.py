@@ -5,9 +5,22 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 from datetime import datetime, timezone
 import uuid
+
+
+def readonly_profile(args):
+    """b295-f1: the filesystem table of the profile that `default_permissions` selects in a Codex argv ({} when absent; the last
+    --config wins, as in Codex)."""
+    selected = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('-c', '--config') and args[i + 1].startswith('default_permissions=')]
+    if not selected:
+        return {}
+    key = 'permissions.' + selected[-1].split('=', 1)[1].strip('"') + '.filesystem='
+    raw = next((arg[len(key):] for arg in args if arg.startswith(key)), '')
+    try: return json.loads(raw.replace('"=', '":'))
+    except ValueError: return {}
 
 
 def emit_codex(answer, session, command_events=None):
@@ -84,7 +97,7 @@ def emit_claude(answer, session, extra_commands=None):
             command = evidence['command']
             if os.environ.get('FAKE_REVIEW_NO_TEST_EVENT') and command == 'python3 -m unittest':
                 continue
-            forbidden = command.startswith(('echo ', 'git checkout', 'rm ', 'git diff --output=',
+            forbidden = command.startswith(('echo ', 'git checkout', 'git --literal-pathspecs checkout', 'rm ', 'git diff --output=',
                                              'git log --output=', 'git show --output=')) or ' > ' in command
             test_failure = bool(evidence.get('force_failure') or
                                 (os.environ.get('FAKE_REVIEW_TEST_FAILURE') and command == 'python3 -m unittest'))
@@ -151,6 +164,11 @@ def main():
             target.write('\n```reviewer-commands\n' + append_commands + '\n```\n')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
+    rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
+    if vendor == 'codex' and rejected:   # b296-f1e: like codex-cli 0.160.0, `codex exec` has no -P/--permission-profile
+        flag = '-P' if rejected.startswith('-P') else '--permission-profile'
+        print(f"error: unexpected argument '{flag}' found", file=sys.stderr)
+        return 2
     if vendor == 'claude':
         allowed = [args[index + 1] for index, value in enumerate(args[:-1])
                    if value == '--allowedTools']
@@ -158,6 +176,19 @@ def main():
             print('fake CLI contract: argument-bearing Bash rules require separate --allowedTools arguments',
                   file=sys.stderr)
             return 2
+    if os.environ.get('FAKE_TMP_LOG'):   # b295-f1: what a tmp_path-style test sees as its temp dir in this dispatch
+        import tempfile
+        made = tempfile.mkdtemp()
+        with open(os.environ['FAKE_TMP_LOG'], 'a') as log:
+            log.write(json.dumps({'vendor': vendor, 'prompt': prompt[:40], 'TMPDIR': os.environ.get('TMPDIR'), 'TMP': os.environ.get('TMP'),
+                                  'TEMP': os.environ.get('TEMP'), 'mkdtemp': made}) + '\n')
+    if os.environ.get('FAKE_CODEX_SCRATCH_HARDLINK') and vendor == 'codex' and os.environ.get('TMPDIR'):
+        os.link(os.environ['FAKE_CODEX_SCRATCH_HARDLINK'], Path(os.environ['TMPDIR']) / 'linked')
+    if os.environ.get('FAKE_CODEX_LINK_WRITE_UNLINK') and vendor == 'codex' and os.environ.get('TMPDIR'):   # b296-f1: the same-volume residual
+        through = Path(os.environ['TMPDIR']) / 'through'
+        os.link(os.environ['FAKE_CODEX_LINK_WRITE_UNLINK'], through)
+        through.write_bytes(through.read_bytes())   # the same bytes: only the inode's ctime records the write
+        through.unlink()
     if os.environ.get('FAKE_RATE_LIMIT'):
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
@@ -251,9 +282,38 @@ def main():
         answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
                   'self_run_evidence': [{'command': command} for command in [allowed, *attacks]]}
         if vendor == 'codex':   # G-a: a Codex probe turn observes the allowed command (exit 0) and denies every write attempt
-            command_events = [{'command': command, 'exit_code': 0 if command == allowed else 126,
-                               'output': 'fake permission result' if command == allowed else 'fake read-only denial'}
+            command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
+                               'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
                               for command in [allowed, *attacks]]
+            for row in command_events:   # b296-f1f/g: as in the field (codex-cli 0.160.0, P1/P2): rm of a file missing on disk is "No such
+                if row['command'].startswith('rm '):   # file", not a denial; checkout takes index.lock before it checks the pathspec, so a working
+                    name = shlex.split(row['command'])[-1]   # sandbox denies it whether or not the name is tracked or on disk
+                    if not os.path.lexists(name): row.update(output=f'rm: {name}: No such file or directory\n')
+                elif row['command'].startswith('git --literal-pathspecs checkout -- '):
+                    row.update(exit_code=128, output=f"fatal: Unable to create '{Path.cwd() / '.git' / 'index.lock'}': Operation not permitted\n")
+            for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
+                if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
+                    command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
+            fs = readonly_profile(args)   # b295-f1: the read-only profile in this argv decides the scratch and workspace writes
+            if 'Scratch write expected to succeed:\n' in prompt:
+                scratch = prompt.split('Scratch write expected to succeed:\n', 1)[1].splitlines()[0]
+                writable = fs.get(':tmpdir') == 'write' and os.environ.get('TMPDIR')
+                if writable and not os.environ.get('FAKE_CODEX_SKIP_SCRATCH'):
+                    (Path(os.environ['TMPDIR']) / 'paired-session-scratch-probe').write_text('probe')
+                command_events.append({'command': scratch, 'exit_code': 0 if writable else 1,
+                                       'output': '' if writable else 'fake: Operation not permitted'})
+            for command in attacks:   # b296-f1 R1: a profile that lets the escape writes or the hard link land (selected by substring)
+                if not os.environ.get('FAKE_CODEX_PROBE_ESCAPE') or os.environ['FAKE_CODEX_PROBE_ESCAPE'] not in command:
+                    continue
+                words = shlex.split(command.replace('$TMPDIR', os.environ.get('TMPDIR', '')))
+                if words[0] == 'ln': os.link(words[1], words[2])
+                elif words[0] == 'rm': Path(words[1]).unlink()   # b296-f1f: the tracked-file delete lands
+                elif words[0] == 'git': subprocess.run(words, check=True, capture_output=True)   # b296-f1g: the real checkout runs
+                elif command.startswith('printf probe > '): Path(words[-1]).write_text('probe')
+                command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] == command else row for row in command_events]
+            if fs.get(':workspace_roots', {}).get('.') == 'write':   # a profile that grants the workspace: the attacks land
+                (Path.cwd() / 'forbidden-probe').write_text('x\n')
+                command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] in attacks else row for row in command_events]
     else:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')
