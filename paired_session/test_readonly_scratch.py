@@ -223,6 +223,8 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
     def test_cleanup_first_stops_what_is_left_of_the_turns_process_group(self):
         co = self.coordinator(*CODEX_ROLES)
         left = subprocess.Popen(['sleep', '30'], start_new_session=True)
+        self.addCleanup(lambda: left.returncode is None and left.kill())                     # never leak the sleeper if the test fails
+        __import__('threading').Thread(target=left.wait, daemon=True).start()               # reap it as the CLI runner does: on Linux a zombie-only group still answers killpg(pid, 0)
         for _ in range(100):                                                                 # the child has become its group's leader
             if os.getpgid(left.pid) == left.pid: break
             __import__('time').sleep(0.02)
@@ -230,6 +232,15 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         co._stop_turn_group(7)
         self.assertIsNotNone(left.wait(timeout=tsc.scaled(5)))
         co._stop_turn_group(8)                                                               # no child started: nothing to stop
+
+    def test_an_eperm_group_counts_as_gone_and_is_never_signalled(self):                    # macOS: only unreaped zombies answer EPERM
+        co = self.coordinator(*CODEX_ROLES)
+        co.state['turns'].append({'sequence': 7, 'role': 'shadow', 'pid': 424242})
+        with patch.object(rc, 'retry_killpg_eperm', side_effect=PermissionError(1, 'EPERM')) as probed, \
+                patch.object(rc.os, 'killpg') as signalled:
+            self.assertIsNone(co._stop_turn_group(7))
+        probed.assert_called_once_with(424242)
+        signalled.assert_not_called()
 
     def test_a_leftover_scratch_is_swept_only_after_its_turn_group_is_confirmed_gone(self):   # b296-f1c
         co = self.coordinator(*CODEX_ROLES, '--quiet-progress')
