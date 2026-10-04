@@ -23,10 +23,11 @@ PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polis
 
 
 def refuse_waivers(args):
-    """D-7: a lifecycle run needs a real probe PASS; the operator waivers stay real-EXEC only.
-    D-4/E-4: lifecycle keys come from the CLI or an operator profile, never an author-writable one."""
+    """D-7 (strict only, D-EFF): a strict lifecycle run needs a real probe PASS; the operator waivers stay real-EXEC only.
+    An efficient run has no probe gate, so main() notes a waiver as unneeded and records none.
+    D-4/E-4 (both modes): lifecycle keys come from the CLI or an operator profile, never an author-writable one."""
     used = [flag for dest, flag in WAIVERS if getattr(args, dest, False)]
-    if used:
+    if used and getattr(args, 'safety_mode', 'strict') != 'efficient':   # Coordinator.strict; resolved before this is called
         raise ValueError('worktree lifecycle refuses ' + ' and '.join(used) + '; run permission-probe until it passes')
     if (keys := getattr(args, 'workspace_lifecycle_keys', None)) and getattr(args, 'action', 'run') in (
             'run', 'resume', 'permission-probe'):   # abort/status/note/accept/reject never read these keys

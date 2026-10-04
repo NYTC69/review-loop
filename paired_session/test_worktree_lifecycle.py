@@ -1,7 +1,9 @@
 """Batch W1a (ADR-11, docs/e2e-6): worktree lifecycle activation on the real path."""
 import hashlib
+import io
 import json
 from pathlib import Path
+import sys
 import unittest
 from unittest import mock
 
@@ -85,6 +87,76 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     rc.Coordinator(self.args(action='resume'))
                 co.save()
+
+    # --- INT-2c: D-7 is strict only (D-EFF, docs/efficient-mode.md §6) ---------------------------------------------------------
+    def efficient_command(self, *extra, action='run'):
+        command = [arg for arg in self.command('--lifecycle-mode', 'on', *extra) if arg != '--strict']
+        command[2] = action
+        return command
+
+    def test_a_strict_worktree_run_refuses_a_waiver_on_resume_too(self):
+        rc.Coordinator(self.args())
+        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-probe-skip'):
+            rc.Coordinator(self.args('--accept-probe-skip', '--reason', 'owner accepted', action='resume'))
+
+    def test_an_efficient_worktree_run_notes_a_waiver_and_records_none(self):
+        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():
+            pin = mock.patch.object(module, 'DEFAULT_SAFETY_MODE', 'efficient')   # the product default, which the harness pins
+            pin.start()
+            self.addCleanup(pin.stop)
+        for action, flag in (('run', '--accept-probe-skip'), ('resume', '--accept-unverified-claude-author')):
+            with self.subTest(action=action), mock.patch.object(rc.Coordinator, 'drive', return_value='DONE'), \
+                    mock.patch.object(rc.Coordinator, 'resume', return_value='DONE'), \
+                    mock.patch('sys.stdout', new_callable=io.StringIO) as out:
+                code = rc.main(self.efficient_command(flag, '--reason', 'checked', action=action)[2:])
+                self.assertEqual(code, 0, out.getvalue())
+                self.assertIn('needs no probe waiver', out.getvalue())
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['config']['safety_mode'], state['lifecycle']['format']), ('efficient', 'worktree'))
+        self.assertFalse({'probe_skip_override', 'claude_author_override'} & state.keys())
+        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-probe-skip'):   # no turn yet: --strict may upgrade
+            rc.Coordinator(self.args('--accept-probe-skip', '--reason', 'checked'))
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['config']['safety_mode'], 'efficient')   # refused: unchanged
+
+    def test_an_efficient_worktree_run_needs_no_probe_and_reaches_done(self):
+        result = rc.subprocess.run(self.efficient_command(), cwd=self.root, text=True, stdout=rc.subprocess.PIPE,
+                                   stderr=rc.subprocess.PIPE)   # no --strict, no --skip-probe, no permission-probe
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['config']['safety_mode'], state['lifecycle']['stage']), ('efficient', 'DONE'))
+        self.assertFalse((self.run_dir / 'permission-probe.json').exists())
+        self.assertEqual([row['stage'] for row in state['lifecycle']['receipts']], ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
+
+    def test_a_w_read_only_turn_that_edits_the_workspace_is_voided_restored_and_re_dispatched(self):   # category A in W
+        marker = self.root / 'mutated-once'
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={
+            'FAKE_MUTATION': 'echo', 'FAKE_MUTATION_ROLE': 'Role: security reviewer,', 'FAKE_MUTATION_ONCE': str(marker)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('re-dispatching the reviewer turn once', result.stdout)
+        self.assertTrue(marker.exists())
+        self.assertFalse((self.workspace / 'forbidden.txt').exists())
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        void, again = [row for row in state['turns'] if row['phase'] == 'SECURITY']
+        self.assertEqual((void['voided']['restored'], 'voided' in again), (True, False))
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual((security['status'], security['review']['sequence']), ('READY', again['sequence']))
+
+    def test_a_w_re_dispatch_counts_against_the_stage_cap(self):   # INT-2c LOW-1
+        co = rc.Coordinator(self.args())
+        voided = RuntimeError('reviewer mutated workspace; the turn is void and the workspace was restored')
+        co.state['turns'] += [{'phase': 'SECURITY'}, {'phase': 'SECURITY'}]
+        co._redispatch_budget('SECURITY', voided)   # 2 + this one fit the cap of 3
+        co.state['spawn_failures'] = [{'phase': 'SECURITY', 'invocation_budget_counted': False}]   # counted, as _security_review_turn does
+        with self.assertRaisesRegex(RuntimeError, r'SECURITY budget has no room to re-dispatch the void turn \(reviewer mutated'):
+            co._redispatch_budget('SECURITY', voided)
+        cap = rc.budget_policy.BUDGET_CAPS['POLISH-Q'][0]
+        co.state['turns'] += [{'phase': 'POLISH-Q'}] * (cap - 1) + [{'phase': 'POLISH-Q', 'invocation_budget_counted': False}]
+        co._redispatch_budget('POLISH-Q', voided)   # POLISH-Q skips refunded rows, like polish_calls
+        co.state['turns'].append({'phase': 'POLISH-Q'})
+        with self.assertRaisesRegex(RuntimeError, 'POLISH-Q budget has no room'):
+            co._redispatch_budget('POLISH-Q', voided)
+        co._redispatch_budget('EXEC', voided)   # only the W stages have a stage cap here
 
     def finish_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'FINISH']
@@ -199,6 +271,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_finisher_that_commits_holds_without_a_receipt(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_COMMIT': '1'})
         self.assertIn('HOLD: finisher changed HEAD, refs or the index', result.stdout, result.stdout + result.stderr)
+        self.assertIn('(the turn failed: author changed HEAD or the branch', result.stdout)   # INT-2c: the original error stays
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual((state['lifecycle']['stage'], self.finish_rows(state)), ('FINISH', []))
         self.assertEqual(state['lifecycle']['pending']['request_id'], 'w-FINISH-0-0')   # never completed

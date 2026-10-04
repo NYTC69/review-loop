@@ -1663,7 +1663,6 @@ class Coordinator:
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
             if _fake_lifecycle and not lifecycle_spine.fake_guard(args):
                 raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
-            if not _fake_lifecycle: worktree_lifecycle.refuse_waivers(args)   # W1a: the real path is the worktree lifecycle (ADR-11)
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
@@ -1688,6 +1687,7 @@ class Coordinator:
         self.state_path = self.run_dir / 'state.json'
         requested = getattr(args, 'safety_mode', None)                   # --strict or the operator profile; None when neither names it
         args.safety_mode = requested or DEFAULT_SAFETY_MODE
+        upgraded = None
         if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
             saved_state = json.loads(self.state_path.read_text())
             args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
@@ -1701,7 +1701,10 @@ class Coordinator:
                 elif not (requested == 'strict' and probe_only): raise ValueError(fixed)
                 else:
                     saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
-                    atomic_json(self.state_path, saved_state)
+                    upgraded = saved_state
+        if args.lifecycle_mode == 'on' and not _fake_lifecycle:   # W1a: the real path is the worktree lifecycle (ADR-11)
+            worktree_lifecycle.refuse_waivers(args)   # INT-2c: after the safety_mode resolution (D-7 is strict only), before its write
+        if upgraded: atomic_json(self.state_path, upgraded)   # a refused command leaves the frozen mode unchanged
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
@@ -1935,7 +1938,13 @@ class Coordinator:
 
     def _void_readonly_turn(self, role, receipt, workspace, recorded, keep, prefix, before) -> ReadOnlyTurnVoided:
         """D-EFF category A (docs/efficient-mode.md §4a): save the change as evidence and undo it from the pre-turn record, only when
-        the undo verifies (HEAD, branch, index, worktree tree, and the coordinator's own snapshot); otherwise the run must hold."""
+        the undo verifies (HEAD, branch, index, worktree tree, and the coordinator's own snapshot); otherwise the run must hold.
+        INT-2c: the turn's process group is stopped first, so no child left in it can change the tree again after the restore."""
+        try: self._stop_turn_group(receipt['sequence'])
+        except RuntimeError as exc:
+            receipt['voided'] = {'restored': False, 'reason': str(exc)}
+            return ReadOnlyTurnVoided(f'{role} mutated workspace and its process group could not be stopped ({exc}); '
+                                      'stop it and restore the workspace by hand', restored=False)
         if not recorded or 'error' in recorded:
             receipt['voided'] = {'restored': False, 'reason': (recorded or {}).get('error', 'no pre-turn record')}
             return ReadOnlyTurnVoided(f'{role} mutated workspace; there is no verified pre-turn record to restore it from '
@@ -4809,6 +4818,7 @@ class Coordinator:
                                 and exc.__cause__.restored): raise
                         if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
                                                             f'restored ({exc})') from exc
+                        self._redispatch_budget(phase, exc)
                         redispatched = True
                         turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
                                         'answer was discarded and the workspace was restored. Review the current tree again without '
@@ -5262,13 +5272,14 @@ class Coordinator:
         base = self.state['lifecycle'].get('writer_git')
         if not base:
             raise RuntimeError(f'{phase} request is in flight without a recorded git baseline; inspect, then abort')
-        def check_git():   # a violation discards every turn of this stage since the baseline: none is ever reused
+        def check_git(cause=None):   # a violation discards every turn of this stage since the baseline: none is ever reused
             if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
                 for turn in self.state['turns']:
                     if turn.get('phase') == phase and turn.get('sequence', 0) > base['sequence']:
                         turn.setdefault('discarded', 'git guard')
                 self.save()
-                raise RuntimeError(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort')
+                raise RuntimeError(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort'
+                                   + (f' (the turn failed: {cause})' if cause else ''))
         check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
         recorded = next((turn for turn in reversed(self.state['turns'])
                          if turn.get('role') == 'author' and turn.get('phase') == phase and not turn.get('error')
@@ -5278,8 +5289,8 @@ class Coordinator:
             result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
                        'role': 'author'} if recorded else
                       self.invoke('author', phase, prompt(), author_schema(), fresh=True))
-        except RuntimeError:   # INT-2b: D-EFF's author HEAD guard (or any failure) first: the W writer guard still names a git change
-            check_git()        # and discards the turn; otherwise the original error stands
+        except RuntimeError as exc:   # INT-2b: D-EFF's author HEAD guard (or any failure) first: the W writer guard still names a git
+            check_git(exc)            # change, with the original error, and discards the turn; otherwise the original error stands
             raise
         check_git()
         return result
@@ -5406,6 +5417,18 @@ class Coordinator:
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
                 'finding_ids': [row['id'] for row in self.state['finding_ledger']
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']]}
+
+    def _redispatch_budget(self, phase: str, voided: Exception) -> None:
+        """INT-2c: a W read-only re-dispatch counts against its stage cap like any dispatch (the callers check room for their
+        own dispatches only); one that does not fit holds with the workspace already restored. Each stage counts as its caller
+        does: DOCS/SECURITY every row of the phase, POLISH-Q the counted ones (polish_calls, reconciled only after invoke).
+        The evidence-contract retry after a re-dispatch is not checked, so one invoke may still pass the cap by one; the
+        caller's next check refuses and max_invocations bounds the run."""
+        if phase not in ('POLISH-Q', 'DOCS', 'SECURITY') or not worktree_lifecycle.is_worktree(self.state): return
+        rows = [row for row in [*self.state['turns'], *self.state.get('spawn_failures', [])] if row.get('phase') == phase]
+        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else len(rows)
+        if used + 1 > self._worktree_run_cap(phase):
+            raise RuntimeError(f'{phase} budget has no room to re-dispatch the void turn ({voided}); abort') from voided
 
     def _docs_budget(self) -> None:
         used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])

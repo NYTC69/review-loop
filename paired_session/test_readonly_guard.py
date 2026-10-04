@@ -179,6 +179,31 @@ class ReadOnlyTurnTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'no verified pre-turn record to restore it from'):
                 co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
 
+    def test_the_turn_process_group_is_stopped_before_the_restore(self):   # INT-2c: no child left in it re-dirties the restored tree
+        co = self.h.coordinator()
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        calls, pids, stop, restore, probe = [], [], rc.Coordinator._stop_turn_group, rc.readonly_guard.restore, rc.retry_killpg_eperm
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}), \
+                patch.object(rc.Coordinator, '_stop_turn_group', autospec=True,
+                             side_effect=lambda me, *a, **k: calls.append(('stop', a[0])) or stop(me, *a, **k)), \
+                patch.object(rc, 'retry_killpg_eperm', side_effect=lambda pid, *a, **k: pids.append(pid) or probe(pid, *a, **k)), \
+                patch.object(rc.readonly_guard, 'restore', side_effect=lambda *a: calls.append('restore') or restore(*a)):
+            with self.assertRaisesRegex(RuntimeError, 'reviewer mutated workspace again after one re-dispatch'):
+                co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+        voids = [t for t in co.state['turns'] if 'voided' in t]
+        self.assertEqual(len(voids), 2)
+        for turn in voids:
+            self.assertEqual(calls[calls.index(('stop', turn['sequence'])) + 1], 'restore')
+            self.assertIn(turn['pid'], pids)   # the stop found the turn's group, not a missing pid
+        self.assertEqual(calls.count('restore'), 2)
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}), \
+                patch.object(rc.Coordinator, '_stop_turn_group', side_effect=RuntimeError('the group outlived its turn')), \
+                patch.object(rc.readonly_guard, 'restore', side_effect=AssertionError('restored while the group may still write')):
+            with self.assertRaisesRegex(RuntimeError, r'reviewer mutated workspace and its process group could not be stopped \(the group'):
+                co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+        self.assertFalse(co.state['turns'][-1]['voided']['restored'])
+
 
 if __name__ == '__main__':
     unittest.main()

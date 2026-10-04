@@ -509,7 +509,7 @@ def main():
             answer['prior_findings'] = prior
         mode = os.environ.get('FAKE_MUTATION')
         once = os.environ.get('FAKE_MUTATION_ONCE')   # D-EFF: a marker file; only the first reviewer turn mutates
-        if mode and 'Role: reviewer,' in prompt and not (once and Path(once).exists()):
+        if mode and os.environ.get('FAKE_MUTATION_ROLE', 'Role: reviewer,') in prompt and not (once and Path(once).exists()):
             if once: Path(once).write_text('mutated\n')
             mutate(mode)
         command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]

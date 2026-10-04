@@ -112,7 +112,7 @@ If the restore verifies, the turn is re-dispatched once. If it does not, or the 
 
 ## 6. Lane A hook (not edited here)
 
-- D-7 ("lifecycle refuses probe waivers") exists only in `docs/v2.10-entry-switch.md`; no code implements it. Lane A should apply it only when `Coordinator.strict` is true, i.e. when `state['config'].get('safety_mode', 'strict') == 'strict'`.
+- D-7 ("lifecycle refuses probe waivers") is W1a's `worktree_lifecycle.refuse_waivers`. Since lane A INT-2c it applies only when `Coordinator.strict` is true; an efficient lifecycle run notes a waiver as unneeded and records none, like any efficient run.
 - The fake-lifecycle candidate-test sandbox (`candidate_test_sandbox.run`) is a sandbox requirement, not a probe gate. It stays in both modes.
 
 ## 7. Tests
