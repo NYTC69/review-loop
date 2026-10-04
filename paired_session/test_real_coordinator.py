@@ -20,6 +20,7 @@ from unittest.mock import patch
 from paired_session import candidate_tree as ct
 from paired_session import delivery_journal as dj
 from paired_session import candidate_test_sandbox as cts
+from paired_session import timeout_scale as tsc
 from paired_session import delivery_publish as dp
 from paired_session import delivery_recovery_state as drs
 from paired_session import delivery_recovery_lock as drl
@@ -92,7 +93,8 @@ class RealCoordinatorTests(unittest.TestCase):
         self.original_home = os.environ.get('HOME')
         os.environ['HOME'] = str(self.test_home)
         self._fake_codex_env = patch.dict(os.environ, {
-            'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root)})
+            'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root),
+            tsc.ENV: str(tsc.factor())})   # one load factor per test, shared with every coordinator it starts
         self._fake_codex_env.start()
         self.addCleanup(self._fake_codex_env.stop)
         self._unpatched_popen = subprocess.Popen
@@ -1024,7 +1026,7 @@ sys.exit(result.returncode)
     def command(self, *extra):
         return [sys.executable, str(MODULE_PATH), 'run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', '10',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', tsc.scaled_arg(10),
                 '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                 '--test-command', 'python3 -m unittest',
                 *extra]
@@ -1220,11 +1222,11 @@ sys.exit(result.returncode)
                 self.assertEqual(receipt['timeout_seconds'], expected)
 
     def test_resume_can_raise_exec_timeout_within_cap_and_persist_it(self):
-        co = self.coordinator('--timeout', '10')
+        co = self.coordinator('--timeout', tsc.scaled_arg(10))
         co._invoke_once('author', 'EXEC', 'Role prompt.', {})
         receipt_path = co.evidence / '001-exec-author.receipt.json'
         args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir), '--timeout', '10',
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir), '--timeout', tsc.scaled_arg(10),
             '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS),
             '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())])
         resumed = rc.Coordinator(args)
@@ -1776,7 +1778,7 @@ sys.exit(result.returncode)
     def test_done_abort_author_write_then_hold_remains_resumable(self):
         completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', tsc.scaled_arg(10),
                               '--author-effort', 'low', '--reviewer-effort', 'low',
                               '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
         co.state.update(status='HOLD', acceptance_state='PENDING',
@@ -1792,7 +1794,7 @@ sys.exit(result.returncode)
     def test_done_abort_author_hold_after_write_remains_resumable(self):
         completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', tsc.scaled_arg(10),
                               '--author-effort', 'low', '--reviewer-effort', 'low',
                               '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
         co.state.update(status='HOLD', acceptance_state='PENDING',
@@ -2512,8 +2514,8 @@ sys.exit(result.returncode)
         for vendor in ('claude', 'codex'):
             with self.subTest(vendor=vendor):
                 self.run_dir = self.root / ('sigkill-stream-usage-' + vendor)
-                co = self.coordinator('--author-vendor', vendor, '--timeout', '3',
-                                      '--exec-turn-timeout', '3')
+                co = self.coordinator('--author-vendor', vendor, '--timeout', tsc.scaled_arg(3),
+                                      '--exec-turn-timeout', tsc.scaled_arg(3))
                 streaming_cli = self.root / ('streaming-' + vendor + '-cli')
                 streaming_cli.write_text(
                     f'#!{sys.executable}\nimport os, sys\n'
@@ -2542,7 +2544,7 @@ sys.exit(result.returncode)
                 with patch.dict(os.environ, stream_env):
                     worker = threading.Thread(target=invoke_author)
                     worker.start()
-                    deadline = time.monotonic() + 2.5
+                    deadline = time.monotonic() + tsc.scaled(2.5)
                     observed = None
                     prekill_state = None
                     while time.monotonic() < deadline:
@@ -2561,7 +2563,7 @@ sys.exit(result.returncode)
                         (co.evidence / '001-exec-author.stderr.log').read_text())
                     self.assertEqual(observed['usage_requests'], expected_rows)
                     self.assertNotIn('timed_out', observed)
-                    worker.join(6)
+                    worker.join(tsc.scaled(6))
                 self.assertFalse(worker.is_alive(), 'coordinator did not SIGKILL/reap the timed-out CLI')
                 self.assertTrue(errors and isinstance(errors[0], RuntimeError), errors)
                 state = json.loads(co.state_path.read_text())
@@ -2574,7 +2576,7 @@ sys.exit(result.returncode)
 
                 reload_args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
                     '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                    '--author-vendor', vendor, '--timeout', '3', '--exec-turn-timeout', '3',
+                    '--author-vendor', vendor, '--timeout', tsc.scaled_arg(3), '--exec-turn-timeout', tsc.scaled_arg(3),
                     '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())])
                 recovered = rc.Coordinator(reload_args)
                 recovered.write_usage()
@@ -2595,7 +2597,7 @@ sys.exit(result.returncode)
                 (recovery_dir / 'state.json').write_text(json.dumps(prekill_state))
                 recovery_args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
                     '--workitem', str(self.workitem), '--run-dir', str(recovery_dir),
-                    '--author-vendor', vendor, '--timeout', '3', '--exec-turn-timeout', '3',
+                    '--author-vendor', vendor, '--timeout', tsc.scaled_arg(3), '--exec-turn-timeout', tsc.scaled_arg(3),
                     '--max-invocations', '1', '--codex-bin', str(self.fake_codex_cli()),
                     '--claude-bin', str(self.fake_claude_cli())])
                 crash_recovery = rc.Coordinator(recovery_args)
@@ -2660,7 +2662,7 @@ sys.exit(result.returncode)
                 writer.start()
             barrier.wait()
             for writer in writers:
-                writer.join(timeout=2)
+                writer.join(timeout=tsc.scaled(2))
                 self.assertFalse(writer.is_alive())
         self.assertEqual(max_active_writes, 1)
 
@@ -2823,7 +2825,7 @@ sys.exit(result.returncode)
     def test_abort_uses_per_run_lease_without_workspace_lease(self):
         run_a = self.root / 'run-a'
         self.run_dir = self.root / 'run-b'
-        co = self.coordinator('--timeout', '10', '--author-effort', 'low',
+        co = self.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low',
                               '--reviewer-effort', 'low', '--gate-effort', 'low',
                               '--test-command', 'python3 -m unittest')
         before = rc.git_snapshot(self.workspace)[0]
@@ -8488,7 +8490,7 @@ print(json.dumps(results))
                                              '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                                              '--author-effort', 'low', '--reviewer-effort', 'low',
                                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest',
-                                             '--timeout', '10', '--exercise-revisions', '--gate-vendor', 'claude',
+                                             '--timeout', tsc.scaled_arg(10), '--exercise-revisions', '--gate-vendor', 'claude',
                                              '--codex-bin', str(self.fake_codex_cli()),
                                              '--claude-bin', str(self.fake_claude_cli())])
         self.assertEqual(report['author_flags_digest'], rc.Coordinator(probe_args).author_flags_digest())
@@ -9063,14 +9065,14 @@ print(json.dumps(results))
         self.assertNotIn('Traceback', result.stderr)
 
     def test_resume_timeout_can_only_increase_to_documented_cap(self):
-        co = self.coordinator('--timeout', '10')
+        co = self.coordinator('--timeout', tsc.scaled_arg(10))
         co.state.update(status='HOLD', hold_reason='operator pause')
         co.save()
 
         def resume_args(*extra):
             args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--timeout', '10', '--codex-bin', str(self.fake_codex_cli()),
+                '--timeout', tsc.scaled_arg(10), '--codex-bin', str(self.fake_codex_cli()),
                 '--claude-bin', str(self.fake_claude_cli()), *extra])
             return args
 
@@ -9261,7 +9263,7 @@ print(json.dumps(results))
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         child_pid = None
         try:
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + tsc.scaled(10)
             active = None
             while time.monotonic() < deadline and coordinator_process.poll() is None:
                 if marker.exists():
@@ -9278,7 +9280,7 @@ print(json.dumps(results))
             self.assertEqual(active['phase'], 'PLAN')
 
             coordinator_process.kill()
-            coordinator_process.communicate(timeout=5)
+            coordinator_process.communicate(timeout=tsc.scaled(5))
 
             resume_command = list(command)
             resume_command[2] = 'resume'
@@ -9301,7 +9303,7 @@ print(json.dumps(results))
                 os.killpg(child_pid, signal.SIGTERM)
             except ProcessLookupError as exc:
                 self.fail('fake provider exited before the test sent SIGTERM: ' + str(exc))
-            wait_dead_by = time.monotonic() + 5
+            wait_dead_by = time.monotonic() + tsc.scaled(5)
             recovered = None
             while True:
                 recovered = subprocess.run(
@@ -9332,7 +9334,7 @@ print(json.dumps(results))
         finally:
             if coordinator_process.poll() is None:
                 coordinator_process.kill()
-                coordinator_process.communicate(timeout=5)
+                coordinator_process.communicate(timeout=tsc.scaled(5))
             if child_pid is not None:
                 try:
                     os.killpg(child_pid, signal.SIGKILL)
@@ -10010,8 +10012,8 @@ print(json.dumps(results))
             pass_fds=(descendant_signal.fileno(),))
         descendant_signal.close()
         try:
-            child.wait(timeout=5)
-            parent_signal.settimeout(5)
+            child.wait(timeout=tsc.scaled(5))
+            parent_signal.settimeout(tsc.scaled(5))
             self.assertEqual(parent_signal.recv(1), b'R')
             active = {'pid': child.pid, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
                       'sequence': 2}
@@ -10034,7 +10036,7 @@ print(json.dumps(results))
             self.assertTrue(owns_socket, 'descendant must still own the sentinel socket before kill')
             if owns_socket:
                 os.killpg(child.pid, signal.SIGKILL)
-                parent_signal.settimeout(5)
+                parent_signal.settimeout(tsc.scaled(5))
                 self.assertEqual(parent_signal.recv(1), b'')
         finally:
             try:
@@ -10053,7 +10055,7 @@ print(json.dumps(results))
                 pass
             finally:
                 parent_signal.close()
-                child.wait(timeout=5)
+                child.wait(timeout=tsc.scaled(5))
         snapshot = rc.git_snapshot(self.workspace)[0]
         result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
                   'snapshot': snapshot, 'sequence': 3, 'role': 'probe'}

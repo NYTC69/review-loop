@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from paired_session import hook_inventory_git as inventory_git
+from paired_session import timeout_scale as tsc
 
 
 class HookInventoryGitTests(unittest.TestCase):
@@ -123,7 +124,7 @@ class HookInventoryGitTests(unittest.TestCase):
                 self.assertFalse(marker.exists())
                 positive = ["git", "-C", str(root), "ls-files", "-z", "--stage"]
                 subprocess.run(positive, env=environment, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=tsc.scaled(10), check=True)
                 self.assertTrue(marker.exists(), "same-command fsmonitor control did not execute")
 
 

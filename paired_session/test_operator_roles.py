@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from paired_session import claude_author_probe as cap
+from paired_session import timeout_scale as tsc
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -34,7 +35,7 @@ class CodexContractTests(unittest.TestCase):
 
     def co(self):
         # Same flags as self.h.command() so a CLI call can restore this coordinator's saved run.
-        return self.h.coordinator('--gate-vendor', 'claude', '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+        return self.h.coordinator('--gate-vendor', 'claude', '--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low',
                                   '--gate-effort', 'low', '--test-command', 'python3 -m unittest')   # explicit gate: default moved by owner decision 2026-09-30
 
     def write_probe(self, co, status):
@@ -707,7 +708,7 @@ class ClaudeAuthorTests(unittest.TestCase):
 
     def co(self, *extra):
         # Same flags as self.h.command() so a CLI call can restore this coordinator's saved run.
-        return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', '10', '--author-effort', 'low',
+        return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', tsc.scaled_arg(10), '--author-effort', 'low',
                                   '--reviewer-effort', 'low', '--gate-effort', 'low',
                                   '--test-command', 'python3 -m unittest', *extra)
 
@@ -1051,7 +1052,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def co(self, *extra):
-        return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+        return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low',
                                   '--gate-effort', 'low', '--test-command', 'python3 -m unittest', '--claude-bin', str(self.fake), *extra)
 
     def probe(self, scenario=None, co=None):
@@ -1507,7 +1508,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(out['process_group'], 'exited')
         co, out = self.fail_reason({'late': {'path': '{base}/outside/late.txt', 'delay': 30}}, 'still alive after the turn')
         self.assertEqual(out['process_group'], 'alive-after-turn')
-        for _ in range(40):                                                                          # the group was killed (init reaps the orphan)
+        for _ in range(int(tsc.scaled(40))):                                                         # the group was killed (init reaps the orphan)
             try: os.killpg(co.state['turns'][-1]['pid'], 0)
             except ProcessLookupError: break
             time.sleep(0.05)
@@ -1733,7 +1734,7 @@ class ProbeSkipTests(unittest.TestCase):
         self.cache = self.h.test_home / '.cache' / 'review-loop' / 'probe-pass'
 
     def co(self, *extra, default_gate=False):
-        return self.h.coordinator(*(() if default_gate else ('--gate-vendor', 'claude')), *extra, '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low',
+        return self.h.coordinator(*(() if default_gate else ('--gate-vendor', 'claude')), *extra, '--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low',
                                   '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
 
     def cli(self, action, *extra, default_gate=False):

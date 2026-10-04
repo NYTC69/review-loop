@@ -46,6 +46,7 @@ try:
     from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
+    from paired_session import timeout_scale
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
@@ -62,6 +63,7 @@ except ModuleNotFoundError:
     import operator_verification as opv
     import sensitive_policy
     import security_repair_policy
+    import timeout_scale
     from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
@@ -96,7 +98,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
+    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
@@ -1760,7 +1762,7 @@ class Coordinator:
         try:
             if self._program_state()[1]: return 'UNAVAILABLE'
             result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True,
-                                    capture_output=True, timeout=10)
+                                    capture_output=True, timeout=10 * timeout_scale.env_factor())
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
             return 'UNAVAILABLE'
@@ -4939,13 +4941,13 @@ class Coordinator:
                     time.sleep(0.2)
             elif result: raise RuntimeError('author probe process group is unverifiable')
             first = cap.listing(base, base.parent, skip)
-            time.sleep(cap.SETTLE_SECONDS)
+            time.sleep(cap.SETTLE_SECONDS * timeout_scale.env_factor())
             second = cap.listing(base, base.parent, skip)
             rows = []
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10, env=cli_env()).stdout.strip() or 'UNAVAILABLE'
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -5783,7 +5785,7 @@ class Coordinator:
         pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
                    'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
                    'review_after_sequence': self.state['sequence'], 'binding_sha256': q_evidence.binding(self)}
-        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5)
+        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5 * timeout_scale.env_factor())
         self.state['fake_q_pending'] = pending
         self.save()
         test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
@@ -6058,7 +6060,7 @@ class Coordinator:
                     'GIT_CEILING_DIRECTORIES': str(checkout.root.parent),
                     'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
         test_id = str(uuid.uuid4())
-        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5)
+        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5 * timeout_scale.env_factor())
         self.state['fake_candidate_test_pending'] = test_id
         self.save()
         test = candidate_test_sandbox.run(self, command, cwd=checkout.root,

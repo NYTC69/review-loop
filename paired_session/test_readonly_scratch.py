@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
+from paired_session import timeout_scale as tsc
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli',
@@ -225,7 +226,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
             __import__('time').sleep(0.02)
         co.state['turns'].append({'sequence': 7, 'role': 'shadow', 'pid': left.pid})
         co._stop_turn_group(7)
-        self.assertIsNotNone(left.wait(timeout=5))
+        self.assertIsNotNone(left.wait(timeout=tsc.scaled(5)))
         co._stop_turn_group(8)                                                               # no child started: nothing to stop
 
     def test_a_leftover_scratch_is_swept_only_after_its_turn_group_is_confirmed_gone(self):   # b296-f1c
