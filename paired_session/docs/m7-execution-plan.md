@@ -33,21 +33,25 @@ v2.10.0 gate (amended E-1, D-EFF 2026-10-04: CI green plus one real run reaching
 |---|---|---|
 | Code | v2.10.0 release commit, pinned `~/paired-runs/review-loop-v2.10.0`, `claude --plugin-dir <pinned>` | the commit that ships the review-start, its own pinned copy |
 | Window 1 | `/review-loop:execute --review-only --stop-after exec-round`, handsfree | review-start, `--max-exec-rounds 1` |
-| Window 2 | `--stop-after before-polish`; harness cap: it watches the session file's exec round records and kills the process group when a 4th review would start | review-start, `--max-exec-rounds 3` |
+| Window 2 | `--stop-after before-polish`; harness cap: it watches the session file's exec round records and kills the process group when the 3rd exec verdict is not approve | review-start, `--max-exec-rounds 3` |
 | Off | `adversarial_gate_skip_paths: ["**"]`, `skip_quality_polish: true` | `--adversarial-gate off --shadow off --polish-round off`, lifecycle off |
 | Reviewer | `reviewer: subagent` = isolated `claude -p` via `scripts/run_claude_reviewer.py`, `reviewer_model: claude-opus-5-5` | `--reviewer-vendor claude --reviewer-model claude-opus-5-5` |
-| Author | executor (Claude Agent) | `--author-vendor claude` |
+| Author | executor (Claude Agent, `executor_model: inherit`) under `claude --model claude-opus-5-5` | `--author-vendor claude --author-model claude-opus-5-5` |
 | Test command | per case, given in `--description` | same command via `--test-command` (the CLI default `npm test` must never apply) |
 
 - **Effort.** The legacy launcher passes no effort flag. Before freezing, find the Claude CLI's default
-  effort for that call and set the paired `--reviewer-effort` (default `medium`) to the same value; if it
-  cannot be established, record the asymmetry in the manifest and report it.
-- **Raw review text.** Legacy: `.review-loop/tmp/{session_id}-reviewer-result.txt` of the reviewer child
-  (the design's "Agent-tool return" predates the isolated launcher; erratum to be made with step 1);
-  paired: the raw answer of the first EXEC review turn.
+  effort for that call and set the paired `--reviewer-effort` (default `medium`) to the same value; do the
+  same for the legacy executor and the paired `--author-effort` (default `medium`). If a value cannot be
+  established, record the asymmetry in the manifest and report it. The author/executor model and both
+  effort values go into the manifest.
+- **Raw review text.** Legacy: the reviewer child's per-invocation
+  `.review-loop/tmp/{session_id}-reviewer-{invocation_id}/result.txt` (the top-level
+  `{session_id}-reviewer-result.txt` is overwritten by every call; the design's "Agent-tool return"
+  predates the isolated launcher, erratum to be made with step 1); paired: the raw answer of the first EXEC
+  review turn.
 - **Workspace extras.** The legacy `.review-loop/config.md` (and the launcher's `.review-loop/tmp/`) enter
-  the case repo after the tree hash is taken and are excluded from the reviewed diff; the paired arm uses
-  flags only.
+  the case repo after the tree hash is taken; `.review-loop/` is listed in the case repo's
+  `.git/info/exclude`, so it stays out of the reviewed diff; the paired arm uses flags only.
 - Both commits, the plugin directory hash, the rate table and the effort values go into the manifest
   before the first scored run. v2.10.0 still ships the legacy skills; the pinned copy must stay runnable
   until M7 is scored even if a later release drops legacy.
@@ -60,10 +64,11 @@ v2.10.0 gate (amended E-1, D-EFF 2026-10-04: CI green plus one real run reaching
   `XDG_STATE_HOME` inside the case directory (the paired run root, FIELD-15, and its probe parent lock stay
   per case). Verify in the rehearsal that a fresh `CLAUDE_CONFIG_DIR` plus scratch `HOME` can log in on
   macOS (Keychain) and bills the subscription.
-- The harness calls the coordinator CLI directly; it never drives the skill through a `claude -p` that
-  ends its turn (FIELD-17).
+- Paired arm: the harness calls the coordinator CLI directly; it never drives the skill through a
+  `claude -p` that ends its turn (FIELD-17). The legacy arm runs its skill under `claude -p
+  --output-format stream-json` as the design requires.
 - D-b1 transcript scan as in the design, including the legacy reviewer child's
-  `*-reviewer-stream.jsonl`; D-b2 tool-version grep against both pinned commits before any scored run.
+  `.review-loop/tmp/*-reviewer-*/stream.jsonl`; D-b2 tool-version grep against both pinned commits before any scored run.
 - Voiding (design D-b, D-d): voided plus excluded cases above 4 invalidate the run; more than 2
   infrastructure failures invalidate it; an arm's own failure (hold, crash, cap, no output) scores as
   MISS / `unresolved` and is never excluded.
@@ -122,7 +127,8 @@ the repo.
 2. Corpus: 5 archived round-1 cases, the two luna facts re-checked, 10 seeded + 2 clean synthetic cases,
    keys, categories, per-case test commands and their result on the frozen tree.
 3. D-b1 scanner and normaliser; legacy and collector fake rehearsal; authentication check (§3).
-4. Optional unscored legacy pilot on 2–3 cases from the pinned v2.10.0 copy (tooling and cost check only).
+4. Optional unscored legacy pilot on 2–3 cases outside the corpus (for example Dot 20's synthetic
+   cases) from the pinned v2.10.0 copy (tooling and cost check only).
 5. Review-start lands (D-LG1 or an M7 harness); paired pinned copy; paired fake rehearsal of the
    first-review stop; effort values fixed; manifest with both commits frozen and hashed; D-b2 grep.
 6. Owner authorisation for real-provider scored runs and a quota window (§5).
