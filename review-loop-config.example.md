@@ -24,7 +24,7 @@ executor_model: inherit         # shared Claude/plugin executor override; "" and
 # entry: legacy
 soft_limit_plan: 3              # after N rounds, ask user to continue if CRITICALs remain
 soft_limit_exec: 3
-auto_commit: false
+auto_commit: false              # legacy only; paired-session reads auto_commit from the operator profile (E-4)
 commit_message_prefix: "feat"
 docs_file: CHANGELOG.md
 handsfree: false

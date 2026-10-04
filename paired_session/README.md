@@ -14,8 +14,10 @@ identity and classify it as `MATCH`, `MISMATCH`, or `UNREPORTED`. A match requir
 the exact requested ID or that ID with an explicit date suffix; synthetic,
 malformed, or missing identity data is unreported, and Claude subagent models
 are ignored.
-The preflight must pass before either a fresh run or a resumed run can invoke an
-author. The Codex author permission probe uses a disposable Git workspace and
+In strict mode (`--strict` or an operator profile's `"safety_mode": "strict"`)
+the preflight must pass before either a fresh run or a resumed run can invoke an
+author; the default `efficient` mode keeps every sandbox but needs no probe PASS
+(`docs/efficient-mode.md`). The Codex author permission probe uses a disposable Git workspace and
 checks that workspace and run-owned `$TMPDIR` writes succeed while external
 temporary paths and `/tmp` writes fail.
 One OS-backed lease serializes commands that mutate a run directory. A second
@@ -110,7 +112,9 @@ For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
 workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
-so a worktree-lifecycle run keeps its `CHANGELOG.md` default. A workspace
+so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It enables the
+worktree lifecycle; for a run created with lifecycle off, pass
+`--lifecycle-mode off` (or use a profile without the key). A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
 when that profile is selected, before any run state is created; `permission-probe`
@@ -124,7 +128,7 @@ changed (for example `changed: path_env`), so run `reject`, `resume` and `accept
 from the same shell setup as the probe. The names of secret-looking environment
 variables (for example a `*_TOKEN` set by an agent session) do not void a recorded
 permission-probe PASS: the Claude credential deny list always follows the current
-environment. They still bind an operator opt-in, an accepted probe skip, the
+environment. They still bind a strict run's operator opt-in and accepted probe skip, the
 probe-pass cache key and a lifecycle-on role manifest. A Claude-author refusal
 also names the failing probe check.
 Role models are operator-set (ADR-9): a role without `--author-model`,
@@ -134,12 +138,12 @@ every model id must be well formed and, when `allowed_models` is set, listed for
 that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
-`lifecycle_mode` defaults to `off`. The frozen config also records exact
+`lifecycle_mode` defaults to `off` on the CLI; the paired-session skill passes
+`on` for every new run (D-4). The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
-outside-workspace or wildcard doc paths are refused. Planned (D12, ADR-11): the
-real lifecycle will run as the worktree lifecycle of
-`docs/e2e-6-worktree-lifecycle.md`; the full lifecycle is usable only after
-batch W3b lands. Since W1a, `lifecycle_mode=on` from the command line or an
+outside-workspace or wildcard doc paths are refused. The real lifecycle is the
+worktree lifecycle of `docs/e2e-6-worktree-lifecycle.md` (D12, ADR-11):
+`lifecycle_mode=on` from the command line or an
 operator `--config` starts a worktree-lifecycle run that runs PLAN and EXEC and
 then runs FINISH (a fresh author turn; a change reopens EXEC review and gate)
 and POLISH-Q (fresh report-only specialists, legacy Step 3.5; their blockers
@@ -154,8 +158,9 @@ the index, or with an operator `auto_commit: true` makes one hook-free local
 commit of exactly the accepted tree (never a push), and writes a Chinese
 delivery report; `reject` reopens EXEC; a
 workspace profile can neither enable it nor set its docs/skip/polish keys, and
-the run refuses
-`--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy
+a strict run refuses
+`--accept-unverified-claude-author` and `--accept-probe-skip` (D-7; an
+efficient run needs neither and records neither). Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
 
@@ -181,7 +186,7 @@ The adopted tree is rebuilt from an empty scratch index using independently
 hashed candidate bytes; it never trusts a copied cache-tree or Git replace
 ref. Verification repeats that fresh-index proof before a review may rely on
 the OID. These helpers still require a stopped writer and installed OS denial
-of metadata writes before any real lifecycle activation.
+of metadata writes before any real candidate-tree activation.
 It does not dispatch writers or prove installed OS sandboxing. Before any live
 caller may use ingest, it must positively stop the writer process group and
 deny that writer OS access to the scratch Git directory and index. Same-device
@@ -207,7 +212,7 @@ bin/paired-session run \
   --test-command 'python3 -m unittest'
 ```
 
-Before `run` or `resume`, perform the author permission probe with the same
+In strict mode, before `run` or `resume`, perform the author permission probe with the same
 workspace, work item, run directory, author vendor/binary, profile, and one-run
 overrides:
 
@@ -418,6 +423,10 @@ in the turn receipt without HOLDing that turn.
 
 If a run is held, inspect `state.json`, `open-findings.md`,
 `findings-ledger.md`, and the latest receipts under `evidence/` before resuming.
+Two HOLDs apply in both safety modes: a reviewer, gate or shadow turn that
+changes the workspace is void (the workspace is restored and the turn
+re-dispatched once; a second change or a failed restore holds), and an author
+turn that changes HEAD or the branch holds.
 A rate-limit HOLD includes a reset hint when the provider supplies one. Resume
 with the same workspace, work item, run directory, author/reviewer settings,
 and test command:
@@ -599,7 +608,7 @@ parent's OPEN blocking findings into its protected successor spec and state,
 with their original run/ID provenance. These records do not enter fresh-role
 prompts or change the legacy reviewer gate. A legacy successor spec lacking
 the item fields is marked `item_blockers_complete=false`; it cannot later be
-treated as verified lifecycle handoff evidence. Lifecycle dispatch remains off.
+treated as verified lifecycle handoff evidence.
 
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting
@@ -650,8 +659,9 @@ there:
 A work item that needs one of these will stall or fail in the author turn, not
 in the permission probe. Options for the operator:
 
-1. Pick a Claude author (`--author-vendor claude`) for that item. It needs a
-   passing Claude-author permission-probe, or the documented
+1. Pick a Claude author (`--author-vendor claude`) for that item. The default
+   efficient mode needs no probe for it. In strict mode it needs a
+   passing Claude-author permission-probe, or (without lifecycle, D-7) the documented
    `--accept-unverified-claude-author --reason` opt-in, which is the operator's
    own decision (see the probe section above). The opt-in waives only the
    Claude author's probe part: a report that is UNKNOWN solely because the author
@@ -677,7 +687,7 @@ one open item with that ID, and match its unique normalized title and section.
 Workspace/index drift, ambiguous items and symlink paths refuse before PLAN.
 The run records the exact HEAD, BACKLOG blob and hashes of the view and adapter.
 This admission does not close an item: Q construction, fresh Q checks and DELIVERY
-remain required. Real lifecycle entry remains disabled.
+remain required. The worktree lifecycle has no closeout stage (D-3).
 
 `closeout_adapter.close_blob` produces an **unreviewed Q proposal** from the exact
 frozen BACKLOG bytes, a C1 object ID and closing date. It moves only the selected
@@ -694,7 +704,7 @@ write a BACKLOG-only Q tree in scratch Git. Its status is always UNREVIEWED.
 It changes neither live HEAD/index/BACKLOG, the P root/index, nor lifecycle state.
 Fresh Q tests/reviews/gate/SECURITY and attributed acceptance remain mandatory;
 this method cannot commit, publish or close. C1 message/author/intent verification
-belongs to the later bundle-verification step. Real lifecycle still refuses.
+belongs to the later bundle-verification step. The worktree lifecycle does not use it.
 
 The fake Q source reviewer preserves its raw verdict in the turn and records an
 independent effective verdict/advisory proof. Nonempty REVISE with only
@@ -710,8 +720,9 @@ reviews at the same Q OID, requires observed configured-test success and binds
 phase, workspace and increasing turn sequences. P FINISH/POLISH-Q/DOCS receipts
 must be current no-ops. A distinct protected `REVIEWED` bundle is evidence for
 future delivery; it does not itself publish commits or CLOSE. A failed or
-uncertain Q attempt requires abort and a new run. Real lifecycle activation
-remains disabled; sandbox/cache/process-isolation gates are still required.
+uncertain Q attempt requires abort and a new run. Real candidate-tree activation
+remains disabled (the worktree lifecycle does not use this bundle);
+sandbox/cache/process-isolation gates are still required.
 
 Non-security reviewer MINOR/LOW and gate low findings are retained in Q proof
 advisories. Their raw verdict stays in the provider receipt; only the coordinator
@@ -737,7 +748,7 @@ other HOLDs/terminal states refuse. Delivery accept requires DONE/PENDING before
 rechecking intent. Fake delivery rejection is explicitly refused until P'/Q'
 recovery is wired; use abort/new run or an explicit scope-change instead.
 
-Fake delivery seals Git hook/config inventory before PLAN and binds it into the operator intent. Active hooks refuse until the hook runner exists. C1 has a fixed coordinator author, committer, start time and item message; delivery refuses metadata or inventory drift. Real lifecycle remains disabled.
+Fake delivery seals Git hook/config inventory before PLAN and binds it into the operator intent. Active hooks refuse until the hook runner exists. C1 has a fixed coordinator author, committer, start time and item message; delivery refuses metadata or inventory drift. The worktree lifecycle does not use fake delivery.
 
 Fake publication uses a protected acceptance journal. Its PREPARED/PUBLISHED phases are incomplete delivery states, not CLOSE receipts. Post-CAS verification checks frozen proof files, current programs, exact candidate bytes and the C1/C2 chain without assuming the old HEAD; final live-index reconciliation is a separate required check.
 
@@ -745,6 +756,6 @@ Fake publication imports C1/C2 through `index-pack --strict`, records the journa
 
 A publication journal or structured publication HOLD quarantines ordinary operator commands (including scope-change, probe, note, accept and resume). Read-only status remains available. Use the locked publication recovery path; pending journal phases are not acceptance or CLOSE.
 
-Fake-only Python drive helpers now prepare reviewed delivery, require explicit operator acceptance, reconcile sealed publication, and produce an idempotent CLOSE receipt with C1/C2 and exact Q facts. The public CLI still refuses real lifecycle activation; external actions are unavailable, including explicit true requests. Recovery releases ordinary-command quarantine only after exact reconciliation and lock removal. Mid-stage resume and full PLAN-to-close fault coverage remain acceptance gates.
+Fake-only Python drive helpers now prepare reviewed delivery, require explicit operator acceptance, reconcile sealed publication, and produce an idempotent CLOSE receipt with C1/C2 and exact Q facts. The public CLI still refuses real candidate-tree activation (the worktree lifecycle does not use these helpers); external actions are unavailable, including explicit true requests. Recovery releases ordinary-command quarantine only after exact reconciliation and lock removal. Mid-stage resume and full PLAN-to-close fault coverage remain acceptance gates.
 
-Fake OID and Q tests require the macOS OS write sandbox; unavailable isolation refuses dispatch. Writes are limited to the candidate root and a fresh test temporary directory, excluding candidate Git/Compass/BACKLOG metadata. `/dev/null` permits data writes for the system Python launcher. Network and hardlink creation are denied; receipts record the sandbox engine, profile and roots. Real activation remains refused. An initial Q reviewer test failure is not erased by a later pass.
+Fake OID and Q tests require the macOS OS write sandbox; unavailable isolation refuses dispatch. Writes are limited to the candidate root and a fresh test temporary directory, excluding candidate Git/Compass/BACKLOG metadata. `/dev/null` permits data writes for the system Python launcher. Network and hardlink creation are denied; receipts record the sandbox engine, profile and roots. Real candidate-tree activation remains refused. An initial Q reviewer test failure is not erased by a later pass.

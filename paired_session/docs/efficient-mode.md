@@ -110,9 +110,9 @@ If the restore verifies, the turn is re-dispatched once. If it does not, or the 
 - efficient (the default) does not require a permission-probe PASS, and its evidence guard only logs;
 - strict (`--strict` or an operator profile) also requires the probe PASS and lets the evidence guard hold.
 
-## 6. Lane A hook (not edited here)
+## 6. Lifecycle hook (D-7)
 
-- D-7 ("lifecycle refuses probe waivers") exists only in `docs/v2.10-entry-switch.md`; no code implements it. Lane A should apply it only when `Coordinator.strict` is true, i.e. when `state['config'].get('safety_mode', 'strict') == 'strict'`.
+- D-7 ("lifecycle refuses probe waivers", ADR-11) applies only to strict runs: `worktree_lifecycle.refuse_waivers` refuses the two waivers only when the run's safety mode is strict (lane B v210-entry-1); an efficient lifecycle run gets the NOTE and records nothing.
 - The fake-lifecycle candidate-test sandbox (`candidate_test_sandbox.run`) is a sandbox requirement, not a probe gate. It stays in both modes.
 
 ## 7. Tests

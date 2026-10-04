@@ -26,7 +26,7 @@ entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
-`--config` to both probe and run; the paired-session skill uses
+`--config` to every command (probe and run in strict mode); the paired-session skill uses
 `~/.config/review-loop/paired-session.json` when it exists and you name no other
 profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
@@ -36,10 +36,14 @@ modes. `efficient`, the default, does not require a permission-probe PASS before
 dispatch, and its evidence guard only records what it would have held. `strict`
 (`--strict`, or `"safety_mode": "strict"` in the operator profile; the
 workspace file cannot set it) also requires the probe PASS and lets the evidence
-guard hold. The first command that creates the run (usually `permission-probe`)
-fixes its mode, so pass `--strict` from `permission-probe` on; a `--strict` that
+guard hold. The first command that creates the run (`run` by default,
+`permission-probe` in strict mode) fixes its mode, so pass `--strict` from that
+first command on; a `--strict` that
 arrives after only the probe has run still upgrades the run, later it is
-refused. Runs made before this change resume strict. See
+refused. Runs made before this change resume strict. In both modes a reviewer
+turn that changes the workspace is voided, restored and re-dispatched once (a
+second change or a failed restore is a HOLD), and an author turn that changes
+HEAD or the branch is a HOLD. See
 [`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
 **Optional** — copy the config template to customize per-project defaults:
@@ -73,8 +77,8 @@ explicitly opt into the local Codex reviewer with
 `codex_reviewer_backend: codex` in `.review-loop/config.md`.
 When a Claude reviewer is selected, the permission probe checks unique writes
 to host `/tmp`, the run directory, and the `context` directory passed through
-`--add-dir`. Strict sandboxing requires a supported Claude host/backend; the
-probe fails closed when the OS sandbox is unavailable.
+`--add-dir`. The Claude reviewer sandbox requires a supported Claude host/backend;
+the probe (required only in strict mode) fails closed when the OS sandbox is unavailable.
 In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
 `judgment_model` is its shared-tier fallback, and the empty backstop is an
 explicit `--model claude-opus-5-5`.
