@@ -313,6 +313,119 @@ class ExplicitDenialTests(unittest.TestCase):                                   
             self.assertEqual((report['status'], report['gate_permission_probe']['status']), ('UNKNOWN', 'UNKNOWN'))
 
 
+class ProbeTrackedFileTests(unittest.TestCase):                                              # b296-f1f
+    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
+
+    def git(self, *args):
+        subprocess.run(['git', *args], cwd=self.h.workspace, check=True, capture_output=True)
+
+    def legs(self, report, tracked):
+        return [command for command in report['write_attempts_denied'] if command.startswith(('git checkout -- ', 'rm '))], \
+               ['git checkout -- ' + tracked, 'rm ' + tracked]
+
+    def test_a_workspace_without_tracked_txt_probes_an_existing_tracked_file_and_passes(self):   # the field shape (P1/P2, codex-cli 0.160.0)
+        ws = self.h.workspace
+        self.git('rm', '-q', 'tracked.txt')
+        (ws / 'src').mkdir()
+        (ws / 'src' / 'app.py').write_text('x = 1\n')
+        self.git('add', 'src/app.py')
+        self.git('commit', '-qm', 'no tracked.txt')
+        for flags in (CODEX_ROLES, ('--reviewer-vendor', 'claude', '--gate-vendor', 'codex')):   # the Codex reviewer probe and a Codex gate probe
+            with self.subTest(flags=flags):
+                self.h.run_dir = self.h.root / ('field-' + flags[1])
+                report = self.probe(self.co(*flags))
+                probe = report if flags[1] == 'codex' else report['gate_permission_probe']
+                self.assertEqual((report['status'], probe['status']), ('PASS', 'PASS'), probe['failure_reasons'])
+                self.assertEqual((report['probe_tracked_file'], probe['probe_tracked_file']), ('.gitignore', '.gitignore'))   # first ls-files entry
+                self.assertEqual(*self.legs(probe, '.gitignore'))
+                self.assertTrue(all(probe['write_attempts_denied'].values()))
+        self.assertEqual(sorted(p.name for p in ws.iterdir() if p.name != '.git'), ['.gitignore', 'src'])   # nothing created or changed
+        self.git('diff', '--exit-code')
+        self.h.run_dir = self.h.root / 'old-literal'                                         # the fake reproduces the field failure of the old literal
+        with patch.object(rc, 'probe_tracked_file', return_value='tracked.txt'):
+            report = self.probe(self.co(*CODEX_ROLES))
+        self.assertNotEqual(report['status'], 'PASS')
+        self.assertIn('denial-not-explicit: rm tracked.txt', report['failure_reasons'])
+
+    def test_the_pick_skips_links_missing_and_unsafe_names_and_a_path_that_needs_quoting_is_quoted(self):
+        ws = self.h.workspace
+        self.git('rm', '-q', 'tracked.txt', '.gitignore')
+        (ws / '-dash.txt').write_text('d\n')
+        (ws / 'a-link').symlink_to('-dash.txt')
+        (ws / 'b-gone.txt').write_text('g\n')
+        (ws / 'c\tmid.txt').write_text('t\n')
+        (ws / 'd-real').mkdir()
+        (ws / 'd-real' / 'f.txt').write_text('f\n')
+        quoted = "e dir/it's.txt"
+        (ws / 'e dir').mkdir()
+        (ws / quoted).write_text('q\n')
+        self.git('add', '--', '-dash.txt', 'a-link', 'b-gone.txt', 'c\tmid.txt', 'd-real/f.txt', quoted)
+        self.git('commit', '-qm', 'pick')
+        (ws / 'b-gone.txt').unlink()                                                        # tracked but gone on disk
+        (ws / 'd-real').rename(ws / 'd-elsewhere')                                           # tracked path now through a symlinked directory
+        (ws / 'd-real').symlink_to('d-elsewhere')
+        self.assertEqual(rc.probe_tracked_file(ws), quoted)
+        self.git('checkout', '--', 'b-gone.txt')
+        self.assertEqual(rc.probe_tracked_file(ws), 'b-gone.txt')
+        (ws / 'b-gone.txt').write_text('uncommitted\n')                                    # R1: an unmodified file beats a quote-safe one with
+        self.assertEqual(rc.probe_tracked_file(ws), quoted)                                  # unstaged changes; a modified one is still a fallback
+        (ws / quoted).write_text('uncommitted\n')
+        self.assertEqual(rc.probe_tracked_file(ws), 'b-gone.txt')
+        self.git('checkout', '--', quoted)
+        (ws / 'b-gone.txt').unlink()
+        self.h.run_dir = self.h.root / 'quoted'
+        report = self.probe(self.co(*CODEX_ROLES))
+        self.assertEqual((report['status'], report['probe_tracked_file']), ('PASS', quoted), report['failure_reasons'])
+        self.assertEqual(*self.legs(report, "'e dir/it'\"'\"'s.txt'"))
+        self.assertEqual((ws / quoted).read_text(), 'q\n')
+
+    def test_a_workspace_with_no_tracked_regular_file_is_refused_before_any_turn(self):
+        ws = self.h.workspace
+        self.git('rm', '-q', '--cached', 'tracked.txt')
+        (ws / 'tracked.txt').unlink()
+        (ws / '.gitignore').unlink()                                                         # the only tracked file is gone on disk
+        self.git('commit', '-qm', 'only .gitignore left')
+        co = self.co(*CODEX_ROLES)
+        sequence = co.state['sequence']
+        (co.run_dir / 'permission-probe.json').write_text('{"status": "PASS"}\n')            # an older report: superseded, not left valid
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            self.assertFalse(co.permission_probe())
+            self.assertFalse(co.probe_passed()[0])
+        self.assertEqual((co.state['sequence'], co.state['turns'], co.state['status']), (sequence, [], 'HOLD'))
+        self.assertIn('permission probe refused before any turn: the workspace has no tracked regular file', co.state['hold_reason'])
+        self.assertFalse((co.run_dir / 'permission-probe.json').exists())
+        self.assertTrue((co.run_dir / 'permission-probe.superseded.json').exists())
+        self.assertEqual(sorted(p.name for p in ws.iterdir()), ['.git'])
+
+    def test_a_delete_that_lands_fails_the_probe_and_the_file_is_not_restored(self):
+        ws = self.h.workspace
+        for flags in (CODEX_ROLES, ('--reviewer-vendor', 'claude', '--gate-vendor', 'codex')):
+            with self.subTest(flags=flags), patch.dict(os.environ, {'FAKE_CODEX_PROBE_ESCAPE': 'rm '}):
+                self.h.run_dir = self.h.root / ('rm-' + flags[1])
+                co = self.co(*flags)
+                report = self.probe(co)
+                probe = report if flags[1] == 'codex' else report['gate_permission_probe']
+                self.assertEqual((report['status'], probe['status']), ('FAIL', 'FAIL'))
+                self.assertFalse(os.path.lexists(ws / '.gitignore'))                         # never silently restored
+                self.assertTrue(any(reason.startswith('probe-tracked-file-escaped: .gitignore was deleted') for reason in probe['failure_reasons']), probe['failure_reasons'])
+                self.assertIn('NOT restored', report['message'])
+                self.assertIn('probe-tracked-file-escaped: .gitignore', co.state['hold_reason'])
+                self.git('checkout', '--', '.gitignore')                                     # the test restores it for the next case
+        self.h.run_dir = self.h.root / 'rm-error'                                            # R1: the delete lands, then the turn errors
+        co = self.co(*CODEX_ROLES)
+        invoke = co.invoke
+        def landed_then_error(role, *args, **kwargs):
+            result = invoke(role, *args, **kwargs)
+            if role == 'probe': raise RuntimeError('fake turn error after the turn')
+            return result
+        with patch.dict(os.environ, {'FAKE_CODEX_PROBE_ESCAPE': 'rm '}), patch.object(co, 'invoke', side_effect=landed_then_error):
+            report = self.probe(co)
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertFalse(os.path.lexists(ws / '.gitignore'))
+        self.assertIn('NOT restored', report['message'])
+        self.assertIn('probe-tracked-file-escaped: .gitignore', co.state['hold_reason'])
+
+
 class ExecProfileSelectionTests(unittest.TestCase):                                          # b296-f1e
     locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
 

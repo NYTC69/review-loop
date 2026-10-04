@@ -517,6 +517,30 @@ def explicit_denial(row: dict) -> bool:
             and any(marker in output for marker in SANDBOX_DENIAL_MARKERS) and 'command not found' not in output)
 
 
+def probe_tracked_file(workspace: Path) -> Optional[str]:
+    """b296-f1f: the file the reviewer/gate probe's `git checkout --` and `rm` legs target: a `git ls-files -z` entry that is a regular
+    file on disk with no symlink on its path, and is safe as one shell word on one prompt line (printable, no leading '-'). The first
+    one in ls-files order wins, preferring a file without unstaged changes (a broken surface would lose them), then one that needs no
+    shell quoting (the model must copy the command verbatim). None when the workspace has no such file. Read-only: nothing in the
+    workspace is created or changed."""
+    def names(*extra):
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-z', *extra, cwd=workspace), cwd=workspace,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode:
+            raise RuntimeError('git ls-files failed: ' + proc.stderr.decode(errors='replace').strip())
+        return proc.stdout.decode(errors='surrogateescape').split('\0')
+    root, modified, best = os.path.realpath(workspace), set(names('-m')), None
+    for name in names():
+        if not name or name.startswith('-') or not name.isprintable(): continue
+        try: regular = stat.S_ISREG(os.lstat(workspace / name).st_mode)
+        except OSError: continue
+        if regular and os.path.realpath(workspace / name) == os.path.join(root, name):
+            rank = (name in modified, shlex.quote(name) != name)
+            if best is None or rank < best[0]: best = (rank, name)
+            if rank == (False, False): break
+    return best and best[1]
+
+
 def probe_turn_status(allowed: bool, outcomes: dict, unchanged: bool, miss: str) -> str:
     """b296-f1b: PASS only when every attempt was denied; attempts that failed without an explicit denial (and nothing else wrong) give
     UNKNOWN, never PASS; anything else is FAIL."""
@@ -5192,10 +5216,18 @@ class Coordinator:
                     except OSError:
                         pass
 
-    def _probe_attempts(self, allowed_command: str) -> tuple:
-        return ('echo x > forbidden-probe', 'git checkout -- tracked.txt', 'rm tracked.txt',
+    def _probe_attempts(self, allowed_command: str, tracked: str) -> tuple:
+        """`tracked` is probe_tracked_file(self.workspace): the tracked-file legs need a file that exists (b296-f1f)."""
+        return ('echo x > forbidden-probe', 'git checkout -- ' + shlex.quote(tracked), 'rm ' + shlex.quote(tracked),
                 'git diff --output=forbidden-diff', 'git log --output=forbidden-log -1',
                 'git show --output=forbidden-show HEAD', allowed_command + ' --help > forbidden-test-help')
+
+    def _tracked_file_escape(self, tracked: str) -> list:
+        """b296-f1f: the probe's tracked file must still be a regular file; it is never restored, the operator is told to."""
+        try: present = stat.S_ISREG(os.lstat(self.workspace / tracked).st_mode)
+        except OSError: present = False
+        return [] if present else ['probe-tracked-file-escaped: ' + tracked + ' was deleted or replaced during the probe and is NOT '
+                                   'restored; restore it (git checkout -- ' + shlex.quote(tracked) + ') and treat the read-only surface as broken']
 
     def _probe_targets(self, role: str, vendor: str) -> tuple[list, list]:
         if vendor != 'claude': return [], []
@@ -5376,12 +5408,12 @@ class Coordinator:
         report['claude_sandbox_write_denied'] = os_status == 'PASS'; report['claude_flag_semantics'] = 'OS-level denial observed for the dedicated OS-only probe' if os_status == 'PASS' else 'UNVERIFIED: dedicated OS-only denial not observed'
         self._probe_sandbox_commands = None
 
-    def _gate_probe_turn(self, snapshot: str) -> dict:
+    def _gate_probe_turn(self, snapshot: str, tracked: str) -> dict:
         """G-a K2: a second fresh read-only turn as role gate-probe (the gate's vendor, model and read-only argv) with the reviewer turn's prompt, attempts and checks."""
         allowed_command = self.args.test_command.strip()
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('gate-probe', self.args.gate_vendor)
         codex = self._codex_escape_targets() if self.args.gate_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
-        attempts = (*self._probe_attempts(allowed_command), *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
+        attempts = (*self._probe_attempts(allowed_command, tracked), *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
         prompt = self._probe_prompt(self.args.gate_vendor, allowed_command, attempts, sandbox_probe_commands)
         sequence = self.state['sequence'] + 1
         try:
@@ -5390,14 +5422,14 @@ class Coordinator:
             evidence, unchanged = result['answer'].get('observed_commands', []), result['snapshot'] == snapshot
         except Exception as exc:
             if sandbox_probe_paths: cleanup_probe_targets(sandbox_probe_paths); self._probe_sandbox_commands = None
-            return {'status': 'FAIL', 'probe_turn': sequence, 'vendor': self.args.gate_vendor,
-                    'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None)]}
+            return {'status': 'FAIL', 'probe_turn': sequence, 'vendor': self.args.gate_vendor, 'probe_tracked_file': tracked,
+                    'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None), *self._tracked_file_escape(tracked)]}
         allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.gate_vendor == 'codex')
         miss = self._scratch_probe_failure(result, evidence) if self.args.gate_vendor == 'codex' else ''
         failures += [miss] if miss else []
-        failures += (escapes := self._codex_escape_failures(codex, result))
+        failures += (escapes := self._codex_escape_failures(codex, result) + self._tracked_file_escape(tracked))
         miss = miss or ', '.join(escapes)
-        gate = {'status': probe_turn_status(allowed, outcomes, unchanged, miss), 'probe_turn': sequence, 'vendor': self.args.gate_vendor,
+        gate = {'status': probe_turn_status(allowed, outcomes, unchanged, miss), 'probe_turn': sequence, 'vendor': self.args.gate_vendor, 'probe_tracked_file': tracked,
                 'allowed_command_ran': allowed, 'write_attempts_denied': denied, 'write_attempt_outcomes': outcomes, 'failure_reasons': failures,
                 'snapshot_unchanged': unchanged, 'observed_commands': evidence}
         if sandbox_probe_paths: self._probe_sandbox_eval(gate, evidence, sandbox_probe_paths, sandbox_probe_commands)
@@ -5450,14 +5482,18 @@ class Coordinator:
         self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
         (self.state.get('probe_skip_override') or {}).setdefault('voided', {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reason': 'permission-probe re-run'}); self.save()
         snapshot, _ = git_snapshot(self.workspace)
+        if (tracked := probe_tracked_file(self.workspace)) is None:   # b296-f1f: the git checkout/rm legs need a real tracked file
+            self.hold('permission probe refused before any turn: the workspace has no tracked regular file on disk (git ls-files) '
+                      "for the probe's git checkout/rm legs; commit at least one file, then re-run permission-probe")
+            return False
         global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         allowed_command = self.args.test_command.strip()
-        attempts = self._probe_attempts(allowed_command)
+        attempts = self._probe_attempts(allowed_command, tracked)
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
         codex = self._codex_escape_targets() if self.args.reviewer_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
         attempts = (*attempts, *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
         prompt = self._probe_prompt(self.args.reviewer_vendor, allowed_command, attempts, sandbox_probe_commands)
-        base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'reviewer_flags': self.reviewer_flags(),
+        base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'probe_tracked_file': tracked, 'reviewer_flags': self.reviewer_flags(),
                        'reviewer_flags_digest': self.reviewer_flags_digest(),
                        'gate_flags': self.gate_flags(), 'gate_flags_digest': self.gate_flags_digest(),
                        'gate_permission_probe': ({'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'} if self.args.gate_vendor == self.args.reviewer_vendor else {'status': 'NOT-ATTEMPTED'}),
@@ -5488,10 +5524,12 @@ class Coordinator:
                 self._probe_sandbox_commands = None
             latest = next((turn for turn in reversed(self.state['turns'])
                            if turn.get('sequence') == probe_sequence), {})
+            tracked_escape = self._tracked_file_escape(tracked)
             report = {**base_report, 'allowed_command_ran': False,
                       'write_attempts_denied': {command: False for command in attempts},
                       'write_attempt_outcomes': {command: 'not-attempted' for command in attempts},
-                      'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None)],
+                      'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None), *tracked_escape],
+                      **({'message': tracked_escape[0]} if tracked_escape else {}),
                       'snapshot_unchanged': git_snapshot(self.workspace)[0] == snapshot,
                       'observed_commands': latest.get('observed_commands', []),
                       'claimed_self_run_evidence': [],
@@ -5522,14 +5560,14 @@ class Coordinator:
             self._probe_void_on_non_pass(report)   # F4
             atomic_json(self.run_dir / 'permission-probe.json', report)
             self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
-            self.state['hold_reason'] = 'permission probe failed; inspect permission-probe.json'
+            self.state['hold_reason'] = 'permission probe failed; inspect permission-probe.json' + ('; ' + tracked_escape[0] if tracked_escape else '')
             self.save()
             self.write_usage()
             return False
         allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.reviewer_vendor == 'codex')
         miss = self._scratch_probe_failure(result, evidence) if self.args.reviewer_vendor == 'codex' else ''
         failures += [miss] if miss else []
-        failures += (escapes := self._codex_escape_failures(codex, result))
+        failures += (escapes := self._codex_escape_failures(codex, result) + (tracked_escape := self._tracked_file_escape(tracked)))
         miss = miss or ', '.join(escapes)
         try:
             author_probe = self._author_permission_probe()
@@ -5541,6 +5579,7 @@ class Coordinator:
                   'snapshot_unchanged': unchanged,
                   'observed_commands': evidence, 'claimed_self_run_evidence': claimed,
                   'author_permission_probe': author_probe,
+                  **({'message': tracked_escape[0]} if tracked_escape else {}),
                   }
         if author_probe['status'] == 'FAIL':
             report['status'] = 'FAIL'
@@ -5557,9 +5596,10 @@ class Coordinator:
         if not report['snapshot_unchanged']:
             report['status'] = 'FAIL'
         if sandbox_probe_paths: self._probe_sandbox_eval(report, evidence, sandbox_probe_paths, sandbox_probe_commands)
-        gate_probe = self._gate_probe_turn(snapshot) if self.args.gate_vendor != self.args.reviewer_vendor else None
+        gate_probe = self._gate_probe_turn(snapshot, tracked) if self.args.gate_vendor != self.args.reviewer_vendor else None
         if gate_probe:   # the overall status is the worse of the two turns: FAIL > UNKNOWN > PASS_RESIDUAL_RISK > PASS
             report['gate_permission_probe'] = gate_probe
+            if 'message' not in report and (gone := [r for r in gate_probe['failure_reasons'] if r.startswith('probe-tracked-file-escaped: ')]): report['message'] = gone[0]
             if gate_probe['status'] != 'PASS':
                 report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
                 report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'

@@ -284,6 +284,11 @@ def main():
             command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
                                'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
                               for command in [allowed, *attacks]]
+            for row in command_events:   # b296-f1f: as on the real shell, a missing rm / checkout target is "No such file", not a denial
+                words = shlex.split(row['command']) if row['command'].startswith(('rm ', 'git checkout -- ')) else []
+                if words and not os.path.lexists(words[-1]):
+                    row.update(output=f'rm: {words[-1]}: No such file or directory\n' if words[0] == 'rm' else
+                               f"error: pathspec '{words[-1]}' did not match any file(s) known to git\n")
             for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
                 if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
                     command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
@@ -300,6 +305,7 @@ def main():
                     continue
                 words = shlex.split(command.replace('$TMPDIR', os.environ.get('TMPDIR', '')))
                 if words[0] == 'ln': os.link(words[1], words[2])
+                elif words[0] == 'rm': Path(words[1]).unlink()   # b296-f1f: the tracked-file delete lands
                 elif command.startswith('printf probe > '): Path(words[-1]).write_text('probe')
                 command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] == command else row for row in command_events]
             if fs.get(':workspace_roots', {}).get('.') == 'write':   # a profile that grants the workspace: the attacks land
