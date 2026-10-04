@@ -1,4 +1,5 @@
 """Worktree lifecycle W (ADR-11, docs/e2e-6): activation preconditions, receipts and stage routing."""
+import json
 from pathlib import Path
 
 try:
@@ -126,3 +127,10 @@ def specialist_prompt(name, body, test_command, owned, protocol):
             'as MINOR; CRITICAL and MAJOR block delivery.\n' + protocol + '\n'
             f'Run this test command exactly as written in one Bash call: {test_command}\n' + ledger +
             'Return only JSON matching the supplied schema.')
+
+
+def delivered_findings(source, rows):
+    """The delivered review for an author repair turn (same shape as the gate's)."""
+    return json.dumps({'source': source, 'status': 'REVISE', 'findings': [
+        {key: row.get(key, '') for key in ('id', 'severity', 'file', 'summary', 'failure_scenario')} for row in rows]},
+        ensure_ascii=False)

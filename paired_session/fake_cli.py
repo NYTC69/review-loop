@@ -208,6 +208,9 @@ def main():
                 module.write_text(module.read_text() + '# rejection applied\n')
             if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
                 module.write_text(module.read_text() + '# resumed author output\n')
+            if 'specialist blocker' in prompt:   # worktree-lifecycle POLISH-Q fix leg: one new tree per fixed id set
+                ids = ' '.join(re.findall(r'"id": "F(\d+)"', prompt))   # no finding ids in code: shadow independence
+                module.write_text(module.read_text() + f'# specialist fix {ids}\n')
             body = 'Implemented sum_ints and ran fake checks.'
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
@@ -353,7 +356,11 @@ def main():
                          'summary': 'polish regression',
                          'failure_scenario': 'polish broke bool rejection'}]
         specialist = prompt.split('Role: specialist ', 1)[1].split(',', 1)[0] if 'Role: specialist ' in prompt else None
-        if specialist and specialist == os.environ.get('FAKE_SPECIALIST_BLOCK'):   # worktree-lifecycle POLISH-Q
+        block_once = os.environ.get('FAKE_SPECIALIST_BLOCK_ONCE')
+        if (specialist and specialist == os.environ.get('FAKE_SPECIALIST_BLOCK') and   # worktree-lifecycle POLISH-Q
+                not (block_once and Path(block_once).exists())):
+            if block_once:
+                Path(block_once).write_text('blocked once\n')
             revise = True
             findings = [{'severity': os.environ.get('FAKE_SPECIALIST_SEVERITY', 'CRITICAL'), 'file': 'sum_ints.py',
                          'summary': 'specialist blocker', 'failure_scenario': 'a specialist found a blocking defect'}]

@@ -156,6 +156,15 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
         self.assertIn('HOLD: finisher changed HEAD, refs or the index', again.stdout, again.stdout + again.stderr)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
+        violating = next(row for row in state['turns'] if row['phase'] == 'FINISH')
+        self.assertEqual(violating['discarded'], 'git guard')
+        rc.subprocess.run(['git', 'reset', '-q', '--mixed', 'HEAD~1'], cwd=self.workspace, check=True)   # operator restore
+        restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [finish] = self.finish_rows(state)
+        self.assertNotEqual(finish['sequence'], violating['sequence'])   # a fresh FINISH, not the violator's READY
+        self.assertEqual(finish['request_id'], 'w-FINISH-0-0')
 
     def test_finish_binds_the_last_reviewed_snapshot_and_refuses_a_stale_tree(self):
         co = rc.Coordinator(self.args())
@@ -236,6 +245,30 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('HOLD: EXEC round limit reached after a FINISH write', result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual((state['lifecycle']['stage'], state['lifecycle']['epoch'], state['next']), ('EXEC', 1, 'reviewer'))
+        self.assertEqual(state['round_limit_hold']['hold_reason'], 'EXEC round limit reached after a FINISH write')
+        self.assertIn(state['round_limit_hold']['hold_reason'], rc.ROUND_LIMIT_REASONS)   # _override_tree knows it (W accept: W3b)
+
+    def test_a_crash_after_a_git_guard_violation_never_reuses_that_finish_turn(self):
+        co = rc.Coordinator(self.args())
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='FINISH', candidate_oid=tree)
+        request = wl.stage_request(co.state['lifecycle'], 'finisher')
+        co.state['lifecycle']['writer_git'] = {**co._writer_git_state(), 'sequence': co.state['sequence']}
+        co.state['lifecycle'] = rc.lifecycle_spine.begin(co.state['lifecycle'], request)
+        co.state['turns'].append({'role': 'author', 'phase': 'FINISH', 'sequence': co.state['sequence'] + 1,
+                                  'answer': {'status': 'READY', 'body': 'done'}, 'snapshot_after': tree})
+        (self.workspace / 'tracked.txt').write_text('staged by the finisher\n')
+        rc.subprocess.run(['git', 'add', 'tracked.txt'], cwd=self.workspace, check=True)   # the index moved
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched past the guard')), \
+                self.assertRaisesRegex(RuntimeError, 'finisher changed HEAD, refs or the index'):
+            co.worktree_finish_turn()   # the crash came before the post-invoke check
+        self.assertEqual(co.state['turns'][-1]['discarded'], 'git guard')
+        rc.subprocess.run(['git', 'reset', '-q', 'tracked.txt'], cwd=self.workspace, check=True)   # operator restore
+        co.context.mkdir(parents=True, exist_ok=True)
+        (co.context / 'plan.md').write_text('plan\n')
+        with mock.patch.object(co, 'invoke', side_effect=RuntimeError('fresh FINISH dispatch')), \
+                self.assertRaisesRegex(RuntimeError, 'fresh FINISH dispatch'):
+            co.worktree_finish_turn()
 
     def test_explicit_cli_values_and_resume_follow_the_operator_only_rule(self):
         profile = self.workspace / '.review-loop' / 'paired-session.json'
@@ -254,26 +287,135 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         abort[2] = 'abort'   # operator actions that never read these keys still work
         rc.Coordinator(rc.configure_parser(rc.parser(), abort[2:]).parse_args(abort[2:]))
 
-    def test_a_specialist_blocker_cannot_pass_and_only_its_owner_can_close_it(self):
-        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
-        self.assertIn('HOLD: POLISH-Q open blocking findings: ', result.stdout, result.stdout + result.stderr)
+    def test_a_specialist_blocker_goes_to_the_fix_leg_and_only_its_owner_can_close_it(self):
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60',
+                                      env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
+        self.assertIn('HOLD: POLISH-Q blockers remain after the fix: ', result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        [finding] = [row for row in state['finding_ledger'] if row['status'] == 'open']
-        self.assertEqual((finding['source'], finding['owner_role'], finding['severity'], finding['phase']),
-                         ('specialist:code-reviewer', 'specialist:code-reviewer', 'CRITICAL', 'POLISH-Q'))
-        [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
-        self.assertEqual((polish['status'], state['lifecycle']['stage']), ('HOLD', 'POLISH-Q'))
-        self.assertEqual([row['name'] for row in polish['specialist_turns']], polish['specialists'])
-        turns = len(state['turns'])
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')   # no fix: no re-review may close it
-        self.assertIn('HOLD: POLISH-Q blockers need a fix on a new tree, not a re-review: ' + finding['id'],
-                      again.stdout, again.stdout + again.stderr)
-        self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), turns)
-        co = rc.Coordinator(self.args(action='resume'))
+        first, second = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
+        self.assertEqual((first['status'], first['owner_role'], first['severity']), ('fixed', 'specialist:code-reviewer', 'CRITICAL'))
+        self.assertEqual(second['status'], 'open')   # the owner re-reviewed the fixed tree and found a new blocker
+        phases = [(row['role'], row['phase']) for row in state['turns'] if row['sequence'] > first['origin_round']]
+        self.assertEqual(phases[:2], [('reviewer', 'POLISH-Q')] * 2)   # silent-failure-hunter, pr-test-analyzer
+        self.assertEqual(phases[2:4], [('author', 'EXEC'), ('reviewer', 'POLISH-Q')])   # the fix, then the owner
+        self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())   # the author got the blocker
+        self.assertEqual((state['lifecycle']['stage'], state['next']), ('POLISH-Q', 'polish-fix'))
+        co = rc.Coordinator(self.args('--max-invocations', '60', action='resume'))
         for role in (None, 'persistent-reviewer', 'specialist:python-reviewer'):   # None: the real persistent path
             with self.subTest(role=role), self.assertRaisesRegex(RuntimeError, 'requires its owning specialist'):
-                co.apply_dispositions([{'id': finding['id'], 'disposition': 'fixed', 'evidence': 'not mine'}],
-                                      999, [finding['id']], role)
+                co.apply_dispositions([{'id': second['id'], 'disposition': 'fixed', 'evidence': 'not mine'}],
+                                      999, [second['id']], role)
+        self.assertNotIn(second['id'], co.open_findings_prompt())   # the persistent reviewer is not asked to close it
+        self.assertNotIn(second['id'], [row['id'] for row in co._reviewer_open_findings()])
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        # a second fix round on a new tree; its owner closes F002, the write replays EXEC + gate + FINISH + POLISH-Q
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, again.stdout, again.stdout + again.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == second['id']], ['fixed'])
+        first_fix, second_fix = state['lifecycle']['polish_fixes']
+        self.assertEqual((first_fix['epoch'], second_fix['epoch'], second_fix['base_tree']), (0, 0, first_fix['tree']))
+        self.assertEqual((state['lifecycle']['epoch'], state['lifecycle']['counts_epoch'],
+                          state['lifecycle']['specialist_counts']['code-reviewer']), (1, 1, 1))   # caps are per epoch
+
+    def test_a_fix_that_leaves_the_tree_unchanged_cannot_close_a_blocker(self):
+        tree = rc.git_snapshot(self.workspace)[0]
+        for candidate in (tree, 'tree-of-an-earlier-epoch-round'):   # first fix round; a later round on its own base
+            with self.subTest(candidate=candidate):
+                self.run_dir = self.root / ('first' if candidate == tree else 'later')
+                co = rc.Coordinator(self.args())
+                [finding] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
+                    {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'held blocker'}])
+                co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=candidate, fix_base=tree)
+                co.state.update(next='polish-recheck', phase='EXEC', delivered_review='')   # author_turn cleared it
+                with mock.patch.object(co, 'invoke', side_effect=AssertionError('re-reviewed an unchanged tree')):
+                    co.worktree_polish_recheck_turn()
+                self.assertEqual((co.state['status'], co.state['next']), ('HOLD', 'polish-fix'))
+                self.assertIn('POLISH-Q fix left the tree unchanged', co.state['hold_reason'])
+                self.assertIn('Delivered review:', co._author_prompt())   # the next fix round sees the blocker
+                self.assertEqual(json.loads(co.state['delivered_review'])['findings'][0]['id'], finding['id'])
+
+    def test_a_recheck_replay_keeps_the_owners_already_done(self):
+        co = rc.Coordinator(self.args())
+        tree = rc.git_snapshot(self.workspace)[0]
+        for name in ('code-reviewer', 'pr-test-analyzer'):
+            co.record_findings('specialist:' + name, 'POLISH-Q', 1, [
+                {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': name + ' blocker'}])
+        done = {'name': 'code-reviewer', 'sequence': 7}
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid='old', fix_base='old', recheck={
+            'tree': tree, 'owners': ['code-reviewer', 'pr-test-analyzer'], 'done': {'code-reviewer': done}})
+        calls = []
+        with mock.patch.object(co, 'materialize_review_context'), \
+                mock.patch.object(co, '_specialist_turn', side_effect=lambda name, *_: calls.append(name) or {'name': name}):
+            co.worktree_polish_recheck_turn()
+        self.assertEqual(calls, ['pr-test-analyzer'])
+        [fix] = co.state['lifecycle']['polish_fixes']
+        self.assertEqual((fix['recheck_turns'], fix['base_tree'], fix['tree']), ([done, {'name': 'pr-test-analyzer'}], 'old', tree))
+        self.assertIn('POLISH-Q blockers remain after the fix', co.state['hold_reason'])
+        self.assertEqual((co.state['lifecycle']['fix_base'], co.state['next']), (tree, 'polish-fix'))
+        self.assertNotIn('recheck', co.state['lifecycle'])
+
+    def test_the_fix_leg_checks_round_limit_and_owner_budget_before_the_author_writes(self):
+        co = rc.Coordinator(self.args())
+        co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
+            {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'held blocker'}])
+        co.state['lifecycle'].update(stage='POLISH-Q', specialist_counts={'code-reviewer': 3})
+        co.state['next'] = 'polish-fix'
+        with mock.patch.object(co, 'author_turn', side_effect=AssertionError('author wrote')), \
+                self.assertRaisesRegex(RuntimeError, 'POLISH-Q specialist budget exhausted: code-reviewer'):
+            co.worktree_polish_fix_turn()
+        co.record_findings('specialist:pr-test-analyzer', 'POLISH-Q', 1, [
+            {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'second owner'}])
+        co.state['lifecycle'].update(specialist_counts={}, polish_calls=30)   # each owner fits, both together do not
+        with mock.patch.object(co, 'author_turn', side_effect=AssertionError('author wrote')), \
+                self.assertRaisesRegex(RuntimeError, 'POLISH-Q call budget cannot cover the re-reviews'):
+            co.worktree_polish_fix_turn()
+        co.state['lifecycle']['polish_calls'] = 0
+        co.args.max_invocations = co.state['invocations_used'] + 2
+        with mock.patch.object(co, 'author_turn', side_effect=AssertionError('author wrote')), \
+                self.assertRaisesRegex(RuntimeError, 'the POLISH-Q fix needs at least 3 more invocations'):
+            co.worktree_polish_fix_turn()
+        co.state['exec_rounds'] = co.exec_round_limit()
+        with mock.patch.object(co, 'author_turn', side_effect=AssertionError('author wrote')):
+            co.worktree_polish_fix_turn()
+        self.assertEqual((co.state['status'], co.state['round_limit_hold']['hold_reason']),
+                         ('HOLD', 'EXEC round limit reached'))
+
+    def test_a_fix_author_that_stopped_before_routing_still_goes_to_the_owners(self):
+        co = rc.Coordinator(self.args())
+        co.state['lifecycle']['stage'] = 'POLISH-Q'
+        co.state.update(next='reviewer', phase='EXEC')   # author_turn saved next=reviewer, then the process died
+        with mock.patch.object(co, 'reviewer_turn', side_effect=AssertionError('persistent reviewer')), \
+                mock.patch.object(co, 'worktree_polish_recheck_turn', side_effect=lambda: co.hold('rechecked')):
+            self.assertEqual(co._drive_loop(), 'HOLD')
+        self.assertEqual((co.state['next'], co.state['hold_reason']), ('polish-recheck', 'rechecked'))
+
+    def test_a_fixed_specialist_blocker_replays_exec_and_gate_then_finish_and_polish_q(self):
+        env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [finding] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
+        self.assertEqual(finding['status'], 'fixed')
+        first, second = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((first['status'], first['epoch'], second['status'], second['epoch']), ('HOLD', 0, 'READY', 1))
+        [fix] = state['lifecycle']['polish_fixes']
+        self.assertEqual(([row['name'] for row in fix['recheck_turns']], fix['tree']), (['code-reviewer'], second['candidate_oid']))
+        between = [(row['role'], row['phase']) for row in state['turns']
+                   if fix['recheck_turns'][0]['sequence'] < row['sequence'] < second['specialist_turns'][0]['sequence']]
+        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):   # the write replays EXEC and gate
+            self.assertIn(step, between)
+        self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())
+
+    def test_a_same_tree_re_review_of_a_held_blocker_is_refused(self):
+        co = rc.Coordinator(self.args())
+        tree = rc.git_snapshot(self.workspace)[0]
+        [finding] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
+            {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'held blocker'}])
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=tree, receipts=[
+            {'stage': 'POLISH-Q', 'status': 'HOLD', 'epoch': 0, 'candidate_oid': tree, 'request_id': 'w-POLISH-Q-0-0'}])
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('re-reviewed the same tree')), \
+                self.assertRaisesRegex(RuntimeError, 'need a fix on a new tree, not a re-review: ' + finding['id']):
+            co.worktree_polish_turn()
 
     def test_a_specialist_without_tool_calls_is_retried_once_then_holds(self):
         marker = self.root / 'no-tools-once'
@@ -306,23 +448,25 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_a_polish_q_replay_after_a_mid_stage_hold_reuses_completed_specialists(self):
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_NO_TOOLS': 'silent-failure-hunter'}
-        held = self.run_coordinator('--lifecycle-mode', 'on', env=env)
+        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn('HOLD: specialist silent-failure-hunter made no tool calls after one retry', held.stdout,
                       held.stdout + held.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(sorted(state['lifecycle']['specialist_done']), ['code-reviewer', 'python-reviewer'])
         [blocker] = [row['id'] for row in state['finding_ledger'] if row['status'] == 'open']
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')   # the owner is not asked again on this tree
-        self.assertIn('HOLD: POLISH-Q open blocking findings: ' + blocker, again.stdout, again.stdout + again.stderr)
+        first_code = next(row['sequence'] for row in state['turns'] if row['phase'] == 'POLISH-Q' and
+                          'Role: specialist code-reviewer,' in (self.run_dir / 'evidence' /
+                          f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text())
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        self.assertIn('HOLD: ' + wl.DOCS_PENDING, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
         state = json.loads((self.run_dir / 'state.json').read_text())
-        prompts = [(self.run_dir / 'evidence' / f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text()
-                   for row in state['turns'] if row['phase'] == 'POLISH-Q']
-        self.assertEqual(sum('Role: specialist code-reviewer,' in text for text in prompts), 1)
-        self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == blocker], ['open'])
-        [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
-        self.assertEqual((polish['status'], polish['request_id'], [row['name'] for row in polish['specialist_turns']]),
-                         ('HOLD', 'w-POLISH-Q-0-0', polish['specialists']))
-        self.assertNotIn('specialist_done', state['lifecycle'])
+        attempt = next(row for row in state['lifecycle']['receipts'] if row['request_id'] == 'w-POLISH-Q-0-0')
+        self.assertEqual((attempt['status'], [row['name'] for row in attempt['specialist_turns']]),
+                         ('HOLD', attempt['specialists']))
+        self.assertEqual(next(row['sequence'] for row in attempt['specialist_turns'] if row['name'] == 'code-reviewer'),
+                         first_code)   # the completed specialist was reused, not re-dispatched, in the replay
+        self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == blocker], ['fixed'])
+        self.assertEqual((state['lifecycle']['epoch'], state['lifecycle']['specialist_counts']['silent-failure-hunter']), (1, 1))
 
     def test_skip_quality_polish_records_a_no_op_receipt(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', '--skip-quality-polish', 'true')
@@ -343,6 +487,19 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                         self.assertRaisesRegex(RuntimeError, 'POLISH-Q specialist budget exhausted: code-reviewer'):
                     co.worktree_polish_turn()
 
+    def test_specialist_reservations_are_reconciled_and_the_budget_is_preflighted(self):
+        co = rc.Coordinator(self.args())
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=rc.git_snapshot(self.workspace)[0])
+        with mock.patch.object(co, 'invoke', side_effect=RuntimeError('invocation limit reached')), \
+                self.assertRaisesRegex(RuntimeError, 'invocation limit reached'):
+            co.worktree_polish_turn()   # refused before any dispatch: the reservation is given back
+        self.assertEqual((co.state['lifecycle']['specialist_counts']['code-reviewer'], co.state['lifecycle']['polish_calls']), (0, 0))
+        co.state['lifecycle']['pending'] = None
+        co.args.max_invocations = co.state['invocations_used'] + 2
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched without budget')), \
+                self.assertRaisesRegex(RuntimeError, 'POLISH-Q needs at least 3 more invocations'):
+            co.worktree_polish_turn()
+
     def test_accept_is_refused_for_worktree_runs_even_on_override_paths(self):
         co = rc.Coordinator(self.args())
         for status, kind in (('DONE', None), ('HOLD', 'rejection_limit')):
@@ -352,14 +509,19 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                     co.accept()
                 self.assertNotEqual(co.state['status'], 'ACCEPTED')
 
-    def test_open_blocker_at_convergence_holds_without_entering_finish(self):
+    def test_open_blocker_at_convergence_starts_a_repair_round(self):
         co = rc.Coordinator(self.args())
         co.state['gate_ran'] = True
-        with mock.patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F007'}]):
-            self.assertEqual(co.start_polish_or_done(), 'HOLD')
-        self.assertIn('open blocking findings: F007', co.state['hold_reason'])
-        self.assertFalse(co.state['gate_ran'])   # the repair convergence runs its own gate
+        with mock.patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F007', 'summary': 'gate blocker'}]):
+            self.assertEqual(co.start_polish_or_done(), 'ACTIVE')   # the author repairs; reviewer and a new gate follow
+        self.assertEqual((co.state['next'], co.state['phase'], co.state['gate_ran']), ('author', 'EXEC', False))
+        self.assertEqual(json.loads(co.state['delivered_review'])['findings'][0]['id'], 'F007')
         self.assertEqual((co.state['lifecycle']['stage'], co.state['lifecycle']['candidate_oid']), ('EXEC', None))
+        co.state.update(gate_ran=True, exec_rounds=co.exec_round_limit())
+        with mock.patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F007', 'summary': 'gate blocker'}]):
+            self.assertEqual(co.start_polish_or_done(), 'HOLD')
+        self.assertEqual((co.state['hold_reason'], co.state['round_limit_hold']['hold_reason']),
+                         ('EXEC round limit reached', 'EXEC round limit reached'))
 
     def test_saved_config_paths_still_refuse_waivers_and_pre_lifecycle_states(self):
         rc.Coordinator(self.args())

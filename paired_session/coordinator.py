@@ -111,7 +111,8 @@ def resolve_exec_turn_timeout(value, general_timeout):
     if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
-ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate')
+ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate',
+                       'EXEC round limit reached after a FINISH write')
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -3271,10 +3272,14 @@ class Coordinator:
             self._freeze_fake_exec_source()
             return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
         if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
-            if blocking := self.blocking_open_findings():
-                self.state['gate_ran'] = False   # the repair is a new convergence and needs its own gate
-                return self.hold('worktree lifecycle refuses FINISH with open blocking findings: ' +
-                                 ', '.join(row['id'] for row in blocking))
+            if blocking := self.blocking_open_findings():   # repair round: author fix, then reviewer and a new gate
+                self.state['gate_ran'] = False
+                if self.state['exec_rounds'] >= self.exec_round_limit():
+                    return self.round_limit_hold('EXEC round limit reached')
+                self.state.update(next='author', phase='EXEC',
+                                  delivered_review=worktree_lifecycle.delivered_findings('convergence', blocking))
+                self.save()
+                return 'ACTIVE'
             reviewed = git_snapshot(self.workspace)[0]
             reviewer, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
             if {reviewer.get('snapshot_before'), gate.get('snapshot_before')} != {reviewed}:
@@ -3506,8 +3511,13 @@ class Coordinator:
                     'the exact test commands below. Do not modify files or use Git through the shell.')
         return 'Use Read/Grep/Glob on context and workspace; Git through Bash is intentionally unavailable.'
 
+    def _reviewer_open_findings(self) -> list[dict]:
+        """In a W run the persistent reviewer sees only findings it may dispose; owners close their own."""
+        rows = self.open_findings()
+        return [row for row in rows if not row.get('owner_role')] if worktree_lifecycle.is_worktree(self.state) else rows
+
     def open_findings_prompt(self) -> str:
-        findings = self.open_findings()
+        findings = self._reviewer_open_findings()
         if not findings:
             return 'Open finding ledger: none. Return an empty prior_findings array.\n' + APPROVE_CONVERSION_NOTE
         rows = '\n'.join(f"- {finding['id']}: {finding['summary']}" for finding in findings)
@@ -3961,7 +3971,7 @@ class Coordinator:
         if self._fake_lifecycle:
             receipt['run_id'] = self.run_dir.name
         if role == 'reviewer':
-            receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
+            receipt['open_finding_ids'] = [row['id'] for row in self._reviewer_open_findings()]
         if rejection:
             receipt['rejection_id'] = rejection['id']
             receipt['rejection_sha256'] = rejection['sha256']
@@ -4256,12 +4266,17 @@ class Coordinator:
         base = self.state['lifecycle'].get('writer_git')
         if not base:
             raise RuntimeError('FINISH request is in flight without a recorded git baseline; inspect, then abort')
-        def check_git():
+        def check_git():   # a violation discards every FINISH turn since the baseline: none is ever reused
             if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
+                for turn in self.state['turns']:
+                    if turn.get('phase') == 'FINISH' and turn.get('sequence', 0) > base['sequence']:
+                        turn.setdefault('discarded', 'git guard')
+                self.save()
                 raise RuntimeError('finisher changed HEAD, refs or the index; restore the recorded baseline or abort')
         check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
         recorded = next((turn for turn in reversed(self.state['turns'])
                          if turn.get('role') == 'author' and turn.get('phase') == 'FINISH' and not turn.get('error')
+                         and not turn.get('discarded')
                          and turn.get('sequence', 0) > base['sequence'] and isinstance(turn.get('answer'), dict)), None)
         plan = (self.context / 'plan.md').read_text()
         docs_file = self.state['config'].get('docs_file')
@@ -4283,9 +4298,65 @@ class Coordinator:
             self.state['exec_rounds'] += 1
             self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
             if self.state['exec_rounds'] > self.exec_round_limit():
-                self.hold('EXEC round limit reached after a FINISH write')
+                self.round_limit_hold('EXEC round limit reached after a FINISH write')
         else:
             self.state['next'] = 'polish-q'
+        self.save()
+
+    def _changed_paths(self) -> list[str]:
+        return [*self._git(['diff', '--name-only', '--diff-filter=d', 'HEAD']).splitlines(),
+                *self._git(['ls-files', '--others', '--exclude-standard']).splitlines()]
+
+    def worktree_polish_fix_turn(self) -> None:
+        """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn)."""
+        if self.state['exec_rounds'] >= self.exec_round_limit():
+            self.round_limit_hold('EXEC round limit reached')
+            return
+        owners = self._blocker_owners()   # every owner's re-review must fit before the author writes
+        for name in owners:
+            self._specialist_budget(name)
+        if self.state['lifecycle'].get('polish_calls', 0) + len(owners) + 1 > budget_policy.BUDGET_CAPS['POLISH-Q'][0]:
+            raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
+        if 1 + len(owners) > self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']:
+            raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
+                               'raise --max-invocations or abort')
+        self.author_turn()
+        if self.state['status'] == 'ACTIVE':
+            self.state['next'] = 'polish-recheck'
+            self.save()
+
+    def worktree_polish_recheck_turn(self) -> None:
+        """The owning specialists re-review their blockers on the fixed tree; the write then replays EXEC + gate."""
+        life, tree = self.state['lifecycle'], git_snapshot(self.workspace)[0]
+        if tree == life['fix_base']:   # the tree the blockers were raised or left open on
+            self.state.update(next='polish-fix', delivered_review=worktree_lifecycle.delivered_findings(
+                'polish-q', self.blocking_open_findings()))   # author_turn cleared it; the next fix needs it
+            self.hold('POLISH-Q fix left the tree unchanged; only a fix on a new tree may close a specialist blocker')
+            return
+        progress = life.get('recheck')
+        if not progress or progress['tree'] != tree:   # a replay on the same tree keeps the owners already done
+            progress = life['recheck'] = {'tree': tree, 'owners': self._blocker_owners(), 'done': {}}
+            self.save()
+        paths = self._changed_paths()
+        self.materialize_review_context()
+        for name in progress['owners']:
+            if name not in progress['done']:
+                progress['done'][name] = self._specialist_turn(name, paths, tree)
+                self.save()
+        author = next((turn['sequence'] for turn in reversed(self.state['turns']) if turn.get('role') == 'author'
+                       and turn.get('phase') == 'EXEC' and not turn.get('error')), None)
+        life.setdefault('polish_fixes', []).append({
+            'epoch': life['epoch'], 'base_tree': life['fix_base'], 'tree': tree, 'author_sequence': author,
+            'recheck_turns': [progress['done'][name] for name in progress['owners']]})
+        life.pop('recheck')
+        if remaining := self.blocking_open_findings():
+            life['fix_base'] = tree
+            self.state.update(next='polish-fix', delivered_review=worktree_lifecycle.delivered_findings('polish-q', remaining))
+            self.hold('POLISH-Q blockers remain after the fix: ' + ', '.join(row['id'] for row in remaining))
+        else:   # the fix wrote: a new EXEC convergence (reviewer, then gate), then FINISH and POLISH-Q again
+            life.pop('fix_base')
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
         self.save()
 
     def worktree_polish_turn(self) -> None:
@@ -4302,12 +4373,14 @@ class Coordinator:
             life['specialist_done'] = {}
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
-        paths = [*self._git(['diff', '--name-only', '--diff-filter=d', 'HEAD']).splitlines(),
-                 *self._git(['ls-files', '--others', '--exclude-standard']).splitlines()]
+        paths = self._changed_paths()
         names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(paths)
+        done = self.state['lifecycle']['specialist_done']
+        if (need := len([name for name in names if name not in done])) > (
+                self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
+            raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; raise --max-invocations or abort')
         if names:
             self.materialize_review_context()
-        done = self.state['lifecycle']['specialist_done']
         for name in names:
             if name not in done:
                 done[name] = self._specialist_turn(name, paths, request['candidate_oid'])
@@ -4319,7 +4392,11 @@ class Coordinator:
                    'skipped': not names}   # skip_quality_polish: a no-op receipt
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
         self.state['lifecycle'].pop('specialist_done', None)
-        if blocking:
+        if blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
+            self.state['lifecycle']['fix_base'] = tree
+            self.state.update(phase='EXEC', next='polish-fix',
+                              delivered_review=worktree_lifecycle.delivered_findings('polish-q', blocking))
+        elif blocking:
             self.hold('POLISH-Q open blocking findings: ' + ', '.join(row['id'] for row in blocking))
         elif tree != request['candidate_oid']:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
@@ -4328,8 +4405,22 @@ class Coordinator:
             self.state['next'] = 'docs'
         self.save()
 
-    def _specialist_turn(self, name: str, paths: list[str], tree: str) -> dict:
+    def _blocker_owners(self) -> list[str]:
+        return sorted({row['owner_role'].split(':', 1)[1] for row in self.blocking_open_findings()
+                       if row.get('owner_role', '').startswith('specialist:')})
+
+    def _specialist_budget(self, name: str) -> dict:
+        """Room for two dispatches (invoke may retry); legacy 3.5.2 caps one Step 3.5 run, here one epoch."""
         life, caps = self.state['lifecycle'], budget_policy.BUDGET_CAPS
+        if life.setdefault('counts_epoch', life['epoch']) != life['epoch']:
+            life.update(counts_epoch=life['epoch'], specialist_counts={})
+        counts = life.setdefault('specialist_counts', {})
+        if life.get('polish_calls', 0) + 2 > caps['POLISH-Q'][0] or counts.get(name, 0) + 2 > caps['specialist'][0]:
+            raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)
+        return counts
+
+    def _specialist_turn(self, name: str, paths: list[str], tree: str) -> dict:
+        life = self.state['lifecycle']
         path = HERE.parent / 'agents' / (name + '.md')
         try:
             raw = _read_role_source(path)
@@ -4352,25 +4443,25 @@ class Coordinator:
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.'])
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned, protocol) +
-                  opv.prompt_block(self, tree, atomic_json, 'reviewer'))
+                  opv.prompt_block(self, tree, atomic_json))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
-            counts = life.setdefault('specialist_counts', {})
-            if life.get('polish_calls', 0) + 2 > caps['POLISH-Q'][0] or counts.get(name, 0) + 2 > caps['specialist'][0]:
-                raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)   # invoke may dispatch twice
+            counts = self._specialist_budget(name)
             counts[name] = counts.get(name, 0) + 1
             life['polish_calls'] = life.get('polish_calls', 0) + 1
             self.save()
             before = self.state['sequence']
             try:
                 result = self.invoke('reviewer', 'POLISH-Q', prompt, review_schema(), fresh=True)
-            finally:   # invoke's own protocol retry is a dispatch too, also when it ends in an error
-                if (extra := self.state['sequence'] - before - 1) > 0:
-                    counts[name] += extra
-                    life['polish_calls'] += extra
+            finally:   # reconcile the reservation: protocol retries add, refused or refunded launches give back
+                refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
+                               if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
+                if delta := self.state['sequence'] - before - refunded - 1:
+                    counts[name] += delta
+                    life['polish_calls'] += delta
                     self.save()
             turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
             if turn.get('snapshot_before') != tree:
-                raise RuntimeError(f'specialist {name} reviewed a tree other than the FINISH-approved one')
+                raise RuntimeError(f'specialist {name} reviewed a tree other than the one under review')
             if turn.get('observed_tool_calls'):
                 break
             turn['discarded'] = 'no tool calls'
@@ -4378,7 +4469,8 @@ class Coordinator:
             if attempt == 2:
                 raise RuntimeError(f'specialist {name} made no tool calls after one retry')
         answer = result['answer']
-        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not answer['full_review']):
+        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not answer['full_review'] and not any(
+                row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
             raise RuntimeError(f"specialist {name} returned {answer['status']} without a usable review")
         findings = worktree_lifecycle.normalized_findings(name, answer['full_review'])   # validate before any ledger write
         if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
@@ -6255,6 +6347,9 @@ class Coordinator:
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         while self.state['status'] == 'ACTIVE':
             if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
+            if (self.state['next'] == 'reviewer' and worktree_lifecycle.is_worktree(self.state) and
+                    self.state['lifecycle']['stage'] == 'POLISH-Q'):   # the fix author saved before polish-recheck
+                self.state['next'] = 'polish-recheck'
             try:
                 if self.state['next'] == 'author':
                     self.author_turn()
@@ -6266,6 +6361,10 @@ class Coordinator:
                     self.worktree_finish_turn()
                 elif self.state['next'] == 'polish-q' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_polish_turn()
+                elif self.state['next'] == 'polish-fix' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_polish_fix_turn()
+                elif self.state['next'] == 'polish-recheck' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_polish_recheck_turn()
                 elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
                     return self.hold(worktree_lifecycle.DOCS_PENDING)
                 else:

@@ -1,8 +1,8 @@
 # E2E lifecycle design 6: worktree lifecycle W (D12 legacy parity)
 
 Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
-W1b runs FINISH; W2a-1 runs the POLISH-Q specialists and HOLDs before DOCS (the POLISH-Q fix leg is W2a-2;
-the simplifier and test-consolidation writers are not implemented and not scheduled in W2a); the remaining
+W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg and HOLDs before DOCS (the simplifier
+and test-consolidation writers are not implemented and not scheduled in W2a); the remaining
 stages arrive in W2b–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
@@ -41,7 +41,16 @@ depends on it.
   never start a replay loop.
 - Adopted (doc 1 §Gate): with lifecycle on, EXEC convergence routes to FINISH and never enters the legacy
   `start_polish_or_done` advisory round. Legacy `--polish-round on` maps to POLISH-Q; open advisory
-  findings feed POLISH-Q, whose fix leg (W2a-2) reuses the existing polish author/reviewer turn implementations.
+  findings feed POLISH-Q. Implemented deviation (W2a-2): the fix leg reuses the persistent EXEC author turn
+  with the open specialist blockers as its delivered review; the owning specialists then re-review on the
+  new tree (only an owner closes its finding), and the write replays EXEC review and gate, then FINISH and
+  POLISH-Q in the next epoch. A blocker left after the re-review HOLDs; resume runs another fix round, and
+  a fix that leaves the tree unchanged since the last review HOLDs. Specialist counts are per epoch
+  (legacy 3.5.2 caps one Step 3.5 run): 4 per specialist with room for two dispatches, so an owner gets
+  its review plus up to two re-reviews per epoch, checked before the author writes. POLISH-Q stays capped
+  at 32 calls per run, and every fix is an EXEC author round under the EXEC round limit.
+- Adopted (W2a-2): blocking findings still open at EXEC convergence start an EXEC repair round (author,
+  reviewer, a new gate) up to the EXEC round limit, which HOLDs with the RLO-capable round-limit reason.
 - Replaced: candidate materialization and OS separation (docs 2a–4) by the live worktree; the same-vendor
   rejection by ADR-11 D-8; Compass CLOSE by no close (ADR-11 D-3).
 
@@ -66,7 +75,7 @@ use the cheap model tier; W uses the configured reviewer model. Legacy 3.5.2 rep
 cap; W HOLDs.
 Specialists get the EXEC reviewer protocol (program review views, changed paths, allowed commands,
 verified claims); a body command outside the reviewer allowlist is unavailable, not a failure. Each
-specialist costs at least one invocation (two with a protocol or tool-use retry), so a W run needs a
+specialist costs at least one invocation (up to four with protocol and tool-use retries), so a W run needs a
 larger `--max-invocations` than the default 25, e.g. 60.
 
 **SECURITY preflight input.** `scripts/security_preflight.py` reads a W01 `delivery-manifest` document
