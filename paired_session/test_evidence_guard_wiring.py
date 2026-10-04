@@ -4,6 +4,8 @@ pre-v2.9.7 substring guard exactly as before, and the receipt counts those fallb
 context (Popen cwd, child env without secret-named variables, writable roots, configured commands); Codex keeps a command's workdir;
 admission refuses only a configured command that names a protected path."""
 import json
+import shlex
+import sys
 import unittest
 from unittest import mock
 
@@ -230,9 +232,10 @@ class EvidenceGuardWiringTests(unittest.TestCase):
             'python3 -m unittest', 'python3 -c pass', "/bin/bash -c 'python3 -m unittest && true'", 'cat "$(x)"', 'for f in a; do :; done']))
         self.assertIn('names a protected path (evidence directory)',
                       rc.configured_command_issue(self.h.workspace, self.h.run_dir, ['npm test', f'/bin/bash {self.evidence}/x.sh']))
-        result = self.h.run_coordinator('--test-command', 'pytest > ../run/evidence/out')
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("REFUSED: configured command 'pytest > ../run/evidence/out' names a protected path", result.stdout)
+        command = shlex.quote(sys.executable) + ' -m unittest > ../run/evidence/out'   # an executable every runner has (no PATH lookup)
+        result = self.h.run_coordinator('--test-command', command)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(f'REFUSED: configured command {command!r} names a protected path', result.stdout)
         self.assertFalse((self.h.run_dir / 'state.json').exists())
 
     def test_admission_of_a_restored_run_checks_its_saved_commands(self):   # eg-wire R1 LOW: the CLI args keep their defaults
