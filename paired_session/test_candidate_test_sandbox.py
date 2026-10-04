@@ -9,6 +9,9 @@ import unittest
 from unittest import mock
 from paired_session import candidate_test_sandbox as sandbox
 
+DARWIN_SANDBOX = unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').is_file(),
+                                     'runs the macOS candidate-test sandbox (sandbox-exec)')
+
 
 class CandidateSandboxGuardTests(unittest.TestCase):
     def setUp(self):
@@ -58,7 +61,7 @@ class CandidateSandboxGuardTests(unittest.TestCase):
                         spawn.assert_not_called()
 
     def test_broad_relative_and_spoofed_home_scopes_refuse(self):
-        for scope in ('.', '/private', '/tmp', tempfile.gettempdir()):
+        for scope in ('.', '/tmp', tempfile.gettempdir()) + (('/private',) if Path('/private').is_dir() else ()):   # macOS tmp parent
             with self.subTest(scope=scope), mock.patch.dict(os.environ, {'FAKE_CODEX_TEST_ROOT': scope}):
                 with mock.patch.object(sandbox.spine, 'fake_dispatch_guard', return_value=True):
                     with mock.patch.object(sandbox.subprocess, 'Popen') as spawn:
@@ -84,6 +87,7 @@ class CandidateSandboxGuardTests(unittest.TestCase):
                         sandbox.run(self.co, None, cwd=self.root, env={}, timeout=5)
                     spawn.assert_not_called()
 
+    @DARWIN_SANDBOX
     def test_killpg_eperm_on_exited_group_returns_result(self):
         calls = []
         def killpg(pid, sig):
@@ -105,6 +109,7 @@ class CandidateSandboxGuardTests(unittest.TestCase):
                     with self.assertRaisesRegex(error, text):
                         sandbox.run(self.co, None, cwd=self.root, env={}, timeout=10)
 
+    @DARWIN_SANDBOX
     def test_executed_candidate_control_receives_eof_and_still_writes_inside(self):
         with mock.patch.dict(os.environ, {'FAKE_CODEX_TEST_ROOT': str(self.base)}):
             result = sandbox.run(self.co, [sys.executable, '-c',

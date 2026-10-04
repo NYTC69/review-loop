@@ -1,9 +1,12 @@
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 from paired_session import descriptor_mutation as mutation
+
+RENAMEATX = unittest.skipUnless(sys.platform == 'darwin', 'moves with the macOS-only renameatx_np')
 
 
 class DescriptorMutationTests(unittest.TestCase):
@@ -23,6 +26,7 @@ class DescriptorMutationTests(unittest.TestCase):
     def replace(self):
         return mutation.mutate(self.root, 'item', self.allowed, ('100644', b'new'), self.store)
 
+    @RENAMEATX
     def test_normal_replace_create_delete_and_retained_originals(self):
         record = self.replace()
         self.assertEqual(self.target.read_bytes(), b'new')
@@ -34,6 +38,7 @@ class DescriptorMutationTests(unittest.TestCase):
         mutation.mutate(self.root, 'nested/new', [None], ('100644', b'created'), self.store)
         self.assertEqual((self.root / 'nested/new').read_bytes(), b'created')
 
+    @RENAMEATX
     def test_leaf_symlink_and_hardlink_swaps_refuse_without_overwriting_foreign_bytes(self):
         for kind in ('symlink', 'hardlink'):
             with self.subTest(kind=kind):
@@ -61,6 +66,7 @@ class DescriptorMutationTests(unittest.TestCase):
                 self.assertEqual(self.target.read_bytes(), b'foreign')
                 self.assertEqual((self.base / ('reviewed-' + kind)).read_bytes(), b'reviewed')
 
+    @RENAMEATX
     def test_directory_swap_writes_only_the_held_directory_inode(self):
         nested = self.root / 'nested'
         nested.mkdir()
@@ -83,6 +89,7 @@ class DescriptorMutationTests(unittest.TestCase):
         self.assertEqual((detached / 'item').read_bytes(), b'new')
         self.assertEqual((nested / 'item').read_bytes(), b'foreign')
 
+    @RENAMEATX
     def test_new_foreign_entry_between_moves_is_never_replaced(self):
         def collide(source_fd, source, target_fd, target):
             if source == 'new' and target == 'item':
