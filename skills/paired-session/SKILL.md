@@ -60,6 +60,18 @@ adds only the Claude Code host rules:
   Never run such a command in a foreground Bash call or extend the foreground
   timeout; long model turns exceed tool limits and can orphan a child CLI. The
   backstop stops the background command.
+- Headless sessions: a `claude -p` session exits when its turn ends and kills
+  its background tasks, so ending the turn to wait for the notification kills
+  the coordinator mid-turn. Use an interactive session. When you know you run
+  headless (the user or the prompt says so), do not end the turn while a
+  coordinator command runs: poll in bounded foreground calls, reading only
+  `status` and `active.phase` from `RUN_DIR/state.json` (or `status --brief`),
+  until the background command itself has exited (the host's task-output tool
+  if it has one; otherwise `pgrep -f -- "--run-di[r] <RUN_DIR>"` prints nothing; the
+  bracket keeps pgrep from matching its own shell),
+  then inspect its final result as above. Recover a run cut off this way by the
+  shared contract's uncertain-turn rule: check the turn's pid and phase, and
+  ask the user before any `--retry-uncertain`.
 - Default (efficient): one Bash call with the `run` block below. Strict: the
   probe block first, then the `run` block as a second Bash call.
 
