@@ -5135,9 +5135,13 @@ class Coordinator:
                            'author changed git control files: ' + ', '.join(control_changed) if control_changed else '')
         context_after = directory_digest(self.context)
         receipt['context_after'] = context_after
+        snapshot_failure = ''
         if control_problem: after = None   # D1: no further git call in this workspace after the author touched its git control files
         else:
-            after, after_manifest = git_snapshot(snapshot_workspace)
+            try: after, after_manifest = git_snapshot(snapshot_workspace)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:   # eff-e: a read-only turn may have broken the index
+                if recorded is None: raise
+                after, after_manifest, snapshot_failure = None, [], f'the post-turn workspace snapshot failed ({type(exc).__name__}: {exc})'
             receipt['snapshot_after'] = after
             atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
@@ -5146,14 +5150,19 @@ class Coordinator:
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
                 raise ValueError('author changed HEAD or the branch: a commit, reset or checkout is not allowed in a paired-session run')
             # D-EFF category A: undo first, so a failed or rejected read-only turn is undone too; raised after the other checks
-            if role != 'author' and not allow_mutation_report and self._readonly_changed(snapshot_workspace, recorded, before, after):
+            if snapshot_failure:   # unverifiable: record the pre-turn baseline; dispatch and accept refuse until it matches again
+                voided = self._void_readonly_turn(role, receipt, snapshot_workspace, {**recorded, 'error': snapshot_failure}, keep, prefix, before)
+            elif role != 'author' and not allow_mutation_report and self._readonly_changed(snapshot_workspace, recorded, before, after):
                 voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
+            if recorded and (note := recorded.get('ignored_note')): receipt['readonly_ignored'] = note
+            touched = readonly_guard.ignored_changes(snapshot_workspace, recorded) if recorded and not snapshot_failure else []
+            if touched: receipt['voided'] = {**receipt.get('voided', {}), 'ignored_changed': touched[:50]}   # eff-e: no ignored content is kept
             if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR'):   # b295-f1: listed in the receipt before it is removed
                 receipt['scratch_entries'], linked = scratch_listing(Path(env_overrides['TMPDIR']))
                 if linked:   # a hard link there could write through to a run-dir file on the same volume
                     raise ValueError(f'{role} left a hard link in its scratch temp root: ' + ', '.join(linked))
-                if (touched := sorted(path for path, mark in watched.items() if after_inodes.get(path) != mark)):   # a link made and removed within the turn
-                    raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(touched[:5]))
+                if (run_dir_touched := sorted(path for path, mark in watched.items() if after_inodes.get(path) != mark)):   # a link made and removed within the turn
+                    raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(run_dir_touched[:5]))
             if vendor_config_before is not None:
                 config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
                 changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace])
@@ -5218,6 +5227,9 @@ class Coordinator:
                 raise ValueError(f'{role} mutated coordinator context outside workspace')
             if role == 'author' and phase == 'PLAN' and before != after:
                 raise ValueError('author mutated workspace during PLAN')
+            if touched:   # after the other checks, like the void below, so a more specific reason of this turn comes first
+                raise ValueError(f'{role} changed ignored files in the workspace, which the coordinator does not restore (the verdict '
+                                 f'is void; check them by hand): {", ".join(touched[:20])}')
             if voided is not None:
                 raise voided
             if recorded is not None: shutil.rmtree(keep, ignore_errors=True)   # a clean read-only turn needs no undo record
@@ -8428,8 +8440,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     unknown = (set(values) - CONFIGURABLE_DESTS) | {k for k in values if k in OPERATOR_ONLY_DESTS or k.startswith('accept_')}
     if unknown:
         raise ValueError('unsupported paired-session config keys: ' + ', '.join(sorted(unknown)))
-    if 'safety_mode' in values and (not known.config or values['safety_mode'] not in ('efficient', 'strict')):   # D-EFF
-        raise ValueError('safety_mode is set only by --strict or an operator --config profile (efficient or strict), never by the workspace config')
+    if 'safety_mode' in values and (not known.config or writable_profile or values['safety_mode'] not in ('efficient', 'strict')):   # D-EFF
+        raise ValueError('safety_mode is set only by --strict or an operator --config profile (efficient or strict) outside the workspace, '
+                         'run dir and author temp, never by the workspace config')
     explicit = set()
     for action in p._actions:
         if action.dest in CONFIGURABLE_DESTS and any(

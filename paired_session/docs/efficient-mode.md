@@ -80,10 +80,29 @@ If the restore verifies, the turn is re-dispatched once. If it does not, or the 
 
 **Cost:** one `git add -A` into a temporary index per read-only turn. It is stat-cached, so a large repository with few changes stays fast.
 
-**Not covered:** ignored files (as today), submodule contents, refs other than HEAD and its branch, and files outside the workspace.
-A change of the executable bit alone is detected and undone since lane A rel210-fixA (the snapshot marks executable files; with
-`core.fileMode` false git records no mode, so such an undo does not verify and the run holds). A workspace below the repository top
-is not a case: the coordinator requires `.git` in the workspace.
+**Not covered:** the content of ignored files (it is never kept or restored), submodule contents, refs other than HEAD and its
+branch, and files outside the workspace. A change of the executable bit alone is detected and undone since lane A rel210-fixA (the
+snapshot marks executable files; with `core.fileMode` false git records no mode, so such an undo does not verify and the run holds).
+A workspace below the repository top is not a case: the coordinator requires `.git` in the workspace.
+
+**Ignored entries (eff-e).** The read-only sandbox is the first barrier; this is the second line. The check runs in both modes.
+- `capture()` records the lstat metadata (type, size, mtime_ns, mode, symlink target) of each ignored entry exactly as
+  `git ls-files -o -i --exclude-standard --directory` lists it, so a collapsed directory is one entry.
+- An entry that changed or is gone after the turn voids the verdict and HOLDs with the changed paths. Nothing is restored, and
+  there is no re-dispatch.
+- **Residuals:** a change inside a collapsed ignored directory that leaves the directory entry itself unchanged, and a new ignored
+  file outside the recorded entries, are not detected.
+- The capture is bounded (`IGNORED_LIMIT` entries, `IGNORED_SECONDS`). Past either bound the receipt says `ignored set too large:
+  not checked`.
+- A CLI home or cache the CLI writes to inside an ignored workspace path (for example `CODEX_HOME`, `__pycache__`, or a test
+  runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write) HOLDs every
+  read-only turn, in both modes. Keep such homes and caches outside the workspace.
+
+**An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The
+unrestored record keeps the pre-turn baseline, and dispatch and accept refuse until the workspace matches it again.
+
+**Mode selection (eff-e).** A `--config` profile under the workspace, run dir or author temp cannot set `safety_mode`, either at
+creation or through the probe-only upgrade.
 
 **A failed undo (eff-c)** leads the HOLD reason ("read-only turn changed the workspace and it could not be restored; manual restore
 needed"), whatever else the turn tripped, and is recorded as `state['unrestored_readonly_turn']`. `run`, `resume`, `reject`,
