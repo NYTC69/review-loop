@@ -81,8 +81,12 @@ CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex di
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
     try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
-# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
-VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
+CODEX_DEFAULT_MODEL = 'gpt-6.1-sol'   # ADR-11 (owner 2026-10-04); runs keep the models frozen in their state
+CODEX_DEFAULT_MODEL_MIN_CLI = (0, 159, 2)
+# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2; 0.160.0: the owner's real
+# permission-probe runs with v2.9.6 on that CLI, p296.sh P1/P2 PASS (.compass/results/2026-10-04_daily-report.md T1), after the
+# b296-f1e default_permissions profiles were checked there with `codex sandbox` and `codex debug prompt-input`; supervisor 2026-10-04 16:00).
+VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0', 'codex-cli 0.160.0'})
 OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
 UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
@@ -1369,7 +1373,7 @@ def progress_line(row: dict) -> str:
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
-        if not restores_run(args): validate_role_models(args)
+        if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -6890,8 +6894,8 @@ def refuse_foreign_gate_model(args: argparse.Namespace) -> None:
 
 
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
-    """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
+    """Apply the vendor default model (ADR-11; ADR-9 keeps the operator's choice) to every role without an explicit model."""
+    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': CODEX_DEFAULT_MODEL}
     refuse_foreign_gate_model(args)
     if getattr(args, 'gate_vendor_source', None) is None:
         args.gate_vendor_source = 'default' if getattr(args, 'gate_vendor', None) is None else 'operator'
@@ -6902,7 +6906,30 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     for key, vendor in role_vendors.items():
         if getattr(args, key) is None:
             setattr(args, key, model_for_vendor[vendor])
+            if vendor == 'codex':   # ADR-11: these roles need a CLI that runs the default model
+                args.defaulted_codex_models = getattr(args, 'defaulted_codex_models', set()) | {key}
     return args
+
+
+def codex_cli_semver(binary: str) -> Optional[tuple]:
+    try: proc = subprocess.run([binary, '--version'], text=True, capture_output=True, stdin=subprocess.DEVNULL,
+                               timeout=10 * timeout_scale.env_factor())
+    except (OSError, subprocess.SubprocessError): return None
+    out = proc.stdout if proc.returncode == 0 else ''
+    match = re.search(r'codex-cli (\d+)\.(\d+)\.(\d+)', out)
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: str) -> None:
+    """ADR-11: a Codex role on the default model needs codex-cli >= CODEX_DEFAULT_MODEL_MIN_CLI; refuse before any state exists.
+    codex_path is the operator program already bound by program_binding.snapshot: a workspace-named binary is never run."""
+    flags = [f"--{key.replace('_', '-')}" for key in ('author_model', 'reviewer_model', 'gate_model')
+             if key in getattr(args, 'defaulted_codex_models', set())]
+    if not flags or (version := codex_cli_semver(codex_path)) is not None and version >= CODEX_DEFAULT_MODEL_MIN_CLI:
+        return
+    have = 'unreadable' if version is None else '.'.join(map(str, version))
+    raise ValueError(f"the default Codex model {CODEX_DEFAULT_MODEL} needs codex-cli >= {'.'.join(map(str, CODEX_DEFAULT_MODEL_MIN_CLI))} "
+                     f"(this CLI: {have}); upgrade the Codex CLI, or pass {' '.join(flag + ' gpt-6-luna' for flag in flags)}")
 
 
 def validate_role_models(args: argparse.Namespace) -> None:
@@ -7143,7 +7170,14 @@ def main(argv=None) -> int:
         return 2
     try:
         resolve_role_model_defaults(args)
-        if not restores_run(args): validate_role_models(args)
+        if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates its restored, frozen models (ADR-9 M5)
+            validate_role_models(args)
+        if args.action in ('run', 'resume', 'permission-probe') and not restores_run(args):   # ADR-11: actions that create state
+            workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
+            programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,
+                                               args.gate_prompt, args.config)
+            if not issue:   # a binding issue keeps its own refusal; only the bound program is run, fake harness included
+                refuse_default_codex_model_on_old_cli(args, programs['codex_bin']['path'])
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2

@@ -513,9 +513,9 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
         self.assertTrue(all(row['returncode'] == 2 and row['status'] == 'FAIL'
                             for row in advisory['checks'].values()))
-        self.assertEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
+        self.assertEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
-            self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
+            self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
 
     def test_codex_capability_config_fails_probe_and_prevents_dispatch(self):
         config = self.test_home / '.codex/config.toml'
@@ -873,7 +873,7 @@ from pathlib import Path
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.157.0")); sys.exit(0)
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.160.0")); sys.exit(0)
 if args and args[0] == "sandbox":
     if os.environ.get("FAKE_CODEX_SANDBOX_CONTRACT_REJECT") or "-P" not in args:
         print("error: --permission-profile <NAME> required", file=sys.stderr); sys.exit(2)
@@ -3339,13 +3339,13 @@ sys.exit(result.returncode)
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         rc.Coordinator(args)
         self.assertEqual((args.author_model, args.reviewer_model, args.gate_model),
-                         ('gpt-6-luna', 'claude-opus-5-5', 'gpt-6-luna'))   # default moved by owner decision 2026-09-30
+                         ('gpt-6.1-sol', 'claude-opus-5-5', 'gpt-6.1-sol'))   # gate: 2026-09-30; Codex model: ADR-11
         swapped = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'swapped-model-run'),
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex'])
         rc.Coordinator(swapped)
         self.assertEqual((swapped.author_model, swapped.reviewer_model, swapped.gate_model),
-                         ('claude-opus-5-5', 'gpt-6-luna', 'claude-opus-5-5'))   # default moved by owner decision 2026-09-30
+                         ('claude-opus-5-5', 'gpt-6.1-sol', 'claude-opus-5-5'))   # gate: 2026-09-30; Codex model: ADR-11
 
     def test_adr9_accepts_explicit_non_default_codex_author_model(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -8387,7 +8387,7 @@ print(json.dumps(results))
         codex_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'codex']
         claude_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'claude']
         self.assertTrue(codex_receipts and claude_receipts)
-        self.assertTrue(all(turn['reported_model'] == 'gpt-6-luna' and
+        self.assertTrue(all(turn['reported_model'] == 'gpt-6.1-sol' and
                             turn['reported_model_source'] == 'thread.started' and
                             turn['model_identity'] == 'MATCH' for turn in codex_receipts))
         self.assertTrue(all(turn['reported_model'] == 'claude-opus-5-5' and

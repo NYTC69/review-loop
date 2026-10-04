@@ -22,7 +22,7 @@ from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
 UNVERIFIED = 'codex-cli 0.159.2'
-OTHER = 'codex-cli 0.160.0'
+OTHER = 'codex-cli 0.161.0'   # an unverified version other than UNVERIFIED (0.160.0 is verified since v2.9.7 models-a)
 
 
 class CodexContractTests(unittest.TestCase):
@@ -323,9 +323,9 @@ class RoleModelTests(unittest.TestCase):
 
     def test_defaults_are_unchanged(self):
         for flags, expected in (
-                ([], ('codex', 'gpt-6-luna', 'claude', 'claude-opus-5-5', 'codex', 'gpt-6-luna')),   # default moved by owner decision 2026-09-30
+                ([], ('codex', 'gpt-6.1-sol', 'claude', 'claude-opus-5-5', 'codex', 'gpt-6.1-sol')),   # gate: 2026-09-30; Codex model: ADR-11
                 (['--author-vendor', 'claude', '--reviewer-vendor', 'codex'],
-                 ('claude', 'claude-opus-5-5', 'codex', 'gpt-6-luna', 'claude', 'claude-opus-5-5'))):   # default moved by owner decision 2026-09-30
+                 ('claude', 'claude-opus-5-5', 'codex', 'gpt-6.1-sol', 'claude', 'claude-opus-5-5'))):   # gate: 2026-09-30; Codex model: ADR-11
             with self.subTest(flags=flags):
                 a = self.resolved(*flags)
                 rc.validate_role_models(a)
@@ -333,7 +333,7 @@ class RoleModelTests(unittest.TestCase):
                                   a.gate_vendor, a.gate_model), expected)
 
     def test_gate_vendor_may_equal_the_reviewer_or_the_author(self):
-        for flags, vendor, model in ((['--gate-vendor', 'codex'], 'codex', 'gpt-6-luna'),
+        for flags, vendor, model in ((['--gate-vendor', 'codex'], 'codex', 'gpt-6.1-sol'),
                                      (['--gate-vendor', 'claude', '--reviewer-vendor', 'claude'],
                                       'claude', 'claude-opus-5-5')):
             with self.subTest(flags=flags):
@@ -368,7 +368,7 @@ class RoleModelTests(unittest.TestCase):
             rc.validate_role_models(a)
         a = self.resolved('--author-vendor', 'claude', '--reviewer-vendor', 'codex')
         a.allowed_models = {'claude': ['claude-opus-5-5']}      # codex missing: nothing is allowed for it
-        with self.assertRaisesRegex(ValueError, 'reviewer_model gpt-6-luna is not in allowed_models'):
+        with self.assertRaisesRegex(ValueError, 'reviewer_model gpt-6.1-sol is not in allowed_models'):
             rc.validate_role_models(a)
         for bad in ([], 'gpt-6', {'codex': 'gpt-6-luna'}, {'codex': [1]}, {'gemini': ['x']}, {'codex': None}):
             with self.subTest(bad=bad):
@@ -541,7 +541,7 @@ class RoleModelTests(unittest.TestCase):
         successor = ['--workitem', str(self.h.run_dir / 'evidence' / 'successor-workitem.md'),
                      '--run-dir', str(target), '--supersedes', str(self.h.run_dir)]
         other = self.h.root / 'other-successor-policy.json'
-        other.write_text(json.dumps({'allowed_models': {'codex': ['gpt-6-luna'], 'claude': ['claude-opus-5-5']}}))
+        other.write_text(json.dumps({'allowed_models': {'codex': ['gpt-6.1-sol'], 'claude': ['claude-opus-5-5']}}))
         for extra in ([], ['--config', str(other)]):        # no config, or another allowlist: not this run's successor
             with self.subTest(extra=extra):
                 self.assertIn('successor spec or parent state differs', self.main('run', *successor, *extra).stdout)
@@ -629,10 +629,10 @@ class RoleModelTests(unittest.TestCase):
         policy = self.h.root / 'gate-policy.json'
         policy.write_text(json.dumps({'gate_vendor': 'claude'}))
         for index, (flags, expected) in enumerate((
-                ([], ('codex', 'gpt-6-luna', 'default')),
+                ([], ('codex', 'gpt-6.1-sol', 'default')),
                 (['--author-vendor', 'claude', '--reviewer-vendor', 'codex'], ('claude', 'claude-opus-5-5', 'default')),
                 (['--gate-vendor', 'claude'], ('claude', 'claude-opus-5-5', 'operator')),
-                (['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex'], ('codex', 'gpt-6-luna', 'operator')),
+                (['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex'], ('codex', 'gpt-6.1-sol', 'operator')),
                 (['--config', str(policy)], ('claude', 'claude-opus-5-5', 'operator')))):      # a config key is an operator choice too
             with self.subTest(flags=flags):
                 self.h.run_dir = self.h.root / f'gate-default-{index}'
@@ -643,9 +643,9 @@ class RoleModelTests(unittest.TestCase):
         self.h.run_dir = self.h.root / 'gate-default-e2e'
         result = self.h.run_coordinator('--shadow', 'off')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('GATE: codex gpt-6-luna (gate_vendor_source: default)', result.stdout)
+        self.assertIn('GATE: codex gpt-6.1-sol (gate_vendor_source: default)', result.stdout)
         gates = [t for t in self.state()['turns'] if t['role'] == 'gate']
-        self.assertTrue(gates and all(t['vendor'] == 'codex' and t['model'] == 'gpt-6-luna' for t in gates))
+        self.assertTrue(gates and all(t['vendor'] == 'codex' and t['model'] == 'gpt-6.1-sol' for t in gates))
 
     def test_a_legacy_saved_run_restores_as_legacy_derived_and_its_successor_keeps_the_derived_vendor(self):   # G-b M2/M3
         self.h.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
@@ -661,7 +661,7 @@ class RoleModelTests(unittest.TestCase):
         self.main('run', '--workitem', str(self.h.run_dir / 'evidence' / 'successor-workitem.md'),
                   '--run-dir', str(target), '--supersedes', str(self.h.run_dir), '--config', str(config_path))
         successor = self.state_at(target)['config']
-        self.assertEqual((successor['gate_vendor'], successor['gate_model']), ('codex', 'gpt-6-luna'))
+        self.assertEqual((successor['gate_vendor'], successor['gate_model']), ('codex', 'gpt-6.1-sol'))
 
     def test_a_gate_model_of_the_other_vendor_is_refused_before_state_unless_the_vendor_is_explicit(self):   # G-b M4
         bob = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6.1-sol']
@@ -1968,7 +1968,7 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertEqual((report['gate_permission_probe']['status'], report['gate_permission_probe']['vendor']), ('PASS', 'codex'))
         allowed = self.cli('run', default_gate=True)
         self.assertEqual(allowed.returncode, 0, allowed.stdout)
-        self.assertIn('GATE: codex gpt-6-luna (gate_vendor_source: default)', allowed.stdout)
+        self.assertIn('GATE: codex gpt-6.1-sol (gate_vendor_source: default)', allowed.stdout)
         self.assertEqual(self.state()['config']['gate_vendor_source'], 'default')
 
     def test_the_gate_probe_is_its_own_role_with_its_own_os_only_path(self):                          # G-a K2
@@ -2295,7 +2295,7 @@ class ProbeSkipTests(unittest.TestCase):
     def test_no_reuse_when_the_flags_or_versions_differ(self):
         changes = {
             'model': lambda co: setattr(co.args, 'reviewer_model', 'claude-sonnet-5-5'),
-            'author-model': lambda co: setattr(co.args, 'author_model', 'gpt-6.1-sol'),
+            'author-model': lambda co: setattr(co.args, 'author_model', 'gpt-6-luna'),   # a non-default model (ADR-11 default: gpt-6.1-sol)
             'vendor': lambda co: setattr(co.args, 'reviewer_vendor', 'codex'),
             'codex-cli-version': lambda co: setattr(co, '_codex_cli_version', lambda: OTHER),
             'claude-version': lambda co: setattr(self, 'claude_version', 'claude 1.1'),
