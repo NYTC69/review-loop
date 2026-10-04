@@ -67,7 +67,8 @@ adds only the Claude Code host rules:
   coordinator command runs: poll in bounded foreground calls, reading only
   `status` and `active.phase` from `RUN_DIR/state.json` (or `status --brief`),
   until the background command itself has exited (the host's task-output tool
-  if it has one; otherwise `pgrep -f -- "--run-dir <RUN_DIR>"` prints nothing),
+  if it has one; otherwise `pgrep -f -- "--run-di[r] <RUN_DIR>"` prints nothing; the
+  bracket keeps pgrep from matching its own shell),
   then inspect its final result as above. Recover a run cut off this way by the
   shared contract's uncertain-turn rule: check the turn's pid and phase, and
   ask the user before any `--retry-uncertain`.
