@@ -2912,6 +2912,8 @@ class Coordinator:
     def _progress_phase(self, role: str, phase: str) -> None:
         rounds = self.state.get(f'{phase.lower()}_rounds', 0) + (role == 'author')
         label = 'gate' if role == 'gate' else 'polish' if phase == 'POLISH' else f'{phase} r{rounds}'
+        if phase == 'PLAN' and role == 'author' and (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':
+            label = 'PLAN rewrite'   # FIELD-11b: the extra turn is no PLAN round
         if label != self._progress_label:
             self._progress_label = label
             self.progress('phase')
@@ -3595,6 +3597,10 @@ class Coordinator:
                     else 'Revise the plan to address the reviewer findings below. Return the complete replacement plan as body.')
             if self.args.exercise_revisions and first:
                 task += ' Exercise rule: omit a Verification section on this first draft only.'
+            if (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':   # FIELD-11b
+                task = ('Rewrite-only turn: return the approved plan as body with all review history removed (finding ids, '
+                        'references to earlier reviews, response-to-reviewer narrative). Do not change the scope, the steps, or '
+                        'the verification. This turn does not count as a PLAN round.')
             prior = self.state.get('delivered_review', '')
             return '\n'.join([
                 f'Role: persistent {self.args.author_vendor} plan author. Phase: PLAN.',
@@ -3691,6 +3697,14 @@ class Coordinator:
             exercise = 'Exercise rule: on this APPROVE include one non-blocking MINOR finding for polish.'
         if base_phase == 'PLAN':
             inline = ''
+            rewrite = self.state.get('plan_history_rewrite') or {}
+            if rewrite.get('status') == 'written':   # FIELD-11b: the reviewer decides whether the rewrite changed anything in substance
+                approved = self.run_dir / f"plan-{rewrite['approved_plan_round']:02d}.md"
+                exercise = (exercise + '\n' if exercise else '') + (
+                    'Rewrite-only re-review: you approved the previous plan; this version is meant to differ only by the removal of '
+                    'review history (finding ids, references to earlier reviews). APPROVE only if it is the same plan in substance; '
+                    'return REVISE if the scope, steps, or verification changed.\n## Previously approved plan\n'
+                    + (approved.read_text() if approved.is_file() else '(unavailable)'))
             if self._role_vendor(role) == 'codex':
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
                           '## Work item content\n' + (self.context / 'workitem.md').read_text() +
@@ -4393,6 +4407,10 @@ class Coordinator:
                   self.invoke('author', phase, self._author_prompt(), author_schema()))
         self.render(result, 'implementer', phase)
         answer = result['answer']
+        rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
+        rewriting = bool(rewrite) and rewrite.get('status') == 'requested'   # FIELD-11b: the extra turn is no PLAN round
+        if rewriting and result['sequence'] not in rewrite.setdefault('attempt_sequences', []):
+            rewrite['attempt_sequences'].append(result['sequence'])           # every try is audited; the chance itself stays one
         if answer['status'] == 'HOLD':
             self.hold('implementer: ' + answer['body'])
             return
@@ -4406,11 +4424,17 @@ class Coordinator:
             atomic_json(Path(rejection['evidence']), rejection)
             self.state.pop('pending_rejection_id', None)
         key = f'{phase.lower()}_rounds'
-        self.state[key] += 1
+        if not rewriting: self.state[key] += 1
         if phase == 'PLAN':
             atomic_text(self.run_dir / 'plan.md', answer['body'].rstrip() + '\n')
-            atomic_text(self.run_dir / f"plan-{self.state[key]:02d}.md", answer['body'].rstrip() + '\n')
+            atomic_text(self.run_dir / ('plan-rewrite.md' if rewriting else f"plan-{self.state[key]:02d}.md"), answer['body'].rstrip() + '\n')
             atomic_text(self.context / 'plan.md', answer['body'].rstrip() + '\n')
+        if rewriting:
+            rewrite.update(status='written', author_sequence=result['sequence'],
+                           plan_sha256=hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest())
+            for receipt in self.state['turns']:
+                if receipt.get('sequence') == result['sequence']: receipt['plan_rewrite'] = True   # the audit trail names the extra turn
+            self.progress('plan_rewrite', status='written', sequence=result['sequence'])
         self.state['delivered_review'] = ''
         self.state['next'] = 'reviewer'
         self.state.pop('pending_author_result_sequence', None)
@@ -4458,6 +4482,9 @@ class Coordinator:
             self.polish_reviewer_turn()
             return
         phase = self.state['phase']
+        failed = (self.state.get('plan_history_rewrite') or {}) if phase == 'PLAN' else {}
+        if failed.get('status') == 'failed':   # FIELD-11b: a resume does not draw a new reviewer to get past a failed rewrite
+            return self.hold(failed['hold_reason'])
         result = self._recorded_reviewer_result(phase)
         if result is None:
             self.materialize_review_context()
@@ -4587,6 +4614,15 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
             return
+        rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
+        if rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status']):
+            # FIELD-11b: the reviewer's own REVISE counts, even if advisory_exit or out-of-phase findings turned it into APPROVE
+            reason = ('the rewrite-only PLAN turn was not approved by the PLAN reviewer (the plan changed in substance or has '
+                      'findings); abort and start a new run')
+            rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history='PLAN reviewer REVISE', hold_reason=reason)
+            self.state['pending_reviewer_result_sequence'] = None
+            self.hold(reason)
+            return
         if answer['status'] == 'REVISE':
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
@@ -4609,18 +4645,39 @@ class Coordinator:
         elif plan_history:
             # FIELD-11: the fresh shadow and gate refuse review history in their inputs (assert_fresh_prompt, unchanged);
             # ask for the restatement now instead of failing at the gate after EXEC.
-            if plan_history.startswith('work item') or self.state['plan_rounds'] >= limit:
+            rewrite = self.state.get('plan_history_rewrite')
+            last_round = self.state['plan_rounds'] >= limit
+            replay = bool(rewrite) and rewrite.get('requested_sequence') == result['sequence']   # this approval, seen again after a crash
+            if plan_history.startswith('work item') or (last_round and rewrite and not replay):
+                reason = (f'approved plan input carries review history ({plan_history}); the independent shadow and gate '
+                          'refuse it' + ('' if plan_history.startswith('work item') else
+                                         ', and the one rewrite-only PLAN turn did not remove it' if rewrite else
+                                         ', and no PLAN round is left to restate it') + '; abort and start a new run')
+                if rewrite and not replay: rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history=plan_history, hold_reason=reason)
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold(f'approved plan input carries review history ({plan_history}); the independent shadow and gate '
-                          'refuse it' + ('' if plan_history.startswith('work item') else ', and no PLAN round is left to restate it')
-                          + '; abort and start a new run')
+                self.hold(reason)
                 return
-            self.state['delivered_review'] = (
-                f'The reviewer approved the plan, but it carries review history ({plan_history}). The independent shadow '
-                'and gate refuse a plan that carries review history. Return the same plan with every finding id and every '
-                'reference to earlier reviews removed; change nothing else.')
+            if last_round:   # FIELD-11b (owner 2026-10-04): one extra rewrite-only author turn, outside the PLAN round cap
+                self.state['plan_history_rewrite'] = {
+                    'status': 'requested', 'requested_sequence': result['sequence'], 'history': plan_history,
+                    'approved_plan_round': self.state['plan_rounds'], 'approved_plan_sha256': hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest()}
+                self.progress('plan_rewrite', status='requested', history=plan_history[:120])
+                self.state['delivered_review'] = (
+                    f'Rewrite-only turn. The reviewer approved the plan in the last PLAN round, but it carries review history '
+                    f'({plan_history}), which the independent shadow and gate refuse. Return the same plan with every finding id '
+                    'and every reference to earlier reviews removed. Do not change the scope, the steps, or the verification; '
+                    'change nothing else. This turn does not count as a PLAN round. The plan is reviewed again; if it still '
+                    'carries review history or differs in substance, the run holds.')
+            else:
+                self.state['delivered_review'] = (
+                    f'The reviewer approved the plan, but it carries review history ({plan_history}). The independent shadow '
+                    'and gate refuse a plan that carries review history. Return the same plan with every finding id and every '
+                    'reference to earlier reviews removed; change nothing else.')
             self.state['next'] = 'author'
         elif phase == 'PLAN':
+            if rewrite and rewrite.get('status') == 'written':
+                rewrite.update(status='passed', passed_sequence=result['sequence'])
+                self.progress('plan_rewrite', status='passed')
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')

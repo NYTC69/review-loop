@@ -63,9 +63,11 @@ any input that carries reviewer ledger ids (`F` plus three or more digits) or
 review narratives (for example "previous review" or "response to reviewer"),
 including `context/plan.md` and `context/workitem.md`. When a shadow or gate is
 on, a plan that the reviewer approves while it still carries ledger ids or such
-wording is sent back to the author for a restatement without them (with no
-PLAN round left, the run holds at PLAN), so the gate does not refuse it after
-EXEC. Vendor names and other gate-scan triggers in the plan are still found
+wording is sent back to the author for a restatement without them, so the gate
+does not refuse it after EXEC. With no PLAN round left, the author gets one extra
+rewrite-only turn that does not count as a PLAN round; the PLAN reviewer then
+reviews the rewrite against the plan it approved, and the run holds at PLAN if
+the history is still there or the plan changed in substance. Vendor names and other gate-scan triggers in the plan are still found
 only at the shadow or gate. The work item is never rewritten: a work item with
 `F001`-style identifiers or review narratives holds at PLAN, so keep them out.
 

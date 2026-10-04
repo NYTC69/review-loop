@@ -65,16 +65,15 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
         self.assertIn("review-history wording 'previous review'", co.state['delivered_review'])
 
-    def test_without_a_plan_round_left_it_holds_now_not_after_exec(self):
+    def test_without_a_plan_round_left_it_gets_one_rewrite_only_turn_not_a_hold(self):   # FIELD-11b (owner 2026-10-04) replaced the HOLD
         co = self.coordinator(plan=PLAN_WITH_IDS)
         co.state['plan_rounds'] = co.args.max_plan_rounds
         co.save()
         self.approve(co)
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertEqual(co.state['phase'], 'PLAN')
-        self.assertIn('approved plan input carries review history (plan: ledger-id-shaped tokens F001, F003)', co.state['hold_reason'])
-        self.assertIn('no PLAN round is left', co.state['hold_reason'])
-        self.assertNotIn('round_limit_hold', co.state)          # not a round-limit HOLD an owner override could accept as is
+        self.assertEqual((co.state['status'], co.state['phase'], co.state['next']), ('ACTIVE', 'PLAN', 'author'))
+        self.assertEqual(co.state['plan_history_rewrite']['status'], 'requested')
+        self.assertIn('Rewrite-only turn', co.state['delivered_review'])
+        self.assertNotIn('round_limit_hold', co.state)          # the second failure HOLDs, not as a round-limit HOLD: test_field11b_plan_rewrite
 
     def test_a_work_item_with_ledger_ids_holds_at_plan_because_the_author_cannot_fix_it(self):
         co = self.coordinator()
