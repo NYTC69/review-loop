@@ -1762,6 +1762,7 @@ class Coordinator:
         if not recorded or 'error' in recorded:
             receipt['voided'] = {'restored': False, 'reason': (recorded or {}).get('error', 'no pre-turn record')}
             self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': receipt['voided']['reason']}
+            self._save_unrestored()
             return ReadOnlyTurnVoided(f'{role} mutated workspace; there is no verified pre-turn record to restore it from '
                                       f'({receipt["voided"]["reason"]}); restore the workspace by hand', restored=False)
         diff = prefix.with_suffix('.workspace-change.diff')
@@ -1771,10 +1772,16 @@ class Coordinator:
             if why is None and git_snapshot(workspace)[0] != before: why = 'the workspace snapshot still differs after the restore'
         except Exception as exc: why = f'{type(exc).__name__}: {exc}'
         receipt['voided'] = {'evidence': str(diff), 'restored': why is None, **({'restore_failure': why} if why else {})}
-        if why: self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': why, 'evidence': str(diff)}
+        if why:
+            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': why, 'evidence': str(diff)}
+            self._save_unrestored()
         if why: return ReadOnlyTurnVoided(f'{role} mutated workspace and the coordinator could not restore it ({why}); '
                                           f'restore it by hand, see {diff}', restored=False)
         return ReadOnlyTurnVoided(f'{role} mutated workspace; the turn is void and the workspace was restored (evidence: {diff})', restored=True)
+
+    def _save_unrestored(self) -> None:   # on disk at once: no later exception of this turn may lose the record
+        try: self.save()
+        except Exception as exc: print(f'WARNING: could not save the unrestored read-only turn record: {type(exc).__name__}: {exc}')
 
     def unrestored_workspace_issue(self) -> str:
         """D-EFF category A: a read-only turn's change that could not be undone blocks every dispatch until the workspace is back to
@@ -1788,7 +1795,9 @@ class Coordinator:
             return ''
         return (f'read-only turn {record["sequence"]} ({record["role"]}) changed the workspace and it could not be restored; manual '
                 f'restore needed ({record["reason"]}' + (f'; evidence: {record["evidence"]}' if record.get('evidence') else '') +
-                '); restore the workspace to its state before that turn, then resume')
+                '); restore the workspace by hand to its state before that turn (content, HEAD, branch and index; the evidence diff '
+                'shows the change). The next run, resume, reject or accept clears this record by itself once the workspace matches '
+                'again; otherwise abort the run')
 
     @property
     def strict(self) -> bool:   # D-EFF: category C (probe gate, a holding evidence guard) as before; anything but 'efficient' is strict
@@ -4624,7 +4633,8 @@ class Coordinator:
                 if session:
                     self.state['sessions'][role] = session
                 self.state['started'][role] = True
-        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+        except Exception as exc:   # any other exception is recorded here only after a failed undo, which must lead the hold
+            if not isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)) and (voided is None or voided.restored): raise
             receipt['error'] = str(exc)
             if voided is not None and not voided.restored:   # the failed undo leads, whatever else this turn tripped
                 receipt['error'] = ('read-only turn changed the workspace and it could not be restored; manual restore needed: '
@@ -7124,9 +7134,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     co._publication_guard()
     if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
-    if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
-    if args.action in ('run', 'resume', 'reject') and (issue := co.unrestored_workspace_issue()):   # D-EFF category A
+    if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
         return co.refused(issue)
+    if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
             and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '

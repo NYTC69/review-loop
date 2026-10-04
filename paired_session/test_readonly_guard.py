@@ -200,6 +200,55 @@ class ReadOnlyTurnTests(unittest.TestCase):
         self.assertEqual(co.unrestored_workspace_issue(), '')
         self.assertNotIn('unrestored_readonly_turn', json.loads((self.h.run_dir / 'state.json').read_text()))
 
+    def failed_undo(self, **patches):   # a PLAN reviewer write whose undo fails; `patches` break the rest of the turn
+        co = self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest')   # the same flags as h.command()
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}), \
+                patch.object(rc.readonly_guard, 'restore', return_value='simulated failure'), \
+                patch.object(rc.Coordinator, '_collect', **patches):
+            co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+
+    def saved_record(self):
+        return json.loads((self.h.run_dir / 'state.json').read_text()).get('unrestored_readonly_turn')
+
+    def test_an_unexpected_exception_after_a_failed_undo_keeps_the_record_and_the_reason(self):   # eff-d
+        with self.assertRaises(RuntimeError) as raised:
+            self.failed_undo(side_effect=OSError('disk went away'))
+        self.assertTrue(str(raised.exception).startswith(
+            'read-only turn changed the workspace and it could not be restored; manual restore needed: '), str(raised.exception))
+        self.assertIn('also: disk went away', str(raised.exception))
+        self.assertEqual(self.saved_record()['reason'], 'simulated failure')
+        command = self.h.command()
+        command[2] = 'resume'
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(rc.main(command[2:]), 2)
+        self.assertIn('manual restore needed', out.getvalue())
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)   # undo by hand before the next run
+        self.h.run_dir = self.h.root / 'interrupted'
+        with self.assertRaises(KeyboardInterrupt):   # not even an Exception: the record was saved when it was made
+            self.failed_undo(side_effect=KeyboardInterrupt)
+        self.assertEqual(self.saved_record()['reason'], 'simulated failure')
+
+    def test_accept_and_a_scope_change_refuse_while_a_failed_undo_stands(self):   # eff-d
+        with self.assertRaises(RuntimeError):
+            self.failed_undo(side_effect=ValueError('stop after the undo'))
+        for action, extra in (('accept', ('--reason', 'looks fine')), ('accept', ('--override-rejection', '--reason', 'take it')),
+                              ('reject', ('--scope-change', '--text', 'narrow it'))):
+            with self.subTest(action=action, extra=extra):
+                result = self.h.run_operator_action(action, *extra)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn('REFUSED: read-only turn', result.stdout)
+                self.assertIn('restore the workspace by hand', result.stdout)
+                self.assertIn('clears this record by itself', result.stdout)
+                self.assertIn('otherwise abort the run', result.stdout)
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)   # the manual restore
+        result = self.h.run_operator_action('accept', '--reason', 'looks fine')
+        self.assertNotIn('REFUSED: read-only turn', result.stdout)
+        self.assertIsNone(self.saved_record())
+
     def test_a_failed_capture_still_sees_a_commit(self):   # eff-c: HEAD, branch and index are recorded apart from the tree
         co = self.h.coordinator()
         (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
