@@ -103,6 +103,11 @@ and end this workflow (except where a row says otherwise).
   workflow then prints the unavailable notice with that reason and continues with Step 0.5.
   Under `--handsfree` or `handsfree: true` nobody answers, so such a question is a failed
   check: `review-loop: paired-session default entry needs an answer (<question>) that handsfree cannot give; using legacy workflow`.
+- Host setup (run directory, `WORKITEM.md`, loading the shared contract): a failure the paired-session skill reports as
+  `stage A failure: <reason>` is a failed check; with the key absent print
+  `review-loop: paired-session default entry unavailable (<reason>); using legacy workflow` and continue with Step 0.5.
+After a handoff, legacy continues only through one of these notices: never start Step 0.5 (session file, lock,
+snapshot) for a handed-off work item without first printing the fallback notice, and never fall back silently.
 From the first `bin/paired-session` command on, every refusal or HOLD is reported verbatim and never falls back to legacy.
 
 Current Codex Stage 1 uses the orchestrator's current workspace only.
