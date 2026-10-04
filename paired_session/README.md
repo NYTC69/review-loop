@@ -454,6 +454,28 @@ apply. This explicit ruling needs no separate intent preview; ordinary accept/re
 still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
 no receipt follows plain resume; a fresh author ingest is required for rejected trees.
 
+Repeated same-class blocks (FIELD-5, v2.9.7): the EXEC reviewer, shadow and gate
+prompts ask for every blocking finding to start with an explicit defect-class
+label `[class: kebab-case-name]`; a gate label is kept at the start of the
+finding's ledger summary, so the persistent reviewer can reuse it. The
+coordinator reads only that label; it never infers a class from the text. A
+BLOCK is an EXEC reviewer or gate verdict with new blocking findings. Old
+blockers merged into a refused approval, a REVISE without new blockers, a
+refused approval and an approval that only routes to the gate neither count nor
+break the run; an approval that ends the review (a gate without blockers, or a
+reviewer approval with no gate to follow) breaks it. When one class appears in
+each of three consecutive BLOCKs, the run HOLDs `structural fix / re-scope
+needed: finding class ...` with the finding ids per verdict, after routing the
+next turn to the author; the round-limit HOLD keeps precedence and its override.
+The HOLD closes no finding and never accepts. Use `note` with a structural plan
+and `resume`, `note --scope-change`, or `abort`; after the HOLD the count starts
+afresh, so the same class HOLDs again only after three more BLOCKs. The history
+is in `block_class_events` and `structural_holds` (written only when the HOLD
+happens) in state.json.
+Blocking findings without a label never HOLD; they are counted in
+`unlabeled_blocking_findings` (run total, and per reviewer/gate turn receipt) so a
+reviewer that never labels is visible.
+
 An idle `HOLD` run waiting for its next author turn accepts an in-scope
 clarification with `note --text '...'` or `note --file /path/to/note`. It reaches
 that author turn on `resume`; a newer note replaces a pending one. Notes are

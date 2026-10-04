@@ -69,6 +69,12 @@ except ModuleNotFoundError:
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
+# FIELD-5 (owner 2026-10-03/10-04): the finding's owner labels its class explicitly; the coordinator never infers it from text.
+CLASS_LABEL_RE = re.compile(r'\s*\[class:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*\]')
+STRUCTURAL_BLOCK_STREAK = 3
+CLASS_LABEL_GUIDANCE = ('Start the {field} of every blocking finding with a defect-class label "[class: <kebab-case-name>]" naming the '
+                        'kind of defect, such as missing-input-validation or path-traversal.')   # fresh roles: no history words (independence scan)
+CLASS_LABEL_REUSE = ' Reuse the exact label of an earlier finding of the same class of defect.'
 PROBE_SURFACE_VERSION = 9
 CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
@@ -2790,6 +2796,8 @@ class Coordinator:
             self.state['next_finding_id'] += 1
             severity = str(finding['severity']).upper()
             summary = finding.get('summary') or finding.get('recommendation') or str(finding.get('body', '')).splitlines()[0]
+            if (label := CLASS_LABEL_RE.match(str(finding.get('body', '')))) and not CLASS_LABEL_RE.match(summary):
+                summary = label.group(0).strip() + ' ' + summary   # FIELD-5: a gate's class label stays visible in the ledger summary
             entry = {'id': finding_id, 'origin_round': origin_round, 'phase': phase,
                      'source': source, 'finding_index': finding_index,
                      'severity': severity, 'file': finding.get('file', ''),
@@ -3660,7 +3668,7 @@ class Coordinator:
                 f'Approved/current plan: {self.context / "plan.md"}',
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
-                REVIEW_SEVERITY_GUIDANCE,
+                REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
                 self.inspection_prompt(role),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
@@ -3703,7 +3711,7 @@ class Coordinator:
             f'Approved/current plan: {self.context / "plan.md"}',
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
             self.inspection_prompt(role),
-            REVIEW_SEVERITY_GUIDANCE,
+            REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt(),
@@ -3727,6 +3735,7 @@ class Coordinator:
                 '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.' +
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
+                '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
                 '\nNever edit, commit, push, or load skills.' + opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
@@ -4617,6 +4626,7 @@ class Coordinator:
         if advisory_exit:
             self.mark_advisory_findings(answer['full_review'])
             answer['status'] = 'APPROVE'
+        new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
         refusal = None
         if answer['status'] == 'APPROVE' and (blocking := self.blocking_open_findings()):
             # RF-5: an APPROVE that leaves blocking findings open is a REVISE routed to the author (round limit and its HOLD apply), never DONE
@@ -4628,6 +4638,9 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal))
+        new_blocking = [row for row in new_rows if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+        structural = (self._structural_block_hold('reviewer', result['sequence'], new_blocking)   # FIELD-5: only NEW blockers form a BLOCK
+                      if phase == 'EXEC' and answer['status'] == 'REVISE' and new_blocking else None)
         if phase == 'EXEC':
             previous_comparison = next((row for row in self.state['exec_comparisons']
                                         if row.get('review_sequence') == result['sequence']), None)
@@ -4673,6 +4686,10 @@ class Coordinator:
                                     'evidence': row['evidence']} for row in answer['prior_findings']],
             }, ensure_ascii=False)
             self.state['next'] = 'author'
+            if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence); resume routes to the author
+                self.state['pending_reviewer_result_sequence'] = None
+                self._structural_hold(structural)
+                return
         elif phase == 'PLAN':
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
@@ -4695,6 +4712,7 @@ class Coordinator:
                                               if advisory else '')
             self.state['next'] = 'gate'
         else:
+            self._structural_block_hold('reviewer', result['sequence'], [])   # FIELD-5: an approval that ends the review breaks the run
             self.state['pending_reviewer_result_sequence'] = None
             self.start_polish_or_done()
             return
@@ -4841,6 +4859,7 @@ class Coordinator:
         if self.state['exec_comparisons']:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
+        structural = self._structural_block_hold('gate', result['sequence'], valid)
         if valid:
             if self.state['config'].get('lifecycle_mode') == 'on':
                 self.state['gate_ran'] = False
@@ -4857,10 +4876,47 @@ class Coordinator:
                 'advisory': self.advisory_rows(advisory),
             }, ensure_ascii=False)
             self.state['next'] = 'author'
+            if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence)
+                self._structural_hold(structural)
+                return
         else:
             self.start_polish_or_done()
             return
         self.save()
+
+    def _structural_block_hold(self, source: str, sequence: int, blocking: list) -> Optional[dict]:
+        """FIELD-5: record one EXEC reviewer/gate verdict by the explicit [class: ...] labels of its NEW blocking findings.
+        blocking = [] records a review-ending approval, which breaks the run; callers record nothing for neutral verdicts
+        (an approval routed to the gate, a REVISE without new blockers, a refused approval). Returns the match when one
+        class is in each of the last STRUCTURAL_BLOCK_STREAK consecutive BLOCKs; _structural_hold then HOLDs. Unlabeled
+        blockers are only counted, never HOLD. No text similarity; the ledger is untouched."""
+        events = self.state.setdefault('block_class_events', [])
+        if not any(event['sequence'] == sequence for event in events):   # a replayed verdict is recorded once
+            classes, unlabeled = {}, 0
+            for row in blocking:
+                if match := CLASS_LABEL_RE.match(str(row.get('summary') or row.get('body') or '')):
+                    classes.setdefault(match.group(1), []).append(row['id'])
+                else:
+                    unlabeled += 1
+            events.append({'sequence': sequence, 'source': source, 'block': bool(blocking), 'classes': classes, 'unlabeled': unlabeled})
+            self.state['unlabeled_blocking_findings'] = self.state.get('unlabeled_blocking_findings', 0) + unlabeled
+            for receipt in self.state['turns']:
+                if receipt.get('sequence') == sequence: receipt['unlabeled_blocking_findings'] = unlabeled
+        tail = []
+        for event in reversed(events):
+            if not event['block'] or len(tail) == STRUCTURAL_BLOCK_STREAK: break
+            tail.insert(0, event)
+        common = sorted(set.intersection(*(set(event['classes']) for event in tail))) if len(tail) == STRUCTURAL_BLOCK_STREAK else []
+        return {'classes': common, 'events': tail} if common else None
+
+    def _structural_hold(self, found: dict) -> str:   # FIELD-5: recorded only when the HOLD happens; the count then starts afresh
+        history = '; '.join(f"{event['source']} #{event['sequence']}: " +
+                            ', '.join(i for name in found['classes'] for i in event['classes'][name]) for event in found['events'])
+        self.state.setdefault('structural_holds', []).append({**found, 'time': datetime.now().astimezone().isoformat()})
+        self.state['block_class_events'].append({'sequence': None, 'source': 'structural-hold', 'block': False, 'classes': {}, 'unlabeled': 0})
+        return self.hold(f"structural fix / re-scope needed: finding class {', '.join(found['classes'])} blocked "
+                         f'{STRUCTURAL_BLOCK_STREAK} consecutive reviews ({history}); all blockers stay open; '
+                         'note a structural plan and resume, note --scope-change, or abort')
 
     def _codex_sandbox_escape_check(self, workspace: Path, label: str, target: Path,
                                     expected_allowed=False) -> dict:
