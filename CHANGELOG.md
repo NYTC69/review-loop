@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-04
+
+### v2.9.6：Codex 只读角色有了自己的临时目录（FIELD-1/FIELD-6）；只读边界和硬链接由探测证明（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：Codex 只读角色的 argv 变了，旧的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。需要 Codex CLI 0.160.0 或更新：只读角色用 `--config default_permissions="paired_session_readonly"` 选择命名权限 profile（`codex exec` 没有 `-P`），已在 0.160.0 上用真实探测验证。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.6` 运行。
+- **fix（FIELD-1，b296-f1）**：Codex 的 reviewer、shadow、gate、probe、gate-probe 不再用 `sandbox_mode="read-only"`。原来这些角色没有任何可写的临时目录，需要临时目录的测试报 "No usable temporary directory found"，Codex gate 的探测也永远过不了（FIELD-6）。现在：
+  - 改用只读权限 profile `paired_session_readonly`：根目录和 workspace 只读，只有 `$TMPDIR` 可写，网络关闭；
+  - 每次派发分到一个独立、属于本 run 的临时目录 `run_dir/role-tmp/<seq>-<role>`（0700），用作 TMPDIR/TMP/TEMP。回合结束（包括失败的回合）后删除，删除前先清除文件标志、恢复权限，删除失败会明确报错，不会掩盖回合本身的错误；
+  - 临时目录里出现多链接的普通文件或不可读的目录，该回合判失败；
+  - Claude 角色不变。
+- **fix（b296-f1e）**：发版前第一次真实探测，P1、P2 都失败，报错 `unexpected argument '-P' found`：`codex exec` 不接受 `-P`，只有 `codex sandbox` 接受。现在改用 `default_permissions` 配置来选择同一个 profile，profile 本身的定义没有变。fake CLI 也改成像真实 CLI 一样拒绝 `-P` 和 `--permission-profile`，避免再出现只有 fake 能通过的 argv。作者的 `codex sandbox -P` escape check 不受影响。
+- **安全（b296-f1）**：Codex 的 reviewer 探测和 gate 探测现在必须证明：
+  - `$TMPDIR` 可写；
+  - 写 `/tmp`、用户临时目录、run dir、`$TMPDIR/..`、context 和 workspace 都被拒绝；
+  - 把 run dir 里的文件硬链接进 `$TMPDIR` 也被拒绝。
+  回合结束后逐个确认目标不存在、源文件仍只有一个链接。每个 Codex 只读回合前后还会比对 run dir 下普通文件的 inode 和 ctime，有变化即判该回合失败（纵深防御）。
+- **审查**：
+  - B 道由 Opus 5.5 执行、Opus 5.5 审查。b296-f1 审了 3 轮：R1 有 2 个 MAJOR，即探测既没有证明「只有 $TMPDIR 可写」，也没有证明硬链接被拒，均已修复；R3 APPROVE_WITH_ADVISORY。f1b 到 f1e 每批都经过 Opus 审查并 APPROVE。
+  - gpt-6.1-sol 跨厂商审查共 5 轮。前 3 轮提出的问题由 f1b 到 f1d 修复，包括 2 个 MAJOR（指向外部的 role-tmp 符号链接会导致误删；探测把「命令不存在」当成拒绝）和 3 个 MEDIUM（chmod 跟随竞争；清扫前没有确认回合进程组已结束；进程组状态未知时也被当成已结束）。第 4 轮 APPROVE_WITH_ADVISORY；第 5 轮审查 f1e，结论：APPROVE_WITH_ADVISORY（唯一的 LOW 是 resume 回合的真实权限效果尚未用真实 CLI 验证，已列为已知限制）。
+  - 真实 permission-probe 在合入 f1e 后重跑，覆盖 Codex reviewer 和 Codex gate 两种配置。
+  - 全量测试在 GitHub Actions 的 macOS 和 Linux 机器上运行。
+- **已知限制**：
+  - 临时目录和 run dir 在同一个卷上。同卷硬链接的主要防线是探测里那条必须被拒绝的 `ln`；ctime 比对不覆盖 `state.json`、`progress.jsonl`、本回合自己的 evidence 文件、Codex rollout，以及 run dir、workspace、context 和受监控的全局配置之外的同卷文件；检测只持续到 CLI 进程退出；探测只覆盖新开的回合，不覆盖 resume。
+  - Claude 只读角色仍使用 Claude Code 自带的 `/tmp/claude`（同一用户共享）。
+  - v2.9.5 的已知限制（失败的 author 回合把树改了又恢复原样时，operator 证据不作废）仍在，v2.9.7 修。
+
 ## 2026-10-03
 
 ### v2.9.5：operator 证据通道（attach-verification）、round-limit HOLD 可由 owner 裁决放行、一批来自真实 run 的 operator CLI 修复（paired-session 仍是可选入口，默认 legacy）
