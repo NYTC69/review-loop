@@ -7,9 +7,11 @@ top-level `README.md` Quick Start.
 
 ## Prerequisites
 
-- **Codex CLI 0.155.1 or later (verified)** — older releases may require the
-  `/plugins` UI path; check `codex plugin --help` before using the CLI install
-  command documented below.
+- **Codex CLI 0.159.2 or later** — the shipped Codex agents
+  (`.codex/agents/*.toml`) and the paired-session Codex default use
+  `gpt-6.1-sol`, which needs 0.159.2+. The plugin install command below was
+  verified on 0.155.1; older releases may require the `/plugins` UI path, so
+  check `codex plugin --help` before using it.
 - **Python ≥ 3.11** — `scripts/run_skill_smoke_lib.py` and other helpers
   used by review-loop's smoke / lint suites depend on it.
 - **git** — used by the executor / reviewer agents and by the smoke

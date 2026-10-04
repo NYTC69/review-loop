@@ -64,7 +64,7 @@ natural-language only. Full step-by-step + verification:
 
 - Codex skills live under `.agents/skills/`.
 - Codex subagents live under `.codex/agents/*.toml`.
-- Codex invokes `python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6} --stage {planning|execution} --role reviewer --timeout-seconds 570` with the script path resolved against the support repository and cwd kept in the task workspace. Its child contract is `claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model MODEL < prompt-file`; `--verbose` is required for print-mode stream-json.
+- Codex invokes `python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-opus-5-5} --stage {planning|execution} --role reviewer --timeout-seconds 570` with the script path resolved against the support repository and cwd kept in the task workspace. Its child contract is `claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model MODEL < prompt-file`; `--verbose` is required for print-mode stream-json.
 - Run the wrapper and child outside the Codex sandbox. Poll only bounded heartbeat/status output; never stream or poll raw reviewer logs into the orchestrator context. Retain `.review-loop/tmp/{session_id}-reviewer-stream.jsonl` and `{session_id}-reviewer-stderr.log` as audit artifacts. On wrapper exit `0` only, read `{session_id}-reviewer-result.txt` in the same directory, then apply the existing schema and triage gates. Exits `1`, `2`, and `3` mean command execution, JSON parsing, and missing `result` respectively.
 - Sandbox diagnostic caveat: a sandboxed `claude -p` rehearsal is not a valid
   substitute for the real Codex reviewer path. If the sandboxed call fails,
@@ -220,7 +220,7 @@ For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
 path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,
 and `codex_reviewer_model` overrides the model used by that Codex fallback
 reviewer path. When neither `reviewer_model` nor `judgment_model` is set,
-that default Claude reviewer path backstops to `claude-sonnet-4-6`. The
+that default Claude reviewer path backstops to `claude-opus-5-5`. The
 `reviewer` and `executor_model` entries above still
 describe shared Claude/plugin-side behavior and do not actively control
 Stage 1 Codex behavior.

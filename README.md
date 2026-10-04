@@ -61,7 +61,7 @@ to host `/tmp`, the run directory, and the `context` directory passed through
 probe fails closed when the OS sandbox is unavailable.
 In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
 `judgment_model` is its shared-tier fallback, and the empty backstop is an
-explicit `--model claude-sonnet-4-6`.
+explicit `--model claude-opus-5-5`.
 The shared `cheap_model` key is accepted for cross-runtime config
 compatibility, but Stage 1 currently has no cheap-tier Codex agents, so it is
 a documented no-op there.
@@ -337,7 +337,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
 | `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |
-| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |
 | `executor_model` | `inherit` | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |
 | `codex_reviewer_backend` | `claude_cli` | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
 | `codex_reviewer_model` | `""` | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
@@ -358,7 +358,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 For Codex Stage 1, the reviewer separation policy is explicit: unless
 `codex_reviewer_backend: codex` is set, review stays on the
 outside-sandbox Claude CLI reviewer path. That default path resolves its model
-as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` and passes it via
+as `reviewer_model` > `judgment_model` > `claude-opus-5-5` and passes it via
 `--model`. The local Codex reviewer is opt-in only. The `cheap_model` entry is
 accepted in the shared config but remains a no-op in Stage 1 because only
 judgment-tier Codex agents are currently shipped.

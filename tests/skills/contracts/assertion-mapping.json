@@ -1176,11 +1176,11 @@
     "cheap_model": [
       {
         "path": "review-loop-config.example.md",
-        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-haiku-4-5-20251001 and is accepted-but-no-op in Codex Stage 1"
+        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-opus-5-5 and is accepted-but-no-op in Codex Stage 1"
       },
       {
         "path": "README.md",
-        "needle": "| `cheap_model` | `\"\"` | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |"
+        "needle": "| `cheap_model` | `\"\"` | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
@@ -1190,15 +1190,15 @@
     "cheap_model_backstop_haiku_4_5": [
       {
         "path": "docs/protocol/planning.md",
-        "needle": "Cheap-tier backstop is always `claude-haiku-4-5-20251001`."
+        "needle": "Cheap-tier backstop is always `claude-opus-5-5`."
       },
       {
         "path": "docs/protocol/runtime-claude.md",
-        "needle": "Cheap-tier backstop is `claude-haiku-4-5-20251001`."
+        "needle": "Cheap-tier backstop is `claude-opus-5-5`."
       },
       {
         "path": "skills/code-quality-loop/SKILL.md",
-        "needle": "claude-haiku-4-5-20251001"
+        "needle": "claude-opus-5-5"
       }
     ],
     "executor_model_falls_through_to_judgment": [
@@ -1232,31 +1232,31 @@
     "codex_claude_reviewer_backstop_claude_sonnet_4_6": [
       {
         "path": "docs/protocol/planning.md",
-        "needle": "`reviewer_model` > `judgment_model` > `claude-sonnet-4-6`"
+        "needle": "`reviewer_model` > `judgment_model` > `claude-opus-5-5`"
       },
       {
         "path": "README.md",
-        "needle": "as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` and passes it via"
+        "needle": "as `reviewer_model` > `judgment_model` > `claude-opus-5-5` and passes it via"
       },
       {
         "path": "docs/protocol/runtime-codex.md",
-        "needle": "--model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+        "needle": "--model {reviewer_model if set; else judgment_model if set; else claude-opus-5-5}"
       },
       {
         "path": ".agents/skills/guide/SKILL.md",
-        "needle": "explicit `claude-sonnet-4-6` backstop."
+        "needle": "explicit `claude-opus-5-5` backstop."
       },
       {
         "path": "docs/protocol/runtime-claude.md",
-        "needle": "`reviewer_model` -> `judgment_model` -> `claude-sonnet-4-6`."
+        "needle": "`reviewer_model` -> `judgment_model` -> `claude-opus-5-5`."
       },
       {
         "path": "skills/guide/SKILL.md",
-        "needle": "reviewer path backstops to `claude-sonnet-4-6`."
+        "needle": "reviewer path backstops to `claude-opus-5-5`."
       },
       {
         "path": "review-loop-config.example.md",
-        "needle": "that Claude path uses `--model claude-sonnet-4-6`."
+        "needle": "that Claude path uses `--model claude-opus-5-5`."
       }
     ],
     "codex_reviewer_requires_explicit_opt_in": [
@@ -1294,7 +1294,7 @@
       },
       {
         "path": "review-loop-config.example.md",
-        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-haiku-4-5-20251001 and is accepted-but-no-op in Codex Stage 1"
+        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-opus-5-5 and is accepted-but-no-op in Codex Stage 1"
       },
       {
         "path": ".agents/skills/guide/SKILL.md",

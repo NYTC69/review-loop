@@ -99,7 +99,7 @@ must still match the saved run configuration. A changed binary or PATH requires
 a fresh permission probe before the run can continue.
 Role models are operator-set (ADR-9): a role without `--author-model`,
 `--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
-(Claude: `claude-opus-5-5`; Codex: `gpt-6-luna`). Before run state is created,
+(Claude: `claude-opus-5-5`; Codex: `gpt-6.1-sol`). Before run state is created,
 every model id must be well formed and, when `allowed_models` is set, listed for
 that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,

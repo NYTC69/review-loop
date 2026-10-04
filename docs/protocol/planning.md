@@ -95,7 +95,7 @@ Shared rules:
 
 - Supported shared tiers are `judgment` and `cheap`.
 - Missing `tier` defaults to `judgment`.
-- Cheap-tier backstop is always `claude-haiku-4-5-20251001`.
+- Cheap-tier backstop is always `claude-opus-5-5`.
 - The Claude/plugin Executor is a `judgment`-tier dispatch.
   `executor_model: ""` and `executor_model: inherit` both mean "this path
   does not specify a model"; they therefore fall through to
@@ -103,7 +103,7 @@ Shared rules:
 - Codex Stage 1 keeps the default reviewer on the outside-sandbox Claude
   CLI path unless `codex_reviewer_backend: codex` is explicitly set.
 - On that default Codex Stage 1 Claude reviewer path, resolve the reviewer
-  model as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6`, and
+  model as `reviewer_model` > `judgment_model` > `claude-opus-5-5`, and
   pass it as `--model <resolved_model>`.
 - Codex Stage 1 accepts `cheap_model` in shared config for compatibility,
   but Stage 1 currently ships no cheap-tier Codex executor or reviewer
@@ -333,7 +333,7 @@ allow inherited tools to widen the reviewer's permissions.
 
 - Default reviewer: `python3 <support-root>/scripts/run_claude_reviewer.py
   --session-id {session_id} --model {reviewer_model if set; else judgment_model
-  if set; else claude-sonnet-4-6} --stage {phase}`.
+  if set; else claude-opus-5-5} --stage {phase}`.
 - Keep cwd in the task workspace. Run the wrapper outside the parent Codex
   sandbox so the native CLI can authenticate; the child capabilities remain
   restricted by the launcher. This is not permission to give it writer tools.

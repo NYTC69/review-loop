@@ -15,7 +15,7 @@ model-selection policy:
 |---|---|---|
 | Claude `reviewer: codex` | `run_codex_reviewer.py` | `reviewer_model`, otherwise Codex default |
 | Claude `reviewer: subagent` (compatibility name) | `run_claude_reviewer.py` | `reviewer_model` > `judgment_model` > Claude CLI runtime default |
-| Codex default Claude reviewer | `run_claude_reviewer.py` | `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` |
+| Codex default Claude reviewer | `run_claude_reviewer.py` | `reviewer_model` > `judgment_model` > `claude-opus-5-5` |
 | Codex `codex_reviewer_backend: codex` | `run_codex_reviewer.py` | `codex_reviewer_model`, otherwise Codex default |
 | Claude report-only quality specialist | `run_claude_reviewer.py` | existing `judgment` / `cheap` tier resolution; omit `--model` when no override is resolved |
 | Codex report-only quality specialist | `run_codex_reviewer.py` | `codex_reviewer_model`, otherwise Codex default |
@@ -143,7 +143,7 @@ Severities are the shared schema's (reviewer-output.md): a blocking finding is `
   Record `cross-vendor review: <VERDICT> (...)`.
 - Model is the other backend's own key: codex uses `reviewer_model` only when it names a Codex model, else
   `codex_reviewer_model`, else the Codex default; claude uses `reviewer_model` > `judgment_model` > the Claude
-  runtime default (`claude-sonnet-4-6` on the Codex runtime, Claude CLI default on the Claude runtime).
+  runtime default (`claude-opus-5-5` on the Codex runtime, Claude CLI default on the Claude runtime).
 - At most once per convergence: the pass never reruns for the same convergence. It reruns only after a reopened
   round that changed files, and that round starts a new convergence.
 - A `[CRITICAL]` blocks delivery and reopens a normal execution fix round, which counts toward `soft_limit_exec`.

@@ -42,7 +42,7 @@
       "id": "codex_reviewer_wrapper_project_notes",
       "kind": "contains",
       "path": "CLAUDE.md",
-      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-sonnet-4-6}"
+      "needle": "python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-opus-5-5}"
     },
     {
       "id": "claude_wrapper_exists",
@@ -1156,7 +1156,7 @@
       "id": "codex_umbrella_startup_banner_reviewer_backend_label_declared",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "Reviewer backend: {claude-cli ({reviewer_model | judgment_model | claude-sonnet-4-6}) | codex (review_loop_reviewer / {codex_reviewer_model})}"
+      "needle": "Reviewer backend: {claude-cli ({reviewer_model | judgment_model | claude-opus-5-5}) | codex (review_loop_reviewer / {codex_reviewer_model})}"
     },
     {
       "id": "codex_umbrella_startup_banner_soft_limit_label_declared",

@@ -164,7 +164,7 @@ Create `.review-loop/config.md` in your project to customize:
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
 | `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | "" | Shared tier override for judgment-tier agents |
-| `cheap_model` | "" | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `cheap_model` | "" | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |
 | `executor_model` | inherit | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model` |
 | `codex_reviewer_backend` | claude_cli | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
 | `codex_reviewer_model` | "" | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
@@ -185,7 +185,7 @@ default. The local Codex reviewer is explicit opt-in only via
 `codex_reviewer_backend: codex`. `cheap_model` remains accepted-but-no-op in
 Codex Stage 1 because only judgment-tier Codex agents are shipped today. When
 neither `reviewer_model` nor `judgment_model` is set, that default Claude
-reviewer path backstops to `claude-sonnet-4-6`.
+reviewer path backstops to `claude-opus-5-5`.
 `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 

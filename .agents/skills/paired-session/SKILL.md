@@ -18,7 +18,7 @@ invoke the legacy review-loop workflow for this task.
    workspace profile; copy desired non-program limits into the external profile.
    CLI options can override
    that profile. Models are operator-set (ADR-9); a role without one gets its
-   vendor's default (`claude-opus-5-5` for Claude; `gpt-6-luna` for Codex), and
+   vendor's default (`claude-opus-5-5` for Claude; `gpt-6.1-sol` for Codex), and
    the gate defaults to the author's vendor (ADR-10).
    Determine the project's test command from its docs/manifests and ask only if
    it cannot be established safely.
