@@ -124,8 +124,11 @@ change during SECURITY HOLDs, and resume replays the same way.
 **`docs_file` entry.** Legacy Step 4 appends the post-delivery summary (status, rounds, polish summary,
 findings, cross-vendor line, files) after the gate. W writes the entry during DOCS so that it is reviewed
 and scanned; it can only hold facts known before SECURITY (work item, changes, EXEC/POLISH-Q results).
-The SECURITY outcome, the commit SHA and token/time totals go only to the Chinese delivery report in the
-run directory. DELIVERY does not append to `docs_file` again. A replayed DOCS stage replaces its own entry.
+The SECURITY outcome and the commit SHA go only to the Chinese delivery report in the run directory
+(`worktree_lifecycle.delivery_report`: run and work item, ACCEPTED time, the auto_commit commit and parent or
+"no ref or index changed", external delivery not done, the last receipt of each stage, the SECURITY scans and
+review, open findings, and invocations, epoch and elapsed minutes; it has no token totals, which stay in the
+run's `usage.json` / `usage.md`). DELIVERY does not append to `docs_file` again. A replayed DOCS stage replaces its own entry.
 
 **Commit scope versus legacy W04.** The accepted manifest is the `git_snapshot` the operator accepted:
 tracked files plus non-ignored untracked files, so a stray untracked file in the worktree is part of
