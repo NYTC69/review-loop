@@ -1,6 +1,8 @@
 """D-EFF category A (docs/efficient-mode.md §4a), both modes: a reviewer, gate or shadow turn that changes the workspace is void, its
 change is saved as evidence and undone from the coordinator's own pre-turn record when the undo verifies, and the turn is re-dispatched
 once; a second change, or an undo that does not verify, holds the run."""
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -85,6 +87,21 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         self.assertIsNone(rg.restore(fresh, recorded, self.keep))
         self.assertNotEqual(subprocess.run(['git', 'rev-parse', '--verify', '-q', 'HEAD'], cwd=fresh).returncode, 0)   # unborn again
 
+    def test_a_turn_that_touched_thousands_of_paths_is_undone_through_stdin(self):   # eff-c: no E2BIG
+        for i in range(2000):
+            (self.ws / f'f{i:04d}.txt').write_text('base\n')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'many files')
+        recorded = rg.capture(self.ws, self.keep)
+        for i in range(2000):
+            (self.ws / f'f{i:04d}.txt').write_text('review edit\n')
+        with patch.object(rg, '_git', wraps=rg._git) as git:
+            self.assertIsNone(rg.restore(self.ws, recorded, self.keep))
+        [checkout] = [c for c in git.call_args_list if 'checkout-index' in c.args]
+        self.assertIn('--stdin', checkout.args)
+        self.assertEqual(checkout.kwargs['input'].count('\0'), 2000)   # the paths, never on the command line
+        self.assertEqual({(self.ws / f'f{i:04d}.txt').read_text() for i in range(2000)}, {'base\n'})
+
     def test_reading_and_git_status_are_no_change(self):
         recorded = rg.capture(self.ws, self.keep)
         self.git('status')                                     # refreshes the index's stat cache
@@ -158,6 +175,93 @@ class ReadOnlyTurnTests(unittest.TestCase):
         self.assertEqual((self.h.workspace / 'tracked.txt').read_text(), 'base\n')
         self.assertEqual([t['voided']['restored'] for t in co.state['turns'] if t.get('role') == 'reviewer'], [True])   # no re-dispatch
 
+    def test_a_failed_undo_leads_the_hold_and_blocks_resume_until_the_workspace_is_back(self):   # eff-c
+        co = self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest')   # the same flags as h.command(), so resume restores it
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1', 'FAKE_PLAN_REVIEWER_FAIL': '1'}), \
+                patch.object(rc.readonly_guard, 'restore', return_value='simulated failure'):
+            with self.assertRaises(RuntimeError) as raised:
+                co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+        self.assertTrue(str(raised.exception).startswith(
+            'read-only turn changed the workspace and it could not be restored; manual restore needed: '), str(raised.exception))
+        self.assertIn('simulated failure', str(raised.exception))
+        self.assertIn('also: CLI exit 1', str(raised.exception))   # the other reason follows
+        self.assertIn('manual restore needed', co.unrestored_workspace_issue())
+        command = self.h.command()
+        command[2] = 'resume'
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(rc.main(command[2:]), 2)
+        self.assertIn('REFUSED: read-only turn', out.getvalue())
+        self.assertIn('manual restore needed', out.getvalue())
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)   # the operator's manual restore
+        self.assertEqual(co.unrestored_workspace_issue(), '')
+        self.assertNotIn('unrestored_readonly_turn', json.loads((self.h.run_dir / 'state.json').read_text()))
+
+    def failed_undo(self, **patches):   # a PLAN reviewer write whose undo fails; `patches` break the rest of the turn
+        co = self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest')   # the same flags as h.command()
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}), \
+                patch.object(rc.readonly_guard, 'restore', return_value='simulated failure'), \
+                patch.object(rc.Coordinator, '_collect', **patches):
+            co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+
+    def saved_record(self):
+        return json.loads((self.h.run_dir / 'state.json').read_text()).get('unrestored_readonly_turn')
+
+    def test_an_unexpected_exception_after_a_failed_undo_keeps_the_record_and_the_reason(self):   # eff-d
+        with self.assertRaises(RuntimeError) as raised:
+            self.failed_undo(side_effect=OSError('disk went away'))
+        self.assertTrue(str(raised.exception).startswith(
+            'read-only turn changed the workspace and it could not be restored; manual restore needed: '), str(raised.exception))
+        self.assertIn('also: disk went away', str(raised.exception))
+        self.assertEqual(self.saved_record()['reason'], 'simulated failure')
+        command = self.h.command()
+        command[2] = 'resume'
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(rc.main(command[2:]), 2)
+        self.assertIn('manual restore needed', out.getvalue())
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)   # undo by hand before the next run
+        self.h.run_dir = self.h.root / 'interrupted'
+        with self.assertRaises(KeyboardInterrupt):   # not even an Exception: the record was saved when it was made
+            self.failed_undo(side_effect=KeyboardInterrupt)
+        self.assertEqual(self.saved_record()['reason'], 'simulated failure')
+
+    def test_accept_and_a_scope_change_refuse_while_a_failed_undo_stands(self):   # eff-d
+        with self.assertRaises(RuntimeError):
+            self.failed_undo(side_effect=ValueError('stop after the undo'))
+        for action, extra in (('accept', ('--reason', 'looks fine')), ('accept', ('--override-rejection', '--reason', 'take it')),
+                              ('reject', ('--scope-change', '--text', 'narrow it'))):
+            with self.subTest(action=action, extra=extra):
+                result = self.h.run_operator_action(action, *extra)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn('REFUSED: read-only turn', result.stdout)
+                self.assertIn('restore the workspace by hand', result.stdout)
+                self.assertIn('clears this record by itself', result.stdout)
+                self.assertIn('otherwise abort the run', result.stdout)
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)   # the manual restore
+        result = self.h.run_operator_action('accept', '--reason', 'looks fine')
+        self.assertNotIn('REFUSED: read-only turn', result.stdout)
+        self.assertIsNone(self.saved_record())
+
+    def test_a_failed_capture_still_sees_a_commit(self):   # eff-c: HEAD, branch and index are recorded apart from the tree
+        co = self.h.coordinator()
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        prompt = co._review_prompt('reviewer', 'snapshot')
+        head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=self.h.workspace, capture_output=True, text=True).stdout.strip()
+        with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_COMMIT': '1'}), \
+                patch.object(rc.readonly_guard, 'capture', side_effect=RuntimeError('no tree')):
+            with self.assertRaisesRegex(RuntimeError, 'manual restore needed: reviewer mutated workspace; there is no verified pre-turn record'):
+                co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+        self.assertIn('manual restore needed', co.unrestored_workspace_issue())
+        subprocess.run(['git', 'reset', '-q', '--soft', head], cwd=self.h.workspace, check=True)
+        self.assertEqual(co.unrestored_workspace_issue(), '')
+
     def test_an_unreadable_index_counts_as_a_change(self):
         co = self.h.coordinator()
         (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
@@ -203,6 +307,14 @@ class ReadOnlyTurnTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, r'reviewer mutated workspace and its process group could not be stopped \(the group'):
                 co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
         self.assertFalse(co.state['turns'][-1]['voided']['restored'])
+        record = self.saved_record()   # INT-3a: not restored either, so recorded at once like eff-d's failed undo
+        self.assertEqual(record['sequence'], co.state['turns'][-1]['sequence'])
+        self.assertTrue(record['reason'].startswith('process group could not be stopped (stop every process of that turn first): '))
+        self.assertIn('head', record['marks'])
+        self.assertIn('manual restore needed', co.unrestored_workspace_issue())
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)   # the operator restores
+        self.assertEqual(co.unrestored_workspace_issue(), '')
+        self.assertIsNone(self.saved_record())
 
 
 if __name__ == '__main__':

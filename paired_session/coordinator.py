@@ -1932,7 +1932,7 @@ class Coordinator:
     @staticmethod
     def _readonly_changed(workspace, recorded, before, after) -> bool:   # content (the coordinator's snapshot), HEAD, branch or index
         if before != after: return True
-        if not recorded or 'error' in recorded: return False
+        if not recorded or 'head' not in recorded: return False
         try: return readonly_guard.moved(workspace, recorded)
         except (OSError, RuntimeError, subprocess.SubprocessError): return True   # unknown: void it; the undo then verifies or holds
 
@@ -1940,13 +1940,19 @@ class Coordinator:
         """D-EFF category A (docs/efficient-mode.md §4a): save the change as evidence and undo it from the pre-turn record, only when
         the undo verifies (HEAD, branch, index, worktree tree, and the coordinator's own snapshot); otherwise the run must hold.
         INT-2c: the turn's process group is stopped first, so no child left in it can change the tree again after the restore."""
+        unrestored = {'sequence': receipt['sequence'], 'role': role, 'snapshot': before,   # resume refuses until the workspace is back
+                      'marks': {key: (recorded or {})[key] for key in ('head', 'branch', 'index') if key in (recorded or {})}}
         try: self._stop_turn_group(receipt['sequence'])
         except RuntimeError as exc:
             receipt['voided'] = {'restored': False, 'reason': str(exc)}
+            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': f'process group could not be stopped (stop every process of that turn first): {exc}'}
+            self._save_unrestored()
             return ReadOnlyTurnVoided(f'{role} mutated workspace and its process group could not be stopped ({exc}); '
                                       'stop it and restore the workspace by hand', restored=False)
         if not recorded or 'error' in recorded:
             receipt['voided'] = {'restored': False, 'reason': (recorded or {}).get('error', 'no pre-turn record')}
+            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': receipt['voided']['reason']}
+            self._save_unrestored()
             return ReadOnlyTurnVoided(f'{role} mutated workspace; there is no verified pre-turn record to restore it from '
                                       f'({receipt["voided"]["reason"]}); restore the workspace by hand', restored=False)
         diff = prefix.with_suffix('.workspace-change.diff')
@@ -1956,9 +1962,32 @@ class Coordinator:
             if why is None and git_snapshot(workspace)[0] != before: why = 'the workspace snapshot still differs after the restore'
         except Exception as exc: why = f'{type(exc).__name__}: {exc}'
         receipt['voided'] = {'evidence': str(diff), 'restored': why is None, **({'restore_failure': why} if why else {})}
+        if why:
+            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': why, 'evidence': str(diff)}
+            self._save_unrestored()
         if why: return ReadOnlyTurnVoided(f'{role} mutated workspace and the coordinator could not restore it ({why}); '
                                           f'restore it by hand, see {diff}', restored=False)
         return ReadOnlyTurnVoided(f'{role} mutated workspace; the turn is void and the workspace was restored (evidence: {diff})', restored=True)
+
+    def _save_unrestored(self) -> None:   # on disk at once: no later exception of this turn may lose the record
+        try: self.save()
+        except Exception as exc: print(f'WARNING: could not save the unrestored read-only turn record: {type(exc).__name__}: {exc}')
+
+    def unrestored_workspace_issue(self) -> str:
+        """D-EFF category A: a read-only turn's change that could not be undone blocks every dispatch until the workspace is back to
+        the coordinator's pre-turn snapshot (content digest, HEAD, branch and index); then the record is cleared."""
+        if not (record := self.state.get('unrestored_readonly_turn')): return ''
+        try: back = git_snapshot(self.workspace)[0] == record['snapshot'] and all(
+                 value == readonly_guard.marks(self.workspace)[key] for key, value in record['marks'].items())
+        except (OSError, RuntimeError, subprocess.SubprocessError, KeyError): back = False
+        if back:
+            self.state.pop('unrestored_readonly_turn'); self.save()
+            return ''
+        return (f'read-only turn {record["sequence"]} ({record["role"]}) changed the workspace and it could not be restored; manual '
+                f'restore needed ({record["reason"]}' + (f'; evidence: {record["evidence"]}' if record.get('evidence') else '') +
+                '); restore the workspace by hand to its state before that turn (content, HEAD, branch and index; the evidence diff '
+                'shows the change). The next run, resume, reject or accept clears this record by itself once the workspace matches '
+                'again; otherwise abort the run')
 
     @property
     def strict(self) -> bool:   # D-EFF: category C (probe gate, a holding evidence guard) as before; anything but 'efficient' is strict
@@ -4924,8 +4953,10 @@ class Coordinator:
         before, manifest = git_snapshot(snapshot_workspace)
         recorded, keep = None, self.internal / 'readonly' / f'{seq:03d}-{role}'   # D-EFF category A, both modes
         if role in ('reviewer', 'gate', 'shadow') and not allow_mutation_report:
+            try: marks = readonly_guard.marks(snapshot_workspace)   # apart from the tree, so a failed capture still compares them
+            except (OSError, RuntimeError, subprocess.SubprocessError): marks = {}
             try: recorded = readonly_guard.capture(snapshot_workspace, keep)
-            except (OSError, RuntimeError, subprocess.SubprocessError) as exc: recorded = {'error': f'{type(exc).__name__}: {exc}'}
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc: recorded = {**marks, 'error': f'{type(exc).__name__}: {exc}'}
         head_before = git_head_state(snapshot_workspace) if role == 'author' else None   # D-EFF git guard (category B), both modes
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
@@ -5071,11 +5102,12 @@ class Coordinator:
             after, after_manifest = git_snapshot(snapshot_workspace)
             receipt['snapshot_after'] = after
             atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
+        voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
         try:
             if control_problem: raise ValueError(control_problem)
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
                 raise ValueError('author changed HEAD or the branch: a commit, reset or checkout is not allowed in a paired-session run')
-            voided = None   # D-EFF category A: undo first, so a failed or rejected read-only turn is undone too; raised after the other checks
+            # D-EFF category A: undo first, so a failed or rejected read-only turn is undone too; raised after the other checks
             if role != 'author' and not allow_mutation_report and self._readonly_changed(snapshot_workspace, recorded, before, after):
                 voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
             if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR'):   # b295-f1: listed in the receipt before it is removed
@@ -5176,15 +5208,19 @@ class Coordinator:
                 if session:
                     self.state['sessions'][role] = session
                 self.state['started'][role] = True
-        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+        except Exception as exc:   # any other exception is recorded here only after a failed undo, which must lead the hold
+            if not isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)) and (voided is None or voided.restored): raise
             receipt['error'] = str(exc)
+            if voided is not None and not voided.restored:   # the failed undo leads, whatever else this turn tripped
+                receipt['error'] = ('read-only turn changed the workspace and it could not be restored; manual restore needed: '
+                                    + str(voided) + ('' if exc is voided else '; also: ' + str(exc)))
             self._rotate_failed_first_claude_session(role, receipt['vendor'], fresh)
             atomic_json(prefix.with_suffix('.receipt.json'), receipt)
             self.state['turns'].append(receipt)
             self.state['last_end'][role] = receipt['end']
             self.state['active'] = None
             self.save()
-            raise RuntimeError(str(exc)) from exc
+            raise RuntimeError(receipt['error']) from exc
         receipt['answer'] = answer
         atomic_json(prefix.with_suffix('.receipt.json'), receipt)
         self.state['turns'].append(receipt)
@@ -8430,6 +8466,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
     co._publication_guard()
     if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
+    if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
+        return co.refused(issue)
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
             and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)

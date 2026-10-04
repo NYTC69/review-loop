@@ -116,7 +116,6 @@ def emit_claude(answer, session, extra_commands=None):
                     ('paired-session-claude-sandbox-' in command or
                      '.paired-session-run-dir-probe-' in command or
                      '.paired-session-context-probe-' in command) and ' > ' in command):
-                import shlex
                 parts = shlex.split(command)
                 target = Path(parts[parts.index('>') + 1])
                 target.write_text('probe escaped sandbox\n')
@@ -578,6 +577,10 @@ def main():
                     'command': "sed -n '1,20p' tracked.txt", 'exit_code': 0, 'aggregated_output': text}}))
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_MUTATE'):
             (Path.cwd() / 'tracked.txt').write_text('forbidden plan review write\n')
+            if os.environ.get('FAKE_PLAN_REVIEWER_FAIL'):   # D-EFF eff-c: a write, then a CLI that exits non-zero
+                return 1
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_COMMIT'):   # D-EFF eff-c: HEAD moves, files stay the same
+            subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'plan review commit'], check=True)   # the module import: a local one would shadow it in all of main()
 
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
     if snapshot_mode == 'wrong':
