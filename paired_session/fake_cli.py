@@ -11,10 +11,12 @@ import uuid
 
 
 def readonly_profile(args):
-    """b295-f1: the filesystem table of the `-P <name>` read-only profile in a Codex argv ({} when absent)."""
-    if '-P' not in args:
+    """b295-f1: the filesystem table of the profile that `default_permissions` selects in a Codex argv ({} when absent; the last
+    --config wins, as in Codex)."""
+    selected = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('-c', '--config') and args[i + 1].startswith('default_permissions=')]
+    if not selected:
         return {}
-    key = 'permissions.' + args[args.index('-P') + 1] + '.filesystem='
+    key = 'permissions.' + selected[-1].split('=', 1)[1].strip('"') + '.filesystem='
     raw = next((arg[len(key):] for arg in args if arg.startswith(key)), '')
     try: return json.loads(raw.replace('"=', '":'))
     except ValueError: return {}
@@ -161,6 +163,11 @@ def main():
             target.write('\n```reviewer-commands\n' + append_commands + '\n```\n')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
+    rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
+    if vendor == 'codex' and rejected:   # b296-f1e: like codex-cli 0.160.0, `codex exec` has no -P/--permission-profile
+        flag = '-P' if rejected.startswith('-P') else '--permission-profile'
+        print(f"error: unexpected argument '{flag}' found", file=sys.stderr)
+        return 2
     if vendor == 'claude':
         allowed = [args[index + 1] for index, value in enumerate(args[:-1])
                    if value == '--allowedTools']

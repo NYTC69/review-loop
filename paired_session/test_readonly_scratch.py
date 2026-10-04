@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -310,6 +311,23 @@ class ExplicitDenialTests(unittest.TestCase):                                   
             self.h.run_dir = self.h.root / 'unknown-gate'
             report = self.probe(self.co('--reviewer-vendor', 'claude', '--gate-vendor', 'codex'))
             self.assertEqual((report['status'], report['gate_permission_probe']['status']), ('UNKNOWN', 'UNKNOWN'))
+
+
+class ExecProfileSelectionTests(unittest.TestCase):                                          # b296-f1e
+    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
+
+    def test_codex_exec_refuses_a_permission_profile_flag_and_the_probe_fails_on_one(self):
+        profile = rc.codex_readonly_profile_args()
+        for flag in (['-P', 'paired_session_readonly'], ['--permission-profile', 'paired_session_readonly'], ['--permission-profile=paired_session_readonly']):
+            with self.subTest(flag=flag[0]):                                                 # codex-cli 0.160.0: `codex exec` has no -P
+                done = subprocess.run([sys.executable, str(trc.FAKE), 'exec', *flag, *profile[2:], '-'], input='Role: reviewer, persistent. Phase: PLAN.',
+                                      text=True, capture_output=True, timeout=30)
+                self.assertEqual((done.returncode, done.stdout), (2, ''))
+                self.assertEqual(done.stderr, f"error: unexpected argument '{flag[0].split('=')[0]}' found\n")
+        old = ['-P', rc.CODEX_READONLY_PROFILE, *profile[2:]]                                 # the v2.9.6 candidate's argv
+        with patch.object(rc, 'codex_readonly_profile_args', return_value=old):
+            report = self.probe(self.co(*CODEX_ROLES))
+        self.assertEqual((report['status'], report['failure_reasons']), ('FAIL', ['probe-turn-error: CLI exit 2']))   # R1 l1: the refusal, not a missed scratch write
 
 
 if __name__ == '__main__':

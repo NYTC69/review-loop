@@ -479,9 +479,12 @@ SCRATCH_PROBE_COMMAND = 'printf probe > "$TMPDIR/paired-session-scratch-probe"'
 
 def codex_readonly_profile_args() -> list[str]:
     """b295-f1: replaces sandbox_mode="read-only" (Codex refuses both together): root and workspace read, only $TMPDIR (the dispatch's
-    scratch root) writable, network off. Only a real permission-probe shows that `codex exec` honours it."""
+    scratch root) writable, network off. Only a real permission-probe shows that `codex exec` honours it.
+    b296-f1e: `codex exec` has no -P (codex-cli 0.160.0 exits 2); `default_permissions` selects the profile. An explicit --config
+    outranks user, system and project config.toml; managed config, requirements and MDM may outrank it, and codex_capability_guard
+    refuses a dispatch when they set permission keys."""
     name = CODEX_READONLY_PROFILE
-    return ['-P', name, '--config', f'permissions.{name}.filesystem={{":root"="read", ":tmpdir"="write", ":workspace_roots"={{"."="read"}}}}',
+    return ['--config', f'default_permissions="{name}"', '--config', f'permissions.{name}.filesystem={{":root"="read", ":tmpdir"="write", ":workspace_roots"={{"."="read"}}}}',
             '--config', f'permissions.{name}.network.enabled=false']
 
 
@@ -1866,6 +1869,7 @@ class Coordinator:
                       **{str(Path(root).resolve()): 'write' for root in policy['sandbox_workspace_write.writable_roots']},
                       ':workspace_roots': roots}
         inline = '{' + ', '.join(json.dumps(k) + '=' + ('{' + ', '.join(json.dumps(r) + '=' + json.dumps(v) for r, v in value.items()) + '}' if isinstance(value, dict) else json.dumps(value)) for k, value in filesystem.items()) + '}'
+        # b296-f1e: only `codex sandbox` (the escape check) takes this argv; `codex sandbox` has -P, `codex exec` does not.
         return ['-P', 'paired_session_author', '--config', 'permissions.paired_session_author.filesystem=' + inline,
                 '--config', 'permissions.paired_session_author.network.enabled=false']
 

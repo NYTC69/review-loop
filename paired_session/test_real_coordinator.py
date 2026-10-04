@@ -46,11 +46,14 @@ def unique_json_object(pairs):
 
 def assert_codex_readonly_profile(case, argv):
     """b295-f1 (authorized replacement for `sandbox_mode="read-only"`): exactly one read-only permission profile: root read, workspace
-    read, only :tmpdir writable, network off, no sandbox_mode and no other permissions key."""
+    read, only :tmpdir writable, network off, no sandbox_mode and no other permissions key. b296-f1e: `codex exec` has no -P, so the
+    profile is selected by exactly one `default_permissions` config and no -P/--permission-profile appears anywhere."""
     configs = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value in ('-c', '--config')]
-    case.assertFalse([value for value in configs if value.startswith(('sandbox_mode', 'sandbox_workspace_write', 'default_permissions'))], argv)
-    case.assertEqual(argv.count('-P'), 1, argv)
-    name = argv[argv.index('-P') + 1]
+    case.assertFalse([value for value in configs if value.startswith(('sandbox_mode', 'sandbox_workspace_write'))], argv)
+    case.assertFalse([value for value in argv if value.startswith(('-P', '--permission-profile'))], argv)
+    case.assertEqual([value for value in configs if value.startswith('default_permissions')],
+                     ['default_permissions="paired_session_readonly"'], argv)
+    name = 'paired_session_readonly'
     granted = [value for value in configs if value.startswith('permissions.')]
     case.assertEqual(len(granted), 2, argv)
     filesystem = json.loads(granted[0].split('=', 1)[1].replace('"=', '":'))

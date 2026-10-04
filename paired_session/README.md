@@ -235,8 +235,13 @@ For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
 on the permission-probe command; this changes only the prompt, not the sandbox.
 
 Read-only temp dir (FIELD-1, v2.9.6): a Codex reviewer, shadow, gate or probe
-turn runs under the permission profile `-P paired_session_readonly` (root and
-workspace read-only, only `$TMPDIR` writable, network off) instead of
+turn runs under the permission profile `paired_session_readonly` (root and
+workspace read-only, only `$TMPDIR` writable, network off), selected with
+`--config default_permissions="paired_session_readonly"` because `codex exec`
+has no `-P` (verified on codex-cli 0.160.0; an explicit `--config` outranks
+user, system and project `config.toml`; managed config, requirements and MDM
+may outrank it, and the capability guard refuses a dispatch when they set
+permission keys), instead of
 `sandbox_mode="read-only"`, with TMPDIR/TMP/TEMP set to a fresh 0700
 `<run_dir>/role-tmp/<seq>-<role>` for that one dispatch, so a `tmp_path`-style
 test has a usable temp dir. The coordinator lists that root in the turn's
@@ -290,7 +295,7 @@ hard link a hostile probe model could link one of them, append a fake refused
 this; not done). The refused writes are judged by their targets on disk and
 are not affected. A detached descendant acting after the CLI exits is outside
 the window, as for the other per-turn checks. Resume turns: a persistent Codex
-reviewer's later turns run `codex exec ... -P paired_session_readonly ... resume
+reviewer's later turns run `codex exec ... --config default_permissions="paired_session_readonly" ... resume
 <id>`; the probe runs fresh turns only, so whether the real CLI applies the
 profile on resume (before, a plain `sandbox_mode` override did) is unproven; if
 it did not, those turns would fall back to the CLI's default sandbox and only
