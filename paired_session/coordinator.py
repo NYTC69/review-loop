@@ -3270,13 +3270,22 @@ class Coordinator:
         if self._fake_lifecycle:
             self._freeze_fake_exec_source()
             return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
-        if worktree_lifecycle.is_worktree(self.state):   # W1a: EXEC converged; FINISH arrives in W1b, never skip it
+        if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
             if blocking := self.blocking_open_findings():
                 self.state['gate_ran'] = False   # the repair is a new convergence and needs its own gate
                 return self.hold('worktree lifecycle refuses FINISH with open blocking findings: ' +
                                  ', '.join(row['id'] for row in blocking))
-            self.state['lifecycle'].update(stage='FINISH', candidate_oid=git_snapshot(self.workspace)[0])
-            return self.hold(worktree_lifecycle.FINISH_PENDING)
+            reviewed = git_snapshot(self.workspace)[0]
+            reviewer, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
+            if {reviewer.get('snapshot_before'), gate.get('snapshot_before')} != {reviewed}:
+                self.state.update(gate_ran=False, next='reviewer')   # resume re-reviews and re-gates this tree
+                return self.hold('stale EXEC approval: the reviewer and the gate did not both review the current tree')
+            self.set_effective_verdict('APPROVE')
+            self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
+                'tree': reviewed, 'reviewer_sequence': reviewer.get('sequence'), 'gate_sequence': gate.get('sequence')})
+            self.state['next'] = 'finish'
+            self.save()
+            return 'ACTIVE'
         findings = self.nonblocking_open_findings()
         if (self.args.polish_round == 'off' and not force) or not findings:
             return self.done()
@@ -3924,7 +3933,7 @@ class Coordinator:
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
         if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
-        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
+        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH')
                            else self.args.timeout)
         self.state['sequence'] += 1
         seq = self.state['sequence']
@@ -4228,6 +4237,56 @@ class Coordinator:
         self.state['delivered_review'] = ''
         self.state['next'] = 'reviewer'
         self.state.pop('pending_author_result_sequence', None)
+        self.save()
+
+    def _writer_git_state(self) -> dict:
+        """HEAD, its branch and the staged entries: what a lifecycle writer must not change (doc 6, D8)."""
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        return {'head': self._head_commit(), 'branch': self._git(['symbolic-ref', '-q', 'HEAD'], ok=(0, 1)).strip(),
+                'index': digest(self._git(['ls-files', '--stage']))}   # tags/other refs are shared across worktrees
+
+    def worktree_finish_turn(self) -> None:
+        """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
+        life = self.state['lifecycle']
+        request = worktree_lifecycle.stage_request(life, 'finisher')
+        if life['pending'] != request:   # new attempt: persist the git baseline before anything runs
+            life['writer_git'] = {**self._writer_git_state(), 'sequence': self.state['sequence']}
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)   # replay-stable on retry
+        self.save()
+        base = self.state['lifecycle'].get('writer_git')
+        if not base:
+            raise RuntimeError('FINISH request is in flight without a recorded git baseline; inspect, then abort')
+        def check_git():
+            if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
+                raise RuntimeError('finisher changed HEAD, refs or the index; restore the recorded baseline or abort')
+        check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
+        recorded = next((turn for turn in reversed(self.state['turns'])
+                         if turn.get('role') == 'author' and turn.get('phase') == 'FINISH' and not turn.get('error')
+                         and turn.get('sequence', 0) > base['sequence'] and isinstance(turn.get('answer'), dict)), None)
+        plan = (self.context / 'plan.md').read_text()
+        docs_file = self.state['config'].get('docs_file')
+        result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
+                   'role': 'author'} if recorded else
+                  self.invoke('author', 'FINISH', worktree_lifecycle.finish_prompt(plan, self.args.test_command, docs_file),
+                              author_schema(), fresh=True))
+        check_git()
+        self.render(result, 'finisher', 'FINISH')
+        answer = result['answer']
+        receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
+                   'output_oid': git_snapshot(self.workspace)[0], 'sequence': result['sequence']}   # the tree now, not as recorded
+        self.state['lifecycle'] = worktree_lifecycle.after_finish(
+            lifecycle_spine.complete(self.state['lifecycle'], receipt), receipt)
+        self.state['lifecycle'].pop('writer_git', None)
+        if answer['status'] == 'HOLD':
+            self.hold('finisher: ' + answer['body'])
+        elif self.state['lifecycle']['stage'] == 'EXEC':   # FINISH wrote: new convergence, reviewer then gate
+            self.state['exec_rounds'] += 1
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.hold('EXEC round limit reached after a FINISH write')
+        else:
+            self.state['next'] = 'polish-q'
+            self.hold(worktree_lifecycle.POLISH_PENDING)
         self.save()
 
     def polish_author_turn(self) -> None:
@@ -5315,8 +5374,6 @@ class Coordinator:
     def drive(self) -> str:
         if self._fake_lifecycle:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
-        if worktree_lifecycle.finish_pending(self.state):
-            return self.hold(worktree_lifecycle.FINISH_PENDING)
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
         if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
@@ -6106,6 +6163,10 @@ class Coordinator:
                     self.reviewer_turn()
                 elif self.state['next'] == 'gate':
                     self.gate_turn()
+                elif self.state['next'] == 'finish' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_finish_turn()
+                elif self.state['next'] == 'polish-q' and worktree_lifecycle.is_worktree(self.state):
+                    return self.hold(worktree_lifecycle.POLISH_PENDING)
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
@@ -6538,6 +6599,8 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     for key, value in values.items():
         if key in explicit:
             continue
+        if writable_profile and key in worktree_lifecycle.PROFILE_KEYS:
+            p.set_defaults(workspace_lifecycle_keys=sorted({*(p.get_default('workspace_lifecycle_keys') or ()), key}))
         if key == 'lifecycle_mode' and value == 'on' and writable_profile:
             raise ValueError('lifecycle remains disabled from a workspace profile; pass --lifecycle-mode on '
                              'or use an operator --config outside the workspace, run dir and author temp')

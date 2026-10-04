@@ -111,8 +111,10 @@ real lifecycle will run as the worktree lifecycle of
 `docs/e2e-6-worktree-lifecycle.md`; the full lifecycle is usable only after
 batch W3b lands. Since W1a, `lifecycle_mode=on` from the command line or an
 operator `--config` starts a worktree-lifecycle run that runs PLAN and EXEC and
-then HOLDs before FINISH (FINISH arrives in W1b; such a run cannot be accepted
-before W3b); a workspace profile cannot enable it, and the run refuses
+then runs FINISH (a fresh author turn; a change reopens EXEC review and gate)
+and HOLDs before POLISH-Q (W2a; such a run cannot be accepted before W3b); a
+workspace profile can neither enable it nor set its docs/skip/polish keys, and
+the run refuses
 `--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.

@@ -1,7 +1,7 @@
 # E2E lifecycle design 6: worktree lifecycle W (D12 legacy parity)
 
-Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path
-and HOLDs after EXEC convergence; the post-EXEC stages arrive in W1b–W3b. Sources: ADR-11, the lane A
+Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
+W1b runs FINISH and HOLDs before POLISH-Q; the remaining stages arrive in W2a–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -99,8 +99,14 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   disabled" message substring.
 - Added in W1a: lifecycle runs refuse `--accept-unverified-claude-author` and `--accept-probe-skip`; a
   verified probe-cache reuse is allowed.
-- Added in W1a: until W1b lands, a W run HOLDs after EXEC convergence with the reason "worktree lifecycle
-  stage FINISH not implemented yet (W1b)", so a real run never silently skips a stage.
+- Added in W1a, moved by W1b: until W2a lands, a W run HOLDs after FINISH with the reason "worktree
+  lifecycle stage POLISH-Q not implemented yet (W2a)", so a real run never silently skips a stage.
+- Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot and HOLDs (stale EXEC approval)
+  when the tree differs; the docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs`,
+  `skip_quality_polish`, `polish_round`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when
+  it changes HEAD, its branch or the staged index against a baseline persisted per attempt (tags, remotes,
+  stash and other branches are shared across worktrees and not checked; HEAD equal to the run parent is a
+  W3b delivery check). The FINISH receipt binds the tree the coordinator observes when it writes it.
 - Added in W1b–W3b: every writer turn must leave HEAD, refs and the index unchanged, otherwise HOLD; the
   run_dir denyWrite and lease stop writers from calling accept or close (D8) but do not stop a `git commit`
   inside the worktree.

@@ -212,6 +212,22 @@ def main():
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
+    elif 'Role: finisher' in prompt or 'Role: docs writer' in prompt:   # worktree-lifecycle fresh writers (ADR-11)
+        module = Path.cwd() / 'sum_ints.py'
+        if ('Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_WRITE') and
+                '# finisher fix' not in module.read_text()):   # one fix; the next FINISH finds nothing to change
+            module.write_text(module.read_text() + '# finisher fix\n')
+        if 'Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_COMMIT'):   # a writer committing on its own
+            for command in (['git', 'add', '-A'], ['git', '-c', 'user.name=Fake', '-c', 'user.email=fake@example.test',
+                                                   'commit', '-qm', 'finisher commit', '--allow-empty']):
+                __import__('subprocess').run(command, check=True)
+        if 'Phase: DOCS' in prompt and os.environ.get('FAKE_LIFECYCLE_DOCS_FILE'):
+            target = Path.cwd() / os.environ['FAKE_LIFECYCLE_DOCS_FILE']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('# Fake lifecycle guide\n')
+        answer = ({'status': 'HOLD', 'body': 'Fake finisher held.'} if os.environ.get('FAKE_FINISH_HOLD') else
+                  {'status': 'READY', 'body': 'Checked readiness; ' + ('fixed a defect.' if
+                   os.environ.get('FAKE_FINISH_WRITE') else 'nothing needed changing.')})
     elif prompt.startswith('You are an adversarial reviewer'):
         configured_test = prompt.split(
             'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
