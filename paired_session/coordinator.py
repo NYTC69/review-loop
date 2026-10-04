@@ -187,6 +187,10 @@ class RunLeaseError(RuntimeError):
     pass
 
 
+class WorktreeDeliveryHold(RuntimeError):
+    """An auto_commit that cannot move HEAD as journaled; the accept HOLDs and a replay with the same --expect finishes."""
+
+
 class RateLimitError(ValueError):
     pass
 
@@ -3316,17 +3320,29 @@ class Coordinator:
         if config.get('external_delivery'):
             raise ValueError('worktree lifecycle refuses external delivery (push, PR, merge; D8); set external_delivery '
                              'false in the operator profile')
-        if self.state.get('status') != 'DONE' or life.get('stage') != 'DONE':
-            raise ValueError('worktree lifecycle accept requires status DONE and stage DONE')
-        if config.get('auto_commit'):
-            raise ValueError('worktree lifecycle auto_commit arrives with W3b-2; set auto_commit false or wait')
-        if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; someone else did
-            life.update(stage='SECURITY', candidate_oid=self.state['approved_snapshot'])
-            self.state['next'] = 'security'
-            return self.hold(f'HEAD moved since the run started ({life["parent"][:12]} -> {head[:12]}); restore it and '
-                             'resume (SECURITY runs again), or abort')
-        intent = self.operator_intent('accept', None, None, self.args.expect, True)
-        delivery = {'auto_commit': False, 'commit': None, 'head': head, 'external_delivery': False}
+        journal_path = self.evidence / 'delivery-commit.json'
+        journal = json.loads(journal_path.read_text()) if journal_path.exists() else None
+        if journal and self.args.expect == journal['intent']['digest'] and life.get('stage') == 'DONE' and (
+                self.state.get('status') == 'DONE' or self.state.get('delivery_pending') == journal['intent']['digest']):
+            intent = journal['intent']   # a replay of a journaled commit (HEAD may already be the commit)
+            if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
+                raise ValueError('the tree changed since the journaled accept; restore it or abort')
+        else:
+            if self.state.get('status') != 'DONE' or life.get('stage') != 'DONE':
+                raise ValueError('worktree lifecycle accept requires status DONE and stage DONE')
+            if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; someone else did
+                life.update(stage='SECURITY', candidate_oid=self.state['approved_snapshot'])
+                self.state['next'] = 'security'
+                return self.hold(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore '
+                                 'HEAD and the approved tree and resume (SECURITY runs again), or abort')
+            intent = self.operator_intent('accept', None, None, self.args.expect, True)
+            journal = None
+        try:
+            delivery = (self._worktree_commit(intent, journal) if config.get('auto_commit') else
+                        {'auto_commit': False, 'commit': None, 'head': life['parent'], 'external_delivery': False})
+        except WorktreeDeliveryHold as exc:   # resume is refused; only accept with the journaled digest finishes it
+            self.state['delivery_pending'] = intent['digest']
+            return self.hold(f"{exc}; accept --expect {intent['digest']}")
         record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(), 'intent': intent,
                   'accepted_state': 'DONE', 'acceptance_state': 'ACCEPTED', 'reason': self.args.reason,
                   'override_rejection': False, 'delivery': delivery}
@@ -3337,12 +3353,96 @@ class Coordinator:
         atomic_json(evidence_path, record)
         self.state.setdefault('events', []).append(record)
         self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
+        self.state.pop('delivery_pending', None)
         atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
             self.state, self.run_dir.name, self.workitem.read_text(), delivery))
         self.save()
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
         return 'ACCEPTED'
+
+    def _worktree_run_cap(self, stage: str) -> int:
+        """A run-wide stage budget; each W reject reruns FINISH..SECURITY, so it adds one more allowance."""
+        return budget_policy.BUDGET_CAPS[stage][0] * (1 + len(self.state.get('rejections', [])))
+
+    def _commit_refusals(self, paths: list[str]) -> None:
+        """W04 parity before an auto_commit: no work staged before the run, no content-transforming attribute or
+        filter, no core.autocrlf, so the commit holds exactly the accepted bytes and checks out as them."""
+        if staged := self._git(['diff-index', '--cached', '--name-only', 'HEAD']).split():
+            raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
+        if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
+            raise ValueError('auto_commit refuses core.autocrlf; unset it or accept with auto_commit false')
+        if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
+            raise ValueError('auto_commit refuses a repository with submodules; accept with auto_commit false')
+        if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
+            raise ValueError('auto_commit refuses skip-worktree (sparse) entries; accept with auto_commit false')
+        proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
+                                           'text', 'eol', 'working-tree-encoding'], cwd=self.workspace,
+                                          input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        fields = proc.stdout.split('\0')
+        transforming = [f'{path}: {attr}={value}' for path, attr, value in zip(fields[0::3], fields[1::3], fields[2::3])
+                        if value not in ('unspecified', 'unset')]
+        if proc.returncode or transforming:
+            raise ValueError('auto_commit refuses content-transforming attributes: ' +
+                             ', '.join(transforming[:10] or [proc.stderr.strip()[-200:]]))
+
+    def _manifest_tree(self, snapshot: list) -> str:
+        """The git tree of exactly the accepted manifest, written through a private index (raw bytes, no filters)."""
+        files = [(path, value) for path, value in snapshot if value != 'missing']
+        if any('\n' in path or path.startswith('"') or path.endswith('\r') for path, _ in files):
+            raise ValueError('auto_commit refuses a path that --stdin-paths would rewrite (newline, leading quote, trailing CR)')
+        regular = [path for path, value in files if not value.startswith('link:')]
+        oids = dict(zip(regular, candidate_tree.run_bounded(
+            candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
+            cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, check=True, timeout=600).stdout.split()))
+        for path, value in files:   # --stdin-paths follows symlinks: a link blob is its target text
+            if value.startswith('link:'):
+                oids[path] = candidate_tree.run_bounded(
+                    candidate_tree.git_command('hash-object', '-w', '--stdin', cwd=self.workspace), cwd=self.workspace,
+                    input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                    timeout=600).stdout.strip()
+        rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if os.lstat(self.workspace / path).st_mode & 0o111 else '100644'}"
+                       f' {oids[path]}\t{path}\0' for path, value in files)
+        index = self.internal / f'delivery-index-{uuid.uuid4().hex[:8]}'
+        env = {**candidate_tree.git_env(), 'GIT_INDEX_FILE': str(index)}
+        try:
+            subprocess.run(candidate_tree.git_command('update-index', '-z', '--index-info', cwd=self.workspace),
+                           cwd=self.workspace, env=env, input=rows, text=True, check=True, capture_output=True, timeout=600)
+            return subprocess.run(candidate_tree.git_command('write-tree', cwd=self.workspace), cwd=self.workspace, env=env,
+                                  text=True, check=True, capture_output=True, timeout=600).stdout.strip()
+        finally:
+            index.unlink(missing_ok=True)
+
+    def _worktree_commit(self, intent: dict, journal: Optional[dict]) -> dict:
+        """D-1 auto_commit: one hook-free local commit (git_command disables hooks) of exactly the accepted manifest,
+        CAS on HEAD and an index sync. A journal written before the ref moves makes a replay finish the same commit."""
+        parent = self.state['lifecycle']['parent']
+        if journal is None:
+            self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
+            tree = self._manifest_tree(intent['tree_snapshot'])
+            if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
+                raise ValueError('the tree changed during the accept; restore the approved tree or abort')
+            title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
+                         'paired-session work item')
+            message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
+                       f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n")
+            commit = self._git(['commit-tree', '--no-gpg-sign', tree, '-p', parent, '-m', message]).strip()
+            journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit}
+            atomic_json(self.evidence / 'delivery-commit.json', journal)
+        if (head := self._head_commit()) == journal['parent']:
+            try:   # compare-and-swap: only from the parent the commit was built on
+                self._git(['update-ref', '-m', 'paired-session accept ' + self.run_dir.name, 'HEAD', journal['commit'], journal['parent']])
+            except RuntimeError as exc:
+                raise WorktreeDeliveryHold(f'auto_commit: HEAD could not move from {journal["parent"][:12]} ({exc}); '
+                                           'restore HEAD to it, or abort') from exc
+        elif head != journal['commit']:
+            raise WorktreeDeliveryHold(f"auto_commit: HEAD is {str(head)[:12]}, neither the parent {journal['parent'][:12]} "
+                                       f"nor the commit {journal['commit'][:12]}; restore it, or abort")
+        self._git(['read-tree', journal['commit']])   # the index follows the new HEAD
+        self._git(['update-index', '-q', '--refresh'], ok=(0, 1))
+        return {'auto_commit': True, 'commit': journal['commit'], 'head': journal['parent'], 'tree': journal['tree'],
+                'external_delivery': False}
 
     def _inherited_security_baseline(self, parent: Path) -> dict:
         """Supervisor decision (W3a): a scope-change successor inherits its parent's delivery baseline, so the delivery
@@ -3420,6 +3520,9 @@ class Coordinator:
         rejections = self.state.setdefault('rejections', [])
         maximum = self.state.setdefault('max_rejections', DEFAULT_MAX_REJECTIONS)
         self.state['rejected_digests'].append(intent['tree_sha256'])
+        if worktree_lifecycle.is_worktree(self.state):   # W3b: a reject reopens EXEC, then FINISH..SECURITY again
+            life = self.state['lifecycle']
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         if len(rejections) >= maximum:
             return self.hold('rejected-tree', terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
@@ -3437,9 +3540,6 @@ class Coordinator:
         self.state.update(status='ACTIVE', phase='EXEC', next='author', gate_ran=False,
                           delivered_review='')
         self.state['force_gate_after_reject'] = True
-        if worktree_lifecycle.is_worktree(self.state):   # W3b: a reject reopens EXEC, then FINISH..SECURITY again
-            life = self.state['lifecycle']
-            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         self.save()
         self.write_comparison()
         return 'ACTIVE'
@@ -4783,7 +4883,7 @@ class Coordinator:
 
     def _docs_budget(self) -> None:
         used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
-        if used + 1 > budget_policy.BUDGET_CAPS['DOCS'][0]:
+        if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
 
     def _observed_test(self, answer: dict):
@@ -4832,6 +4932,9 @@ class Coordinator:
                 self.round_limit_hold('EXEC round limit reached after a SECURITY-stage change')
             self.save()
             return
+        if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
+            raise RuntimeError(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore it and '
+                               'resume, or abort')
         if (held := [row['id'] for row in self.open_findings() if row.get('owner_role') == 'security-reviewer']) and (
                 life.get('security_hold_tree') == tree):   # the tree its findings were raised or left open on
             raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + ', '.join(held) +
@@ -4857,7 +4960,7 @@ class Coordinator:
             self.state['lifecycle'].pop(key, None)
         if reasons:
             self.hold('; '.join(reasons))
-        else:   # acceptance pending; accept on W DONE arrives with W3b
+        else:   # acceptance pending: accept --expect (W3b) delivers it
             self.done(expected=after, lifecycle_stage='DONE')
 
     def _security_review_turn(self, tree: str, request_id: str) -> dict:
@@ -4891,7 +4994,7 @@ class Coordinator:
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
                 used = sum(row.get('phase') == 'SECURITY' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
-                if used + 1 > budget_policy.BUDGET_CAPS['SECURITY'][0]:
+                if used + 1 > self._worktree_run_cap('SECURITY'):
                     raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
                 result = self.invoke('reviewer', 'SECURITY', prompt, review_schema(), fresh=True)
                 turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
@@ -4997,7 +5100,7 @@ class Coordinator:
         owners = self._blocker_owners()   # every owner's re-review must fit before the author writes
         for name in owners:
             self._specialist_budget(name)
-        if self.state['lifecycle'].get('polish_calls', 0) + len(owners) + 1 > budget_policy.BUDGET_CAPS['POLISH-Q'][0]:
+        if self.state['lifecycle'].get('polish_calls', 0) + len(owners) + 1 > self._worktree_run_cap('POLISH-Q'):
             raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
         if 1 + len(owners) > self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']:
             raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
@@ -5097,7 +5200,7 @@ class Coordinator:
         if life.setdefault('counts_epoch', life['epoch']) != life['epoch']:
             life.update(counts_epoch=life['epoch'], specialist_counts={})
         counts = life.setdefault('specialist_counts', {})
-        if life.get('polish_calls', 0) + 2 > caps['POLISH-Q'][0] or counts.get(name, 0) + 2 > caps['specialist'][0]:
+        if life.get('polish_calls', 0) + 2 > self._worktree_run_cap('POLISH-Q') or counts.get(name, 0) + 2 > caps['specialist'][0]:
             raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)
         return counts
 
@@ -7134,6 +7237,8 @@ class Coordinator:
 
     def resume(self, retry_uncertain=False) -> str:
         self._publication_guard()
+        if pending := self.state.get('delivery_pending'):   # W3b: a journaled auto_commit finishes only through accept
+            raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or

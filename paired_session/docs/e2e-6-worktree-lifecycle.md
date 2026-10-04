@@ -4,8 +4,8 @@ Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_
 W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg (the simplifier and test-consolidation
 writers are not implemented and not scheduled in W2a); W2b runs DOCS (writer, docs review with an observed
 test); W3a runs SECURITY (scans and a fresh security reviewer) and reaches DONE (acceptance pending);
-W3b-1 accepts a W DONE without a commit (`auto_commit` false) and reject reopens EXEC; the auto_commit
-local commit arrives in W3b-2. Sources: ADR-11, the lane A
+W3b accepts a W DONE (`accept --expect`; with `auto_commit` true one hook-free local commit) and reject
+reopens EXEC: W now runs end to end, FINISH → POLISH-Q → DOCS → SECURITY → DONE → accept. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -174,11 +174,24 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
 - Added in W3b-1: a W accept needs status DONE and stage DONE and `--expect` over an intent that also binds
   the stage receipts (`receipts_sha256`); `--override-rejection` is refused, so neither a rejected tree nor a
   round-limit HOLD (FINISH, DOCS or SECURITY reasons included) is accepted, and open specialist or security
-  blockers are never put into an accepted record; at the rejection limit a W run can only abort. A HEAD
-  that moved since the run started HOLDs the accept and sends the run back to SECURITY (restore HEAD and
-  resume). `auto_commit` and `external_delivery` are frozen operator-only keys (default false);
+  blockers are never put into an accepted record. At the rejection limit the reject still reopens EXEC and
+  HOLDs `rejected-tree`; the legacy hint names accept and `--override-rejection`, but for W only a note and
+  resume, `reject --scope-change` or abort remain. A HEAD that moved since the run started HOLDs the accept
+  and sends the run back to SECURITY, which itself HOLDs before any review until HEAD is restored. The W
+  run-wide budgets (DOCS 7, SECURITY 3, POLISH-Q 32) grow by one allowance per reject, since each reject
+  reruns FINISH..SECURITY. `auto_commit` and `external_delivery` are frozen operator-only keys (default false);
   `external_delivery` true refuses the accept (D8). With `auto_commit` false the accept changes no ref and
-  no index; the Chinese delivery report is `delivery-report.md` in the run directory. A reject on a W DONE
+  no index; the Chinese delivery report is `delivery-report.md` in the run directory. W3b-2, `auto_commit`
+  true (D-1: `accept --expect` authorizes it): W04 refusals first (work staged before the run, a
+  content-transforming `filter`/`text`/`eol`/`working-tree-encoding` attribute, any true `core.autocrlf`,
+  submodules and skip-worktree entries, whose rows would read as deletions); then the accepted manifest's raw bytes (no filters; symlinks as link text; executable bits) go
+  through a private index into one tree, `commit-tree --no-gpg-sign` on the run's parent, a journal
+  (`evidence/delivery-commit.json`), `update-ref HEAD <commit> <parent>` (compare-and-swap) and an index
+  sync (`read-tree`, refresh). Every git call disables hooks (`core.hooksPath=/dev/null`). A HEAD that is
+  neither the parent nor the commit HOLDs (`auto_commit: ...; accept --expect <digest>`, recorded as
+  `delivery_pending`, which refuses resume); a replay with that `--expect` finishes
+  the journaled commit (CAS from the parent, or nothing if HEAD already is the commit). The accept's own
+  `--auto-commit` value is not consulted; the frozen config decides. A reject on a W DONE
   reopens EXEC (epoch+1, the persistent author gets the rejection note, then reviewer, gate, FINISH,
   POLISH-Q, DOCS and SECURITY again).
 - Not a refusal: author and reviewer may share a vendor exactly as in real EXEC (ADR-11 D-8).

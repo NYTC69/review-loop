@@ -121,8 +121,9 @@ write gets a fresh docs review that must run the test) and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
 security reviewer (any hit or finding HOLDs), then reaches DONE (acceptance
 pending). `accept --expect` on a W DONE accepts it without touching refs or
-the index (`auto_commit` false; the auto-commit path is W3b-2) and writes a
-Chinese delivery report; `reject` reopens EXEC; a
+the index, or with an operator `auto_commit: true` makes one hook-free local
+commit of exactly the accepted tree (never a push), and writes a Chinese
+delivery report; `reject` reopens EXEC; a
 workspace profile can neither enable it nor set its docs/skip/polish keys, and
 the run refuses
 `--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy

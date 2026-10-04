@@ -955,8 +955,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 (lambda co: setattr(co.args, 'override_rejection', True), 'refuses accept --override-rejection'),
                 (lambda co: co.state['config'].update(external_delivery=True), 'refuses external delivery'),
                 (lambda co: co.state['lifecycle'].update(stage='SECURITY'), 'requires status DONE and stage DONE'),
-                (lambda co: co.state.update(status='HOLD'), 'requires status DONE and stage DONE'),
-                (lambda co: co.state['config'].update(auto_commit=True), 'auto_commit arrives with W3b-2')):
+                (lambda co: co.state.update(status='HOLD'), 'requires status DONE and stage DONE')):
             with self.subTest(message=message):
                 co = rc.Coordinator(self.args(action='accept'))
                 change(co)
@@ -1011,6 +1010,104 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         Path(base['path']).write_text('{}')   # the parent copy changed
         with self.assertRaisesRegex(ValueError, 'the parent delivery baseline changed'):
             child._inherited_security_baseline(parent.run_dir)
+
+    def git(self, *args):
+        return rc.subprocess.run(['git', *args], cwd=self.workspace, check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_auto_commit_makes_one_hook_free_commit_of_exactly_the_accepted_manifest(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--auto-commit', 'true').stdout)
+        hooks = ('pre-commit', 'commit-msg', 'post-commit', 'reference-transaction', 'post-index-change', 'post-checkout')
+        for name in hooks:
+            hook = self.workspace / '.git' / 'hooks' / name
+            hook.write_text(f'#!/bin/sh\ntouch "{self.root}/hook-{name}"\n')
+            hook.chmod(0o755)
+        parent = self.git('rev-parse', 'HEAD')
+        accepted = self.run_operator_action('accept', '--lifecycle-mode', 'on', '--auto-commit', 'true')
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        commit = self.git('rev-parse', 'HEAD')
+        self.assertEqual((self.git('rev-parse', 'HEAD~1'), state['acceptance']['delivery']['commit']), (parent, commit))
+        manifest = sorted(path for path, value in state['approved_manifest'] if value != 'missing')
+        self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'HEAD').splitlines(), manifest)   # exactly the manifest
+        self.assertEqual(self.git('show', 'HEAD:sum_ints.py') + '\n', (self.workspace / 'sum_ints.py').read_text())
+        self.assertEqual(self.git('status', '--porcelain'), '')   # the index follows the new HEAD
+        self.assertEqual([name for name in hooks if (self.root / f'hook-{name}').exists()], [])   # no hook ran
+        self.assertIn(f'本地提交 `{commit}`', (self.run_dir / 'delivery-report.md').read_text())
+        again = self.run_operator_action('accept', '--lifecycle-mode', 'on', '--auto-commit', 'true')
+        self.assertEqual((again.stdout.strip().splitlines()[-1], self.git('rev-parse', 'HEAD')), ('ACCEPTED', commit))
+
+    def test_an_auto_commit_replay_finishes_the_journaled_commit_and_a_moved_head_holds(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--auto-commit', 'true').stdout)
+        co = rc.Coordinator(self.args('--auto-commit', 'true', action='accept'))
+        intent, parent = co.operator_intent('accept', None, None), self.git('rev-parse', 'HEAD')
+        commit = co._worktree_commit(intent, None)['commit']   # the ref moved, then the coordinator crashed
+        journal = json.loads((co.evidence / 'delivery-commit.json').read_text())
+        self.assertEqual((self.git('rev-parse', 'HEAD'), journal['commit'], journal['parent']), (commit, commit, parent))
+        self.assertEqual(co._worktree_commit(intent, journal)['commit'], commit)   # idempotent: no second commit
+        self.assertEqual(self.git('rev-parse', 'HEAD~1'), parent)
+        other = self.git('commit-tree', parent + '^{tree}', '-p', parent, '-m', 'someone else')
+        self.git('update-ref', 'HEAD', other)
+        held = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(held.accept(), 'HOLD')
+        self.assertIn('auto_commit: HEAD is ', held.state['hold_reason'])
+        self.assertTrue(held.state['hold_reason'].endswith('accept --expect ' + intent['digest']))
+        with self.assertRaisesRegex(ValueError, 'an auto_commit delivery is pending; restore HEAD and accept --expect'):
+            rc.Coordinator(self.args('--auto-commit', 'true', action='resume')).resume()
+        self.git('update-ref', 'HEAD', parent)   # the operator restores the parent; the replay moves HEAD by CAS
+        replay = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(replay.accept(), 'ACCEPTED')
+        self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('rev-parse', 'HEAD~1')), (commit, parent))
+        self.assertEqual(replay.state['acceptance']['delivery']['commit'], commit)
+        self.assertNotIn('delivery_pending', replay.state)
+
+    def test_auto_commit_w04_refusals(self):
+        co = rc.Coordinator(self.args())
+        paths = ['tracked.txt', 'sum_ints.py']
+        (self.workspace / 'staged.txt').write_text('staged before the run\n')
+        self.git('add', 'staged.txt')
+        with self.assertRaisesRegex(ValueError, 'refuses work staged before the run: staged.txt'):
+            co._commit_refusals(paths)
+        self.git('rm', '-q', '--cached', 'staged.txt')
+        for value in ('input', 'yes'):
+            self.git('config', 'core.autocrlf', value)
+            with self.assertRaisesRegex(ValueError, 'refuses core.autocrlf'):
+                co._commit_refusals(paths)
+        self.git('config', '--unset', 'core.autocrlf')
+        self.git('update-index', '--skip-worktree', 'tracked.txt')
+        with self.assertRaisesRegex(ValueError, 'refuses skip-worktree'):
+            co._commit_refusals(paths)
+        self.git('update-index', '--no-skip-worktree', 'tracked.txt')
+        self.git('update-index', '--add', '--cacheinfo', '160000,' + self.git('rev-parse', 'HEAD') + ',vendor/lib')
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'a submodule')
+        with self.assertRaisesRegex(ValueError, 'refuses a repository with submodules'):
+            co._commit_refusals(paths)
+        self.git('rm', '-q', '--cached', 'vendor/lib')
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'no submodule')
+        with self.assertRaisesRegex(ValueError, 'would rewrite'):
+            co._manifest_tree([['"quoted"', 'x']])
+        (self.workspace / '.gitattributes').write_text('*.py filter=lfs\n')
+        with self.assertRaisesRegex(ValueError, 'content-transforming attributes: sum_ints.py: filter=lfs'):
+            co._commit_refusals(paths)
+        (self.workspace / '.gitattributes').unlink()
+        co._commit_refusals(paths)   # nothing left to refuse
+
+    def test_a_reject_at_the_limit_still_reopens_exec_and_budgets_grow_with_rejects(self):
+        co = rc.Coordinator(self.args())
+        co.state.update(status='DONE', rejections=[{'id': 'R001'}, {'id': 'R002'}])
+        co.state['lifecycle'].update(stage='DONE')
+        self.assertEqual((co._worktree_run_cap('SECURITY'), co._worktree_run_cap('DOCS')), (9, 21))
+        co.args.expect = co.operator_intent('reject', 'again', None)['digest']
+        self.assertEqual(co.reject('again', None), 'HOLD')
+        self.assertEqual((co.state['hold_reason'].split(';')[0], co.state['lifecycle']['stage'], co.state['lifecycle']['epoch']),
+                         ('rejected-tree', 'EXEC', 1))
+
+    def test_security_holds_before_any_review_when_head_moved(self):
+        co, tree = self.at_security()
+        self.git('commit', '-q', '--allow-empty', '-m', 'someone else')
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('security review dispatched')), \
+                self.assertRaisesRegex(RuntimeError, 'HEAD moved since the run started'):
+            co.worktree_security_turn()
+        self.assertIsNone(co.state['lifecycle']['pending'])
 
     def test_the_docs_hold_set(self):
         for path, value, denied in (('CLAUDE.md', 'x', True), ('pkg/AGENTS.md', 'x', True), ('agents/new.md', 'x', True),
