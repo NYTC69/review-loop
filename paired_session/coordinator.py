@@ -46,6 +46,7 @@ try:
     from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
+    from paired_session import timeout_scale
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
@@ -62,19 +63,31 @@ except ModuleNotFoundError:
     import operator_verification as opv
     import sensitive_policy
     import security_repair_policy
+    import timeout_scale
     from program_binding import snapshot as program_snapshot, safe_path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
+# FIELD-5 (owner 2026-10-03/10-04): the finding's owner labels its class explicitly; the coordinator never infers it from text.
+CLASS_LABEL_RE = re.compile(r'\s*\[class:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*\]')
+STRUCTURAL_BLOCK_STREAK = 3
+CLASS_LABEL_GUIDANCE = ('Start the {field} of every blocking finding with a defect-class label "[class: <kebab-case-name>]" naming the '
+                        'kind of defect, such as missing-input-validation or path-traversal.')   # fresh roles: no history words (independence scan)
+CLASS_LABEL_REUSE = ' Reuse the exact label of an earlier finding of the same class of defect.'
 PROBE_SURFACE_VERSION = 9
 CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
     try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
-# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2).
-VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0'})
+CODEX_DEFAULT_MODEL = 'gpt-6.1-sol'   # ADR-12 (owner 2026-10-04); runs keep the models frozen in their state
+CODEX_DEFAULT_MODEL_MIN_CLI = (0, 159, 2)
+# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2; 0.160.0: the owner's real
+# permission-probe runs with v2.9.6 on that CLI, p296.sh P1/P2 PASS (.compass/results/2026-10-04_daily-report.md T1), after the
+# b296-f1e default_permissions profiles were checked there with `codex sandbox` and `codex debug prompt-input`; confirmed by the
+# supervisor 2026-10-04 19:35: real v2.9.6 permission-probe attempt4, P1 Codex reviewer + P2 Codex gate PASS, ~/paired-runs/probe296/runs/).
+VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0', 'codex-cli 0.160.0'})
 OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
 UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
@@ -96,7 +109,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10, stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
+    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
@@ -1361,7 +1374,7 @@ def progress_line(row: dict) -> str:
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
-        if not restores_run(args): validate_role_models(args)
+        if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -1370,6 +1383,7 @@ class Coordinator:
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
+        if getattr(args, 'wi_deadline', None) is not None and args.wi_deadline <= 0: raise ValueError('--wi-deadline must be a positive number of seconds')
         self.args = args
         self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
         self._fake_dispatching = False
@@ -1619,6 +1633,7 @@ class Coordinator:
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
                 'skip_globs', 'skip_quality_polish', 'allowed_models')
         config = {key: getattr(self.args, key) for key in keys}
+        if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -1788,7 +1803,7 @@ class Coordinator:
         try:
             if self._program_state()[1]: return 'UNAVAILABLE'
             result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True,
-                                    capture_output=True, timeout=10)
+                                    capture_output=True, timeout=10 * timeout_scale.env_factor())
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
             return 'UNAVAILABLE'
@@ -2136,6 +2151,11 @@ class Coordinator:
                 requested_exec_timeout, self.args.timeout)
         self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
         validate_role_models(self.args)
+        if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
+            self.args.wi_deadline = self.state['config'].get('wi_deadline')
+        elif 'wi_deadline' not in self.state['config']:
+            raise ValueError('--wi-deadline is fixed at run start (the run or permission-probe that creates the run directory); '
+                             'this run directory was created without one')
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
@@ -2724,7 +2744,7 @@ class Coordinator:
             current = self.internal / 'current-review'
             self._mirror_workspace(current)
             proc = candidate_tree.run_bounded(candidate_tree.git_command('diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
             atomic_text(since, proc.stdout)
@@ -2811,6 +2831,8 @@ class Coordinator:
             self.state['next_finding_id'] += 1
             severity = str(finding['severity']).upper()
             summary = finding.get('summary') or finding.get('recommendation') or str(finding.get('body', '')).splitlines()[0]
+            if (label := CLASS_LABEL_RE.match(str(finding.get('body', '')))) and not CLASS_LABEL_RE.match(summary):
+                summary = label.group(0).strip() + ' ' + summary   # FIELD-5: a gate's class label stays visible in the ledger summary
             entry = {'id': finding_id, 'origin_round': origin_round, 'phase': phase,
                      'source': source, 'finding_index': finding_index,
                      'severity': severity, 'file': finding.get('file', ''),
@@ -3105,6 +3127,29 @@ class Coordinator:
         self._progress_terminal('HOLD', reason)
         return 'HOLD'
 
+    def _wi_deadline_issue(self, record=True) -> Optional[str]:   # F2: checked before every dispatch; a running turn is never cut
+        limit = self.state['config'].get('wi_deadline')
+        if not limit: return None
+        now, seen = time.time(), self.state.get('wi_clock', 0)
+        if now + 60 < seen:   # never a negative elapsed: no refund after the clock moves back
+            return (f'whole-WI deadline: the wall clock moved back {seen - now:.0f}s since the last dispatch '
+                    '(check the clock; dispatches work again once it is past the last dispatch time)')
+        clock = max(now, seen)
+        if record: self.state['wi_clock'] = clock   # a dispatch saves it; an operator-action check must not change the state its intent digest covers
+        elapsed = clock - self.state['started_at']
+        if elapsed >= limit:
+            return (f'whole-WI deadline reached: {elapsed:.0f}s since the run started (--wi-deadline {limit}s); '
+                    'no new turn was started and resume is refused; abort, or note --scope-change to start a successor '
+                    'with its own --wi-deadline')
+        return None
+
+    def _refuse_past_deadline(self, action: str) -> None:   # F2: a deadline blocks new dispatches only; it never rewrites a DONE or a HOLD
+        if issue := self._wi_deadline_issue(record=False):
+            kept = ('the DONE tree stays acceptable: accept it, abort, or reject --scope-change' if self.state.get('status') == 'DONE'
+                    else 'nothing changed: the HOLD keeps its reason, so its accept/override, note and abort paths stay as they are'
+                    if self.state.get('status') == 'HOLD' else 'nothing changed; abort, or note --scope-change to start a successor')
+            raise ValueError(f'{action} refused: {issue.split(";")[0]}; {kept}')
+
     def round_limit_hold(self, reason: str) -> str:   # RLO: the held tree, so accept --override-rejection can rule on exactly it
         self.state['round_limit_hold'] = {'hold_reason': reason, 'phase': self.state['phase'], 'tree_sha256': git_snapshot(self.workspace)[0],
                                           'time': datetime.now().astimezone().isoformat()}
@@ -3316,6 +3361,7 @@ class Coordinator:
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
+        self._refuse_past_deadline('reject')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
@@ -3470,6 +3516,7 @@ class Coordinator:
         if blocking:
             return self.hold('resume --polish rejected with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
+        self._refuse_past_deadline('resume --polish')
         self.import_gate_findings()
         self.state['status'] = 'ACTIVE'
         self.state['phase'] = 'EXEC'
@@ -3658,7 +3705,7 @@ class Coordinator:
                 f'Approved/current plan: {self.context / "plan.md"}',
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
-                REVIEW_SEVERITY_GUIDANCE,
+                REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
                 self.inspection_prompt(role),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
@@ -3701,7 +3748,7 @@ class Coordinator:
             f'Approved/current plan: {self.context / "plan.md"}',
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
             self.inspection_prompt(role),
-            REVIEW_SEVERITY_GUIDANCE,
+            REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt(),
@@ -3725,6 +3772,7 @@ class Coordinator:
                 '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.' +
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
+                '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
                 '\nNever edit, commit, push, or load skills.' + opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
@@ -4173,6 +4221,7 @@ class Coordinator:
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
         if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
+        if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
         timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
                            else self.args.timeout)
         self.state['sequence'] += 1
@@ -4614,6 +4663,7 @@ class Coordinator:
         if advisory_exit:
             self.mark_advisory_findings(answer['full_review'])
             answer['status'] = 'APPROVE'
+        new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
         refusal = None
         if answer['status'] == 'APPROVE' and (blocking := self.blocking_open_findings()):
             # RF-5: an APPROVE that leaves blocking findings open is a REVISE routed to the author (round limit and its HOLD apply), never DONE
@@ -4625,6 +4675,9 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal))
+        new_blocking = [row for row in new_rows if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+        structural = (self._structural_block_hold('reviewer', result['sequence'], new_blocking)   # FIELD-5: only NEW blockers form a BLOCK
+                      if phase == 'EXEC' and answer['status'] == 'REVISE' and new_blocking else None)
         if phase == 'EXEC':
             previous_comparison = next((row for row in self.state['exec_comparisons']
                                         if row.get('review_sequence') == result['sequence']), None)
@@ -4670,6 +4723,10 @@ class Coordinator:
                                     'evidence': row['evidence']} for row in answer['prior_findings']],
             }, ensure_ascii=False)
             self.state['next'] = 'author'
+            if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence); resume routes to the author
+                self.state['pending_reviewer_result_sequence'] = None
+                self._structural_hold(structural)
+                return
         elif phase == 'PLAN':
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
@@ -4692,6 +4749,7 @@ class Coordinator:
                                               if advisory else '')
             self.state['next'] = 'gate'
         else:
+            self._structural_block_hold('reviewer', result['sequence'], [])   # FIELD-5: an approval that ends the review breaks the run
             self.state['pending_reviewer_result_sequence'] = None
             self.start_polish_or_done()
             return
@@ -4838,6 +4896,7 @@ class Coordinator:
         if self.state['exec_comparisons']:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
+        structural = self._structural_block_hold('gate', result['sequence'], valid)
         if valid:
             if self.state['config'].get('lifecycle_mode') == 'on':
                 self.state['gate_ran'] = False
@@ -4854,10 +4913,47 @@ class Coordinator:
                 'advisory': self.advisory_rows(advisory),
             }, ensure_ascii=False)
             self.state['next'] = 'author'
+            if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence)
+                self._structural_hold(structural)
+                return
         else:
             self.start_polish_or_done()
             return
         self.save()
+
+    def _structural_block_hold(self, source: str, sequence: int, blocking: list) -> Optional[dict]:
+        """FIELD-5: record one EXEC reviewer/gate verdict by the explicit [class: ...] labels of its NEW blocking findings.
+        blocking = [] records a review-ending approval, which breaks the run; callers record nothing for neutral verdicts
+        (an approval routed to the gate, a REVISE without new blockers, a refused approval). Returns the match when one
+        class is in each of the last STRUCTURAL_BLOCK_STREAK consecutive BLOCKs; _structural_hold then HOLDs. Unlabeled
+        blockers are only counted, never HOLD. No text similarity; the ledger is untouched."""
+        events = self.state.setdefault('block_class_events', [])
+        if not any(event['sequence'] == sequence for event in events):   # a replayed verdict is recorded once
+            classes, unlabeled = {}, 0
+            for row in blocking:
+                if match := CLASS_LABEL_RE.match(str(row.get('summary') or row.get('body') or '')):
+                    classes.setdefault(match.group(1), []).append(row['id'])
+                else:
+                    unlabeled += 1
+            events.append({'sequence': sequence, 'source': source, 'block': bool(blocking), 'classes': classes, 'unlabeled': unlabeled})
+            self.state['unlabeled_blocking_findings'] = self.state.get('unlabeled_blocking_findings', 0) + unlabeled
+            for receipt in self.state['turns']:
+                if receipt.get('sequence') == sequence: receipt['unlabeled_blocking_findings'] = unlabeled
+        tail = []
+        for event in reversed(events):
+            if not event['block'] or len(tail) == STRUCTURAL_BLOCK_STREAK: break
+            tail.insert(0, event)
+        common = sorted(set.intersection(*(set(event['classes']) for event in tail))) if len(tail) == STRUCTURAL_BLOCK_STREAK else []
+        return {'classes': common, 'events': tail} if common else None
+
+    def _structural_hold(self, found: dict) -> str:   # FIELD-5: recorded only when the HOLD happens; the count then starts afresh
+        history = '; '.join(f"{event['source']} #{event['sequence']}: " +
+                            ', '.join(i for name in found['classes'] for i in event['classes'][name]) for event in found['events'])
+        self.state.setdefault('structural_holds', []).append({**found, 'time': datetime.now().astimezone().isoformat()})
+        self.state['block_class_events'].append({'sequence': None, 'source': 'structural-hold', 'block': False, 'classes': {}, 'unlabeled': 0})
+        return self.hold(f"structural fix / re-scope needed: finding class {', '.join(found['classes'])} blocked "
+                         f'{STRUCTURAL_BLOCK_STREAK} consecutive reviews ({history}); all blockers stay open; '
+                         'note a structural plan and resume, note --scope-change, or abort')
 
     def _codex_sandbox_escape_check(self, workspace: Path, label: str, target: Path,
                                     expected_allowed=False) -> dict:
@@ -4968,13 +5064,13 @@ class Coordinator:
                     time.sleep(0.2)
             elif result: raise RuntimeError('author probe process group is unverifiable')
             first = cap.listing(base, base.parent, skip)
-            time.sleep(cap.SETTLE_SECONDS)
+            time.sleep(cap.SETTLE_SECONDS * timeout_scale.env_factor())
             second = cap.listing(base, base.parent, skip)
             rows = []
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10, env=cli_env()).stdout.strip() or 'UNAVAILABLE'
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -5441,6 +5537,8 @@ class Coordinator:
         """One fresh reviewer turn proving allowlist use and write denial/detection."""
         self._publication_guard()
         uncertain = self.state.get('active') or self.state.get('uncertain_active')
+        if not uncertain:   # F2b: no FAIL record, no cache void, no rewritten HOLD after the deadline
+            self._refuse_past_deadline('permission-probe')
         if uncertain:
             if uncertain.get('phase') not in ('PROBE', 'AUTHOR_PERMISSION_PROBE'):
                 self.state['uncertain_active'] = uncertain
@@ -5479,6 +5577,9 @@ class Coordinator:
                      'uncertain in-flight CLI turn')):
                 self.state['hold_reason'] = 'permission probe retry cleared; permission probe is pending'
             self.save()
+            if past_deadline := self._wi_deadline_issue(record=False):   # F2b: settled and archived; no new probe, report or cache untouched
+                self.hold(past_deadline)
+                return False
         report_file = self.run_dir / 'permission-probe.json'      # P0-4 V0: an aborted re-probe must not leave the old PASS valid
         if report_file.exists(): os.replace(report_file, report_file.with_name('permission-probe.superseded.json'))
         self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
@@ -5829,7 +5930,7 @@ class Coordinator:
         pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
                    'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
                    'review_after_sequence': self.state['sequence'], 'binding_sha256': q_evidence.binding(self)}
-        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5)
+        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5 * timeout_scale.env_factor())
         self.state['fake_q_pending'] = pending
         self.save()
         test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
@@ -6104,7 +6205,7 @@ class Coordinator:
                     'GIT_CEILING_DIRECTORIES': str(checkout.root.parent),
                     'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
         test_id = str(uuid.uuid4())
-        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5)
+        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5 * timeout_scale.env_factor())
         self.state['fake_candidate_test_pending'] = test_id
         self.save()
         test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
@@ -6461,6 +6562,9 @@ class Coordinator:
                 return self.hold('DONE state rejected with open blocking findings: ' +
                                  ', '.join(row['id'] for row in blocking))
             return 'DONE'
+        if not (self.state.get('active') or self.state.get('uncertain_active')):
+            self._refuse_past_deadline('resume')   # F2b: before any state change, so the HOLD (and RLO) survives
+        past_deadline = self._wi_deadline_issue(record=False)   # with an uncertain turn: settle it below, then HOLD instead of a dispatch
         reason = self.state.get('hold_reason', '')
         if self.state.get('active'):
             self.state['uncertain_active'] = self.state['active']
@@ -6495,6 +6599,9 @@ class Coordinator:
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
+        if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
+            self.state['active'] = self.state['uncertain_active'] = None
+            return self.hold(past_deadline)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state['active'] = None
@@ -6693,6 +6800,9 @@ def parser() -> argparse.ArgumentParser:
                         f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
     p.add_argument('--resume-timeout', type=int, default=None,
                    help=f'increase the saved timeout on resume, up to {MAX_RESUME_TIMEOUT_SECONDS} seconds')
+    p.add_argument('--wi-deadline', type=int, default=None, metavar='SECONDS',
+                   help='optional whole work-item wall-clock deadline from the run start (off by default); once it has '
+                        'passed the run HOLDs at the next dispatch, never mid-turn; fixed at run, kept across HOLD, resume and restart')
     p.add_argument('--test-command', default='npm test')
     p.add_argument('--reviewer-command', action='append', default=[],
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
@@ -6785,8 +6895,8 @@ def refuse_foreign_gate_model(args: argparse.Namespace) -> None:
 
 
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
-    """Apply ADR-5's vendor-pinned defaults when no model is explicitly selected."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6-luna'}
+    """Apply the vendor default model (ADR-12; ADR-9 keeps the operator's choice) to every role without an explicit model."""
+    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': CODEX_DEFAULT_MODEL}
     refuse_foreign_gate_model(args)
     if getattr(args, 'gate_vendor_source', None) is None:
         args.gate_vendor_source = 'default' if getattr(args, 'gate_vendor', None) is None else 'operator'
@@ -6797,7 +6907,30 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     for key, vendor in role_vendors.items():
         if getattr(args, key) is None:
             setattr(args, key, model_for_vendor[vendor])
+            if vendor == 'codex':   # ADR-12: these roles need a CLI that runs the default model; a sorted list keeps args JSON-serializable
+                args.defaulted_codex_models = sorted({*getattr(args, 'defaulted_codex_models', ()), key})
     return args
+
+
+def codex_cli_semver(binary: str) -> Optional[tuple]:
+    try: proc = subprocess.run([binary, '--version'], text=True, capture_output=True, stdin=subprocess.DEVNULL,
+                               timeout=10 * timeout_scale.env_factor())
+    except (OSError, subprocess.SubprocessError): return None
+    out = proc.stdout if proc.returncode == 0 else ''
+    match = re.search(r'codex-cli (\d+)\.(\d+)\.(\d+)', out)
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: str) -> None:
+    """ADR-12: a Codex role on the default model needs codex-cli >= CODEX_DEFAULT_MODEL_MIN_CLI; refuse before any state exists.
+    codex_path is the operator program already bound by program_binding.snapshot: a workspace-named binary is never run."""
+    flags = [f"--{key.replace('_', '-')}" for key in ('author_model', 'reviewer_model', 'gate_model')
+             if key in getattr(args, 'defaulted_codex_models', set())]
+    if not flags or (version := codex_cli_semver(codex_path)) is not None and version >= CODEX_DEFAULT_MODEL_MIN_CLI:
+        return
+    have = 'unreadable' if version is None else '.'.join(map(str, version))
+    raise ValueError(f"the default Codex model {CODEX_DEFAULT_MODEL} needs codex-cli >= {'.'.join(map(str, CODEX_DEFAULT_MODEL_MIN_CLI))} "
+                     f"(this CLI: {have}); upgrade the Codex CLI, or pass {' '.join(flag + ' gpt-6-luna' for flag in flags)}")
 
 
 def validate_role_models(args: argparse.Namespace) -> None:
@@ -7038,7 +7171,14 @@ def main(argv=None) -> int:
         return 2
     try:
         resolve_role_model_defaults(args)
-        if not restores_run(args): validate_role_models(args)
+        if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates its restored, frozen models (ADR-9 M5)
+            validate_role_models(args)
+        if args.action in ('run', 'resume', 'permission-probe') and not restores_run(args):   # ADR-12: actions that create state
+            workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
+            programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,
+                                               args.gate_prompt, args.config)
+            if not issue:   # a binding issue keeps its own refusal; only the bound program is run, fake harness included
+                refuse_default_codex_model_on_old_cli(args, programs['codex_bin']['path'])
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2

@@ -20,6 +20,7 @@ from unittest.mock import patch
 from paired_session import candidate_tree as ct
 from paired_session import delivery_journal as dj
 from paired_session import candidate_test_sandbox as cts
+from paired_session import timeout_scale as tsc
 from paired_session import delivery_publish as dp
 from paired_session import delivery_recovery_state as drs
 from paired_session import delivery_recovery_lock as drl
@@ -33,6 +34,10 @@ SPEC = importlib.util.spec_from_file_location('real_coordinator', MODULE_PATH)
 rc = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(rc)
 FAKE = Path(__file__).with_name('fake_cli.py')
+def DARWIN_SANDBOX(test):   # CI-TESTFIX R3: the candidate-test sandbox is macOS-only (sandbox-exec); other platforms fail closed
+    test.candidate_test_workspace = True   # CI-TESTFIX R2: setUp gives these runs a candidate with one trivial test (every candidate-test run needs this decorator)
+    return unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').is_file(),
+                               'macOS candidate-test sandbox (sandbox-exec); other platforms fail closed')(test)
 
 
 def unique_json_object(pairs):
@@ -80,7 +85,12 @@ class RealCoordinatorTests(unittest.TestCase):
         subprocess.run(['git', 'config', 'user.name', 'Fake'], cwd=self.workspace, check=True)
         (self.workspace / 'tracked.txt').write_text('base\n')
         (self.workspace / '.gitignore').write_text('__pycache__/\n*.cache\n')
-        subprocess.run(['git', 'add', 'tracked.txt', '.gitignore'], cwd=self.workspace, check=True)
+        base = ['tracked.txt', '.gitignore']
+        if getattr(getattr(type(self), self._testMethodName, None), 'candidate_test_workspace', False):
+            base.append('test_fixture_smoke.py')   # CI-TESTFIX R2: Python >= 3.12 `python3 -m unittest` exits 5 on zero tests
+            (self.workspace / base[-1]).write_text(
+                'import unittest\n\n\nclass FixtureSmokeTest(unittest.TestCase):\n    def test_fixture(self):\n        pass\n')
+        subprocess.run(['git', 'add', *base], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'base'], cwd=self.workspace, check=True)
         self.workitem = self.root / 'WORKITEM.md'
         self.workitem.write_text('# Toy\nCreate sum_ints; reject booleans.\n')
@@ -94,13 +104,21 @@ class RealCoordinatorTests(unittest.TestCase):
             json.dumps({'plugins': []}))
         self.original_home = os.environ.get('HOME')
         os.environ['HOME'] = str(self.test_home)
+        stub_bin = self.root / 'bin'   # CI-TESTFIX R1: a Coordinator built without --codex-bin/--claude-bin binds these stubs
+        stub_bin.mkdir()
+        for name in ('codex', 'claude'):
+            (stub_bin / name).write_text('#!/bin/sh\necho "test stub: no real provider CLI" >&2\nexit 127\n')
+            (stub_bin / name).chmod(0o755)
         self._fake_codex_env = patch.dict(os.environ, {
-            'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root)})
+            'PATH': str(stub_bin) + os.pathsep + os.environ.get('PATH', ''),
+            'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root),
+            tsc.ENV: str(tsc.factor())})   # one load factor per test, shared with every coordinator it starts
         self._fake_codex_env.start()
         self.addCleanup(self._fake_codex_env.stop)
         self._unpatched_popen = subprocess.Popen
-        self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')
-                                     if (path := shutil.which(name))}
+        self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')   # the stubs and any real CLI behind them
+                                     for search in (os.environ['PATH'], os.environ['PATH'].split(os.pathsep, 1)[-1])
+                                     if (path := shutil.which(name, path=search))}
         self._provider_guard_patcher = patch('subprocess.Popen', new=self._guarded_test_popen)
         self._provider_guard_patcher.start()
         self.addCleanup(self._provider_guard_patcher.stop)
@@ -511,9 +529,9 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
         self.assertTrue(all(row['returncode'] == 2 and row['status'] == 'FAIL'
                             for row in advisory['checks'].values()))
-        self.assertEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
+        self.assertEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
-            self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.157.0')
+            self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
 
     def test_codex_capability_config_fails_probe_and_prevents_dispatch(self):
         config = self.test_home / '.codex/config.toml'
@@ -871,7 +889,7 @@ from pathlib import Path
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.157.0")); sys.exit(0)
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.160.0")); sys.exit(0)
 if args and args[0] == "sandbox":
     if os.environ.get("FAKE_CODEX_SANDBOX_CONTRACT_REJECT") or "-P" not in args:
         print("error: --permission-profile <NAME> required", file=sys.stderr); sys.exit(2)
@@ -1027,7 +1045,7 @@ sys.exit(result.returncode)
     def command(self, *extra):
         return [sys.executable, str(MODULE_PATH), 'run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', '10',
+                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', tsc.scaled_arg(10),
                 '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                 '--test-command', 'python3 -m unittest',
                 *extra]
@@ -1223,11 +1241,11 @@ sys.exit(result.returncode)
                 self.assertEqual(receipt['timeout_seconds'], expected)
 
     def test_resume_can_raise_exec_timeout_within_cap_and_persist_it(self):
-        co = self.coordinator('--timeout', '10')
+        co = self.coordinator('--timeout', tsc.scaled_arg(10))
         co._invoke_once('author', 'EXEC', 'Role prompt.', {})
         receipt_path = co.evidence / '001-exec-author.receipt.json'
         args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir), '--timeout', '10',
+            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir), '--timeout', tsc.scaled_arg(10),
             '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS),
             '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())])
         resumed = rc.Coordinator(args)
@@ -1779,7 +1797,7 @@ sys.exit(result.returncode)
     def test_done_abort_author_write_then_hold_remains_resumable(self):
         completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', tsc.scaled_arg(10),
                               '--author-effort', 'low', '--reviewer-effort', 'low',
                               '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
         co.state.update(status='HOLD', acceptance_state='PENDING',
@@ -1795,7 +1813,7 @@ sys.exit(result.returncode)
     def test_done_abort_author_hold_after_write_remains_resumable(self):
         completed = self.run_coordinator('--shadow', 'off', '--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', '10',
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--timeout', tsc.scaled_arg(10),
                               '--author-effort', 'low', '--reviewer-effort', 'low',
                               '--gate-effort', 'low', '--test-command', 'python3 -m unittest')
         co.state.update(status='HOLD', acceptance_state='PENDING',
@@ -2515,8 +2533,8 @@ sys.exit(result.returncode)
         for vendor in ('claude', 'codex'):
             with self.subTest(vendor=vendor):
                 self.run_dir = self.root / ('sigkill-stream-usage-' + vendor)
-                co = self.coordinator('--author-vendor', vendor, '--timeout', '3',
-                                      '--exec-turn-timeout', '3')
+                co = self.coordinator('--author-vendor', vendor, '--timeout', tsc.scaled_arg(3),
+                                      '--exec-turn-timeout', tsc.scaled_arg(3))
                 streaming_cli = self.root / ('streaming-' + vendor + '-cli')
                 streaming_cli.write_text(
                     f'#!{sys.executable}\nimport os, sys\n'
@@ -2545,7 +2563,7 @@ sys.exit(result.returncode)
                 with patch.dict(os.environ, stream_env):
                     worker = threading.Thread(target=invoke_author)
                     worker.start()
-                    deadline = time.monotonic() + 2.5
+                    deadline = time.monotonic() + tsc.scaled(2.5)
                     observed = None
                     prekill_state = None
                     while time.monotonic() < deadline:
@@ -2564,7 +2582,7 @@ sys.exit(result.returncode)
                         (co.evidence / '001-exec-author.stderr.log').read_text())
                     self.assertEqual(observed['usage_requests'], expected_rows)
                     self.assertNotIn('timed_out', observed)
-                    worker.join(6)
+                    worker.join(tsc.scaled(6))
                 self.assertFalse(worker.is_alive(), 'coordinator did not SIGKILL/reap the timed-out CLI')
                 self.assertTrue(errors and isinstance(errors[0], RuntimeError), errors)
                 state = json.loads(co.state_path.read_text())
@@ -2577,7 +2595,7 @@ sys.exit(result.returncode)
 
                 reload_args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
                     '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                    '--author-vendor', vendor, '--timeout', '3', '--exec-turn-timeout', '3',
+                    '--author-vendor', vendor, '--timeout', tsc.scaled_arg(3), '--exec-turn-timeout', tsc.scaled_arg(3),
                     '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())])
                 recovered = rc.Coordinator(reload_args)
                 recovered.write_usage()
@@ -2598,7 +2616,7 @@ sys.exit(result.returncode)
                 (recovery_dir / 'state.json').write_text(json.dumps(prekill_state))
                 recovery_args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
                     '--workitem', str(self.workitem), '--run-dir', str(recovery_dir),
-                    '--author-vendor', vendor, '--timeout', '3', '--exec-turn-timeout', '3',
+                    '--author-vendor', vendor, '--timeout', tsc.scaled_arg(3), '--exec-turn-timeout', tsc.scaled_arg(3),
                     '--max-invocations', '1', '--codex-bin', str(self.fake_codex_cli()),
                     '--claude-bin', str(self.fake_claude_cli())])
                 crash_recovery = rc.Coordinator(recovery_args)
@@ -2663,7 +2681,7 @@ sys.exit(result.returncode)
                 writer.start()
             barrier.wait()
             for writer in writers:
-                writer.join(timeout=2)
+                writer.join(timeout=tsc.scaled(2))
                 self.assertFalse(writer.is_alive())
         self.assertEqual(max_active_writes, 1)
 
@@ -2803,7 +2821,7 @@ sys.exit(result.returncode)
         real_stat = Path.stat
 
         def same_identity_for_aliases(path, *args, **kwargs):
-            if path.resolve() in canonical_paths:
+            if Path(os.path.realpath(path)) in canonical_paths:   # CI-TESTFIX R4: resolve() would re-enter this stat patch
                 return identity
             return real_stat(path, *args, **kwargs)
 
@@ -2826,7 +2844,7 @@ sys.exit(result.returncode)
     def test_abort_uses_per_run_lease_without_workspace_lease(self):
         run_a = self.root / 'run-a'
         self.run_dir = self.root / 'run-b'
-        co = self.coordinator('--timeout', '10', '--author-effort', 'low',
+        co = self.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low',
                               '--reviewer-effort', 'low', '--gate-effort', 'low',
                               '--test-command', 'python3 -m unittest')
         before = rc.git_snapshot(self.workspace)[0]
@@ -3337,13 +3355,13 @@ sys.exit(result.returncode)
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         rc.Coordinator(args)
         self.assertEqual((args.author_model, args.reviewer_model, args.gate_model),
-                         ('gpt-6-luna', 'claude-opus-5-5', 'gpt-6-luna'))   # default moved by owner decision 2026-09-30
+                         ('gpt-6.1-sol', 'claude-opus-5-5', 'gpt-6.1-sol'))   # gate: 2026-09-30; Codex model: ADR-12
         swapped = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'swapped-model-run'),
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex'])
         rc.Coordinator(swapped)
         self.assertEqual((swapped.author_model, swapped.reviewer_model, swapped.gate_model),
-                         ('claude-opus-5-5', 'gpt-6-luna', 'claude-opus-5-5'))   # default moved by owner decision 2026-09-30
+                         ('claude-opus-5-5', 'gpt-6.1-sol', 'claude-opus-5-5'))   # gate: 2026-09-30; Codex model: ADR-12
 
     def test_adr9_accepts_explicit_non_default_codex_author_model(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -3495,6 +3513,7 @@ sys.exit(result.returncode)
         self.assertEqual(co.fake_lifecycle_route(approved, stub_mode=True), 'STOP_BEFORE_SECURITY')
         self.assertEqual(len(co.state['lifecycle']['receipts']), 4)
 
+    @DARWIN_SANDBOX
     def test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog(self):
         docs = self.workspace / 'docs' / 'guide.md'
         docs.parent.mkdir()
@@ -3612,6 +3631,7 @@ sys.exit(result.returncode)
             rc.q_evidence.review_source(co, c1, '2026-09-30', rc.observed_test_succeeded)
         co.state = unchanged
 
+    @DARWIN_SANDBOX
     def test_fake_q_empty_approval_cannot_create_review_receipt(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3626,6 +3646,7 @@ sys.exit(result.returncode)
         self.assertNotIn('fake_q_review', co.state)
         self.assertFalse(co._fake_dispatching)
 
+    @DARWIN_SANDBOX
     def test_fake_q_reservation_refuses_p_dispatch_and_stage_begin(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3644,6 +3665,7 @@ sys.exit(result.returncode)
             co._fake_lifecycle_event('begin', {})
         self.assertIsNone(co.state['lifecycle']['pending'])
 
+    @DARWIN_SANDBOX
     def test_fake_q_retry_fits_reserved_two_slots_and_missing_tools_refuses(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3661,6 +3683,7 @@ sys.exit(result.returncode)
         self.assertNotIn('fake_q_review', co.state)
         self.assertIn('fake_q_pending', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_q_freeze_refuses_insufficient_budget_before_plan(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan',
@@ -3673,6 +3696,7 @@ sys.exit(result.returncode)
         self.assertNotIn('closeout_item', co.state)
         self.assertNotIn('q_reserved', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_q_reserved_polish_preflight_rejects_short_retry_budget_before_begin(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3688,6 +3712,7 @@ sys.exit(result.returncode)
         self.assertIsNone(co.state['lifecycle']['pending'])
         self.assertEqual(co.state['sequence'], sequence)
 
+    @DARWIN_SANDBOX
     def test_fake_q_reserved_polish_retry_dispatch_fits_exact_boundary(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3724,6 +3749,7 @@ sys.exit(result.returncode)
                              rc.budget_policy.BUDGET_CAPS['specialist'][0])
         self.assertEqual(co.state['lifecycle']['receipts'][-1]['stage'], 'POLISH-Q')
 
+    @DARWIN_SANDBOX
     def test_fake_q_source_revise_minor_keeps_raw_and_effective_proof(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3744,6 +3770,7 @@ sys.exit(result.returncode)
         self.assertEqual(record['reviewer_raw_verdict'], 'REVISE')
         self.assertEqual(record['effective_verdict'], 'APPROVE_WITH_ADVISORY')
 
+    @DARWIN_SANDBOX
     def test_fake_q_source_revise_major_security_or_empty_is_rejected(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3791,6 +3818,7 @@ sys.exit(result.returncode)
                     self.assertNotIn({'local': 'mutation'}, findings)
         self.assertEqual(co.state, state)
 
+    @DARWIN_SANDBOX
     def test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3822,6 +3850,7 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'uncertain or unreserved'):
             co.fake_q_complete(c1, '2026-09-30')
 
+    @DARWIN_SANDBOX
     def test_fake_q_bundle_refuses_wrong_phase_missing_tools_and_relabeling(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3857,6 +3886,7 @@ sys.exit(result.returncode)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
                 self.assertFalse(co._fake_dispatching)
 
+    @DARWIN_SANDBOX
     def test_fake_q_bundle_refuses_missing_noop_later_turn_and_short_reservation(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3884,6 +3914,7 @@ sys.exit(result.returncode)
                 self.assertNotIn('fake_q_bundle', co.state)
                 self.assertNotIn('fake_q_bundle_pending', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_q_bundle_keeps_minor_advisories_without_restarting_run(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3895,6 +3926,7 @@ sys.exit(result.returncode)
         self.assertTrue(all(r['advisories'] and r['advisories'][0]['severity'] == 'MINOR' for r in reviewers))
         self.assertFalse(co.state.get('fake_q_bundle_pending'))
 
+    @DARWIN_SANDBOX
     def test_fake_q_gate_low_is_advisory_but_reviewer_security_and_major_block(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3916,6 +3948,7 @@ sys.exit(result.returncode)
                 self.assertNotIn('fake_q_bundle', co.state)
                 self.assertIn('fake_q_bundle_pending', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_q_bundle_revise_minor_keeps_advisory_and_raw_verdict(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3937,6 +3970,7 @@ sys.exit(result.returncode)
         self.assertTrue(all(row['id'] in ledger for row in rows))
         self.assertEqual(bundle['status'], 'REVIEWED')
 
+    @DARWIN_SANDBOX
     def test_fake_q_bundle_revise_major_security_and_empty_are_rejected(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -3954,6 +3988,7 @@ sys.exit(result.returncode)
                 self.assertNotIn('fake_q_bundle', co.state)
                 self.assertIn('fake_q_bundle_pending', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_q_delivery_verifier_rechecks_disk_and_returns_detached_proof(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -3973,6 +4008,7 @@ sys.exit(result.returncode)
             binary.write_bytes(original)
         self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    @DARWIN_SANDBOX
     def test_fake_q_delivery_verifier_refuses_each_proof_guard(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -4087,12 +4123,15 @@ raise AssertionError('fault window was not reached')
             dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
             self.assertEqual(len(cas_calls), 1)
 
+    @DARWIN_SANDBOX
     def test_reconcile_after_sigkill_immediately_after_cas(self):
         self.hard_crash_publication_recovery('cas')
 
+    @DARWIN_SANDBOX
     def test_reconcile_after_sigkill_immediately_after_index_replace(self):
         self.hard_crash_publication_recovery('index')
 
+    @DARWIN_SANDBOX
     def test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
         co, c1, before = self.q_test_fixture
@@ -4126,6 +4165,7 @@ raise AssertionError('fault window was not reached')
         co._publication_guard()
         drs.inspect(co, exact_q=True)
 
+    @DARWIN_SANDBOX
     def test_reconcile_retries_zero_side_effect_hold_without_journal(self):
         self.test_fake_publication_refuses_unaccepted_and_dirty_workspace()
         co, c1, before = self.q_test_fixture
@@ -4139,9 +4179,11 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)['phase'], 'RECONCILED')
         self.assertFalse((self.workspace / '.git/index.lock').exists())
 
+    @DARWIN_SANDBOX
     def test_reconcile_after_sigkill_before_cas(self):
         self.hard_crash_publication_recovery('pre-cas')
 
+    @DARWIN_SANDBOX
     def test_reconcile_preserves_explicit_pending_null(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
         co, c1, before = self.q_test_fixture
@@ -4154,6 +4196,7 @@ raise AssertionError('fault window was not reached')
         self.assertNotIn('hold_reason', co.state)
         co._publication_guard()
 
+    @DARWIN_SANDBOX
     def test_reconcile_refuses_foreign_bytes_immediately_before_checkout(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
         co, c1, before = self.q_test_fixture
@@ -4174,6 +4217,7 @@ raise AssertionError('fault window was not reached')
         self.assertNotEqual(json.loads((co.evidence / 'delivery-publication.json').read_text())['phase'],
                             'RECONCILED')
 
+    @DARWIN_SANDBOX
     def test_publication_guard_refuses_completed_state_with_leftover_lock_and_missing_intent(self):
         self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
         co, c1, before = self.q_test_fixture
@@ -4188,6 +4232,7 @@ raise AssertionError('fault window was not reached')
         with self.assertRaisesRegex(ValueError, 'publication intent missing'):
             dr.reconcile(co, rc.observed_test_succeeded, rc.atomic_json)
 
+    @DARWIN_SANDBOX
     def test_close_proof_requires_exact_accepted_reconciled_tree_and_compass_blob(self):
         self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
         co, c1, before = self.q_test_fixture
@@ -4222,6 +4267,7 @@ raise AssertionError('fault window was not reached')
                 dcp.verify(co)
         self.assertEqual(dcp.verify(co), proof)
 
+    @DARWIN_SANDBOX
     def test_fake_close_is_bound_to_operator_intent_exact_tree_and_idempotent_receipt(self):
         self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
         co, c1, before = self.q_test_fixture
@@ -4252,6 +4298,7 @@ raise AssertionError('fault window was not reached')
         backlog.write_bytes(raw)
         self.assertEqual(co.fake_close(digest), 'CLOSED')
 
+    @DARWIN_SANDBOX
     def test_fake_close_replays_receipt_write_crash_and_refuses_stale_disk_and_relabel(self):
         self.test_reconcile_post_cas_keeps_lock_and_is_idempotent_at_exact_q()
         co, c1, before = self.q_test_fixture
@@ -4299,6 +4346,7 @@ raise AssertionError('fault window was not reached')
             '--max-invocations', '64')[2:])
         return rc.Coordinator(args, _fake_lifecycle=True)
 
+    @DARWIN_SANDBOX
     def test_coordinator_prepares_and_finishes_fake_delivery_without_test_stage_outputs(self):
         co = self.close_drive_fixture()
         intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
@@ -4323,6 +4371,7 @@ raise AssertionError('fault window was not reached')
             with self.assertRaisesRegex(ValueError, 'fake-only'):
                 co.fake_prepare_delivery()
 
+    @DARWIN_SANDBOX
     def test_delivery_drive_rejects_invalid_parameters_before_freeze_or_dispatch(self):
         co = self.close_drive_fixture()
         saved = co.state_path.read_bytes()
@@ -4338,6 +4387,7 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(co.state['status'], 'DONE')
         self.assertEqual(intent['day'], '2026-10-01')
 
+    @DARWIN_SANDBOX
     def test_delivery_drive_refuses_unfrozen_item_after_supported_m3_without_spending_or_saving(self):
         co = self.close_drive_fixture()
         self.assertEqual(co.fake_lifecycle_drive(), 'STOP_BEFORE_SECURITY')
@@ -4399,24 +4449,31 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(len({r['request_id'] for r in co.state['lifecycle']['receipts']}),
                          len(co.state['lifecycle']['receipts']))
 
+    @DARWIN_SANDBOX
     def test_m4_resume_finish_boundary(self):
         self.exercise_m4_resume_boundary('FINISH')
 
+    @DARWIN_SANDBOX
     def test_m4_resume_polish_boundary(self):
         self.exercise_m4_resume_boundary('POLISH-Q')
 
+    @DARWIN_SANDBOX
     def test_m4_resume_docs_boundary(self):
         self.exercise_m4_resume_boundary('DOCS')
 
+    @DARWIN_SANDBOX
     def test_m4_resume_security_boundary(self):
         self.exercise_m4_resume_boundary('SECURITY')
 
+    @DARWIN_SANDBOX
     def test_m4_resume_delivery_boundary(self):
         self.exercise_m4_resume_boundary('DELIVERY')
 
+    @DARWIN_SANDBOX
     def test_m4_resume_close_boundary(self):
         self.exercise_m4_resume_boundary('CLOSE')
 
+    @DARWIN_SANDBOX
     def test_m4_plan_to_close_has_two_exact_commits_without_hand_built_approvals(self):
         co = self.close_drive_fixture()
         parent = co._head_commit()
@@ -4440,6 +4497,7 @@ raise AssertionError('fault window was not reached')
         for phase in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY', 'DELIVERY', 'CLOSE'):
             self.assertIn(phase, phases)
 
+    @DARWIN_SANDBOX
     def test_m4_security_error_cannot_reach_q_or_delivery(self):
         co = self.close_drive_fixture()
         original = co.invoke
@@ -4457,6 +4515,7 @@ raise AssertionError('fault window was not reached')
         self.assertNotIn('fake_delivery_intent', co.state)
         self.assertNotEqual(co.state['status'], 'DONE')
 
+    @DARWIN_SANDBOX
     def test_recovery_lock_admission_refuses_without_rebinding_or_writing_state(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4476,6 +4535,7 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(co.state_path.read_bytes(), saved)
         self.assertEqual(co.state['publication_hold'], 'different-run')
 
+    @DARWIN_SANDBOX
     def test_recovery_lock_is_journal_bound_and_retained_until_completion(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
         co, c1, before = self.q_test_fixture
@@ -4508,6 +4568,7 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(lock.read_text(), 'foreign lock')
         self.assertEqual(co.state['status'], 'HOLD')
 
+    @DARWIN_SANDBOX
     def test_recovery_state_accepts_preimport_scratch_q_objects(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4525,6 +4586,7 @@ raise AssertionError('fault window was not reached')
         with self.assertRaises(ct.CandidateError):
             ct._tree_entries(live, row['intent']['q_oid'])
 
+    @DARWIN_SANDBOX
     def test_recovery_state_accepts_q_new_files_before_live_index_replace(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4541,6 +4603,7 @@ raise AssertionError('fault window was not reached')
         self.assertIn('sum_ints.py', ct._git(['ls-files', '--others', '--exclude-standard'], env=live))
         self.assertEqual((self.workspace / 'sum_ints.py').read_bytes(), (root.root / 'sum_ints.py').read_bytes())
 
+    @DARWIN_SANDBOX
     def test_recovery_state_accepts_known_parent_or_q_and_rejects_foreign_bytes(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
         co, c1, before = self.q_test_fixture
@@ -4566,6 +4629,7 @@ raise AssertionError('fault window was not reached')
             drs.inspect(co)
         self.assertEqual(co.state_path.read_bytes(), state)
 
+    @DARWIN_SANDBOX
     def test_publication_hold_quarantines_all_operator_paths_without_state_write(self):
         self.test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation()
         co, c1, before = self.q_test_fixture
@@ -4586,6 +4650,7 @@ raise AssertionError('fault window was not reached')
             self.assertEqual(rc.main(command), 0)
         self.assertEqual(co.state_path.read_bytes(), saved)
 
+    @DARWIN_SANDBOX
     def test_fake_publication_cas_holds_index_lock_through_checkout(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4622,6 +4687,7 @@ raise AssertionError('fault window was not reached')
         dj.verify(co, row)
         self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    @DARWIN_SANDBOX
     def test_fake_publication_crash_after_cas_is_hold_not_false_reconciliation(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4640,6 +4706,7 @@ raise AssertionError('fault window was not reached')
         self.assertEqual(co.state['publication_hold'], row['intent']['digest'])
         self.assertIn('simulated journal completion failure', co.state['hold_reason'])
 
+    @DARWIN_SANDBOX
     def test_fake_publication_refuses_unaccepted_and_dirty_workspace(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4661,6 +4728,7 @@ raise AssertionError('fault window was not reached')
         self.assertEqual((self.workspace / 'user.txt').read_text(), 'foreign work')
         self.assertEqual(co.state['status'], 'HOLD')
 
+    @DARWIN_SANDBOX
     def test_candidate_test_sandbox_executes_controls_and_denies_workspace_refs_and_aliases(self):
         command = self.command('--lifecycle-mode', 'on', '--skip-probe')
         co = rc.Coordinator(rc.parser().parse_args(command[2:]), _fake_lifecycle=True)
@@ -4734,6 +4802,7 @@ print(json.dumps(results))
         with self.assertRaises(RuntimeError):
             cts.run(co, [sys.executable, '-c', 'pass'], cwd=root, env={}, timeout=30)
 
+    @DARWIN_SANDBOX
     def test_oid_sandbox_preflight_failure_is_retryable_without_pending(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -4761,6 +4830,7 @@ print(json.dumps(results))
         self.assertNotIn('fake_candidate_test_pending', co.state)
         self.assertEqual(co.fake_candidate_oid_test()['returncode'], 0)
 
+    @DARWIN_SANDBOX
     def test_q_failed_then_passed_test_never_yields_source_or_reviewed_bundle(self):
         self.test_fake_q_materialization_is_unreviewed_and_never_closes_live_backlog()
         co, c1, before = self.q_test_fixture
@@ -4783,6 +4853,7 @@ print(json.dumps(results))
         with self.assertRaises(ValueError):
             co.fake_q_complete(c1, '2026-09-30')
 
+    @DARWIN_SANDBOX
     def test_publication_journal_proofs_survive_cas_but_reject_drift(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4827,6 +4898,7 @@ print(json.dumps(results))
         with self.assertRaises(ValueError):
             dj.verify(co, row)
 
+    @DARWIN_SANDBOX
     def test_publication_journal_needs_operator_acceptance_and_no_later_writer(self):
         self.test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest()
         co, c1, before = self.q_test_fixture
@@ -4849,6 +4921,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(ValueError, 'inventory changed'):
             dj.verify(co, row)
 
+    @DARWIN_SANDBOX
     def test_candidate_contents_verify_after_cas_without_weakening_prepublication_guard(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -4881,6 +4954,7 @@ print(json.dumps(results))
                                 cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    @DARWIN_SANDBOX
     def test_delivery_seal_binds_c1_metadata_and_hook_inventory(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -4934,6 +5008,7 @@ print(json.dumps(results))
             rc.delivery_seal.verify(co, root, {})
         self.assertEqual(co.state['publication_seal'], saved)
 
+    @DARWIN_SANDBOX
     def test_fake_delivery_intent_binds_unpublished_objects_and_accepts_exact_digest(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -4971,6 +5046,7 @@ print(json.dumps(results))
         self.assertEqual(co._head_commit(), head)
         self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    @DARWIN_SANDBOX
     def test_fake_delivery_intent_refuses_drift_and_unreviewed_bundle(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -5006,6 +5082,7 @@ print(json.dumps(results))
                 self.assertNotIn('fake_delivery_acceptance', co.state)
                 self.assertEqual(co.state['lifecycle']['stage'], 'STOP_BEFORE_DELIVERY')
 
+    @DARWIN_SANDBOX
     def test_fake_delivery_abort_never_revives_on_prepare_or_accept(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -5026,6 +5103,7 @@ print(json.dumps(results))
             rc.delivery_intent.prepare(co, c1, '2026-09-30', rc.observed_test_succeeded, rc.atomic_json)
         self.assertEqual(co.state['status'], 'HOLD')
 
+    @DARWIN_SANDBOX
     def test_fake_delivery_reject_refuses_without_entering_legacy_recovery(self):
         self.test_fake_q_bundle_consumes_real_gate_final_security_and_p_noops()
         co, c1, before = self.q_test_fixture
@@ -5070,6 +5148,7 @@ print(json.dumps(results))
                 if kind != 'parent-drift':
                     freeze.assert_not_called()
 
+    @DARWIN_SANDBOX
     def test_fake_drive_freezes_operator_closeout_item_before_candidate_author(self):
         docs = self.workspace / 'docs' / 'guide.md'
         docs.parent.mkdir()
@@ -5100,6 +5179,7 @@ print(json.dumps(results))
         self.assertNotIn('Q', [r['stage'] for r in saved['lifecycle']['receipts']])
         self.assertNotEqual(saved['status'], 'CLOSED')
 
+    @DARWIN_SANDBOX
     def test_fake_lifecycle_drive_runs_m3_without_test_built_approvals(self):
         docs = self.workspace / 'docs' / 'guide.md'
         docs.parent.mkdir()
@@ -5252,6 +5332,7 @@ print(json.dumps(results))
                    'simulated_separation': True}
         return co, ingest, baseline, context, launched
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_finish_write_reingests_and_reviews_new_oid(self):
         co, ingest, baseline, context, launched = self.fake_chain_only_finish_fixture()
         revision = ct.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
@@ -5265,6 +5346,7 @@ print(json.dumps(results))
         self.assertEqual(chain['oid'], co.state['fake_candidate_test']['oid'])
         self.assertEqual(co.state['fake_candidate_review']['id'], chain['review_id'])
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_writer_reentry_recovers_after_advance_crash(self):
         co, ingest, baseline, context, _ = self.fake_chain_only_finish_fixture()
         with patch.object(co, 'fake_finish_writer_ingest', side_effect=RuntimeError('crash after advance')):
@@ -5280,6 +5362,7 @@ print(json.dumps(results))
         self.assertEqual(ingest['source_writer_request_id'], co.state['lifecycle']['receipts'][1]['request_id'])
         self.assertEqual(co.state['fake_candidate_chain']['oid'], co.state['lifecycle']['candidate_oid'])
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_reviewer_rejection_cannot_resume_same_writer_oid(self):
         co, _, _, context, _ = self.fake_chain_only_finish_fixture()
         with patch.dict(os.environ, {'FAKE_EXEC_MIXED_REVISE': '1'}):
@@ -5293,6 +5376,7 @@ print(json.dumps(results))
             co.fake_lifecycle_route(None, stub_mode=True, chain_only=True)
         self.assertEqual(len(co.state['turns']), count)
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_security_writer_reentry_holds(self):
         co, _, _, _, _ = self.fake_chain_only_finish_fixture()
         life = co.state['lifecycle']
@@ -5305,6 +5389,7 @@ print(json.dumps(results))
         self.assertEqual(co.state['status'], 'HOLD')
         self.assertIn('abort or start a new run', co.state['hold_reason'])
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_exec_receipt_hold_names_recovery(self):
         co, ingest, _, _, _ = self.fake_chain_only_finish_fixture()
         life = co.state['lifecycle']
@@ -5316,6 +5401,7 @@ print(json.dumps(results))
         self.assertEqual(co.fake_lifecycle_route(None, stub_mode=True, chain_only=True), 'HOLD')
         self.assertIn('EXEC receipt needs abort or new run', co.state['hold_reason'])
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_oid_test_failure_does_not_reenter(self):
         co, _, _, context, _ = self.fake_chain_only_finish_fixture()
         turns = len(co.state['turns'])
@@ -5327,6 +5413,7 @@ print(json.dumps(results))
         self.assertIsNone(co.state.get('fake_candidate_chain'))
         self.assertEqual(len(co.state['turns']), turns)
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_writer_reingest_rejects_post_receipt_change(self):
         co, ingest, baseline, context, _ = self.fake_chain_only_finish_fixture()
         original = co.fake_finish_writer_ingest
@@ -6024,6 +6111,7 @@ print(json.dumps(results))
                                                       'revision': finish['revision'], 'review': approve})
         self.assertEqual(co.state['lifecycle']['reserved_docs_constraint'], marker)
 
+    @DARWIN_SANDBOX
     def test_fake_reserved_docs_replay_routes_to_fresh_exec_then_security(self):
         (self.workspace / 'docs').mkdir()
         (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
@@ -6084,6 +6172,7 @@ print(json.dumps(results))
                          'STOP_BEFORE_DELIVERY')
         self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
 
+    @DARWIN_SANDBOX
     def test_fake_reserved_docs_rejects_stale_blocker_allowance_after_replay(self):
         (self.workspace / 'docs').mkdir()
         (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
@@ -6128,6 +6217,7 @@ print(json.dumps(results))
         self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
         self.assertEqual(co.blocking_open_findings(), [])
 
+    @DARWIN_SANDBOX
     def test_fake_reserved_docs_refuses_empty_owner_set_before_marker(self):
         (self.workspace / 'docs').mkdir()
         (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
@@ -6157,6 +6247,7 @@ print(json.dumps(results))
                                                       'repair': repair})
         self.assertNotIn('reserved_docs_constraint', co.state['lifecycle'])
 
+    @DARWIN_SANDBOX
     def test_fake_reviewer_owned_reserved_docs_keeps_finding_until_same_owner_review(self):
         (self.workspace / 'docs').mkdir()
         (self.workspace / 'docs/guide.md').write_text('# Existing guide\n')
@@ -6728,6 +6819,7 @@ print(json.dumps(results))
         self.assertIsNotNone(co.state['fake_candidate_pending'])
         self.assertNotIn('fake_ingest_receipt', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_test_binds_rebuilt_tree_and_ingest_id(self):
         (self.workspace / 'test_sum_ints.py').write_text(
             'import unittest\nfrom sum_ints import sum_ints\n'
@@ -6751,6 +6843,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(RuntimeError, 'completed ingest'):
             co.fake_candidate_oid_test()
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_test_failure_and_pending_cannot_rerun(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6791,6 +6884,7 @@ print(json.dumps(results))
             co.fake_candidate_oid_test()
         self.assertNotIn('fake_candidate_test', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_test_does_not_import_from_inherited_pythonpath(self):
         outside = self.root / 'outside'; outside.mkdir()
         (outside / 'outside_only.py').write_text('VALUE = 1\n')
@@ -6809,6 +6903,7 @@ print(json.dumps(results))
                 co.fake_candidate_oid_test()
         self.assertNotIn('fake_candidate_test', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_chains_ingest_test_reviewer_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6838,6 +6933,7 @@ print(json.dumps(results))
             self.assertNotIn(str(self.workspace), prompt)
             self.assertEqual(row['workspace'], tested['root'])
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_rejects_stale_test_or_changed_checkout(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6853,6 +6949,7 @@ print(json.dumps(results))
             co.fake_candidate_oid_review()
         self.assertNotIn('fake_candidate_review', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_uses_coordinator_test_not_model_claim(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6863,6 +6960,7 @@ print(json.dumps(results))
             co.fake_candidate_oid_review()
         self.assertIn('fake_candidate_chain', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_blocks_gate_finding(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6881,6 +6979,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(RuntimeError, 'current successful test'):
             resumed.fake_candidate_oid_review()
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_revise_persists_same_oid_rejection(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6902,6 +7001,7 @@ print(json.dumps(results))
                              for row in resumed.state['turns']), review_count)
         self.assertNotIn('fake_candidate_chain', resumed.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_protocol_error_cannot_reroll(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6921,6 +7021,7 @@ print(json.dumps(results))
         self.assertEqual(len(resumed.state['turns']), count)
         self.assertNotIn('fake_candidate_chain', resumed.state)
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_approval_rejects_changed_evidence_and_identity(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6938,6 +7039,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(RuntimeError, 'evidence differs'):
             co.fake_candidate_approval()
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_approval_rechecks_current_inputs_and_turns(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6966,6 +7068,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(RuntimeError, 'missing or malformed'):
             co.fake_candidate_approval()
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_approval_rejects_new_head_after_plan_stop(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -6981,6 +7084,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(RuntimeError, 'frozen parent'):
             co.fake_candidate_approval()
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_router_consumes_persisted_approval_once(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -7003,6 +7107,7 @@ print(json.dumps(results))
         with self.assertRaisesRegex(ValueError, 'unused persisted approval'):
             co.fake_lifecycle_route(None, stub_mode=True, chain_only=True)
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_router_rejects_unrelated_receipt_and_terminal_run(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -7019,6 +7124,7 @@ print(json.dumps(results))
             co.fake_lifecycle_route(None, chain_only=True)
         self.assertNotIn('fake_route_consumed', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_continues_security_from_consumed_exec_receipt(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -7068,6 +7174,7 @@ print(json.dumps(results))
         self.assertEqual(len(co.state['turns']), count)
         self.assertNotIn('fake_candidate_pending', co.state)
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_rejects_legacy_approval_before_and_after_rejection(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -7087,6 +7194,7 @@ print(json.dumps(results))
             co.fake_lifecycle_route(hand_built, stub_mode=True)
         self.assertEqual(co.state['lifecycle']['stage'], 'EXEC')
 
+    @DARWIN_SANDBOX
     def test_fake_chain_only_preserves_candidate_error_diagnostic(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -7099,6 +7207,7 @@ print(json.dumps(results))
             with self.assertRaisesRegex(RuntimeError, 'candidate changed: scratch root changed'):
                 co.fake_candidate_approval()
 
+    @DARWIN_SANDBOX
     def test_fake_candidate_oid_review_rejects_reviewer_tree_mutation_before_gate(self):
         args = rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--stop-after-plan')[2:])
         co = rc.Coordinator(args, _fake_lifecycle=True)
@@ -7717,7 +7826,7 @@ print(json.dumps(results))
         finding = state['finding_ledger'][0]
         self.assertEqual(finding['severity'], 'MINOR')
         self.assertTrue(finding['summary'].startswith('[out-of-phase]'))
-        plan_round = next((self.run_dir / 'rounds').glob('*-supervisor-approve.md')).read_text()
+        plan_round = sorted((self.run_dir / 'rounds').glob('*-supervisor-approve.md'))[0].read_text()   # CI-TESTFIX R5
         self.assertIn('[out-of-phase]', plan_round)
 
     def test_codex_plan_receives_full_inputs_without_requiring_shell_reads(self):
@@ -8385,7 +8494,7 @@ print(json.dumps(results))
         codex_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'codex']
         claude_receipts = [turn for turn in state['turns'] if turn['vendor'] == 'claude']
         self.assertTrue(codex_receipts and claude_receipts)
-        self.assertTrue(all(turn['reported_model'] == 'gpt-6-luna' and
+        self.assertTrue(all(turn['reported_model'] == 'gpt-6.1-sol' and
                             turn['reported_model_source'] == 'thread.started' and
                             turn['model_identity'] == 'MATCH' for turn in codex_receipts))
         self.assertTrue(all(turn['reported_model'] == 'claude-opus-5-5' and
@@ -8491,7 +8600,7 @@ print(json.dumps(results))
                                              '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                                              '--author-effort', 'low', '--reviewer-effort', 'low',
                                              '--gate-effort', 'low', '--test-command', 'python3 -m unittest',
-                                             '--timeout', '10', '--exercise-revisions', '--gate-vendor', 'claude',
+                                             '--timeout', tsc.scaled_arg(10), '--exercise-revisions', '--gate-vendor', 'claude',
                                              '--codex-bin', str(self.fake_codex_cli()),
                                              '--claude-bin', str(self.fake_claude_cli())])
         self.assertEqual(report['author_flags_digest'], rc.Coordinator(probe_args).author_flags_digest())
@@ -9066,14 +9175,14 @@ print(json.dumps(results))
         self.assertNotIn('Traceback', result.stderr)
 
     def test_resume_timeout_can_only_increase_to_documented_cap(self):
-        co = self.coordinator('--timeout', '10')
+        co = self.coordinator('--timeout', tsc.scaled_arg(10))
         co.state.update(status='HOLD', hold_reason='operator pause')
         co.save()
 
         def resume_args(*extra):
             args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                '--timeout', '10', '--codex-bin', str(self.fake_codex_cli()),
+                '--timeout', tsc.scaled_arg(10), '--codex-bin', str(self.fake_codex_cli()),
                 '--claude-bin', str(self.fake_claude_cli()), *extra])
             return args
 
@@ -9250,6 +9359,8 @@ print(json.dumps(results))
             '    stopped.write_text(str(os.getpid()))\n'
             '    os._exit(0)\n'
             'signal.signal(signal.SIGTERM, stop)\n'
+            'if sys.argv[1:] == ["--version"]:\n'   # like the real CLI and the harness fake: a version query never blocks (ADR-12 startup check)
+            '    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.160.0")); sys.exit(0)\n'
             'if not marker.exists():\n'
             '    marker.write_text(str(os.getpid()))\n'
             '    time.sleep(120)\n'
@@ -9264,7 +9375,7 @@ print(json.dumps(results))
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         child_pid = None
         try:
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + tsc.scaled(10)
             active = None
             while time.monotonic() < deadline and coordinator_process.poll() is None:
                 if marker.exists():
@@ -9281,7 +9392,7 @@ print(json.dumps(results))
             self.assertEqual(active['phase'], 'PLAN')
 
             coordinator_process.kill()
-            coordinator_process.communicate(timeout=5)
+            coordinator_process.communicate(timeout=tsc.scaled(5))
 
             resume_command = list(command)
             resume_command[2] = 'resume'
@@ -9304,7 +9415,7 @@ print(json.dumps(results))
                 os.killpg(child_pid, signal.SIGTERM)
             except ProcessLookupError as exc:
                 self.fail('fake provider exited before the test sent SIGTERM: ' + str(exc))
-            wait_dead_by = time.monotonic() + 5
+            wait_dead_by = time.monotonic() + tsc.scaled(5)
             recovered = None
             while True:
                 recovered = subprocess.run(
@@ -9335,7 +9446,7 @@ print(json.dumps(results))
         finally:
             if coordinator_process.poll() is None:
                 coordinator_process.kill()
-                coordinator_process.communicate(timeout=5)
+                coordinator_process.communicate(timeout=tsc.scaled(5))
             if child_pid is not None:
                 try:
                     os.killpg(child_pid, signal.SIGKILL)
@@ -10013,8 +10124,8 @@ print(json.dumps(results))
             pass_fds=(descendant_signal.fileno(),))
         descendant_signal.close()
         try:
-            child.wait(timeout=5)
-            parent_signal.settimeout(5)
+            child.wait(timeout=tsc.scaled(5))
+            parent_signal.settimeout(tsc.scaled(5))
             self.assertEqual(parent_signal.recv(1), b'R')
             active = {'pid': child.pid, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
                       'sequence': 2}
@@ -10037,7 +10148,7 @@ print(json.dumps(results))
             self.assertTrue(owns_socket, 'descendant must still own the sentinel socket before kill')
             if owns_socket:
                 os.killpg(child.pid, signal.SIGKILL)
-                parent_signal.settimeout(5)
+                parent_signal.settimeout(tsc.scaled(5))
                 self.assertEqual(parent_signal.recv(1), b'')
         finally:
             try:
@@ -10056,7 +10167,7 @@ print(json.dumps(results))
                 pass
             finally:
                 parent_signal.close()
-                child.wait(timeout=5)
+                child.wait(timeout=tsc.scaled(5))
         snapshot = rc.git_snapshot(self.workspace)[0]
         result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
                   'snapshot': snapshot, 'sequence': 3, 'role': 'probe'}

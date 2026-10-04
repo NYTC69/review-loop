@@ -12,6 +12,7 @@ import unittest.mock
 from paired_session import author_write_guard as guard
 from paired_session import candidate_tree as tree
 from paired_session import test_real_coordinator as trc
+from paired_session import timeout_scale as tsc
 
 rc = trc.rc
 
@@ -394,7 +395,7 @@ class WorkspaceProfileBeforeStateTests(Fixture):
         h = self.h
         argv = [action, '--workspace', str(h.workspace), '--workitem', str(h.workitem), '--run-dir', str(h.run_dir),
                 '--codex-bin', str(h.fake_codex_cli()), '--claude-bin', str(h.fake_claude_cli()),
-                '--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                '--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                 '--test-command', 'python3 -m unittest']
         return rc.configure_parser(rc.parser(), argv).parse_args(argv)
 

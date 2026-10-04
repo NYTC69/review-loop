@@ -387,6 +387,29 @@ from `max(7200, saved --timeout)`, capped at 14400 seconds. The existing
 `resume --resume-timeout N` option raises the general per-turn timeout up to
 7200 seconds for phases that use `--timeout`.
 
+`--wi-deadline SECONDS` (off by default) bounds the whole work item in wall-clock
+time, counted from the run's start; HOLDs, operator waits and coordinator
+restarts all count. It is checked before every dispatch: once the deadline has
+passed, the run HOLDs instead of starting the next turn. A running turn is never
+cut short and keeps its own timeout. The value is fixed at `run`: `resume`
+keeps the saved deadline and refuses a different one, and the operator actions
+keep the saved deadline. The deadline only blocks new dispatches: once it has
+passed, `resume` and `permission-probe` are refused without dispatching or
+touching the HOLD, so every HOLD keeps its reason and its exits
+(`accept --override-rejection` at a round-limit or rejected-tree HOLD,
+`note --scope-change`, `abort`). The one exception is an uncertain in-flight
+turn: `resume` records it, and `resume --retry-uncertain` (or
+`permission-probe --retry-uncertain` for a probe turn) still verifies its
+process group is gone and archives it, then HOLDs with the deadline reason
+instead of dispatching, so `note --scope-change` works afterwards. A wall clock
+that moved back (below) is treated the same way. A `DONE` run past
+its deadline stays acceptable: `accept` and `reject --scope-change` work, while
+`reject` and `resume --polish` are refused because their next dispatch could
+only HOLD. If the wall clock moves back by more than 60 seconds
+since the last dispatch, the run HOLDs until the clock is past that time again;
+elapsed time is never refunded. A scope-change successor starts without a
+deadline; pass the time it may use as its own `--wi-deadline`.
+
 A run ending in `DONE` is awaiting explicit operator acceptance. Use `accept` to
 record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
 no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope
@@ -451,6 +474,28 @@ security flag, one-line summary). Both leases and role run-dir write denials
 apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
 still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
 no receipt follows plain resume; a fresh author ingest is required for rejected trees.
+
+Repeated same-class blocks (FIELD-5, v2.9.7): the EXEC reviewer, shadow and gate
+prompts ask for every blocking finding to start with an explicit defect-class
+label `[class: kebab-case-name]`; a gate label is kept at the start of the
+finding's ledger summary, so the persistent reviewer can reuse it. The
+coordinator reads only that label; it never infers a class from the text. A
+BLOCK is an EXEC reviewer or gate verdict with new blocking findings. Old
+blockers merged into a refused approval, a REVISE without new blockers, a
+refused approval and an approval that only routes to the gate neither count nor
+break the run; an approval that ends the review (a gate without blockers, or a
+reviewer approval with no gate to follow) breaks it. When one class appears in
+each of three consecutive BLOCKs, the run HOLDs `structural fix / re-scope
+needed: finding class ...` with the finding ids per verdict, after routing the
+next turn to the author; the round-limit HOLD keeps precedence and its override.
+The HOLD closes no finding and never accepts. Use `note` with a structural plan
+and `resume`, `note --scope-change`, or `abort`; after the HOLD the count starts
+afresh, so the same class HOLDs again only after three more BLOCKs. The history
+is in `block_class_events` and `structural_holds` (written only when the HOLD
+happens) in state.json.
+Blocking findings without a label never HOLD; they are counted in
+`unlabeled_blocking_findings` (run total, and per reviewer/gate turn receipt) so a
+reviewer that never labels is visible.
 
 An idle `HOLD` run waiting for its next author turn accepts an in-scope
 clarification with `note --text '...'` or `note --file /path/to/note`. It reaches

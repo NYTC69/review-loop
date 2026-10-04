@@ -24,7 +24,7 @@ def readonly_profile(args):
 
 
 def emit_codex(answer, session, command_events=None):
-    model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6-luna')
+    model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6.1-sol')
     print(json.dumps({'type': 'thread.started', 'thread_id': session, 'model': model}))
     print(json.dumps({'type': 'turn.started', 'model': model}))
     if os.environ.get('FAKE_STREAM_TWO_USAGE_THEN_HANG'):
@@ -261,6 +261,8 @@ def main():
             body = ('Trigger: bool input. Reachability: public API. Impact: wrong sum. Likelihood: common. '
                     'Fix cost: one type check. Cheaper response: tests alone do not fix behavior.' if blocking
                     else 'Trigger: bool input only.')
+            if os.environ.get('FAKE_FINDING_CLASS'):
+                body = '[class: ' + os.environ['FAKE_FINDING_CLASS'] + '] ' + body
             findings = [{'severity': 'high', 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3,
                          'confidence': 0.9, 'recommendation': 'reject bool', 'body': body}]
         elif os.environ.get('FAKE_GATE_MINOR') or os.environ.get('FAKE_GATE_LOW'):
@@ -353,8 +355,9 @@ def main():
             findings = [
                 {'severity': 'MINOR', 'file': 'sum_ints.py', 'summary': 'small cleanup',
                  'failure_scenario': 'style remains untidy'},
-                {'severity': 'MAJOR', 'file': 'sum_ints.py', 'summary': 'major behavior issue',
-                 'failure_scenario': 'wrong result is returned'},
+                {'severity': 'MAJOR', 'file': 'sum_ints.py', 'failure_scenario': 'wrong result is returned',
+                 'summary': ('[class: ' + os.environ['FAKE_FINDING_CLASS'] + '] ' if os.environ.get('FAKE_FINDING_CLASS') else '')
+                 + 'major behavior issue'},
             ]
         if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_LOW_REVISE'):
             revise = True
