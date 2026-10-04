@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
+from urllib.parse import unquote as _unquote
 
 ALLOW, PROTECTED, UNKNOWN = 'ALLOW', 'PROTECTED', 'UNKNOWN'
 NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
@@ -37,7 +38,9 @@ INTERPRETERS = {'python': ('c', {'-W', '-X', '--check-hash-based-pycs'}), 'pypy'
                 'perl': ('eE', {'-I', '-M', '-m'}), 'ruby': ('e', {'-I', '-r', '-E'}), 'php': ('rRBE', {'-d', '-c', '-z'}), 'lua': ('e', {'-l'}),
                 'osascript': ('e', {'-l'}), 'Rscript': ('e', set()), 'rbash': ('c', {'-o', '-O', '+o', '+O', '--rcfile', '--init-file'}),
                 **{shell: ('c', set()) for shell in ('csh', 'tcsh', 'ash', 'mksh', 'yash', 'posh')}}
-SHELLS = {'sh', 'bash', 'zsh', 'dash', 'ksh', 'rbash'}                          # a script file is fine; -c, -s, stdin and option values are opaque
+LOADS_PROGRAM = {'node': {'-r', '--require', '--import', '--loader', '--experimental-loader'}, 'bun': {'-r', '--preload'},
+                 'ruby': {'-r'}, 'php': {'-c', '-z'}}                         # value options whose file is code (php -c: an ini can prepend)
+SHELLS = {'sh', 'bash', 'zsh', 'dash', 'ksh', 'rbash'}                         # a script file is fine; -c, -s, stdin and option values are opaque
 RARE_SHELLS = {'csh', 'tcsh', 'ash', 'mksh', 'yash', 'posh', 'fish'}            # not parsed: opaque unless they only print version or help
 PRINT_ONLY = {'python': ('--version', '-V', '--help', '-h'), 'pypy': ('--version', '-V', '--help', '-h'),
               'node': ('--version', '-v', '--help', '-h'), 'nodejs': ('--version', '-v', '--help', '-h')}   # else --version/--help only
@@ -456,6 +459,9 @@ class TurnGuard:
                     return opaque('runs inline code')                             # -M'Mod;CODE' becomes `use Mod;CODE`
                 if family == 'php' and word[:2] == '-d' and re.match(r'\s*auto_(?:prepend|append)_file\s*=', value, re.I):
                     return opaque('runs inline code')                             # php://stdin or a data:// program
+                if (word[:2] if attached else option) in LOADS_PROGRAM.get(family, ()) and \
+                        self._stdin_path(re.sub(r'^file:(?://(?:localhost)?)?', '', _unquote(value), flags=re.I), cwds):
+                    return opaque('reads its program from stdin')                 # ruby -r/dev/stdin, node --import=file:///dev/stdin
                 skip = not eq and not attached; continue                          # _simple checks the value as an operand
             if option in ('--eval', '--print', 'eval') or self._stdin_path(word, cwds) or \
                     (word[:1] in '-+' and not word.startswith('--') and set(word[1:]) & set(code)):

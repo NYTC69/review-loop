@@ -1084,6 +1084,17 @@ def configured_command_issue(workspace: Path, run_dir: Path, commands: list) -> 
     return None
 
 
+def _saved_configured_commands(run_dir: Path) -> list:
+    """A restored run's saved test, reviewer and work-item reviewer commands, for admission (args keep the CLI defaults until the
+    Coordinator restores the saved config); an unreadable state adds none, and the Coordinator reports it itself."""
+    try: config = json.loads((run_dir / 'state.json').read_text())['config']
+    except (OSError, ValueError, KeyError, TypeError): return []
+    if not isinstance(config, dict): return []
+    found = [config.get('test_command'), *[c for key in ('reviewer_command', 'workitem_reviewer_commands')
+                                           for c in (config.get(key) if isinstance(config.get(key), list) else [])]]
+    return [command for command in found if isinstance(command, str)]
+
+
 def _legacy_sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path) -> Optional[str]:
     """The pre-v2.9.7 substring guard, unchanged: the hybrid's fallback for calls the typed guard cannot resolve."""
     evidence_text = str(evidence)
@@ -1322,6 +1333,73 @@ def codex_rollout_attempts(session: Optional[str], start: float, end: float) -> 
             except (ValueError, KeyError, AttributeError):
                 continue
     return commands, calls
+
+
+def codex_rollout_cwds(session: Optional[str], start: float, end: float, writable: tuple = ()) -> Optional[dict]:
+    """v297-eg-cwd: the cwd Codex itself recorded for each command of this CLI interval: the same rollout and window as the usage and
+    attempt readers, CommandExecution items of the one turn started in the window only, and that turn's own cwd (its turn_context rows).
+    None when the rollout cannot be read, when the window holds no or several turns, or when a role could write the sessions dir."""
+    from urllib.parse import unquote, urlparse
+    def path_of(value) -> Optional[str]:
+        url = urlparse(value) if isinstance(value, str) else None
+        path = unquote(url.path) if url and url.scheme == 'file' and url.netloc in ('', 'localhost') else value if url and not url.scheme else None
+        return path if isinstance(path, str) and os.path.isabs(path) else None
+    sessions = codex_sessions_dir().resolve()
+    if not session or any(sessions == r or r in sessions.parents for r in (Path(w).resolve() for w in writable if w)):
+        return None
+    paths = list(sessions.rglob('*' + session + '*.jsonl'))
+    if len(paths) != 1:
+        return None
+    rows = []
+    try:
+        with paths[0].open(errors='replace') as source:
+            for line in source:
+                try:
+                    row = json.loads(line)
+                    stamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if start - 1 <= stamp <= end + 1 and isinstance(row.get('payload'), dict):
+                    rows.append((row.get('type'), row['payload']))
+    except OSError:
+        return None
+    turns = {p.get('turn_id') for kind, p in rows if kind == 'event_msg' and p.get('type') == 'task_started' and p.get('turn_id')}
+    if len(turns) != 1:                                                       # one CLI call is one turn; a neighbour's rows never count
+        return None
+    contexts = {path_of(p.get('cwd')) for kind, p in rows if kind == 'turn_context'}
+    commands = [(p['item'].get('command'), path_of(p['item'].get('cwd'))) for kind, p in rows
+                if kind == 'event_msg' and p.get('type') == 'item_completed' and p.get('turn_id') in turns
+                and isinstance(p.get('item'), dict) and p['item'].get('type') == 'CommandExecution']
+    return {'cwd': next(iter(contexts)) if len(contexts) == 1 else None, 'commands': commands}
+
+
+def codex_guard_calls(calls: list[dict], proof: Optional[dict]) -> tuple[list[dict], Optional[Path], int]:
+    """v297-eg-cwd: Codex command events carry no workdir. A command_execution call gets the cwd Codex recorded for that command when
+    every recorded run of it in the turn has the same cwd and there are at least as many records as events; otherwise it keeps no cwd
+    (unknown: the substring guard decides, as before). Code-mode cells get the turn's own cwd only when every command event is proven.
+    Returns (calls for the guard, the guard's cwd or None, proven events); the receipt keeps the calls as observed."""
+    if not proof:
+        return calls, None, 0
+    records: dict = {}
+    for argv, cwd in proof['commands']:
+        if isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv):   # unwrapped as observed_events does
+            text = argv[2] if len(argv) == 3 and argv[0].endswith(('sh', 'bash', 'zsh')) and argv[1] in ('-c', '-lc') else shlex.join(argv)
+            records.setdefault(text, []).append(cwd)
+    events = [c['input'].get('command') for c in calls if c.get('tool') == 'command_execution' and isinstance(c.get('input'), dict)]
+    changes = [c['input'].get('changes') if isinstance(c.get('input'), dict) else None for c in calls if c.get('tool') == 'file_change']
+    relative = any(not isinstance(listed, list) or not all(isinstance(change, dict) and isinstance(change.get('path'), str)
+                                                           and os.path.isabs(change['path']) for change in listed)
+                   for listed in changes)   # a relative patch path may have been applied in another workdir
+    guarded, proven, total = [], 0, 0
+    for call in calls:
+        given = call.get('input')
+        if call.get('tool') == 'command_execution' and isinstance(given, dict) and 'workdir' not in given:
+            total += 1
+            found = records.get(given.get('command'), [])
+            if len(set(found)) == 1 and found[0] is not None and len(found) >= events.count(given.get('command')):
+                call, proven = {**call, 'input': {**given, 'workdir': found[0]}}, proven + 1
+        guarded.append(call)
+    return guarded, Path(proof['cwd']) if proven == total and proof['cwd'] and not relative else None, proven
 
 
 def compact_command(command: dict, evidence_file: str) -> dict:
@@ -4365,12 +4443,15 @@ class Coordinator:
             receipt['observed_tool_calls'] = tool_calls
             receipt['observed_commands'] = observed_commands
             answer['observed_commands'] = observed_commands
-            fallbacks = []   # configured bytes: CLI commands only (a work item may sit in the workspace the author writes)
-            forbidden = sensitive_access(tool_calls, role, self.evidence, self.rounds,
-                                         None if receipt['vendor'] == 'codex' else active_workspace,   # Codex events carry no workdir
+            fallbacks, guard_calls, guard_cwd, proven = [], tool_calls, active_workspace, None
+            if receipt['vendor'] == 'codex':   # its events carry no workdir: only the rollout's own record proves one (v297-eg-cwd)
+                guard_calls, guard_cwd, proven = codex_guard_calls(tool_calls, codex_rollout_cwds(
+                    session, receipt['start'], receipt['end'], (self.workspace, active_workspace, self.author_temp_dir)))
+            forbidden = sensitive_access(guard_calls, role, self.evidence, self.rounds, guard_cwd,   # configured bytes: CLI commands only
                                          env, (self.workspace, active_workspace, self.author_temp_dir),
                                          (self.args.test_command, *self.args.reviewer_command), fallbacks)
-            receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20]}   # v297-eg-wire: substring-guard calls
+            receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20],   # v297-eg-wire: substring-guard calls
+                                         **({'codex_cwd_proven': proven} if proven is not None else {})}
             if forbidden:
                 raise ValueError(f'{role} accessed isolated {forbidden}')
             if context_before != context_after:
@@ -7066,7 +7147,8 @@ def main(argv=None) -> int:
             return 2
         try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text())
         except (OSError, ValueError): workitem_commands = []                    # the coordinator reports an unreadable work item itself
-        if issue := configured_command_issue(workspace, run_dir, [args.test_command, *args.reviewer_command, *workitem_commands]):
+        saved = _saved_configured_commands(run_dir) if args.action in ('run', 'resume') and restores_run(args) else []   # they dispatch turns
+        if issue := configured_command_issue(workspace, run_dir, [args.test_command, *args.reviewer_command, *workitem_commands, *saved]):
             print('REFUSED: ' + issue)                                           # v297-eg-wire: before any model turn
             return 2
     if args.action == 'status' and args.brief is not None:

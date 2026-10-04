@@ -47,6 +47,17 @@ def emit_codex(answer, session, command_events=None):
                 'status': 'completed' if event['exit_code'] == 0 else 'failed',
                 'aggregated_output': event.get('output', 'fake permission result'),
             }}))
+    if command_events and os.environ.get('FAKE_CODEX_ROLLOUT_CWD'):   # v297-eg-cwd: Codex's own record of where each command ran
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        rows = [{'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'fake-turn-' + session}},
+                {'timestamp': now, 'type': 'turn_context', 'payload': {'cwd': str(Path.cwd().resolve())}}]
+        rows += [{'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'item_completed', 'turn_id': 'fake-turn-' + session, 'item': {
+            'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', event['command']], 'cwd': Path.cwd().resolve().as_uri()}}}
+                 for event in command_events]
+        rollout = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'sessions' / ('rollout-' + session + '.jsonl')
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        with rollout.open('a') as handle:
+            handle.write(''.join(json.dumps(row) + '\n' for row in rows))
     if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'codex':
         print('{malformed model metadata')
     print(json.dumps({'type': 'item.completed', 'item': {'id': 'fake', 'type': 'agent_message',

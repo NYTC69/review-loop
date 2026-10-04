@@ -286,6 +286,12 @@ class EvidenceGuardTests(unittest.TestCase):
                                  ("perl '-Mstrict;print 1' x.pl", U), ("perl -M 'strict;print 1' x.pl", U), ('perl -mPOSIX=() x.pl', U),
                                  ("node '--import=data:text/javascript,1' x.js", U), ('php -dauto_prepend_file=php://stdin x.php', U),
                                  ("php -d 'auto_append_file=data://text/plain,x' x.php", U), ('php -dAUTO_PREPEND_FILE=/dev/stdin x.php', U),
+                                 ('printf x | ruby -r/dev/stdin x.rb', U), ('printf x | ruby -r /dev/./stdin x.rb', U),   # eg-wire R2 LOW
+                                 ('printf x | node -r /dev/fd/0 x.js', U), ('printf x | node --require=/dev/stdin x.js', U),
+                                 ('printf x | node --import=file:///dev/stdin x.js', U), ('printf x | node --import file:///%64ev/stdin x.js', U),
+                                 ('printf x | bun --preload /dev/stdin x.ts', U), ('printf x | php -c /dev/stdin x.php', U),
+                                 ('node -r ./setup.js x.js', A), ('node --import=file:///opt/loader.mjs x.js', A), ('ruby -rjson x.rb', A),
+                                 ('php -c php.ini x.php', A),
                                  ('ruby -I../run/evidence x.rb', P),          # the attached value is still an operand
                                  ('printf x | bash /dev/./stdin', U), ('printf x | bash //dev/stdin', U), ('printf x | bash /dev/fd/../fd/0', U),
                                  ('cd /dev && bash stdin', U), ('printf x | python3 /dev/./stdin', U), ('printf x | bash devlink/stdin', U),
