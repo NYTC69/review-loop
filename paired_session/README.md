@@ -460,7 +460,10 @@ bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" 
 `accept --reason TEXT` records the operator's acceptance reason; the intent
 digest covers it, so give the same `--reason` to `accept --intent-only` and to
 `accept`. `accept` refuses `--text` and `--file` (they belong to `reject` and
-`note`).
+`note`). `accept` also refuses while a CLI turn is active or uncertain (in the
+legacy and the worktree lifecycle alike): once its process group is gone,
+settle a probe turn with `permission-probe --retry-uncertain` (a DONE run stays
+DONE) and any other turn with `resume --retry-uncertain`, or abort.
 
 Runs created without the acceptance snapshot and rejected-digest fields refuse
 mutating commands: `run was created by an older paired-session build; start a new run`.

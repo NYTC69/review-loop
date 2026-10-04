@@ -3320,6 +3320,11 @@ class Coordinator:
 
     def accept(self) -> str:
         self._publication_guard()
+        if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
+                and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
+            fix = ('permission-probe' if turn.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') else 'resume') + ' --retry-uncertain'   # resume returns early on DONE
+            raise ValueError(f"accept refused: CLI turn {turn.get('sequence', '?')} is active or uncertain; settle it first "
+                             f'({fix} once its process group is gone) or abort')
         if worktree_lifecycle.is_worktree(self.state):   # W3b DELIVERY; no accept may skip FINISH-SECURITY
             return self._worktree_accept()
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
@@ -7643,12 +7648,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
-    p.add_argument('--command', help='attach-verification: the command the operator ran outside the author sandbox')
-    p.add_argument('--cwd', help='attach-verification: where it ran, the workspace or a directory inside it (default the workspace)')
-    p.add_argument('--exit-code', type=int, help='attach-verification: its exit code')
-    p.add_argument('--log', help='attach-verification: its log file, outside the workspace and run dir (copied into the run evidence)')
-    p.add_argument('--log-sha256', help='attach-verification: sha256 of that log; a mismatch is refused')
-    p.add_argument('--note', help='attach-verification: non-empty operator note')
+    av = p.add_argument_group('attach-verification', 'operator evidence for the current tree (ACTIVE, HOLD or DONE before accept)')   # HELP-GROUP
+    av.add_argument('--command', help='the command the operator ran outside the author sandbox')
+    av.add_argument('--cwd', help='where it ran, the workspace or a directory inside it (default the workspace)')
+    av.add_argument('--exit-code', type=int, help='its exit code')
+    av.add_argument('--log', help='its log file, outside the workspace and run dir (copied into the run evidence)')
+    av.add_argument('--log-sha256', help='sha256 of that log; a mismatch is refused')
+    av.add_argument('--note', help='non-empty operator note')
     p.add_argument('--expect', help='operator intent digest required by accept/reject')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
