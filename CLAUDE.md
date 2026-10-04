@@ -8,6 +8,8 @@
 
 **Fix:** read-only agents declare `tools: Read, Grep, Glob, Bash` (no Edit/Write; `reviewer` declares `Read, Grep, Glob`); agents that edit files (`executor`, `code-simplifier`) omit `tools` and inherit everything. Never put a policy word in `tools:` — valid values are tool names, `*`, or an omitted field.
 
+**Bash in report-only agents:** the `Bash` in those frontmatters is for direct user invocation only (`git diff`, static analysis). The launcher dispatch path sets its own read-only tools (Claude: Read/Grep/Glob; Codex: a read-only sandbox) and the caller runs verification; see `docs/protocol/reviewer-runtime.md` (owner decision 2026-10-04: keep Bash, align the docs).
+
 **History:** first seen with Executor (`tools: all`) in commit `8506809`, then with `code-simplifier` (2026-04-06) and `rust-reviewer` (issue #3). Each time the conclusion was "plugin agent types are sandboxed", so the protocol switched to `subagent_type: general-purpose` with the agent body inlined in the prompt.
 
 **Rule**: Every writer-agent invocation uses `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. The agents resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work. Report-only reviewers instead use the enforced native CLI boundary in `docs/protocol/reviewer-runtime.md`; a writable general-purpose agent cannot serve as a permission boundary.

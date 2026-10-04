@@ -63,13 +63,22 @@ descendant cleanup; run it outside a parent tool sandbox that blocks process
 inspection. If inspection is unavailable, cleanup fails closed and no review is
 accepted.
 
-Do not give report-only agents Bash/Write/Edit/Agent tools. Materialize patches
+On this launcher dispatch path, a report-only reviewer or specialist gets no
+Bash/Write/Edit/Agent tools: Claude gets Read/Grep/Glob only, Codex the
+read-only sandbox above. Materialize patches
 and run required verification commands in the authorized caller; pass the
 artifact paths, command, exit status and relevant output to the reviewer.
 Reviewers inspect the evidence and request missing verification. They do not
 install tools or run a write-requiring test suite themselves. For quality
 agents whose old body asks for Bash, this boundary takes precedence: the caller
 runs the named static analysis commands and supplies their results.
+
+The `tools:` frontmatter of the report-only agents in `agents/*.md` keeps
+`Bash` (owner decision 2026-10-04). It serves direct native use only, when a
+user invokes such an agent themselves and it needs `git diff` and its static
+analysis commands. The launchers do not read that frontmatter: they set their
+own read-only tools (`--tools` Read/Grep/Glob for Claude, the read-only sandbox
+for Codex), so the frontmatter never widens this dispatch boundary.
 
 The launcher counts root-agent native tool-use events without retaining their
 payloads. `tool_uses: 0` is a failed review. The caller retries it once where the active
