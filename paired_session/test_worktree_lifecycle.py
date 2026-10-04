@@ -1,4 +1,5 @@
 """Batch W1a (ADR-11, docs/e2e-6): worktree lifecycle activation on the real path."""
+import hashlib
 import json
 import unittest
 from unittest import mock
@@ -74,14 +75,27 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def finish_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'FINISH']
 
-    def test_finish_no_op_and_polish_q_specialists_advance_to_the_docs_hold(self):
+    def test_finish_polish_q_and_a_no_op_docs_writer_advance_to_the_security_hold(self):
         result = self.run_coordinator('--lifecycle-mode', 'on')
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         tree = rc.git_snapshot(self.workspace)[0]
         self.assertEqual((state['status'], state['hold_reason'], state['lifecycle']['stage'], state['next']),
-                         ('HOLD', wl.DOCS_PENDING, 'DOCS', 'docs'))
+                         ('HOLD', wl.SECURITY_PENDING, 'SECURITY', 'security'))
+        [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
+        self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['candidate_oid'], docs['output_oid']),
+                         ('READY', 'SECURITY', [], tree, tree))
+        writer = next(row for row in state['turns'] if row['sequence'] == docs['sequence'])
+        self.assertEqual((writer['role'], writer['phase'], writer['fresh']), ('author', 'DOCS', True))
+        prompt = (self.run_dir / 'evidence' / f"{docs['sequence']:03d}-docs-author.prompt.txt").read_text()
+        self.assertIn('Role: docs writer, fresh. Phase: DOCS.', prompt)
+        self.assertIn('Documentation paths you may write: CHANGELOG.md.', prompt)
+        self.assertEqual(state['config']['docs_file'], str((self.workspace / 'CHANGELOG.md').resolve()))   # doc 6 W default
+        for row in (next(row for row in state['turns'] if row['phase'] == 'FINISH'),
+                    next(row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'EXEC')):
+            prompt = (self.run_dir / 'evidence' / f"{row['sequence']:03d}-{row['phase'].lower()}-author.prompt.txt").read_text()
+            self.assertIn('Reserved for the DOCS stage; do not edit: CHANGELOG.md.', prompt)   # earlier writers know
         [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
         names = ['python-reviewer', 'code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer']   # sum_ints.py is Python
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped'], polish['output_oid']),
@@ -105,12 +119,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(state['acceptance_state'], 'IN_PROGRESS')
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
         self.assertEqual(again.returncode, 2, again.stdout + again.stderr)
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, again.stdout)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
 
     def test_a_finish_write_reopens_exec_review_and_gate_before_finishing_again(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_WRITE': '1'})
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.finish_rows(state)
         self.assertNotEqual(first['output_oid'], first['candidate_oid'])   # the finisher changed the reviewed tree
@@ -139,7 +153,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('uncertain in-flight', crashed.state['hold_reason'])
         with mock.patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
             self.assertEqual(crashed.resume(retry_uncertain=True), 'HOLD')
-        self.assertEqual(crashed.state['hold_reason'], wl.DOCS_PENDING)
+        self.assertEqual(crashed.state['hold_reason'], wl.SECURITY_PENDING)
         rows = self.finish_rows(crashed.state)
         self.assertEqual([(row['request_id'], row['status']) for row in rows],
                          [('w-FINISH-0-0', 'HOLD'), (request['request_id'], 'READY')])
@@ -160,7 +174,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(violating['discarded'], 'git guard')
         rc.subprocess.run(['git', 'reset', '-q', '--mixed', 'HEAD~1'], cwd=self.workspace, check=True)   # operator restore
         restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, restored.stdout, restored.stdout + restored.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finish] = self.finish_rows(state)
         self.assertNotEqual(finish['sequence'], violating['sequence'])   # a fresh FINISH, not the violator's READY
@@ -309,7 +323,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertNotIn(second['id'], [row['id'] for row in co._reviewer_open_findings()])
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
         # a second fix round on a new tree; its owner closes F002, the write replays EXEC + gate + FINISH + POLISH-Q
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, again.stdout, again.stdout + again.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == second['id']], ['fixed'])
         first_fix, second_fix = state['lifecycle']['polish_fixes']
@@ -392,7 +406,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_fixed_specialist_blocker_replays_exec_and_gate_then_finish_and_polish_q(self):
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finding] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
         self.assertEqual(finding['status'], 'fixed')
@@ -420,7 +434,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_specialist_without_tool_calls_is_retried_once_then_holds(self):
         marker = self.root / 'no-tools-once'
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_NO_TOOLS_ONCE': str(marker)})
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['lifecycle']['specialist_counts']['python-reviewer'], 2)
         self.assertEqual([row.get('discarded') for row in state['turns'] if row['phase'] == 'POLISH-Q'][:2],
@@ -458,7 +472,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                           'Role: specialist code-reviewer,' in (self.run_dir / 'evidence' /
                           f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text())
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
         state = json.loads((self.run_dir / 'state.json').read_text())
         attempt = next(row for row in state['lifecycle']['receipts'] if row['request_id'] == 'w-POLISH-Q-0-0')
         self.assertEqual((attempt['status'], [row['name'] for row in attempt['specialist_turns']]),
@@ -470,11 +484,174 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_skip_quality_polish_records_a_no_op_receipt(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', '--skip-quality-polish', 'true')
-        self.assertIn('HOLD: ' + wl.DOCS_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped']), ('READY', [], True))
         self.assertFalse([row for row in state['turns'] if row['phase'] == 'POLISH-Q'])
+
+    def docs_rows(self, state):
+        return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
+
+    def test_an_allowlisted_docs_write_waits_for_the_docs_review(self):
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'})
+        self.assertIn('HOLD: ' + wl.DOCS_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [docs] = self.docs_rows(state)
+        digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
+        self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['docs_written']),
+                         ('HOLD', 'HOLD', ['CHANGELOG.md'], {'CHANGELOG.md': digest}))
+
+    def test_a_docs_comment_write_replays_exec_review_and_gate(self):
+        env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        first, second = self.docs_rows(state)
+        self.assertEqual((first['status'], first['route'], first['docs_paths'], first['docs_written'], first['epoch']),
+                         ('READY', 'EXEC', ['sum_ints.py'], {}, 0))
+        self.assertEqual((second['route'], second['docs_paths'], second['epoch'], second['candidate_oid']),
+                         ('SECURITY', [], 1, first['output_oid']))
+        between = [(row['role'], row['phase']) for row in state['turns']
+                   if first['sequence'] < row['sequence'] < second['sequence']]
+        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH'), ('reviewer', 'POLISH-Q')):
+            self.assertIn(step, between)   # the comment fix is reviewed and gated like any code write
+        self.assertIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
+
+    def test_a_docs_write_past_the_exec_round_limit_holds(self):
+        env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
+        self.assertIn('HOLD: EXEC round limit reached after a DOCS write', result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['round_limit_hold']['hold_reason'], 'EXEC round limit reached after a DOCS write')
+        self.assertEqual((state['lifecycle']['stage'], state['lifecycle']['epoch'], state['next']), ('EXEC', 1, 'reviewer'))
+
+    def test_a_docs_write_to_a_protected_path_holds_until_it_is_restored(self):
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_LIFECYCLE_DOCS_FILE': 'CLAUDE.md'})
+        self.assertIn('HOLD: DOCS writer changed protected paths: CLAUDE.md; restore them or abort', result.stdout,
+                      result.stdout + result.stderr)
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
+        self.assertIn('HOLD: DOCS tree differs from the POLISH-Q-approved tree', again.stdout, again.stdout + again.stderr)
+        (self.workspace / 'CLAUDE.md').unlink()   # operator restore
+        restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual([(row['request_id'], row['route']) for row in self.docs_rows(state)],
+                         [('w-DOCS-0-0', 'HOLD'), ('w-DOCS-0-1', 'SECURITY')])
+
+    def test_docs_own_entry_survives_a_replay_and_may_be_rewritten(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        first, second = self.docs_rows(state)
+        digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
+        self.assertEqual((first['route'], first['docs_paths'], first['docs_written']),
+                         ('EXEC', ['CHANGELOG.md', 'sum_ints.py'], {'CHANGELOG.md': digest}))
+        self.assertEqual(state['lifecycle']['docs_owned'], {'CHANGELOG.md': digest})
+        self.assertEqual((second['route'], second['docs_paths'], second['epoch']), ('SECURITY', [], 1))   # entry check passed
+
+    def test_docs_paths_are_exact_documentation_files_and_an_empty_docs_file_turns_the_default_off(self):
+        co = rc.Coordinator(self.args('--docs-file', ''))
+        self.assertEqual((co.state['config']['docs_file'], co.state['config']['docs_allowlist']), ('', []))
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs' / 'link.md').symlink_to(self.workspace / 'sum_ints.py')
+        for extra, message in ((('--docs-allowlist', 'sum_ints.py'), 'not a documentation path: sum_ints.py'),
+                               (('--docs-allowlist', 'docs/link.md'), 'reached without symlinks: docs/link.md'),
+                               (('--docs-allowlist', 'CLAUDE.md'), 'not a documentation path: CLAUDE.md'),
+                               (('--docs-allowlist', '.claude-plugin/README.md'),
+                                'not a documentation path: .claude-plugin/README.md')):
+            with self.subTest(extra=extra):
+                self.run_dir = self.root / extra[1].replace('/', '-')
+                with self.assertRaisesRegex(ValueError, message):
+                    rc.Coordinator(self.args(*extra))
+
+    def start_docs_attempt(self, co):
+        tree, manifest = rc.git_snapshot(self.workspace)
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=tree)
+        request = wl.stage_request(co.state['lifecycle'], 'docs-writer')
+        co.state['lifecycle']['writer_git'] = {**co._writer_git_state(), 'sequence': co.state['sequence']}
+        co.state['lifecycle'] = rc.lifecycle_spine.begin(co.state['lifecycle'], request)
+        co.evidence.mkdir(parents=True, exist_ok=True)
+        return request, co.evidence / f"{request['request_id']}-docs-base.json", manifest
+
+    def test_a_recorded_docs_writer_turn_is_reused_and_a_deletion_replays_exec(self):
+        co = rc.Coordinator(self.args())
+        request, base, manifest = self.start_docs_attempt(co)
+        rc.atomic_json(base, manifest)
+        (self.workspace / 'tracked.txt').unlink()   # the writer deleted a tracked file, then the coordinator crashed
+        co.state['turns'].append({'role': 'author', 'phase': 'DOCS', 'sequence': co.state['sequence'] + 1,
+                                  'answer': {'status': 'READY', 'body': 'done'},
+                                  'snapshot_after': rc.git_snapshot(self.workspace)[0]})
+        rounds = co.state['exec_rounds']
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('second docs writer dispatch')):
+            co.worktree_docs_turn()
+        [docs] = self.docs_rows(co.state)
+        self.assertEqual((docs['request_id'], docs['route'], docs['docs_paths'], docs['sequence']),
+                         (request['request_id'], 'EXEC', ['tracked.txt'], co.state['sequence'] + 1))
+        self.assertEqual((co.state['next'], co.state['exec_rounds'], co.state['lifecycle']['epoch']), ('reviewer', rounds + 1, 1))
+
+    def test_a_missing_or_foreign_docs_base_holds_before_the_writer(self):
+        for write, message in ((None, 'DOCS base manifest is unreadable'),
+                               ([['other.md', 'x']], 'DOCS base manifest differs from the POLISH-Q-approved tree')):
+            with self.subTest(message=message):
+                self.run_dir = self.root / ('missing' if write is None else 'foreign')
+                co = rc.Coordinator(self.args())
+                _, base, _ = self.start_docs_attempt(co)
+                if write is not None:
+                    rc.atomic_json(base, write)
+                with mock.patch.object(co, 'invoke', side_effect=AssertionError('docs writer dispatched')), \
+                        self.assertRaisesRegex(RuntimeError, message):
+                    co.worktree_docs_turn()
+
+    def test_the_docs_hold_set(self):
+        for path, value, denied in (('CLAUDE.md', 'x', True), ('pkg/AGENTS.md', 'x', True), ('agents/new.md', 'x', True),
+                                    ('docs/protocol/loading.md', 'x', True), ('sub/.claude/settings.json', 'x', True),
+                                    ('.review-loop/config.md', 'x', True), ('.gitignore', 'x', True),
+                                    ('.claude-plugin/plugin.json', 'x', True), ('docs/link.md', 'link:../../x', True),
+                                    ('README.md', 'x', False), ('docs/guide.md', 'x', False), ('src/a.py', 'x', False),
+                                    ('CHANGELOG.md', None, False)):
+            with self.subTest(path=path):
+                self.assertEqual(wl.docs_denied(path, value), denied)
+
+    def test_docs_refuses_an_exec_change_that_already_touches_its_allowlist(self):
+        co = rc.Coordinator(self.args())
+        (self.workspace / 'CHANGELOG.md').write_text('written by the EXEC author\n')
+        tree, manifest = rc.git_snapshot(self.workspace)
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=tree)
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('docs writer dispatched')), \
+                self.assertRaisesRegex(RuntimeError, 'already touches docs allowlist paths: CHANGELOG.md'):
+            co.worktree_docs_turn()
+        co.state['lifecycle']['docs_owned'] = {'CHANGELOG.md': dict(manifest)['CHANGELOG.md']}
+        with mock.patch.object(co, 'invoke', side_effect=RuntimeError('docs writer dispatched')), \
+                self.assertRaisesRegex(RuntimeError, 'docs writer dispatched'):
+            co.worktree_docs_turn()   # DOCS's own entry, reviewed by the EXEC replay, may be rewritten
+
+    def test_docs_refuses_a_staged_deletion_or_rename_of_a_reserved_path(self):
+        git = ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.test']
+        (self.workspace / 'CHANGELOG.md').write_text('# Changelog\n')
+        rc.subprocess.run(['git', 'add', 'CHANGELOG.md'], cwd=self.workspace, check=True)
+        rc.subprocess.run([*git, 'commit', '-qm', 'changelog'], cwd=self.workspace, check=True)
+        for command in (['git', 'rm', '-q', 'CHANGELOG.md'], ['git', 'mv', 'CHANGELOG.md', 'HISTORY.md']):
+            with self.subTest(command=command[1]):
+                self.run_dir = self.root / command[1]
+                co = rc.Coordinator(self.args())
+                rc.subprocess.run(command, cwd=self.workspace, check=True)   # the EXEC author's git operation
+                co.state['lifecycle'].update(stage='DOCS', candidate_oid=rc.git_snapshot(self.workspace)[0])
+                with mock.patch.object(co, 'invoke', side_effect=AssertionError('docs writer dispatched')), \
+                        self.assertRaisesRegex(RuntimeError, 'already touches docs allowlist paths: CHANGELOG.md'):
+                    co.worktree_docs_turn()
+                rc.subprocess.run(['git', 'reset', '-q', '--hard', 'HEAD'], cwd=self.workspace, check=True)
+
+    def test_a_docs_writer_that_moves_the_index_holds(self):
+        co = rc.Coordinator(self.args())
+        _, base, manifest = self.start_docs_attempt(co)
+        rc.atomic_json(base, manifest)
+        (self.workspace / 'tracked.txt').write_text('staged by the docs writer\n')
+        rc.subprocess.run(['git', 'add', 'tracked.txt'], cwd=self.workspace, check=True)
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched past the guard')), \
+                self.assertRaisesRegex(RuntimeError, 'docs writer changed HEAD, refs or the index'):
+            co.worktree_docs_turn()
 
     def test_specialist_caps_hold_before_dispatch(self):
         for counts, calls in (({'code-reviewer': 4}, 0), ({'code-reviewer': 3}, 0), ({}, 31)):   # room for 2 dispatches

@@ -112,7 +112,7 @@ def resolve_exec_turn_timeout(value, general_timeout):
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
 ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate',
-                       'EXEC round limit reached after a FINISH write')
+                       'EXEC round limit reached after a FINISH write', 'EXEC round limit reached after a DOCS write')
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -1480,14 +1480,25 @@ class Coordinator:
         config['gate_prompt'] = (
             '<bundled-default>:' + hashlib.sha256(gate_prompt.read_bytes()).hexdigest()
             if gate_prompt == DEFAULT_GATE_PROMPT.resolve() else str(gate_prompt))
+        worktree = self.args.lifecycle_mode == 'on' and not self._fake_lifecycle
         def frozen_doc_path(value):
             if any(char in value for char in '*?['): raise ValueError('lifecycle doc paths must be exact')
             path = (self.workspace / value).expanduser().resolve()
             if self.workspace not in path.parents: raise ValueError('lifecycle doc path escapes workspace')
+            if worktree:   # W: an exact documentation file, reached without a symlink (doc 6 DOCS)
+                if path != Path(os.path.normpath(self.workspace / value)) or path.is_dir():
+                    raise ValueError(f'lifecycle docs path must be a file reached without symlinks: {value}')
+                try:
+                    docs_policy._exact_paths([relative := path.relative_to(self.workspace).as_posix()], True)
+                    if worktree_lifecycle.docs_denied(relative, ''): raise ValueError('in the DOCS HOLD set')
+                except (ValueError, candidate_tree.CandidateError) as exc:
+                    raise ValueError(f'lifecycle docs path is not a documentation path: {value}') from exc
             return str(path)
-        config['docs_file'] = frozen_doc_path(self.args.docs_file) if self.args.docs_file else ''
+        docs_file = (self.args.docs_file if self.args.docs_file is not None else
+                     'CHANGELOG.md' if worktree else '')   # doc 6: the W default; --docs-file '' turns it off
+        config['docs_file'] = frozen_doc_path(docs_file) if docs_file else ''
         config['docs_allowlist'] = sorted({frozen_doc_path(value) for value in
-                                           [*self.args.docs_allowlist, *([self.args.docs_file] if self.args.docs_file else [])]})
+                                           [*self.args.docs_allowlist, *([docs_file] if docs_file else [])]})
         config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text())
         return config
 
@@ -3474,10 +3485,18 @@ class Coordinator:
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
+            *([self._docs_reserved_note()] if worktree_lifecycle.is_worktree(self.state) and self._docs_allowlist() else []),
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
         ])
+
+    def _docs_allowlist(self) -> list[str]:
+        return sorted(Path(path).relative_to(self.workspace).as_posix() for path in self.state['config']['docs_allowlist'])
+
+    def _docs_reserved_note(self) -> str:
+        allow = self._docs_allowlist()
+        return ('Reserved for the DOCS stage; do not edit: ' + ', '.join(allow) + '.') if allow else ''
 
     def author_control_contract(self) -> str:
         if self.state['phase'] == 'PLAN':
@@ -3943,7 +3962,7 @@ class Coordinator:
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
         if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
-        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH')
+        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
                            else self.args.timeout)
         self.state['sequence'] += 1
         seq = self.state['sequence']
@@ -4255,36 +4274,40 @@ class Coordinator:
         return {'head': self._head_commit(), 'branch': self._git(['symbolic-ref', '-q', 'HEAD'], ok=(0, 1)).strip(),
                 'index': digest(self._git(['ls-files', '--stage']))}   # tags/other refs are shared across worktrees
 
-    def worktree_finish_turn(self) -> None:
-        """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
-        life = self.state['lifecycle']
-        request = worktree_lifecycle.stage_request(life, 'finisher')
+    def _lifecycle_writer(self, request: dict, label: str, prompt) -> dict:
+        """A fresh author session in the live worktree that must leave HEAD, its branch and the index unchanged
+        (D8). The git baseline is persisted per attempt; a recorded turn since it is reused, never re-dispatched."""
+        life, phase = self.state['lifecycle'], request['stage']
         if life['pending'] != request:   # new attempt: persist the git baseline before anything runs
             life['writer_git'] = {**self._writer_git_state(), 'sequence': self.state['sequence']}
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)   # replay-stable on retry
         self.save()
         base = self.state['lifecycle'].get('writer_git')
         if not base:
-            raise RuntimeError('FINISH request is in flight without a recorded git baseline; inspect, then abort')
-        def check_git():   # a violation discards every FINISH turn since the baseline: none is ever reused
+            raise RuntimeError(f'{phase} request is in flight without a recorded git baseline; inspect, then abort')
+        def check_git():   # a violation discards every turn of this stage since the baseline: none is ever reused
             if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
                 for turn in self.state['turns']:
-                    if turn.get('phase') == 'FINISH' and turn.get('sequence', 0) > base['sequence']:
+                    if turn.get('phase') == phase and turn.get('sequence', 0) > base['sequence']:
                         turn.setdefault('discarded', 'git guard')
                 self.save()
-                raise RuntimeError('finisher changed HEAD, refs or the index; restore the recorded baseline or abort')
+                raise RuntimeError(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort')
         check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
         recorded = next((turn for turn in reversed(self.state['turns'])
-                         if turn.get('role') == 'author' and turn.get('phase') == 'FINISH' and not turn.get('error')
+                         if turn.get('role') == 'author' and turn.get('phase') == phase and not turn.get('error')
                          and not turn.get('discarded')
                          and turn.get('sequence', 0) > base['sequence'] and isinstance(turn.get('answer'), dict)), None)
-        plan = (self.context / 'plan.md').read_text()
-        docs_file = self.state['config'].get('docs_file')
         result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
                    'role': 'author'} if recorded else
-                  self.invoke('author', 'FINISH', worktree_lifecycle.finish_prompt(plan, self.args.test_command, docs_file),
-                              author_schema(), fresh=True))
+                  self.invoke('author', phase, prompt(), author_schema(), fresh=True))
         check_git()
+        return result
+
+    def worktree_finish_turn(self) -> None:
+        """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
+        request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
+        result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
+            (self.context / 'plan.md').read_text(), self.args.test_command, self._docs_reserved_note()))
         self.render(result, 'finisher', 'FINISH')
         answer = result['answer']
         receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
@@ -4303,9 +4326,69 @@ class Coordinator:
             self.state['next'] = 'polish-q'
         self.save()
 
-    def _changed_paths(self) -> list[str]:
-        return [*self._git(['diff', '--name-only', '--diff-filter=d', 'HEAD']).splitlines(),
-                *self._git(['ls-files', '--others', '--exclude-standard']).splitlines()]
+    def worktree_docs_turn(self) -> None:
+        """ADR-11 DOCS (legacy Step 3.6): a fresh docs writer; its allowlisted writes get a fresh docs review with an
+        observed test, a protected path HOLDs, and any other write replays EXEC (reviewer, then gate)."""
+        life, workspace = self.state['lifecycle'], self.workspace
+        allow = set(self._docs_allowlist())
+        request = worktree_lifecycle.stage_request(life, 'docs-writer')
+        base_file = self.evidence / f"{request['request_id']}-docs-base.json"
+        if life['pending'] != request:
+            tree, manifest = git_snapshot(workspace)
+            if tree != life['candidate_oid']:
+                raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
+            owned = life.get('docs_owned', {})   # DOCS's own entries that an EXEC replay reviewed byte for byte
+            current = dict(manifest)   # a staged deletion has no manifest row: never exempt it
+            if touched := sorted(path for path in set(self._changed_paths(deleted=True)) & allow
+                                 if path not in owned or owned[path] != current.get(path)):
+                raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
+                                   '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
+            atomic_json(base_file, manifest)
+        try:   # bound to the POLISH-Q-approved tree before the writer runs
+            base = json.loads(base_file.read_text())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
+        if hashlib.sha256(json.dumps(base, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest() != request['candidate_oid']:
+            raise RuntimeError('DOCS base manifest differs from the POLISH-Q-approved tree; abort')
+        result = self._lifecycle_writer(request, 'docs writer', lambda: worktree_lifecycle.docs_prompt(
+            self.state['config'].get('docs_file'), sorted(allow), self.run_dir.name, self.workitem.read_text()))
+        self.render(result, 'docs-writer', 'DOCS')
+        tree, manifest = git_snapshot(workspace)
+        before, after = dict(base), dict(manifest)
+        changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+        denied = [path for path in changed if worktree_lifecycle.docs_denied(path, after.get(path))]
+        outside = [path for path in changed if path not in allow]
+        receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': result['sequence'], 'docs_paths': changed,
+                   'docs_written': {path: after.get(path) for path in changed if path in allow}}
+        reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
+                            *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
+                              if denied else [])]) or None
+        if not reason and changed and not outside:   # an allowlisted write needs the docs review (W2b-2)
+            reason = worktree_lifecycle.DOCS_REVIEW_PENDING
+        receipt['route'] = 'HOLD' if reason else 'EXEC' if outside else 'SECURITY'
+        self.state['lifecycle'] = lifecycle_spine.complete(
+            self.state['lifecycle'], {**receipt, 'status': 'HOLD' if reason else 'READY'})
+        self.state['lifecycle'].pop('writer_git', None)
+        if reason:
+            self.hold(reason)
+        elif outside:   # a code or comment write, or a docs review REVISE: new EXEC convergence, reviewer then gate
+            life = self.state['lifecycle']
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
+                                       'docs_owned': {**life.get('docs_owned', {}), **receipt['docs_written']}}
+            self.state['exec_rounds'] += 1
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after a DOCS write')
+        else:
+            self.state['lifecycle']['stage'] = 'SECURITY'
+            self.state['next'] = 'security'
+        self.save()
+
+    def _changed_paths(self, deleted: bool = False) -> list[str]:
+        diff = (['diff', '--name-only', '-z', '--no-renames', 'HEAD'] if deleted else   # a rename lists both paths
+                ['diff', '--name-only', '-z', '--diff-filter=d', 'HEAD'])
+        return [path for path in (*self._git(diff).split('\0'),
+                                  *self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')) if path]
 
     def worktree_polish_fix_turn(self) -> None:
         """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn)."""
@@ -6366,7 +6449,9 @@ class Coordinator:
                 elif self.state['next'] == 'polish-recheck' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_polish_recheck_turn()
                 elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
-                    return self.hold(worktree_lifecycle.DOCS_PENDING)
+                    self.worktree_docs_turn()
+                elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):
+                    return self.hold(worktree_lifecycle.SECURITY_PENDING)
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
@@ -6612,7 +6697,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
-    p.add_argument('--docs-file', default='')
+    p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)

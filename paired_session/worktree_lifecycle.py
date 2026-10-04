@@ -3,12 +3,15 @@ import json
 from pathlib import Path
 
 try:
-    from paired_session import lifecycle_spine
+    from paired_session import docs_policy, lifecycle_spine
 except ModuleNotFoundError:
+    import docs_policy
     import lifecycle_spine
 
 FORMAT = 'worktree'
-DOCS_PENDING = 'worktree lifecycle stage DOCS not implemented yet (W2b)'
+SECURITY_PENDING = 'worktree lifecycle stage SECURITY not implemented yet (W3a)'
+DOCS_REVIEW_PENDING = 'worktree lifecycle DOCS review not implemented yet (W2b-2)'
+DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
 LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
                    **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),
                                    'frontend-security-reviewer')}
@@ -76,17 +79,38 @@ def after_finish(life, receipt):
     return {**life, 'stage': 'POLISH-Q'}
 
 
-def finish_prompt(plan, test_command, docs_file):
+def finish_prompt(plan, test_command, reserved):
     return ('Role: finisher, fresh. Phase: FINISH.\n'
             'The approved plan below is implemented and has passed review in this worktree. Check that it is '
             f'ready to deliver: run the test command ({test_command}) and fix only defects inside the approved '
             'plan that block delivery. Do not commit, stage, push or change branches, refs or the index. Do not '
-            'expand the scope, edit outside the workspace, edit run state or review files, or edit the docs file '
-            f'({docs_file or "none configured"}). Do not load review-loop skills and do not invoke or wait for '
+            f'expand the scope, edit outside the workspace or edit run state or review files. {reserved} '
+            'Do not load review-loop skills and do not invoke or wait for '
             'another model. Answer READY when nothing needed changing or your fixes are complete; answer HOLD '
             'only when a decision is missing or the environment cannot recover, with the reason. Return only '
             'JSON matching the supplied schema.\n\n'
             'Approved plan:\n' + plan)
+
+
+def docs_prompt(docs_file, allowlist, run_id, workitem):
+    return ('Role: docs writer, fresh. Phase: DOCS.\n'
+            'The reviewed change in this worktree is ready for delivery. Bring the documentation in line with it '
+            '(legacy review-loop Step 3.6): update docs that describe changed behavior, APIs or logic, and fix stale '
+            'comments in the changed files. Documentation paths you may write: ' + (', '.join(allowlist) or 'none') +
+            '. Any other write (a comment or code fix) sends the change back through EXEC review and the gate; agent, '
+            'skill, protocol, config, manifest and Git files and symlinks are refused. ' +
+            (f'Add one entry for run {run_id} to {docs_file} with the work item, the changes and the review results, '
+             'replacing an earlier entry for this run. ' if docs_file else '') +
+            'Do not commit, stage, push or change branches, refs or the index. Do not edit outside the workspace or '
+            'edit run state or review files. Do not load review-loop skills and do not invoke or wait for another '
+            'model. Answer READY when the docs are consistent; answer HOLD only when a decision is missing or the '
+            'environment cannot recover. Return only JSON matching the supplied schema.\n\nWork item:\n' + workitem)
+
+
+def docs_denied(path, value):
+    """The DOCS HOLD set (doc 6): protected names at any depth, docs/protocol, and any symlink write."""
+    parts = tuple(part.casefold() for part in path.split('/'))
+    return str(value).startswith('link:') or bool(DOCS_HOLD_PARTS & set(parts)) or parts[:2] == ('docs', 'protocol')
 
 
 def specialists(paths):

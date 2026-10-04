@@ -1,9 +1,9 @@
 # E2E lifecycle design 6: worktree lifecycle W (D12 legacy parity)
 
 Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
-W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg and HOLDs before DOCS (the simplifier
-and test-consolidation writers are not implemented and not scheduled in W2a); the remaining
-stages arrive in W2b–W3b. Sources: ADR-11, the lane A
+W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg (the simplifier and test-consolidation
+writers are not implemented and not scheduled in W2a); W2b-1 runs the DOCS writer and HOLDs before
+SECURITY, or before the docs review of an allowlisted write (W2b-2); the remaining stages arrive in W2b-2–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -38,7 +38,11 @@ depends on it.
   `skipped-by-config`; the finisher and other writers as separate fresh sessions of the author role.
 - Adopted (doc 1 §Writes): `docs_file` and the docs allowlist are reserved for DOCS. If the EXEC-reviewed
   change set already touches an allowlisted path, W HOLDs before DOCS instead of replaying, so DOCS can
-  never start a replay loop.
+  never start a replay loop. Implemented (W2b-1): the EXEC author and finisher prompts name the reserved
+  paths, and the check sees deletions, staged deletions and renames. One exception: an allowlisted file that a DOCS write routed to an
+  EXEC replay and that is still byte-identical (`lifecycle.docs_owned`, accumulated over replays) is
+  DOCS's own reviewed entry, and DOCS may rewrite it ("a replayed DOCS stage replaces its own entry").
+  Otherwise the run can only abort, or be rerun with that path outside `--docs-file`/`--docs-allowlist`.
 - Adopted (doc 1 §Gate): with lifecycle on, EXEC convergence routes to FINISH and never enters the legacy
   `start_polish_or_done` advisory round. Legacy `--polish-round on` maps to POLISH-Q; open advisory
   findings feed POLISH-Q. Implemented deviation (W2a-2): the fix leg reuses the persistent EXEC author turn
@@ -60,14 +64,20 @@ depends on it.
 |---|---|---|---|---|
 | FINISH | fresh author session, same author flags | worktree | unchanged digest → POLISH-Q; changed → EXEC replay | Step 3.4 spent; executor readiness |
 | POLISH-Q | fresh reviewer turns per detected language plus code/silent-failure/test reviewers, inlined `agents/*.md` bodies in the frozen role manifest; fixes via the polish author/reviewer turn implementations; one simplifier pass and test consolidation by fresh author sessions | fix, simplify and test writers only | open specialist blocker, zero tool use after one retry, cap → HOLD; any write → EXEC replay; `skip_quality_polish: true` → no-op receipt | Step 3.5 (static-analysis fix 2, code review 3, simplify 1, tests 2 rounds), tool-use guard |
-| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (lifecycle default `docs_file` = `CHANGELOG.md`; the CLI default is still `''` until W2b) | HOLD set (below) → HOLD; any other path outside the allowlist (source, tests, comments) → EXEC replay; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
+| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` — also from an operator profile copied from `paired-session-config.example.json`, which sets `"docs_file": ""`; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | HOLD set (below) → HOLD; any other path outside the allowlist (source, tests, comments) → EXEC replay; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
 | SECURITY | coordinator `sensitive_policy` path scan and `scripts/security_preflight.py`; fresh security reviewer | none | any preflight hit, `security=true` or blocking finding → HOLD (no automatic repair, no `.gitignore` edit); a no-op run still scans; tree change at exit → HOLD | Step 3.7 |
 | DONE | after SECURITY only | — | acceptance pending | Delivery gate |
 | DELIVERY | operator `accept --expect <digest>` from W DONE only (existing intent: tree, HEAD, index, state) | `auto_commit: false` (default): none. `auto_commit: true`: one hook-free local commit of the accepted manifest; drift → HOLD | external push/PR/merge refused (D8) | Step 4; differences from W04 below |
 
 **DOCS HOLD set.** A DOCS write to any of these HOLDs even if listed: `AGENTS.md`, `CLAUDE.md`,
 `agents/**`, `skills/**`, `.claude/**`, `docs/protocol/**`, `.review-loop/*`, config and manifest files,
-`.gitignore`, `.gitattributes`, `.git`, and symlink escapes. Every other write outside the allowlist,
+`.gitignore`, `.gitattributes`, `.git`, and symlink escapes. Implemented (W2b-1, `docs_denied`): any path
+with a `docs_policy.PROTECTED_PARTS` name at any depth (case-insensitive; this adds `.env`, `.npmrc`,
+`.netrc`, `.pypirc`, `.gitmodules`, `.mailmap`, `.compass`, `Makefile` and `Dockerfile`),
+`.claude-plugin`/`.codex-plugin`, `plugin.json`, `marketplace.json`, `docs/protocol/**`, and every symlink
+write. Other config and build files (`package.json`, `pyproject.toml`, lockfiles, `.github/**`) are not in
+the set: like code, a DOCS write to them replays EXEC review and gate. A no-op DOCS writer
+advances without a docs review (legacy 3.6 reviews only writes). Every other write outside the allowlist,
 including comment fixes in code (legacy 3.6.2), goes to EXEC replay.
 
 **POLISH-Q differences from legacy (intentional, stricter).** Legacy language agents and the test analyzer
@@ -114,8 +124,8 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   disabled" message substring.
 - Added in W1a: lifecycle runs refuse `--accept-unverified-claude-author` and `--accept-probe-skip`; a
   verified probe-cache reuse is allowed.
-- Added in W1a, moved by W1b and W2a: until W2b lands, a W run HOLDs after POLISH-Q with the reason
-  "worktree lifecycle stage DOCS not implemented yet (W2b)", so a real run never silently skips a stage.
+- Added in W1a, moved by W1b, W2a and W2b-1: until W3a lands, a W run HOLDs after DOCS with the reason
+  "worktree lifecycle stage SECURITY not implemented yet (W3a)", so a real run never silently skips a stage.
 - Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot and HOLDs (stale EXEC approval)
   when the tree differs; the docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs`,
   `skip_quality_polish`, `polish_round`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when

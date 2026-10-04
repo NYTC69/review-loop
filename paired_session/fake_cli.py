@@ -228,6 +228,9 @@ def main():
             target = Path.cwd() / os.environ['FAKE_LIFECYCLE_DOCS_FILE']
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('# Fake lifecycle guide\n')
+        if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
+            Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: EXEC replays
+            module.write_text(module.read_text() + '# docs comment fix\n')
         answer = ({'status': 'HOLD', 'body': 'Fake finisher held.'} if os.environ.get('FAKE_FINISH_HOLD') else
                   {'status': 'READY', 'body': 'Checked readiness; ' + ('fixed a defect.' if
                    os.environ.get('FAKE_FINISH_WRITE') else 'nothing needed changing.')})
