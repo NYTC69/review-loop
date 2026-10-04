@@ -323,9 +323,9 @@ class RoleModelTests(unittest.TestCase):
 
     def test_defaults_are_unchanged(self):
         for flags, expected in (
-                ([], ('codex', 'gpt-6.1-sol', 'claude', 'claude-opus-5-5', 'codex', 'gpt-6.1-sol')),   # gate: 2026-09-30; Codex model: ADR-11
+                ([], ('codex', 'gpt-6.1-sol', 'claude', 'claude-opus-5-5', 'codex', 'gpt-6.1-sol')),   # gate: 2026-09-30; Codex model: ADR-12
                 (['--author-vendor', 'claude', '--reviewer-vendor', 'codex'],
-                 ('claude', 'claude-opus-5-5', 'codex', 'gpt-6.1-sol', 'claude', 'claude-opus-5-5'))):   # gate: 2026-09-30; Codex model: ADR-11
+                 ('claude', 'claude-opus-5-5', 'codex', 'gpt-6.1-sol', 'claude', 'claude-opus-5-5'))):   # gate: 2026-09-30; Codex model: ADR-12
             with self.subTest(flags=flags):
                 a = self.resolved(*flags)
                 rc.validate_role_models(a)
@@ -2295,7 +2295,7 @@ class ProbeSkipTests(unittest.TestCase):
     def test_no_reuse_when_the_flags_or_versions_differ(self):
         changes = {
             'model': lambda co: setattr(co.args, 'reviewer_model', 'claude-sonnet-5-5'),
-            'author-model': lambda co: setattr(co.args, 'author_model', 'gpt-6-luna'),   # a non-default model (ADR-11 default: gpt-6.1-sol)
+            'author-model': lambda co: setattr(co.args, 'author_model', 'gpt-6-luna'),   # a non-default model (ADR-12 default: gpt-6.1-sol)
             'vendor': lambda co: setattr(co.args, 'reviewer_vendor', 'codex'),
             'codex-cli-version': lambda co: setattr(co, '_codex_cli_version', lambda: OTHER),
             'claude-version': lambda co: setattr(self, 'claude_version', 'claude 1.1'),

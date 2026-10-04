@@ -1,4 +1,4 @@
-"""v2.9.7 models-a (ADR-11): the Codex default model is gpt-6.1-sol and needs codex-cli >= 0.159.2."""
+"""v2.9.7 models-a (ADR-12): the Codex default model is gpt-6.1-sol and needs codex-cli >= 0.159.2."""
 import json
 import os
 import unittest
@@ -27,7 +27,7 @@ class CodexDefaultModelTests(unittest.TestCase):
         state_path = self.run_dir / 'state.json'
         state = json.loads(state_path.read_text())
         for key in ('author_model', 'gate_model'):
-            state['config'][key] = 'gpt-6-luna'                       # a run frozen before ADR-11
+            state['config'][key] = 'gpt-6-luna'                       # a run frozen before ADR-12
         state_path.write_text(json.dumps(state))
         return state_path
 

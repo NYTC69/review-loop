@@ -147,7 +147,7 @@ entry; never edit history.
 
 ---
 
-### ADR-11: paired-session Codex 角色默认模型改为 gpt-6.1-sol
+### ADR-12: paired-session Codex 角色默认模型改为 gpt-6.1-sol
 - **Date**: 2026-10-04
 - **Status**: Accepted
 - **Context**: ADR-9 (M1) 保留了按厂商的默认模型（codex→gpt-6-luna），ADR-10 沿用。Yuan 于 2026-10-04 09:15 JST 选择“改成 gpt-6.1-sol”（推荐项是保留 luna），09:20 补充“默认 claude 这边就是 opus5.5，codex 那边就是 6.1-sol”。gpt-6.1-sol 需要 codex-cli 0.159.2 及以上；更旧的 CLI 在第一次派发时才会失败，不能让默认值在 run 中途失败。监督者 2026-10-04 16:00 决定：测试 harness 的 fake codex 报告今天真实 CLI 上验证过的 0.160.0（v2.9.6 的 owner 真实 probe p296.sh P1/P2 PASS），版本拒绝在所有路径上生效，没有测试专用的绕过。
