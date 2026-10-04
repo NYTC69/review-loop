@@ -3112,8 +3112,12 @@ class Coordinator:
                 'rationale': str(author.get('answer', {}).get('body', ''))[:2000],
                 'rationale_evidence': {'run_dir': str(self.run_dir), 'turn_sequence': author.get('sequence')}}
             self.state.update(next='author', pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
-            reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
-            if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
+            if worktree_lifecycle.is_worktree(self.state):   # W accepts no held tree (no --override-rejection)
+                reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
+                           if terminal_kind == 'rejection_limit' else '; note, change the workspace, or abort')
+            else:
+                reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
+                if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
@@ -3322,8 +3326,10 @@ class Coordinator:
                              'false in the operator profile')
         journal_path = self.evidence / 'delivery-commit.json'
         journal = json.loads(journal_path.read_text()) if journal_path.exists() else None
+        receipts = hashlib.sha256(json.dumps(life['receipts'], sort_keys=True).encode()).hexdigest()
         if journal and self.args.expect == journal['intent']['digest'] and life.get('stage') == 'DONE' and (
-                self.state.get('status') == 'DONE' or self.state.get('delivery_pending') == journal['intent']['digest']):
+                self.state.get('status') in ('DONE', 'HOLD')) and (   # never ABORTED: a superseded run stays superseded
+                journal['intent'].get('receipts_sha256') == receipts) and not self.state.get('scope_change_intent'):
             intent = journal['intent']   # a replay of a journaled commit (HEAD may already be the commit)
             if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                 raise ValueError('the tree changed since the journaled accept; restore it or abort')
@@ -7237,7 +7243,7 @@ class Coordinator:
 
     def resume(self, retry_uncertain=False) -> str:
         self._publication_guard()
-        if pending := self.state.get('delivery_pending'):   # W3b: a journaled auto_commit finishes only through accept
+        if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'

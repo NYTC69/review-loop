@@ -1098,8 +1098,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((co._worktree_run_cap('SECURITY'), co._worktree_run_cap('DOCS')), (9, 21))
         co.args.expect = co.operator_intent('reject', 'again', None)['digest']
         self.assertEqual(co.reject('again', None), 'HOLD')
-        self.assertEqual((co.state['hold_reason'].split(';')[0], co.state['lifecycle']['stage'], co.state['lifecycle']['epoch']),
-                         ('rejected-tree', 'EXEC', 1))
+        self.assertEqual((co.state['hold_reason'], co.state['lifecycle']['stage'], co.state['lifecycle']['epoch']),
+                         ('rejected-tree; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort',
+                          'EXEC', 1))
 
     def test_security_holds_before_any_review_when_head_moved(self):
         co, tree = self.at_security()
@@ -1108,6 +1109,70 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, 'HEAD moved since the run started'):
             co.worktree_security_turn()
         self.assertIsNone(co.state['lifecycle']['pending'])
+
+    def journaled_commit(self):
+        """A W DONE with auto_commit, whose commit was journaled and HEAD moved, then the coordinator crashed."""
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--auto-commit', 'true').stdout)
+        co = rc.Coordinator(self.args('--auto-commit', 'true', action='accept'))
+        intent, parent = co.operator_intent('accept', None, None), self.git('rev-parse', 'HEAD')
+        return intent, parent, co._worktree_commit(intent, None)['commit']
+
+    def test_a_run_superseded_on_a_delivery_hold_cannot_be_replayed_into_accepted(self):
+        intent, parent, commit = self.journaled_commit()
+        self.git('update-ref', 'HEAD', parent)
+        foreign = self.git('commit-tree', parent + '^{tree}', '-p', parent, '-m', 'someone else')
+        self.git('update-ref', 'HEAD', foreign)
+        held = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(held.accept(), 'HOLD')   # a delivery HOLD: delivery_pending is set
+        note = rc.Coordinator(self.args('--auto-commit', 'true', action='note'))
+        note.args.action = 'note'
+        self.assertIn('Start: ', note.scope_change('Narrow the scope to integers only.', None))
+        self.git('update-ref', 'HEAD', parent)   # even with the parent restored, the superseded run stays superseded
+        for action in ('accept', 'resume'):   # the CLI refuses every non-scope action on a superseded run
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'scope change is pending'):
+                rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action=action))
+        note.args.expect, note.args.override_rejection = intent['digest'], False
+        with self.assertRaisesRegex(ValueError, 'requires status DONE and stage DONE'):
+            note._worktree_accept()   # and the replay itself refuses an ABORTED run
+        self.assertEqual((self.git('rev-parse', 'HEAD'), json.loads((self.run_dir / 'state.json').read_text())['status']),
+                         (parent, 'ABORTED'))
+
+    def test_an_abort_after_a_crash_in_the_commit_window_is_recoverable_from_the_journal(self):
+        intent, parent, commit = self.journaled_commit()   # HEAD is the commit; ACCEPTED was never saved
+        aborted = self.run_operator_action('abort', '--lifecycle-mode', 'on', '--auto-commit', 'true')
+        self.assertIn('HOLD: aborted by operator', aborted.stdout, aborted.stdout + aborted.stderr)
+        stale = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        stale.state['lifecycle']['receipts'].append({'stage': 'DOCS', 'request_id': 'w-DOCS-9-0', 'epoch': 9})
+        with self.assertRaisesRegex(ValueError, 'requires status DONE and stage DONE'):
+            stale.accept()   # a journal from other receipts (an earlier epoch) is never replayed
+        replay = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(replay.accept(), 'ACCEPTED')
+        self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('rev-parse', 'HEAD~1')), (commit, parent))
+        record = json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())
+        self.assertEqual(record['delivery']['commit'], commit)
+
+    def test_a_successor_inherits_the_baseline_and_scopes_delivery_to_the_original_tree(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60').stdout)
+        parent_dir = self.run_dir
+        parent = rc.Coordinator(self.args(action='reject'))
+        parent.args.action = 'reject'
+        command = parent.scope_change('Also reject floats.', None)
+        start = command.split('Start: ', 1)[1].split()
+        option = lambda name: start[start.index(name) + 1]
+        self.run_dir, self.workitem = Path(option('--run-dir')), Path(option('--workitem'))
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--config', option('--config'),
+                                      '--supersedes', str(parent_dir))
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        inherited = state['lifecycle']['security_baseline']
+        original = json.loads((parent_dir / 'state.json').read_text())['lifecycle']['security_baseline']
+        self.assertEqual((inherited['inherited_from'], inherited['sha256']), (str(parent_dir), original['sha256']))
+        security = next(row for row in reversed(state['lifecycle']['receipts']) if row['stage'] == 'SECURITY')
+        manifest = json.loads(Path(security['preflight']['report'].replace('-preflight.json', '-manifest.json')).read_text())
+        [row] = [row for row in manifest['task_delta'] if row['path'] == 'sum_ints.py']
+        # the parent's work is task delta against the tree before the work item, not a dirty baseline
+        self.assertEqual((row['ownership'], row['baseline_dirty']), ('declared-post-baseline', False))
+        self.assertEqual(manifest['baseline_changes']['untracked'], [])
 
     def test_the_docs_hold_set(self):
         for path, value, denied in (('CLAUDE.md', 'x', True), ('pkg/AGENTS.md', 'x', True), ('agents/new.md', 'x', True),

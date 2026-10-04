@@ -175,8 +175,9 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   the stage receipts (`receipts_sha256`); `--override-rejection` is refused, so neither a rejected tree nor a
   round-limit HOLD (FINISH, DOCS or SECURITY reasons included) is accepted, and open specialist or security
   blockers are never put into an accepted record. At the rejection limit the reject still reopens EXEC and
-  HOLDs `rejected-tree`; the legacy hint names accept and `--override-rejection`, but for W only a note and
-  resume, `reject --scope-change` or abort remain. A HEAD that moved since the run started HOLDs the accept
+  HOLDs `rejected-tree` with a W hint ("note and resume, reject --scope-change, or abort"; before the limit
+  "note, change the
+  workspace, or abort"), never accept or `--override-rejection`. A HEAD that moved since the run started HOLDs the accept
   and sends the run back to SECURITY, which itself HOLDs before any review until HEAD is restored. The W
   run-wide budgets (DOCS 7, SECURITY 3, POLISH-Q 32) grow by one allowance per reject, since each reject
   reruns FINISH..SECURITY. `auto_commit` and `external_delivery` are frozen operator-only keys (default false);
@@ -189,7 +190,10 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   (`evidence/delivery-commit.json`), `update-ref HEAD <commit> <parent>` (compare-and-swap) and an index
   sync (`read-tree`, refresh). Every git call disables hooks (`core.hooksPath=/dev/null`). A HEAD that is
   neither the parent nor the commit HOLDs (`auto_commit: ...; accept --expect <digest>`, recorded as
-  `delivery_pending`, which refuses resume); a replay with that `--expect` finishes
+  `delivery_pending`, which refuses resume); a replay with that `--expect` (W3c: only on a DONE or HOLD run
+  whose receipts still equal the journaled intent's, without a scope-change intent,
+  so an operator abort after a crash in the commit window stays recoverable and a run superseded by a scope
+  change is never replayed into ACCEPTED) finishes
   the journaled commit (CAS from the parent, or nothing if HEAD already is the commit). The accept's own
   `--auto-commit` value is not consulted; the frozen config decides. A reject on a W DONE
   reopens EXEC (epoch+1, the persistent author gets the rejection note, then reviewer, gate, FINISH,
