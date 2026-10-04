@@ -1,6 +1,7 @@
 """Batch W1a (ADR-11, docs/e2e-6): worktree lifecycle activation on the real path."""
 import hashlib
 import json
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -8,12 +9,24 @@ from paired_session import test_real_coordinator as trc
 from paired_session import worktree_lifecycle as wl
 
 rc = trc.rc
+COVERING_GITIGNORE = '\n'.join((   # the legacy sensitive patterns (tests/security_preflight_test.py), so preflight is clean
+    '__pycache__/', '*.cache', '.review-loop/', '.env', '.env.*', '*.env', '!.env.example', '!.env.sample', '*.pem',
+    '*.key', '*.crt', '*.cert', '*.cer', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.ppk', 'id_rsa*', 'id_dsa*',
+    'id_ecdsa*', 'id_ed25519*', '*.asc', '*.gpg', '*.pgp', '*credentials*', '!*credentials.example*',
+    '!*credentials.sample*', 'service-account*.json', '.aws/', '.gcloud/', '*secret*', '!*secret.example*',
+    '!*secret.sample*', 'secrets.*', '!secrets.example*', '!secrets.sample*', '*.sqlite', '*.sqlite3', '*.db', '*.dump',
+    '*.sql.gz', '*.map', '*.tfstate', '*.tfstate.*', '*.tfvars', '!*.tfvars.example', '.terraform/', '*.log', 'logs/', ''))
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli',
             'fake_claude_cli', 'command', 'run_coordinator', 'run_operator_action', 'coordinator')
 
 
 class WorktreeLifecycleActivationTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
+
+    def setUp(self):
+        trc.RealCoordinatorTests.setUp(self)
+        (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)
+        rc.subprocess.run(['git', 'commit', '-qam', 'ignore sensitive files'], cwd=self.workspace, check=True)
 
     def args(self, *extra, action='run'):
         command = self.command('--lifecycle-mode', 'on', *extra)
@@ -78,11 +91,11 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_finish_polish_q_and_a_no_op_docs_writer_advance_to_the_security_hold(self):
         result = self.run_coordinator('--lifecycle-mode', 'on')
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         tree = rc.git_snapshot(self.workspace)[0]
         self.assertEqual((state['status'], state['hold_reason'], state['lifecycle']['stage'], state['next']),
-                         ('HOLD', wl.SECURITY_PENDING, 'SECURITY', 'security'))
+                         ('HOLD', wl.SECURITY_REVIEW_PENDING, 'SECURITY', 'security'))
         [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
         self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['candidate_oid'], docs['output_oid']),
                          ('READY', 'SECURITY', [], tree, tree))
@@ -92,6 +105,15 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('Role: docs writer, fresh. Phase: DOCS.', prompt)
         self.assertIn('Documentation paths you may write: CHANGELOG.md.', prompt)
         self.assertEqual(state['config']['docs_file'], str((self.workspace / 'CHANGELOG.md').resolve()))   # doc 6 W default
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        preflight = security['preflight']   # a no-op run still scans
+        self.assertEqual((security['sensitive_paths'], preflight['exit'], preflight['status'], preflight['reason']),
+                         ([], 0, 'clean', None))
+        self.assertGreaterEqual(preflight['scanned_files'], 3)
+        self.assertTrue(Path(preflight['report']).is_file())
+        baseline = json.loads(Path(state['lifecycle']['security_baseline']['path']).read_text())
+        self.assertNotIn('sum_ints.py', baseline['state']['worktree'])   # captured before the author's first write
+        self.assertNotIn('docs_file', json.loads((Path(rc.__file__).parent / 'paired-session-config.example.json').read_text()))
         for row in (next(row for row in state['turns'] if row['phase'] == 'FINISH'),
                     next(row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'EXEC')):
             prompt = (self.run_dir / 'evidence' / f"{row['sequence']:03d}-{row['phase'].lower()}-author.prompt.txt").read_text()
@@ -122,12 +144,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(state['acceptance_state'], 'IN_PROGRESS')
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
         self.assertEqual(again.returncode, 2, again.stdout + again.stderr)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
 
     def test_a_finish_write_reopens_exec_review_and_gate_before_finishing_again(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_WRITE': '1'})
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.finish_rows(state)
         self.assertNotEqual(first['output_oid'], first['candidate_oid'])   # the finisher changed the reviewed tree
@@ -156,7 +178,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('uncertain in-flight', crashed.state['hold_reason'])
         with mock.patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
             self.assertEqual(crashed.resume(retry_uncertain=True), 'HOLD')
-        self.assertEqual(crashed.state['hold_reason'], wl.SECURITY_PENDING)
+        self.assertEqual(crashed.state['hold_reason'], wl.SECURITY_REVIEW_PENDING)
         rows = self.finish_rows(crashed.state)
         self.assertEqual([(row['request_id'], row['status']) for row in rows],
                          [('w-FINISH-0-0', 'HOLD'), (request['request_id'], 'READY')])
@@ -177,7 +199,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(violating['discarded'], 'git guard')
         rc.subprocess.run(['git', 'reset', '-q', '--mixed', 'HEAD~1'], cwd=self.workspace, check=True)   # operator restore
         restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, restored.stdout, restored.stdout + restored.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finish] = self.finish_rows(state)
         self.assertNotEqual(finish['sequence'], violating['sequence'])   # a fresh FINISH, not the violator's READY
@@ -326,7 +348,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertNotIn(second['id'], [row['id'] for row in co._reviewer_open_findings()])
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
         # a second fix round on a new tree; its owner closes F002, the write replays EXEC + gate + FINISH + POLISH-Q
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout, again.stdout + again.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == second['id']], ['fixed'])
         first_fix, second_fix = state['lifecycle']['polish_fixes']
@@ -409,7 +431,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_fixed_specialist_blocker_replays_exec_and_gate_then_finish_and_polish_q(self):
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finding] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
         self.assertEqual(finding['status'], 'fixed')
@@ -437,7 +459,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_specialist_without_tool_calls_is_retried_once_then_holds(self):
         marker = self.root / 'no-tools-once'
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_NO_TOOLS_ONCE': str(marker)})
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['lifecycle']['specialist_counts']['python-reviewer'], 2)
         self.assertEqual([row.get('discarded') for row in state['turns'] if row['phase'] == 'POLISH-Q'][:2],
@@ -475,7 +497,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                           'Role: specialist code-reviewer,' in (self.run_dir / 'evidence' /
                           f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text())
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
         state = json.loads((self.run_dir / 'state.json').read_text())
         attempt = next(row for row in state['lifecycle']['receipts'] if row['request_id'] == 'w-POLISH-Q-0-0')
         self.assertEqual((attempt['status'], [row['name'] for row in attempt['specialist_turns']]),
@@ -487,7 +509,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_skip_quality_polish_records_a_no_op_receipt(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', '--skip-quality-polish', 'true')
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped']), ('READY', [], True))
@@ -498,7 +520,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_an_allowlisted_docs_write_gets_a_fresh_docs_review_with_an_observed_test_and_advances(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'})
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [docs] = self.docs_rows(state)
         digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
@@ -525,7 +547,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual((self.docs_rows(state), state['lifecycle']['pending']['stage']), ([], 'DOCS'))   # no receipt
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout, again.stdout + again.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [docs] = self.docs_rows(state)
         writers = [row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'DOCS']
@@ -538,7 +560,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                'FAKE_DOCS_FINDING_STILL_OPEN_ONCE': str(self.root / 'docs-open')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--max-exec-rounds', '6',
                                       env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC'
@@ -588,7 +610,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_docs_review_revise_replays_exec_with_its_findings_then_reviews_again(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         [finding] = first['review']['finding_ids']
@@ -605,7 +627,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_docs_comment_write_replays_exec_review_and_gate(self):
         env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         self.assertEqual((first['status'], first['route'], first['docs_paths'], first['docs_written'], first['epoch']),
@@ -634,7 +656,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('HOLD: DOCS tree differs from the POLISH-Q-approved tree', again.stdout, again.stdout + again.stderr)
         (self.workspace / 'CLAUDE.md').unlink()   # operator restore
         restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, restored.stdout, restored.stdout + restored.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([(row['request_id'], row['route']) for row in self.docs_rows(state)],
                          [('w-DOCS-0-0', 'HOLD'), ('w-DOCS-0-1', 'SECURITY')])
@@ -642,7 +664,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_docs_own_entry_survives_a_replay_and_may_be_rewritten(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
@@ -705,6 +727,87 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                         self.assertRaisesRegex(RuntimeError, message):
                     co.worktree_docs_turn()
 
+    def test_a_docs_allowlist_path_under_a_symlinked_parent_holds_at_the_docs_entry(self):
+        (self.workspace / 'docs').mkdir()
+        (self.workspace / 'docs' / 'guide.md').write_text('# Guide\n')
+        co = rc.Coordinator(self.args('--docs-allowlist', 'docs/guide.md'))
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (self.workspace / 'docs' / 'guide.md').rename(outside / 'guide.md')
+        (self.workspace / 'docs').rmdir()
+        (self.workspace / 'docs').symlink_to(outside)   # the EXEC author's replacement of the parent directory
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=rc.git_snapshot(self.workspace)[0])
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('docs writer dispatched')), \
+                self.assertRaisesRegex(RuntimeError, 'now a directory or reached through a symlink: docs/guide.md'):
+            co.worktree_docs_turn()
+
+    def test_security_holds_on_a_sensitive_path_and_on_secret_content(self):
+        key = 'AKIA' + 'ABCDEFGHIJKLMNOP'   # an AWS access key id shape, built at runtime
+        for name, content, needle in (('deploy.pem', 'not a real key\n', 'SECURITY sensitive paths: deploy.pem (key-certificate)'),
+                                      ('settings.txt', f'aws_key = {key}\n', 'aws-access-key-id in settings.txt')):
+            with self.subTest(name=name):
+                self.run_dir = self.root / name
+                (self.workspace / name).write_text(content)
+                rc.subprocess.run(['git', 'add', '-f', name], cwd=self.workspace, check=True)
+                rc.subprocess.run(['git', 'commit', '-qm', 'add ' + name], cwd=self.workspace, check=True)
+                result = self.run_coordinator('--lifecycle-mode', 'on')
+                self.assertIn(needle, result.stdout, result.stdout + result.stderr)
+                self.assertNotIn(key, result.stdout + result.stderr)   # values are never printed
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+                self.assertEqual((security['status'], state['status']), ('HOLD', 'HOLD'))
+                self.assertEqual(security['preflight']['status'], 'blocked')
+                rc.subprocess.run(['git', 'rm', '-q', name], cwd=self.workspace, check=True)
+                rc.subprocess.run(['git', 'commit', '-qm', 'drop ' + name], cwd=self.workspace, check=True)
+
+    def at_security(self):
+        co = rc.Coordinator(self.args())
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree, receipts=[
+            {'stage': 'DOCS', 'epoch': 0, 'request_id': 'w-DOCS-0-0', 'route': 'SECURITY', 'output_oid': tree}])
+        co.state.update(next='security', phase='EXEC')
+        return co, tree
+
+    def test_a_tree_changed_during_security_holds_and_resume_replays_exec(self):
+        co, tree = self.at_security()
+        def late_write(request_id):
+            (self.workspace / 'late.txt').write_text('written during SECURITY\n')
+            return {'status': 'clean', 'reason': None}
+        with mock.patch.object(co, '_security_preflight', side_effect=late_write):
+            co.worktree_security_turn()
+        self.assertIn('SECURITY tree changed during the stage', co.state['hold_reason'])
+        [security] = [row for row in co.state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual((security['status'], security['candidate_oid']), ('HOLD', tree))
+        rounds = co.state['exec_rounds']
+        co.state['status'] = 'ACTIVE'
+        co.worktree_security_turn()   # resume: the changed tree is reviewed and gated again
+        self.assertEqual((co.state['next'], co.state['gate_ran'], co.state['exec_rounds'], co.state['lifecycle']['stage'],
+                          co.state['lifecycle']['epoch']), ('reviewer', False, rounds + 1, 'EXEC', 1))
+
+    def test_security_preflight_fails_closed(self):
+        co, _ = self.at_security()
+        failed = rc.subprocess.CompletedProcess([], 3, '', '{"error": "scanner exploded", "kind": "scan"}')
+        real = co._security_script
+        with mock.patch.object(co, '_security_script', side_effect=lambda script, *args: (
+                failed if script == 'security_preflight.py' else real(script, *args))):
+            result = co._security_preflight('w-SECURITY-0-0')
+        self.assertEqual((result['exit'], result['status']), (3, 'unknown'))
+        self.assertIn('security preflight unknown (exit 3); {"error": "scanner exploded"', result['reason'])
+        co.state['lifecycle'].pop('security_baseline')   # a W run created before W3a
+        self.assertIn('no delivery baseline (the run started before W3a)', co._security_preflight('w-SECURITY-0-1')['reason'])
+
+    def test_the_delivery_baseline_is_captured_when_the_state_is_created(self):
+        probe = rc.Coordinator(self.args(action='permission-probe'))   # before any probe turn
+        baseline = probe.state['lifecycle']['security_baseline']
+        self.assertEqual((probe.state['sequence'], Path(baseline['path']).parent), (0, probe.evidence))
+        self.assertEqual(hashlib.sha256(Path(baseline['path']).read_bytes()).hexdigest(), baseline['sha256'])
+        self.run_dir = self.root / 'refused'
+        failed = rc.subprocess.CompletedProcess([], 3, '', '{"error": "nested repository", "kind": "capture"}')
+        with mock.patch.object(rc.Coordinator, '_security_script', return_value=failed), \
+                self.assertRaisesRegex(ValueError, r'cannot capture its delivery baseline \(delivery_scope exit 3\)'):
+            rc.Coordinator(self.args())
+        self.assertFalse((self.run_dir / 'state.json').exists())   # refused at the start, not at SECURITY
+
     def test_the_docs_hold_set(self):
         for path, value, denied in (('CLAUDE.md', 'x', True), ('pkg/AGENTS.md', 'x', True), ('agents/new.md', 'x', True),
                                     ('docs/protocol/loading.md', 'x', True), ('sub/.claude/settings.json', 'x', True),
@@ -734,7 +837,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         co.state['lifecycle'].update(stage='DOCS', candidate_oid=rc.git_snapshot(self.workspace)[0],
                                      docs_owned={'CHANGELOG.md': 'an earlier digest'})
         with mock.patch.object(co, 'invoke', side_effect=AssertionError('docs writer dispatched')), \
-                self.assertRaisesRegex(RuntimeError, 'a DOCS-owned entry became a symlink or protected path: CHANGELOG.md'):
+                self.assertRaisesRegex(RuntimeError, 'now a directory or reached through a symlink: CHANGELOG.md'):
             co.worktree_docs_turn()
 
     def test_docs_refuses_a_staged_deletion_or_rename_of_a_reserved_path(self):

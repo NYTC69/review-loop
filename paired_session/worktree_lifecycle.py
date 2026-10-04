@@ -9,7 +9,7 @@ except ModuleNotFoundError:
     import lifecycle_spine
 
 FORMAT = 'worktree'
-SECURITY_PENDING = 'worktree lifecycle stage SECURITY not implemented yet (W3a)'
+SECURITY_REVIEW_PENDING = 'worktree lifecycle SECURITY review not implemented yet (W3a-2)'
 DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
 LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
                    **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),

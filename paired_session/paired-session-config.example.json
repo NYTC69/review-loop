@@ -12,7 +12,6 @@
   "adversarial_gate": "on",
   "polish_round": "on",
   "lifecycle_mode": "off",
-  "docs_file": "",
   "docs_allowlist": [],
   "skip_globs": [],
   "skip_quality_polish": false,

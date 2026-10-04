@@ -3,7 +3,8 @@
 Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
 W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg (the simplifier and test-consolidation
 writers are not implemented and not scheduled in W2a); W2b runs DOCS (writer, docs review with an observed
-test) and HOLDs before SECURITY; the remaining stages arrive in W3a–W3b. Sources: ADR-11, the lane A
+test); W3a-1 runs the SECURITY scans and HOLDs before the security review (W3a-2); DONE and DELIVERY
+arrive in W3a-2–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -65,7 +66,7 @@ depends on it.
 |---|---|---|---|---|
 | FINISH | fresh author session, same author flags | worktree | unchanged digest → POLISH-Q; changed → EXEC replay | Step 3.4 spent; executor readiness |
 | POLISH-Q | fresh reviewer turns per detected language plus code/silent-failure/test reviewers, inlined `agents/*.md` bodies in the frozen role manifest; fixes via the polish author/reviewer turn implementations; one simplifier pass and test consolidation by fresh author sessions | fix, simplify and test writers only | open specialist blocker, zero tool use after one retry, cap → HOLD; any write → EXEC replay; `skip_quality_polish: true` → no-op receipt | Step 3.5 (static-analysis fix 2, code review 3, simplify 1, tests 2 rounds), tool-use guard |
-| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` — also from an operator profile copied from `paired-session-config.example.json`, which sets `"docs_file": ""`; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | HOLD set (below) → HOLD; any other path outside the allowlist (source, tests, comments) → EXEC replay; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
+| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` or `"docs_file": ""` in a profile; `paired-session-config.example.json` leaves the key out so the default applies; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | HOLD set (below) → HOLD; any other path outside the allowlist (source, tests, comments) → EXEC replay; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
 | SECURITY | coordinator `sensitive_policy` path scan and `scripts/security_preflight.py`; fresh security reviewer | none | any preflight hit, `security=true` or blocking finding → HOLD (no automatic repair, no `.gitignore` edit); a no-op run still scans; tree change at exit → HOLD | Step 3.7 |
 | DONE | after SECURITY only | — | acceptance pending | Delivery gate |
 | DELIVERY | operator `accept --expect <digest>` from W DONE only (existing intent: tree, HEAD, index, state) | `auto_commit: false` (default): none. `auto_commit: true`: one hook-free local commit of the accepted manifest; drift → HOLD | external push/PR/merge refused (D8) | Step 4; differences from W04 below |
@@ -104,10 +105,21 @@ larger `--max-invocations` than the default 25, e.g. 60.
 
 **SECURITY preflight input.** `scripts/security_preflight.py` reads a W01 `delivery-manifest` document
 whose `baseline` is captured before the task starts (`scripts/delivery_scope.py`); a `git_snapshot` list
-is not accepted. W1a or W3a must capture that baseline at run start or add an adapter. A repository without
-the legacy sensitive `.gitignore` patterns gets `review-required` (exit 1) and HOLDs at every SECURITY, as
-legacy does; W3a defines the operator recovery (adding the patterns outside the run, which changes the tree
-and replays from EXEC, or abort).
+is not accepted. Implemented (W3a-1): creating a W run's state, before any probe or turn, runs
+`delivery_scope.py capture --scope .` into `evidence/delivery-baseline-<random>.json` (its sha256 is in the
+state); a capture failure refuses the run, and a W run created before W3a has no baseline and HOLDs at
+SECURITY. Known limit: a scope-change successor captures its own baseline over the parent's uncommitted
+changes, which the manifest then marks `ambiguous-baseline-overlap`; scanning stays complete (stricter),
+but a parent's uncommitted `.gitignore` fix never counts as coverage, so such a successor HOLDs
+`review-required` until the patterns are committed. Inheriting the parent's baseline is decided before W3b,
+whose task delta depends on it. Each SECURITY attempt writes a fresh
+manifest and runs `security_preflight.py` as a subprocess (`sys.executable`); anything but exit 0 with a
+`clean`, coverage-complete report HOLDs, and the HOLD reason names rules and paths, never matched values.
+The `sensitive_policy` scan covers tracked plus non-ignored untracked paths. A repository without the legacy
+sensitive `.gitignore` patterns gets `review-required` (exit 1) and HOLDs at every SECURITY, as legacy does.
+Operator recovery: change the tree outside the run (add the patterns, remove the file) and resume, which
+replays EXEC review and gate (then FINISH, POLISH-Q, DOCS, SECURITY) under the round limit; or abort. A tree
+change during SECURITY HOLDs, and resume replays the same way.
 
 **`docs_file` entry.** Legacy Step 4 appends the post-delivery summary (status, rounds, polish summary,
 findings, cross-vendor line, files) after the gate. W writes the entry during DOCS so that it is reviewed
@@ -138,8 +150,9 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   disabled" message substring.
 - Added in W1a: lifecycle runs refuse `--accept-unverified-claude-author` and `--accept-probe-skip`; a
   verified probe-cache reuse is allowed.
-- Added in W1a, moved by W1b, W2a and W2b-1: until W3a lands, a W run HOLDs after DOCS with the reason
-  "worktree lifecycle stage SECURITY not implemented yet (W3a)", so a real run never silently skips a stage.
+- Added in W1a, moved by W1b, W2a, W2b-1 and W3a-1: until W3a-2 lands, a W run whose SECURITY scans are
+  clean HOLDs with "worktree lifecycle SECURITY review not implemented yet (W3a-2)", so a real run never
+  silently skips a stage.
 - Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot and HOLDs (stale EXEC approval)
   when the tree differs; the docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs`,
   `skip_quality_polish`, `polish_round`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when

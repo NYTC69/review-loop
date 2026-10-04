@@ -89,7 +89,8 @@ the run dir. When any role is Codex, `run`, `resume`, `reject` and
 For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
 workspace, run directory and author temp directory, then pass it with
-`--config /absolute/path/to/profile.json`. A workspace
+`--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
+so a worktree-lifecycle run keeps its `CHANGELOG.md` default. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there cause HOLD when that profile
 is selected. `--config` replaces the workspace profile; copy any desired limits
@@ -116,8 +117,10 @@ and POLISH-Q (fresh report-only specialists, legacy Step 3.5; their blockers
 go to an author fix that the owning specialist re-reviews before EXEC review
 and gate run again) and DOCS (a fresh docs writer; a protected path HOLDs, a
 write outside the docs allowlist reopens EXEC review and gate, an allowlisted
-write gets a fresh docs review that must run the test), then HOLDs
-before SECURITY (W3a; such a run cannot be accepted before W3b); a
+write gets a fresh docs review that must run the test) and the SECURITY scans
+(`sensitive_policy` paths and `scripts/security_preflight.py`; any hit HOLDs),
+then HOLDs before the security review (W3a-2; such a run cannot be accepted
+before W3b); a
 workspace profile can neither enable it nor set its docs/skip/polish keys, and
 the run refuses
 `--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy

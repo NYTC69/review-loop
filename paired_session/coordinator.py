@@ -112,7 +112,8 @@ def resolve_exec_turn_timeout(value, general_timeout):
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
 ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate',
-                       'EXEC round limit reached after a FINISH write', 'EXEC round limit reached after a DOCS write')
+                       'EXEC round limit reached after a FINISH write', 'EXEC round limit reached after a DOCS write',
+                       'EXEC round limit reached after a SECURITY-stage change')
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -1548,6 +1549,8 @@ class Coordinator:
                                   item_uuid=old.get('item_uuid') or str(uuid.uuid5(uuid.NAMESPACE_URL, str(parent))),
                                   item_blockers=copy.deepcopy(spec.get('item_blockers', [])),
                                   item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')))
+            if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any probe or turn
+                self.state['lifecycle']['security_baseline'] = self._capture_security_baseline()
             self.save()
 
     def _migrate_invocation_budget(self) -> int:
@@ -4616,9 +4619,10 @@ class Coordinator:
             if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews them again
                 raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
                                    '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
-            if bad := sorted(path for path in owned if worktree_lifecycle.docs_denied(path, dict(manifest).get(path))):
-                raise RuntimeError('a DOCS-owned entry became a symlink or protected path: ' + ', '.join(bad) +
-                                   '; restore it or abort')   # the writer would write through it
+            if bad := sorted(path for path in allow if (workspace / path).is_dir() or   # the config-time invariant again:
+                             (workspace / path).resolve() != Path(os.path.normpath(workspace / path))):   # no symlink on the path
+                raise RuntimeError('a docs allowlist path is now a directory or reached through a symlink: ' +
+                                   ', '.join(bad) + '; restore it or abort')   # the writer would write through it
             atomic_json(base_file, manifest)
         try:   # bound to the POLISH-Q-approved tree before the writer runs
             base = json.loads(base_file.read_text())
@@ -4666,7 +4670,7 @@ class Coordinator:
             if self.state['exec_rounds'] > self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after a DOCS write')
         else:
-            self.state['lifecycle']['stage'] = 'SECURITY'
+            self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree)   # SECURITY binds the DOCS output
             self.state['next'] = 'security'
         self.save()
 
@@ -4708,6 +4712,109 @@ class Coordinator:
     def _observed_test(self, answer: dict):
         return next((row['command'] for row in answer.get('observed_commands', [])
                      if observed_test_succeeded(row, self.args.test_command)), None)
+
+    def _capture_security_baseline(self) -> dict:
+        """D-6: the W01 delivery baseline for scripts/security_preflight.py, captured when the W state is created,
+        before any probe or turn; a failure refuses the run instead of surfacing at SECURITY."""
+        path = self.evidence / f'delivery-baseline-{uuid.uuid4().hex[:8]}.json'
+        try:
+            proc = self._security_script('delivery_scope.py', 'capture', '--scope', '.', '--output', str(path))
+        except RuntimeError as exc:
+            raise ValueError(f'worktree lifecycle cannot capture its delivery baseline: {exc}') from exc
+        try:
+            if proc.returncode == 0:
+                return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        except OSError as exc:
+            raise ValueError(f'worktree lifecycle cannot read its delivery baseline: {exc}') from exc
+        raise ValueError(f'worktree lifecycle cannot capture its delivery baseline (delivery_scope exit '
+                         f'{proc.returncode}): {proc.stderr.strip()[-300:]}')
+
+    def _security_script(self, script: str, *args: str) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run([sys.executable, str(HERE.parent / 'scripts' / script), '--repo', str(self.workspace),
+                                   *args], cwd=self.workspace, capture_output=True, text=True, errors='replace', timeout=600)
+        except (OSError, subprocess.SubprocessError) as exc:   # a timeout or a missing interpreter HOLDs
+            raise RuntimeError(f'{script} could not run: {exc}') from exc
+
+    def worktree_security_turn(self) -> None:
+        """ADR-11 SECURITY (legacy Step 3.7) over the DOCS-approved tree: the sensitive path scan and
+        scripts/security_preflight.py run every time, a no-op run included; any hit HOLDs (no repair)."""
+        life = self.state['lifecycle']
+        request = worktree_lifecycle.stage_request(life, 'security')
+        tree = git_snapshot(self.workspace)[0]
+        if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: EXEC review and gate again
+            life = lifecycle_spine.complete(lifecycle_spine.begin(life, request),
+                                            {**request, 'status': 'HOLD', 'output_oid': tree, 'route': 'EXEC'})
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state['exec_rounds'] += 1
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after a SECURITY-stage change')
+            self.save()
+            return
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.save()
+        sensitive = self._sensitive_paths()
+        preflight = self._security_preflight(request['request_id'])
+        reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive)]
+                     if sensitive else []), *([preflight['reason']] if preflight['reason'] else [])]
+        if not reasons:
+            reasons.append(worktree_lifecycle.SECURITY_REVIEW_PENDING)
+        if (after := git_snapshot(self.workspace)[0]) != tree:
+            reasons.append('SECURITY tree changed during the stage; resume replays EXEC review and gate')
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
+            **request, 'status': 'HOLD' if reasons else 'READY', 'output_oid': after,
+            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive, 'preflight': preflight})
+        self.hold('; '.join(reasons))
+
+    def _sensitive_paths(self) -> list[dict]:
+        """sensitive_policy over the tracked and non-ignored untracked paths (legacy 3.7.1)."""
+        hits = []
+        for name in sorted(set(filter(None, self._git(['ls-files', '-z', '-co', '--exclude-standard']).split('\0')))):
+            try:
+                category = sensitive_policy.sensitive_path_category(name)
+            except ValueError:
+                category = 'unclassifiable path'
+            if category:
+                hits.append({'path': name, 'category': category})
+        return hits
+
+    def _security_preflight(self, request_id: str) -> dict:
+        """D-6: scripts/security_preflight.py over a fresh manifest; anything but exit 0 with a clean report HOLDs."""
+        baseline = self.state['lifecycle'].get('security_baseline')
+        if not baseline:
+            return {'status': 'unavailable', 'reason': 'security preflight unavailable: no delivery baseline '
+                                                       '(the run started before W3a); abort'}
+        path = Path(baseline['path'])
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = None
+        if digest != baseline['sha256']:
+            return {'status': 'unavailable', 'reason': 'security preflight unavailable: the delivery baseline changed; abort'}
+        prefix = self.evidence / f'{request_id}-{uuid.uuid4().hex[:8]}'
+        manifest, report = Path(f'{prefix}-manifest.json'), Path(f'{prefix}-preflight.json')
+        proc = self._security_script('delivery_scope.py', 'manifest', '--baseline', str(path), '--output', str(manifest))
+        if proc.returncode:
+            return {'status': 'unavailable', 'reason': f'security preflight unavailable: delivery_scope manifest exited '
+                                                       f'{proc.returncode}: {proc.stderr.strip()[-300:]}'}
+        proc = self._security_script('security_preflight.py', '--manifest', str(manifest), '--output', str(report))
+        try:
+            document = json.loads(report.read_text())
+        except (OSError, ValueError):
+            document = {}
+        result = {'exit': proc.returncode, 'status': document.get('status', 'unknown'), 'report': str(report),
+                  'scanned_files': document.get('scanned_files'),
+                  'findings': [{key: row.get(key) for key in ('rule', 'path', 'line')} for row in document.get('findings', [])],
+                  'uncovered_ignore': [row['category'] for row in document.get('ignore_coverage', []) if not row.get('covered')]}
+        clean = (proc.returncode == 0 and result['status'] == 'clean' and document.get('coverage_complete') is True and
+                 document.get('ignore_coverage_complete') is True)
+        result['reason'] = None if clean else (
+            f"security preflight {result['status']} (exit {proc.returncode})" +
+            ''.join(f'; {row["rule"]} in {row["path"]}' for row in result['findings'][:10]) +
+            ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) if result['uncovered_ignore'] else '') +
+            (f'; {proc.stderr.strip()[-300:]}' if proc.returncode not in (0, 1) and proc.stderr.strip() else ''))
+        return result
 
     def _changed_paths(self, deleted: bool = False) -> list[str]:
         diff = (['diff', '--name-only', '-z', '--no-renames', 'HEAD'] if deleted else   # a rename lists both paths
@@ -6851,7 +6958,7 @@ class Coordinator:
                 elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_docs_turn()
                 elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):
-                    return self.hold(worktree_lifecycle.SECURITY_PENDING)
+                    self.worktree_security_turn()
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
