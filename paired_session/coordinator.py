@@ -2744,7 +2744,7 @@ class Coordinator:
             current = self.internal / 'current-review'
             self._mirror_workspace(current)
             proc = candidate_tree.run_bounded(candidate_tree.git_command('diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
             atomic_text(since, proc.stdout)
