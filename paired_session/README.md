@@ -234,6 +234,76 @@ directories; foreign entries there are retained and reported.
 For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
 on the permission-probe command; this changes only the prompt, not the sandbox.
 
+Read-only temp dir (FIELD-1, v2.9.6): a Codex reviewer, shadow, gate or probe
+turn runs under the permission profile `paired_session_readonly` (root and
+workspace read-only, only `$TMPDIR` writable, network off), selected with
+`--config default_permissions="paired_session_readonly"` because `codex exec`
+has no `-P` (verified on codex-cli 0.160.0; an explicit `--config` outranks
+user, system and project `config.toml`; managed config, requirements and MDM
+may outrank it, and the capability guard refuses a dispatch when they set
+permission keys), instead of
+`sandbox_mode="read-only"`, with TMPDIR/TMP/TEMP set to a fresh 0700
+`<run_dir>/role-tmp/<seq>-<role>` for that one dispatch, so a `tmp_path`-style
+test has a usable temp dir. The coordinator lists that root in the turn's
+receipt and removes it after the turn (also after a failed turn; an uncertain
+turn's root when it is archived or at the next dispatch). Removal first stops what is
+left of the turn's CLI process group (a descendant that left the group is not
+covered; if the group cannot be confirmed gone the scratch is kept, and a
+successful turn then HOLDs; a kept leftover is swept at the next dispatch only on an explicit ESRCH for its turn's group (probed, never signalled, since its pid may have been reused) or a recorded never-started turn; no recorded pid, EPERM or any other error keeps it and that dispatch HOLDs naming it), then works through directory handles, resetting
+modes and file flags through open file descriptors, and never follows a link
+even if a process survives: `role-tmp` must be a real 0700 directory owned by this user, a link or
+any other leftover entry there is refused, and inside a scratch a link is
+removed as a link while modes and file flags are reset without following one.
+A regular file with more than one link, an unreadable directory, or a changed
+mode of the scratch root itself, left in the scratch fails the turn. The reviewer and gate flags digests
+change, so an older probe PASS or probe-pass cache entry no longer matches:
+re-run `permission-probe`. A Codex probe or gate-probe turn must now write its
+own `$TMPDIR` and must be refused each of: a write to `/tmp`, to the user temp
+dir, to the run dir, to `role-tmp` beside its own scratch (`$TMPDIR/..`), to the
+context, every workspace write, and `ln <run-dir file> "$TMPDIR/..."` (a hard
+link into its scratch); every target must be absent and the link source keep a
+single link afterwards. A leg counts as refused only on an explicit sandbox or
+OS denial (Operation not permitted, Permission denied, Read-only file system,
+a sandbox deny line) with a non-zero exit; `command not found` (exit 127), exit
+126 or any other error makes the probe UNKNOWN, never PASS. Only that real probe shows that `codex exec` honours the
+profile; the tests use fake CLIs, and the probe runs fresh turns only (see
+resume turns below).
+
+Hard links: the scratch shares a volume with the run dir and usually with the
+user's home. If the CLI let a role hard-link a same-user file into its scratch,
+it could write through it to any such file it can read; the probe's refused
+`ln` is the evidence that it cannot (a probe that sees the link made FAILs). As
+defence in depth for run-dir files, the coordinator records inode and ctime of
+every regular file under the run dir before the turn and fails the turn on any
+change until the CLI process exits (making a link, writing through it or
+changing mode, flags or times all move the ctime, which no process can set
+back), so a link made, written through and removed within one turn is caught.
+That check does not cover exactly `state.json` and `progress.jsonl` (no other
+names), which the
+coordinator writes during the turn (`state.json` is replaced atomically from
+the in-memory state after the turn; a write through a link survives only a
+coordinator crash before that save; `progress.jsonl` is display only), the
+turn's own `evidence/<seq>-<phase>-<role>.*` files (the coordinator reads the
+answer and observed commands from its `stdout.jsonl`), Codex session rollouts
+under `CODEX_HOME`, or any same-volume file outside the run dir, workspace,
+context and the watched global config files; for those the refused `ln` in the
+probe is the only control. That control assumes the probe model does not forge
+its own command events: the probe reads them from the turn's `stdout.jsonl` and
+the Codex rollout, which are outside the ctime check, so if the CLI did allow a
+hard link a hostile probe model could link one of them, append a fake refused
+`ln` and skip the real one (reading stdout from a pipe into memory would close
+this; not done). The refused writes are judged by their targets on disk and
+are not affected. A detached descendant acting after the CLI exits is outside
+the window, as for the other per-turn checks. Resume turns: a persistent Codex
+reviewer's later turns run `codex exec ... --config default_permissions="paired_session_readonly" ... resume
+<id>`; the probe runs fresh turns only, so whether the real CLI applies the
+profile on resume (before, a plain `sandbox_mode` override did) is unproven; if
+it did not, those turns would fall back to the CLI's default sandbox and only
+the workspace snapshot, context digest and run-dir ctime checks would remain. Claude roles keep Claude
+Code's own sandbox TMPDIR (`/tmp/claude`, shared per UID, also with a Claude
+author): `denyWrite: run_dir` takes precedence over `allowWrite`, so a run-dir
+root cannot be writable for them.
+
 Claude roles use one inline strict sandbox settings object, deny secret-like
 environment variables and common credential files, block network access and
 local network binding, and require the exact Bash allowlist. The reviewer
