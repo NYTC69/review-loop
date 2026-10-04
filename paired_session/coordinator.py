@@ -6906,8 +6906,8 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     for key, vendor in role_vendors.items():
         if getattr(args, key) is None:
             setattr(args, key, model_for_vendor[vendor])
-            if vendor == 'codex':   # ADR-11: these roles need a CLI that runs the default model
-                args.defaulted_codex_models = getattr(args, 'defaulted_codex_models', set()) | {key}
+            if vendor == 'codex':   # ADR-11: these roles need a CLI that runs the default model; a sorted list keeps args JSON-serializable
+                args.defaulted_codex_models = sorted({*getattr(args, 'defaulted_codex_models', ()), key})
     return args
 
 

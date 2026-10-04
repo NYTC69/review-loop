@@ -9252,6 +9252,8 @@ print(json.dumps(results))
             '    stopped.write_text(str(os.getpid()))\n'
             '    os._exit(0)\n'
             'signal.signal(signal.SIGTERM, stop)\n'
+            'if sys.argv[1:] == ["--version"]:\n'   # like the real CLI and the harness fake: a version query never blocks (ADR-11 startup check)
+            '    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.160.0")); sys.exit(0)\n'
             'if not marker.exists():\n'
             '    marker.write_text(str(os.getpid()))\n'
             '    time.sleep(120)\n'
