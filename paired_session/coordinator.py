@@ -103,6 +103,7 @@ def claude_cli_version(binary: str) -> str:
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
+DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 
 
@@ -876,6 +877,13 @@ def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
         except Exception as exc: digest['effective-config' + scope] = 'UNAVAILABLE: ' + str(exc); continue   # a changed config that git cannot be called under still HOLDs
         digest['effective-config' + scope] = hashlib.sha256(proc.stdout + bytes([proc.returncode])).hexdigest()
     return dirs, digest
+def git_head_state(workspace: Path) -> list:
+    """D-EFF git guard: the commit HEAD names and the branch it is on (empty when detached or unborn)."""
+    return [candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True).stdout.strip()
+            for args in (('rev-parse', '--verify', '-q', 'HEAD'), ('symbolic-ref', '-q', 'HEAD'))]
+
+
 def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     """Digest tracked + untracked non-ignored files; symlinks hash their target."""
     proc = candidate_tree.run_bounded(
@@ -1495,6 +1503,18 @@ class Coordinator:
         self.context = self.run_dir / 'context'
         self.internal = self.run_dir / 'internal'
         self.state_path = self.run_dir / 'state.json'
+        requested = getattr(args, 'safety_mode', None)                   # --strict or the operator profile; None when neither names it
+        args.safety_mode = requested or DEFAULT_SAFETY_MODE
+        if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
+            saved_state = json.loads(self.state_path.read_text())
+            args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
+            if requested and requested != args.safety_mode:
+                probe_only = all(t.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') for t in saved_state.get('turns', []))
+                if not (requested == 'strict' and probe_only):
+                    raise ValueError(f'safety_mode is fixed for this run: it was created {args.safety_mode} by its first command; '
+                                     f'start a new run directory to use {requested}')
+                saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
+                atomic_json(self.state_path, saved_state)
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
@@ -1714,6 +1734,10 @@ class Coordinator:
             setattr(self.args, key, saved[key])
         return saved
 
+    @property
+    def strict(self) -> bool:   # D-EFF: category C (probe gate, a holding evidence guard) as before; anything but 'efficient' is strict
+        return getattr(self.args, 'safety_mode', 'strict') != 'efficient'
+
     def _saved_config(self) -> dict:
         """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
         return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived', **self.state['config']}
@@ -1725,7 +1749,7 @@ class Coordinator:
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish', 'allowed_models')
+                'skip_globs', 'skip_quality_polish', 'allowed_models', 'safety_mode')
         config = {key: getattr(self.args, key) for key in keys}
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
@@ -4282,6 +4306,7 @@ class Coordinator:
         control_dirs, control_before = git_control_state(snapshot_workspace) if role == 'author' else ([], {})
         if bad := control_before.get('!unreadable') or next((v for v in control_before.values() if v.startswith('UNAVAILABLE')), None): raise RuntimeError('git control state unreadable: ' + bad)   # no further git call in a workspace whose config cannot be read
         before, manifest = git_snapshot(snapshot_workspace)
+        head_before = git_head_state(snapshot_workspace) if role == 'author' else None   # D-EFF git guard (category B), both modes
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh, active_workspace)
@@ -4425,6 +4450,8 @@ class Coordinator:
             atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         try:
             if control_problem: raise ValueError(control_problem)
+            if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
+                raise ValueError('author changed HEAD or the branch: a commit, reset or checkout is not allowed in a paired-session run')
             if vendor_config_before is not None:
                 config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
                 changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace])
@@ -4482,8 +4509,9 @@ class Coordinator:
                                          (self.args.test_command, *self.args.reviewer_command), fallbacks)
             receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20],   # v297-eg-wire: substring-guard calls
                                          **({'codex_cwd_proven': proven} if proven is not None else {})}
-            if forbidden:
+            if forbidden and self.strict:
                 raise ValueError(f'{role} accessed isolated {forbidden}')
+            if forbidden: receipt['evidence_guard']['would_hold'] = f'{role} accessed isolated {forbidden}'   # D-EFF efficient: log-only
             if context_before != context_after:
                 raise ValueError(f'{role} mutated coordinator context outside workspace')
             if role == 'author' and phase == 'PLAN' and before != after:
@@ -5740,10 +5768,10 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
-        if self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.claude_author_verified())[0]:
             raise ValueError(ok[1])
         return self._drive_loop()
@@ -6773,6 +6801,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
+    p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
+                   help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default='')
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
@@ -6841,7 +6871,7 @@ CONFIGURABLE_DESTS = {
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
-    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish',
+    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'safety_mode',
 }
 
 
@@ -6938,6 +6968,8 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     unknown = (set(values) - CONFIGURABLE_DESTS) | {k for k in values if k in OPERATOR_ONLY_DESTS or k.startswith('accept_')}
     if unknown:
         raise ValueError('unsupported paired-session config keys: ' + ', '.join(sorted(unknown)))
+    if 'safety_mode' in values and (not known.config or values['safety_mode'] not in ('efficient', 'strict')):   # D-EFF
+        raise ValueError('safety_mode is set only by --strict or an operator --config profile (efficient or strict), never by the workspace config')
     explicit = set()
     for action in p._actions:
         if action.dest in CONFIGURABLE_DESTS and any(
@@ -7014,7 +7046,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
-    if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
+    if (co.strict and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
             co.state['claude_author_override'] = {
@@ -7023,6 +7055,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
             co.save()
         if not (claude_ok := co.claude_author_verified())[0]:
             return co.refused(claude_ok[1])
+    if not co.strict and (args.accept_probe_skip or args.accept_unverified_codex_cli or args.accept_unverified_claude_author):
+        print('NOTE: an efficient-mode run needs no probe waiver; the --accept-* flag is not recorded')   # D-EFF
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -7049,7 +7083,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+    if (co.strict and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
@@ -7058,14 +7092,14 @@ def _execute_locked(args: argparse.Namespace) -> int:
             co.save()
         if not (verified := co.codex_contract_verified())[0]:
             return co.refused(verified[1])
-    if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
+    if co.strict and args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):   # D-EFF: a probe waiver matters in strict only
         if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
             return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
         if not co._gate_probe_covered():
             return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
         co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}; co.save()
     if args.action == 'reject':
-        if not args.skip_probe:
+        if co.strict and not args.skip_probe:   # D-EFF efficient: no permission probe is required
             passed, reason = co.probe_gate()
             if not passed:
                 return co.refused(reason + '; run permission-probe before continuing')
@@ -7082,11 +7116,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
                      and before_config and (co.run_dir / 'permission-probe.json').exists()
                      and global_config_snapshot(co.global_config_home, co.global_codex_home).get(
                          'codex_config', {}).get('sha256') != before_config)
-    if args.action in ('run', 'resume') and not args.skip_probe:
+    if co.strict and args.action in ('run', 'resume') and not args.skip_probe:
         passed, reason = co.probe_gate()
         if not passed and not changed_codex:
             return co.refused(reason + '; run permission-probe before continuing')
-    co._probe_gate_required = not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
+    co._probe_gate_required = co.strict and not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
         if co.state.get('status') == 'ACCEPTED':
             print('ACCEPTED')
@@ -7139,7 +7173,7 @@ def main(argv=None) -> int:
         return 2
     if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
             and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
-            and not restores_run(args):
+            and not restores_run(args) and (args.safety_mode or DEFAULT_SAFETY_MODE) == 'strict':   # D-EFF: a new run's probe gate (C)
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
               '--reason TEXT` (permission-probe does not take the flag); no run state exists yet, so run permission-probe first')   # FIELD-10

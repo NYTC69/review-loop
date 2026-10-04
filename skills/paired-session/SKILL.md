@@ -81,6 +81,11 @@ the first command that runs `bin/paired-session`):
    `--skip-probe`, `--accept-unverified-codex-cli`,
    `--accept-unverified-claude-author`, `--accept-probe-skip` or
    `--override-rejection` on your own initiative.
+   `--strict` comes only from the user or the operator profile (`safety_mode`),
+   and goes to `permission-probe` and `run` alike:
+   both modes keep every sandbox; the default `efficient` mode does not require
+   the probe PASS and its evidence guard only logs, while `--strict` restores
+   both (`paired_session/docs/efficient-mode.md`).
    Start the permission probe as a separate Bash call with
    `run_in_background: true`; wait for the background task completion
    notification and inspect its final result. Use a shell-output polling tool

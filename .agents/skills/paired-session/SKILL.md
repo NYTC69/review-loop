@@ -59,6 +59,11 @@ the first command that runs `bin/paired-session`):
    `--skip-probe`, `--accept-unverified-codex-cli`,
    `--accept-unverified-claude-author`, `--accept-probe-skip` or
    `--override-rejection` on your own initiative.
+   `--strict` comes only from the user or the operator profile (`safety_mode`),
+   and goes to `permission-probe` and `run` alike:
+   both modes keep every sandbox; the default `efficient` mode does not require
+   the probe PASS and its evidence guard only logs, while `--strict` restores
+   both (`paired_session/docs/efficient-mode.md`).
    The coordinator spawns provider CLIs and writes to `$CODEX_HOME` outside the
    product workspace; execute each invocation below with the host's full
    filesystem/network permission, outside the current Codex sandbox, and never

@@ -223,6 +223,13 @@ def main():
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
+        if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
+            import subprocess
+            subprocess.run(['git', 'add', '-A'], check=True)
+            subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'fake author commit'], check=True)
+        if os.environ.get('FAKE_GLOBAL_CONFIG_WRITE') and 'Phase: EXEC' in prompt:   # D-EFF: a turn that changes the global Codex config
+            with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
+                handle.write('\nmodel_verbosity = "high"\n')
         if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
             print('fake author failed after writing', file=sys.stderr)
             return 1

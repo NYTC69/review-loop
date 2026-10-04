@@ -31,6 +31,17 @@ outside the product workspace and run directory, then pass its absolute path wit
 profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
 
+**Safety modes (D-EFF).** Every role runs with the same OS sandboxes in both
+modes. `efficient`, the default, does not require a permission-probe PASS before
+dispatch, and its evidence guard only records what it would have held. `strict`
+(`--strict`, or `"safety_mode": "strict"` in the operator profile; the
+workspace file cannot set it) also requires the probe PASS and lets the evidence
+guard hold. The first command that creates the run (usually `permission-probe`)
+fixes its mode, so pass `--strict` from `permission-probe` on; a `--strict` that
+arrives after only the probe has run still upgrades the run, later it is
+refused. Runs made before this change resume strict. See
+[`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
+
 **Optional** — copy the config template to customize per-project defaults:
 
 ```bash
