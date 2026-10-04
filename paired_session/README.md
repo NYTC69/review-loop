@@ -116,7 +116,7 @@ and POLISH-Q (fresh report-only specialists, legacy Step 3.5; their blockers
 go to an author fix that the owning specialist re-reviews before EXEC review
 and gate run again) and DOCS (a fresh docs writer; a protected path HOLDs, a
 write outside the docs allowlist reopens EXEC review and gate, an allowlisted
-write HOLDs for the docs review of W2b-2), then HOLDs
+write gets a fresh docs review that must run the test), then HOLDs
 before SECURITY (W3a; such a run cannot be accepted before W3b); a
 workspace profile can neither enable it nor set its docs/skip/polish keys, and
 the run refuses

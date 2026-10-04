@@ -98,6 +98,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
             self.assertIn('Reserved for the DOCS stage; do not edit: CHANGELOG.md.', prompt)   # earlier writers know
         [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
         names = ['python-reviewer', 'code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer']   # sum_ints.py is Python
+        self.assertEqual({row['observed_test'] for row in polish['specialist_turns']},
+                         {state['config']['test_command']})   # W2a-1 L-3: recorded, not enforced
+        self.assertNotIn('review', [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS'][0])
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped'], polish['output_oid']),
                          ('READY', names, False, tree))
         turns = [row for row in state['turns'] if row['phase'] == 'POLISH-Q']
@@ -493,14 +496,111 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def docs_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
 
-    def test_an_allowlisted_docs_write_waits_for_the_docs_review(self):
+    def test_an_allowlisted_docs_write_gets_a_fresh_docs_review_with_an_observed_test_and_advances(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'})
-        self.assertIn('HOLD: ' + wl.DOCS_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [docs] = self.docs_rows(state)
         digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
-        self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['docs_written']),
-                         ('HOLD', 'HOLD', ['CHANGELOG.md'], {'CHANGELOG.md': digest}))
+        self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['docs_written'], docs['output_oid']),
+                         ('READY', 'SECURITY', ['CHANGELOG.md'], {'CHANGELOG.md': digest}, rc.git_snapshot(self.workspace)[0]))
+        review = docs['review']
+        self.assertEqual((review['status'], review['observed_test'], review['finding_ids']),
+                         ('APPROVE', state['config']['test_command'], []))
+        self.assertEqual(state['lifecycle']['docs_owned'], {'CHANGELOG.md': digest})   # approved: DOCS owns it
+        turn = next(row for row in state['turns'] if row['sequence'] == review['sequence'])
+        self.assertEqual((turn['role'], turn['phase'], turn['fresh'], turn['snapshot_before']),
+                         ('reviewer', 'DOCS', True, docs['output_oid']))
+        prompt = (self.run_dir / 'evidence' / f"{review['sequence']:03d}-docs-reviewer.prompt.txt").read_text()
+        for needle in ('Role: docs reviewer, fresh. Phase: DOCS.', 'Documentation written by the DOCS stage: CHANGELOG.md',
+                       'delta.patch', 'Run this test command exactly as written in one Bash call: ' +
+                       state['config']['test_command']):
+            self.assertIn(needle, prompt)
+
+    def test_a_docs_review_without_the_retest_holds_and_resume_reviews_again(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_NO_TEST_ONCE': str(self.root / 'no-test')}
+        held = self.run_coordinator('--lifecycle-mode', 'on', env=env)
+        self.assertIn('HOLD: DOCS reviewer did not observe a successful run of the configured test command', held.stdout,
+                      held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((self.docs_rows(state), state['lifecycle']['pending']['stage']), ([], 'DOCS'))   # no receipt
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, again.stdout, again.stdout + again.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [docs] = self.docs_rows(state)
+        writers = [row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'DOCS']
+        reviews = [row for row in state['turns'] if row['role'] == 'reviewer' and row['phase'] == 'DOCS']
+        self.assertEqual((len(writers), len(reviews), docs['sequence'], docs['review']['sequence']),
+                         (1, 2, writers[0]['sequence'], reviews[1]['sequence']))   # the writer is reused, not re-run
+
+    def test_the_exec_author_can_fix_a_docs_finding_in_a_docs_owned_entry(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block'),
+               'FAKE_DOCS_FINDING_STILL_OPEN_ONCE': str(self.root / 'docs-open')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--max-exec-rounds', '6',
+                                      env=env)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        first, second = self.docs_rows(state)
+        fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC'
+                   and first['review']['sequence'] < turn['sequence'] < second['sequence'])
+        prompt = (self.run_dir / 'evidence' / f"{fix['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn('Written by the DOCS stage; edit only to fix a delivered docs finding: CHANGELOG.md.', prompt)
+        self.assertNotIn('Reserved for the DOCS stage', prompt)   # CHANGELOG.md is the whole allowlist and DOCS owns it
+        self.assertEqual((second['route'], second['review']['status']), ('SECURITY', 'APPROVE'))   # entry check passed
+        [row] = [row for row in state['finding_ledger'] if row['id'] in first['review']['finding_ids']]
+        self.assertEqual(row['status'], 'fixed')
+
+    def docs_review_with(self, answer, findings_before=()):
+        co = rc.Coordinator(self.args())
+        tree = rc.git_snapshot(self.workspace)[0]
+        def invoke(role, phase, prompt, schema, fresh=False):
+            co.state['sequence'] += 1
+            co.state['turns'].append({'sequence': co.state['sequence'], 'role': role, 'phase': phase, 'snapshot_before': tree})
+            return {'answer': answer, 'sequence': co.state['sequence'], 'snapshot': tree, 'role': role}
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=invoke):
+            return co, co._docs_review_turn(tree, ['CHANGELOG.md'])
+
+    def test_docs_review_verdicts_follow_the_ledger_blocking_rule(self):
+        test = {'command': self.args().test_command, 'exit_code': 0, 'output': 'OK'}
+        minor = {'severity': 'MINOR', 'file': 'CHANGELOG.md', 'summary': 'wording', 'failure_scenario': 'none'}
+        for status, finding, verdict in (('APPROVE', {**minor, 'security': True}, 'REVISE'),   # a security flag blocks
+                                         ('REVISE', minor, 'APPROVE')):   # a MINOR-only REVISE is advisory
+            with self.subTest(status=status, finding=finding):
+                self.run_dir = self.root / verdict
+                co, review = self.docs_review_with({'status': status, 'full_review': [finding],
+                                                    'observed_commands': [test]})
+                self.assertEqual(review['status'], verdict)
+                [row] = [row for row in co.state['finding_ledger'] if row['id'] in review['finding_ids']]
+                self.assertEqual((row['source'], row.get('owner_role')), ('docs-reviewer', None))
+        self.run_dir = self.root / 'empty'
+        with self.assertRaisesRegex(RuntimeError, 'docs reviewer returned REVISE without a usable review'):
+            self.docs_review_with({'status': 'REVISE', 'full_review': [], 'observed_commands': [test]})
+
+    def test_the_docs_budget_caps_writer_and_review_dispatches(self):
+        co = rc.Coordinator(self.args())
+        co.state['turns'].extend({'sequence': 900 + index, 'role': 'author', 'phase': 'DOCS'} for index in range(7))
+        with mock.patch.object(co, 'materialize_review_context'), \
+                mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched past the DOCS budget')), \
+                self.assertRaisesRegex(RuntimeError, r'DOCS budget exhausted \(7 writer and review calls'):
+            co._docs_review_turn(rc.git_snapshot(self.workspace)[0], ['CHANGELOG.md'])
+
+    def test_a_docs_review_revise_replays_exec_with_its_findings_then_reviews_again(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn('HOLD: ' + wl.SECURITY_PENDING, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        first, second = self.docs_rows(state)
+        [finding] = first['review']['finding_ids']
+        self.assertEqual((first['route'], first['review']['status'], second['route'], second['review']['status']),
+                         ('EXEC', 'REVISE', 'SECURITY', 'APPROVE'))   # the owned entry is reviewed again
+        [row] = [row for row in state['finding_ledger'] if row['id'] == finding]
+        self.assertEqual((row['source'], row['severity'], row['status']), ('docs-reviewer', 'MAJOR', 'fixed'))
+        self.assertEqual(list(state['lifecycle']['docs_owned']), ['CHANGELOG.md'])
+        between = [(turn['role'], turn['phase']) for turn in state['turns']
+                   if first['review']['sequence'] < turn['sequence'] < second['sequence']]
+        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):
+            self.assertIn(step, between)   # the persistent reviewer disposes the docs finding, then a new gate
 
     def test_a_docs_comment_write_replays_exec_review_and_gate(self):
         env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
@@ -550,6 +650,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                          ('EXEC', ['CHANGELOG.md', 'sum_ints.py'], {'CHANGELOG.md': digest}))
         self.assertEqual(state['lifecycle']['docs_owned'], {'CHANGELOG.md': digest})
         self.assertEqual((second['route'], second['docs_paths'], second['epoch']), ('SECURITY', [], 1))   # entry check passed
+        self.assertEqual(second['review']['status'], 'APPROVE')   # a no-op DOCS still reviews its owned entry
 
     def test_docs_paths_are_exact_documentation_files_and_an_empty_docs_file_turns_the_default_off(self):
         co = rc.Coordinator(self.args('--docs-file', ''))
@@ -626,6 +727,15 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         with mock.patch.object(co, 'invoke', side_effect=RuntimeError('docs writer dispatched')), \
                 self.assertRaisesRegex(RuntimeError, 'docs writer dispatched'):
             co.worktree_docs_turn()   # DOCS's own entry, reviewed by the EXEC replay, may be rewritten
+        self.run_dir = self.root / 'symlinked'
+        co = rc.Coordinator(self.args())
+        (self.workspace / 'CHANGELOG.md').unlink()
+        (self.workspace / 'CHANGELOG.md').symlink_to(self.root / 'outside.md')   # the EXEC author's replacement
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=rc.git_snapshot(self.workspace)[0],
+                                     docs_owned={'CHANGELOG.md': 'an earlier digest'})
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('docs writer dispatched')), \
+                self.assertRaisesRegex(RuntimeError, 'a DOCS-owned entry became a symlink or protected path: CHANGELOG.md'):
+            co.worktree_docs_turn()
 
     def test_docs_refuses_a_staged_deletion_or_rename_of_a_reserved_path(self):
         git = ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.test']

@@ -3485,7 +3485,7 @@ class Coordinator:
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
-            *([self._docs_reserved_note()] if worktree_lifecycle.is_worktree(self.state) and self._docs_allowlist() else []),
+            *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
@@ -3495,8 +3495,11 @@ class Coordinator:
         return sorted(Path(path).relative_to(self.workspace).as_posix() for path in self.state['config']['docs_allowlist'])
 
     def _docs_reserved_note(self) -> str:
-        allow = self._docs_allowlist()
-        return ('Reserved for the DOCS stage; do not edit: ' + ', '.join(allow) + '.') if allow else ''
+        owned = self.state['lifecycle'].get('docs_owned', {})
+        reserved = [path for path in self._docs_allowlist() if path not in owned]
+        return ' '.join([*(['Reserved for the DOCS stage; do not edit: ' + ', '.join(reserved) + '.'] if reserved else []),
+                         *(['Written by the DOCS stage; edit only to fix a delivered docs finding: ' +
+                            ', '.join(sorted(owned)) + '.'] if owned else [])])
 
     def author_control_contract(self) -> str:
         if self.state['phase'] == 'PLAN':
@@ -4337,12 +4340,13 @@ class Coordinator:
             tree, manifest = git_snapshot(workspace)
             if tree != life['candidate_oid']:
                 raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
-            owned = life.get('docs_owned', {})   # DOCS's own entries that an EXEC replay reviewed byte for byte
-            current = dict(manifest)   # a staged deletion has no manifest row: never exempt it
-            if touched := sorted(path for path in set(self._changed_paths(deleted=True)) & allow
-                                 if path not in owned or owned[path] != current.get(path)):
+            owned = life.get('docs_owned', {})   # DOCS's own entries: the EXEC author may fix docs findings in them,
+            if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews them again
                 raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
                                    '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
+            if bad := sorted(path for path in owned if worktree_lifecycle.docs_denied(path, dict(manifest).get(path))):
+                raise RuntimeError('a DOCS-owned entry became a symlink or protected path: ' + ', '.join(bad) +
+                                   '; restore it or abort')   # the writer would write through it
             atomic_json(base_file, manifest)
         try:   # bound to the POLISH-Q-approved tree before the writer runs
             base = json.loads(base_file.read_text())
@@ -4350,8 +4354,11 @@ class Coordinator:
             raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
         if hashlib.sha256(json.dumps(base, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest() != request['candidate_oid']:
             raise RuntimeError('DOCS base manifest differs from the POLISH-Q-approved tree; abort')
-        result = self._lifecycle_writer(request, 'docs writer', lambda: worktree_lifecycle.docs_prompt(
-            self.state['config'].get('docs_file'), sorted(allow), self.run_dir.name, self.workitem.read_text()))
+        def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
+            self._docs_budget()
+            return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
+                                                  self.run_dir.name, self.workitem.read_text())
+        result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
         before, after = dict(base), dict(manifest)
@@ -4363,18 +4370,25 @@ class Coordinator:
         reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
                             *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
                               if denied else [])]) or None
-        if not reason and changed and not outside:   # an allowlisted write needs the docs review (W2b-2)
-            reason = worktree_lifecycle.DOCS_REVIEW_PENDING
-        receipt['route'] = 'HOLD' if reason else 'EXEC' if outside else 'SECURITY'
+        owned = self.state['lifecycle'].get('docs_owned', {})
+        replay = bool(outside)
+        if not reason and not replay and (changed or owned):   # every DOCS-written doc gets a fresh docs review
+            review = self._docs_review_turn(tree, sorted({*changed, *owned}))
+            receipt['review'] = review
+            replay = review['status'] != 'APPROVE'   # its findings go to the persistent EXEC reviewer, then the gate
+        if not reason and not replay and (blocking := self.blocking_open_findings()):
+            reason = 'DOCS cannot advance with open blocking findings: ' + ', '.join(row['id'] for row in blocking)
+        receipt['route'] = 'HOLD' if reason else 'EXEC' if replay else 'SECURITY'
         self.state['lifecycle'] = lifecycle_spine.complete(
             self.state['lifecycle'], {**receipt, 'status': 'HOLD' if reason else 'READY'})
         self.state['lifecycle'].pop('writer_git', None)
+        if not reason:   # reviewed (SECURITY) or about to be (EXEC replay): DOCS owns what it wrote (values: audit only)
+            self.state['lifecycle']['docs_owned'] = {**owned, **receipt['docs_written']}
         if reason:
             self.hold(reason)
-        elif outside:   # a code or comment write, or a docs review REVISE: new EXEC convergence, reviewer then gate
+        elif replay:   # a code or comment write, or a docs review REVISE: new EXEC convergence, reviewer then gate
             life = self.state['lifecycle']
-            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
-                                       'docs_owned': {**life.get('docs_owned', {}), **receipt['docs_written']}}
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
             self.state['exec_rounds'] += 1
             self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
             if self.state['exec_rounds'] > self.exec_round_limit():
@@ -4383,6 +4397,45 @@ class Coordinator:
             self.state['lifecycle']['stage'] = 'SECURITY'
             self.state['next'] = 'security'
         self.save()
+
+    def _docs_review_turn(self, tree: str, paths: list[str]) -> dict:
+        """Fresh docs reviewer over the full diff (legacy 3.6 reviewer-only fast replay). A HOLD, an unusable review
+        or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again."""
+        self.materialize_review_context()
+        prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
+                  'Review the documentation of this uncommitted change against the full diff (legacy review-loop '
+                  'Step 3.6): the docs must describe the implemented behavior, APIs and logic accurately, and the '
+                  'changed code comments must match the code. Do not modify any file. Documentation written by the '
+                  'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
+                  f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'
+                  'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
+        self._docs_budget()
+        result = self.invoke('reviewer', 'DOCS', prompt, review_schema(), fresh=True)
+        turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+        if turn.get('snapshot_before') != tree:
+            raise RuntimeError('docs reviewer reviewed a tree other than the one under review')
+        answer = result['answer']
+        findings = worktree_lifecycle.normalized_findings('docs-reviewer', answer['full_review'], 'docs reviewer')
+        blocking = [row for row in findings if row['severity'] in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
+            raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
+        if not (observed := self._observed_test(answer)):
+            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command; '
+                               'resume reviews again')
+        self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer disposes them
+        self.render(result, 'docs-reviewer', 'DOCS')
+        return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
+                'finding_ids': [row['id'] for row in self.state['finding_ledger']
+                                if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']]}
+
+    def _docs_budget(self) -> None:
+        used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+        if used + 1 > budget_policy.BUDGET_CAPS['DOCS'][0]:
+            raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
+
+    def _observed_test(self, answer: dict):
+        return next((row['command'] for row in answer.get('observed_commands', [])
+                     if observed_test_succeeded(row, self.args.test_command)), None)
 
     def _changed_paths(self, deleted: bool = False) -> list[str]:
         diff = (['diff', '--name-only', '-z', '--no-renames', 'HEAD'] if deleted else   # a rename lists both paths
@@ -4515,17 +4568,8 @@ class Coordinator:
             raise RuntimeError('specialist body differs from the frozen role manifest: ' + name)
         owner = 'specialist:' + name
         owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
-        protocol = '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
-            f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
-            f'Approved plan: {self.context / "plan.md"}',
-            f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat and status.txt.',
-            'Changed paths: ' + (', '.join(paths) or 'none'), self.inspection_prompt('reviewer'),
-            REVIEW_SEVERITY_GUIDANCE, self.verified_claims_prompt(), self.allowed_command_prompt(),
-            'A command the instructions above ask for that is not in this list is unavailable here; that is not a '
-            'failure and not a reason to HOLD. Analyse those concerns with Read/Grep/Glob instead.',
-            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
-            'Do not report exit codes; the coordinator reads tool results directly.'])
-        prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned, protocol) +
+        prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
+                                                       self._review_protocol(paths)) +
                   opv.prompt_block(self, tree, atomic_json))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
             counts = self._specialist_budget(name)
@@ -4561,7 +4605,20 @@ class Coordinator:
             raise RuntimeError(f'specialist {name} omitted dispositions for its findings: ' + ', '.join(missing))
         self.record_findings(owner, 'POLISH-Q', result['sequence'], findings)
         self.render(result, 'specialist-' + name, 'POLISH-Q')
-        return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree}
+        return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree,
+                'observed_test': self._observed_test(answer)}   # W2a-1 L-3: recorded, not enforced
+
+    def _review_protocol(self, paths: list[str]) -> str:
+        return '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
+            f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
+            f'Approved plan: {self.context / "plan.md"}',
+            f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat and status.txt.',
+            'Changed paths: ' + (', '.join(paths) or 'none'), self.inspection_prompt('reviewer'),
+            REVIEW_SEVERITY_GUIDANCE, self.verified_claims_prompt(), self.allowed_command_prompt(),
+            'A command the instructions above ask for that is not in this list is unavailable here; that is not a '
+            'failure and not a reason to HOLD. Analyse those concerns with Read/Grep/Glob instead.',
+            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
+            'Do not report exit codes; the coordinator reads tool results directly.'])
 
     def polish_author_turn(self) -> None:
         polish = self.state['polish']

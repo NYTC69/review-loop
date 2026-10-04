@@ -208,6 +208,9 @@ def main():
                 module.write_text(module.read_text() + '# rejection applied\n')
             if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
                 module.write_text(module.read_text() + '# resumed author output\n')
+            if 'docs entry still wrong' in prompt:   # worktree-lifecycle: the EXEC author fixes a DOCS-owned entry
+                changelog = Path.cwd() / 'CHANGELOG.md'
+                changelog.write_text(changelog.read_text() + '# corrected entry\n')
             if 'specialist blocker' in prompt:   # worktree-lifecycle POLISH-Q fix leg: one new tree per fixed id set
                 ids = ' '.join(re.findall(r'"id": "F(\d+)"', prompt))   # no finding ids in code: shadow independence
                 module.write_text(module.read_text() + f'# specialist fix {ids}\n')
@@ -284,6 +287,7 @@ def main():
                  'Q' if 'Q-FINAL:' in prompt or 'Phase: Q.' in prompt else
                  'SECURITY' if 'Phase: SECURITY' in prompt else
                  'POLISH' if 'Phase: POLISH' in prompt else
+                 'DOCS' if 'Role: docs reviewer, fresh. Phase: DOCS.' in prompt else
                  'EXEC' if 'Phase: EXEC' in prompt else 'PLAN')
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
@@ -367,16 +371,33 @@ def main():
             revise = True
             findings = [{'severity': os.environ.get('FAKE_SPECIALIST_SEVERITY', 'CRITICAL'), 'file': 'sum_ints.py',
                          'summary': 'specialist blocker', 'failure_scenario': 'a specialist found a blocking defect'}]
+        docs_block = os.environ.get('FAKE_DOCS_REVIEW_BLOCK_ONCE')   # worktree-lifecycle DOCS review
+        if 'Role: docs reviewer,' in prompt and docs_block and not Path(docs_block).exists():
+            Path(docs_block).write_text('blocked once\n')
+            revise = True
+            findings = [{'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs describe the wrong behavior',
+                         'failure_scenario': 'a reader trusts the stale changelog entry'}]
         disposition = ('still_open' if os.environ.get('FAKE_POLISH_DECLINE') and
                        'Phase: POLISH' in prompt else 'fixed')
         prior = [{'id': finding_id, 'disposition': disposition,
                   'evidence': 'fake verified disposition'} for finding_id in open_ids]
+        docs_open = os.environ.get('FAKE_DOCS_FINDING_STILL_OPEN_ONCE')   # the EXEC reviewer keeps a docs finding
+        if (docs_open and role == 'reviewer' and phase == 'EXEC' and 'docs describe the wrong behavior' in prompt and
+                not Path(docs_open).exists()):
+            Path(docs_open).write_text('still open\n')
+            revise = True
+            prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'docs entry still wrong'}
+                     for finding_id in open_ids]
         if 'Role: shadow,' in prompt or 'Role: shadow,' in prompt.replace('fresh isolated ', ''):
             prior = None
         answer = {'status': 'REVISE' if revise else 'APPROVE',
                   'full_review': findings,
                   'self_run_evidence': ([{'command': configured_test or 'python3 -m unittest'}]
-                                        if phase in ('EXEC', 'SECURITY', 'Q') else [])}
+                                        if phase in ('EXEC', 'SECURITY', 'Q', 'DOCS') else [])}
+        no_test = os.environ.get('FAKE_DOCS_REVIEW_NO_TEST_ONCE')
+        if 'Role: docs reviewer,' in prompt and no_test and not Path(no_test).exists():
+            Path(no_test).write_text('no test\n')
+            answer['self_run_evidence'] = []   # a docs review without the retest
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):

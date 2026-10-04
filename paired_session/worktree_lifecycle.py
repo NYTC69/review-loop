@@ -10,7 +10,6 @@ except ModuleNotFoundError:
 
 FORMAT = 'worktree'
 SECURITY_PENDING = 'worktree lifecycle stage SECURITY not implemented yet (W3a)'
-DOCS_REVIEW_PENDING = 'worktree lifecycle DOCS review not implemented yet (W2b-2)'
 DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
 LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
                    **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),
@@ -119,12 +118,12 @@ def specialists(paths):
     return (*languages, *QUALITY_AGENTS)
 
 
-def normalized_findings(name, findings):
+def normalized_findings(name, findings, label=None):
     rows = []
     for finding in findings:
         severity = SEVERITY.get(str(finding.get('severity', '')).upper())
         if severity is None:
-            raise RuntimeError(f'specialist {name} returned an unknown severity: {finding.get("severity")!r}')
+            raise RuntimeError(f'{label or "specialist " + name} returned an unknown severity: {finding.get("severity")!r}')
         rows.append({**finding, 'severity': severity})
     return rows
 

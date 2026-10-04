@@ -2,8 +2,8 @@
 
 Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
 W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg (the simplifier and test-consolidation
-writers are not implemented and not scheduled in W2a); W2b-1 runs the DOCS writer and HOLDs before
-SECURITY, or before the docs review of an allowlisted write (W2b-2); the remaining stages arrive in W2b-2–W3b. Sources: ADR-11, the lane A
+writers are not implemented and not scheduled in W2a); W2b runs DOCS (writer, docs review with an observed
+test) and HOLDs before SECURITY; the remaining stages arrive in W3a–W3b. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -39,10 +39,11 @@ depends on it.
 - Adopted (doc 1 §Writes): `docs_file` and the docs allowlist are reserved for DOCS. If the EXEC-reviewed
   change set already touches an allowlisted path, W HOLDs before DOCS instead of replaying, so DOCS can
   never start a replay loop. Implemented (W2b-1): the EXEC author and finisher prompts name the reserved
-  paths, and the check sees deletions, staged deletions and renames. One exception: an allowlisted file that a DOCS write routed to an
-  EXEC replay and that is still byte-identical (`lifecycle.docs_owned`, accumulated over replays) is
-  DOCS's own reviewed entry, and DOCS may rewrite it ("a replayed DOCS stage replaces its own entry").
-  Otherwise the run can only abort, or be rerun with that path outside `--docs-file`/`--docs-allowlist`.
+  paths, and the check sees deletions, staged deletions and renames. One exception: an allowlisted file that DOCS has written (`lifecycle.docs_owned`, accumulated when DOCS
+  routes to an EXEC replay or to SECURITY) is DOCS's own entry. The EXEC author is told it may edit it only
+  to fix a delivered docs finding, the entry check lets it through, and every later DOCS reviews it again;
+  DOCS may rewrite it ("a replayed DOCS stage replaces its own entry"). Any other touched allowlisted path
+  leaves only abort, or a rerun with that path outside `--docs-file`/`--docs-allowlist`.
 - Adopted (doc 1 §Gate): with lifecycle on, EXEC convergence routes to FINISH and never enters the legacy
   `start_polish_or_done` advisory round. Legacy `--polish-round on` maps to POLISH-Q; open advisory
   findings feed POLISH-Q. Implemented deviation (W2a-2): the fix leg reuses the persistent EXEC author turn
@@ -76,8 +77,21 @@ with a `docs_policy.PROTECTED_PARTS` name at any depth (case-insensitive; this a
 `.netrc`, `.pypirc`, `.gitmodules`, `.mailmap`, `.compass`, `Makefile` and `Dockerfile`),
 `.claude-plugin`/`.codex-plugin`, `plugin.json`, `marketplace.json`, `docs/protocol/**`, and every symlink
 write. Other config and build files (`package.json`, `pyproject.toml`, lockfiles, `.github/**`) are not in
-the set: like code, a DOCS write to them replays EXEC review and gate. A no-op DOCS writer
-advances without a docs review (legacy 3.6 reviews only writes). Every other write outside the allowlist,
+the set: like code, a DOCS write to them replays EXEC review and gate.
+
+**DOCS review (W2b-2).** When the writer changed only allowlisted paths, or DOCS owns entries from an
+earlier replay (`docs_owned`), a fresh docs reviewer (reviewer role, EXEC reviewer protocol) reviews the
+full diff and must run the configured test command. A missing observed test, a HOLD or a REVISE without
+findings HOLDs before the DOCS receipt, so resume reuses the recorded writer and reviews again. A blocking
+finding (the ledger rule: CRITICAL/MAJOR or a security flag) routes to an EXEC replay: the findings (source
+`docs-reviewer`, no owner) go to the persistent EXEC reviewer, whose author may fix them in DOCS-owned
+entries, then a new gate, FINISH, POLISH-Q and DOCS. A REVISE with only MINOR findings is advisory, and
+APPROVE advances to SECURITY, unless any blocking finding is still open. `BUDGET_CAPS['DOCS']` (7) bounds
+the DOCS writer and review dispatches per run (a protocol retry may add one). A
+no-op DOCS writer without owned entries advances without a docs review (legacy 3.6 reviews only writes).
+POLISH-Q specialist turns record the configured test command they ran (`observed_test`) but are not
+required to run it: the candidate tree already has the EXEC reviewer's and the gate's observed tests.
+Every other write outside the allowlist,
 including comment fixes in code (legacy 3.6.2), goes to EXEC replay.
 
 **POLISH-Q differences from legacy (intentional, stricter).** Legacy language agents and the test analyzer
