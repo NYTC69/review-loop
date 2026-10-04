@@ -8,7 +8,7 @@
     "codex"
   ],
   "setup": {
-    "temp_config": "",
+    "temp_config": "entry: legacy\n",
     "timeout_seconds": 600
   },
   "execution_policy": "best_effort",
