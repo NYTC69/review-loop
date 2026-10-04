@@ -1,5 +1,107 @@
 # Changelog
 
+### v2.9.7：可选的整个工作项截止时间（FIELD-2）；同一类阻断连续三次就停下（FIELD-5）；Codex 默认模型改为 gpt-6.1-sol（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：
+  - Codex 角色（author、reviewer、gate）没有显式指定模型时，默认改为 `gpt-6.1-sol`（ADR-12）。这需要 codex-cli 0.159.2 或更新：版本更低或读不出时，`run`、`resume`、`permission-probe` 在创建 run state 之前就拒绝，提示升级 CLI，或对取了默认值的角色显式传 `--author-model/--reviewer-model/--gate-model gpt-6-luna`。版本只从已通过程序绑定的 codex 路径读取，绝不执行 workspace 指定的程序。
+  - 已经开始的 run 保留 state 里冻结的模型，不迁移，也不做版本检查；`abort`、`status` 照常可用。
+  - author 模型是 permission-probe 的键的一部分：依赖默认值的运营者升级后，每个 run 目录要重跑一次 `permission-probe`（旧 PASS 和探测缓存不再命中）。
+  - codex-cli 0.160.0 加入已验证版本（v2.9.6 发版时的真实 permission-probe：Codex reviewer 和 Codex gate 都 PASS）。
+- **feat（FIELD-2，v297-f2 / f2b）**：新增可选的 `--wi-deadline SECONDS`，默认关闭，从 run 开始按墙钟计时（HOLD、等待、重启都计入）。截止之后：
+  - 不再启动新的回合，在下一次派发处 HOLD；正在跑的回合不会被打断，单回合超时不变；
+  - 截止时间在 `run` 时固定，`resume` 沿用保存值、拒绝不同的值；
+  - 截止只拦新派发，绝不改写已有的 HOLD，也不拿掉 owner 的出口：`resume` 和 `permission-probe` 在不改任何东西的情况下被拒，round-limit HOLD 上的 `accept --override-rejection` 等出口都保留；还没收尾的不确定回合仍可用 `--retry-uncertain` 确认进程组已结束并归档，然后可以 `note --scope-change`；
+  - 已到 DONE 的 run 仍可 `accept` 或 `reject --scope-change`；`reject` 和 `resume --polish` 被拒，因为它们的下一次派发只会 HOLD；
+  - 墙钟回拨超过 60 秒时也 HOLD，已用时间不退还；
+  - scope-change 产生的后继 run 不继承截止时间，需要显式传入。
+- **feat（FIELD-5，v297-f5）**：EXEC reviewer、shadow 和 gate 的提示要求每个阻断 finding 以 `[class: <kebab-case-name>]` 开头。coordinator 只用正则读取这个显式标签，不做文本相似度判断。
+  - 同一类别在连续三次 EXEC reviewer 或 gate 的阻断里都出现时，run 先把下一回合交回 author，然后 HOLD "structural fix / re-scope needed"，并列出每次阻断的 finding 编号。
+  - 转去 gate 的批准、只带旧阻断项的 REVISE 不算打断；真正结束审查的批准会打断计数；HOLD 之后从头计数。
+  - 不关闭、不接受任何 finding；round-limit HOLD 和它的 override 优先。
+  - 没带标签的阻断项只计数（`unlabeled_blocking_findings`，run 合计和每个回合的 receipt），永不 HOLD。
+  - gate 的标签保留在 ledger summary 开头，persistent reviewer 能看到并复用。
+- **fix（v297-cwd，发版前真实 run 发现）**：在不是 git 仓库的目录里启动 run 时，第一次审查之后生成 review-mirror diff 的那条 git 命令在协调器自己的当前目录里执行；git 2.40 起在仓库外拒绝 `--attr-source`，run 在下一次派发前 HOLD（`cannot use --attr-source or GIT_ATTR_SOURCE without repo`）。现在这条命令在 workspace 里执行。这个问题从 v2.9.x 起就存在，之前的真实 run 都是在仓库里启动的。
+- **test（v297-tscale）**：测试里 10 秒以内的固定超时和 settle 等待改为随负载放大（系数 = clamp(load1/CPU 数, 1, 6)，可用 `PAIRED_SESSION_TEST_TIMEOUT_SCALE` 覆盖）。产品侧只认这个显式变量，未设置时生产超时完全不变。
+- **test（v297-linux-zombie）**：一个只在 Linux 上失败的测试改为像生产一样回收自己的进程组 leader（Linux 上只剩僵尸的进程组仍会回应 `killpg(pid, 0)`）；原来只靠它覆盖的"EPERM 视为已结束"分支另加了 mock 测试。
+- **test（CI-TESTFIX）**：测试不再依赖开发机：
+  - 本机没有 codex/claude 时用测试自带的存根，守卫仍拦截真实 CLI；
+  - 候选测试的工作区带一个最简单的测试（Python 3.12 起，unittest 找不到测试时退出码为 5）；
+  - 91 个依赖 macOS sandbox-exec 的测试在其他平台自动跳过（候选测试沙箱只在 macOS 上可用，其他平台拒绝派发）；
+  - 修了两处与文件系统顺序和 CPython 3.9.25 相关的写法。
+  - 另修了 models-a 引入的两个回归（v297-ci-regress）：args 上的记录不能被 JSON 序列化；一个 fake CLI 把启动时的 `--version` 当成了回合。
+- **审查**：B 道由 Opus 5.5 执行、Opus 5.5 审查。
+  - tscale：2 轮，R2 APPROVE。
+  - F2：3 轮（每轮各 1 个 MAJOR，均已修复），加 1 轮验证，APPROVE_WITH_ADVISORY。
+  - F2b：3 轮（2 个 MAJOR，均已修复），APPROVE_WITH_ADVISORY。
+  - F5：2 轮（R1 的 MAJOR：转去 gate 的批准打断了计数），R2 APPROVE_WITH_ADVISORY。
+  - models-a：2 轮（R1 有 1 个 CRITICAL：版本检查曾在程序绑定之前执行；1 个 MAJOR：abort/status 被拒），R2 APPROVE_WITH_ADVISORY。
+  - linux-zombie：2 轮。ci-regress：1 轮 APPROVE_WITH_FINDINGS。CI-TESTFIX：2 轮，R2 APPROVE。v297-cwd：1 轮，结论为修复正确。
+  - 按新的发版门禁，本版不做跨厂商审查（只在 v2.10.0 做）；全量测试在 GitHub Actions 的 macOS 和 Linux 上运行，发版前另做一次真实 run，走到 ACCEPTED。
+- **已知限制**：
+  - 截止 HOLD 本身不能用 `accept --override-rejection` 接受，出口是 abort 或 `note --scope-change`；
+  - FIELD-5 依赖评审方给出一致的标签，fresh gate 看不到历史，只能靠 ledger summary 里的标签对齐；
+  - 候选测试沙箱只在 macOS 上可用；
+  - 没有任何测试的仓库在 Python 3.12 及以上用 `python3 -m unittest` 时会被判为测试失败（待 owner 决定）。
+  - v2.9.5 的已知限制（失败的 author 回合把树改了又恢复原样时，operator 证据不作废）这一版仍未修复，延后处理。
+
+## 2026-10-04
+
+### v2.9.6：Codex 只读角色有了自己的临时目录（FIELD-1/FIELD-6）；只读边界和硬链接由探测证明（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：Codex 只读角色的 argv 变了，旧的 permission-probe 报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。需要 Codex CLI 0.160.0 或更新：只读角色用 `--config default_permissions="paired_session_readonly"` 选择命名权限 profile（`codex exec` 没有 `-P`），已在 0.160.0 上用真实探测验证。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.6` 运行。
+- **fix（FIELD-1，b296-f1）**：Codex 的 reviewer、shadow、gate、probe、gate-probe 不再用 `sandbox_mode="read-only"`。原来这些角色没有任何可写的临时目录，需要临时目录的测试报 "No usable temporary directory found"，Codex gate 的探测也永远过不了（FIELD-6）。现在：
+  - 改用只读权限 profile `paired_session_readonly`：根目录和 workspace 只读，只有 `$TMPDIR` 可写，网络关闭；
+  - 每次派发分到一个独立、属于本 run 的临时目录 `run_dir/role-tmp/<seq>-<role>`（0700），用作 TMPDIR/TMP/TEMP。回合结束（包括失败的回合）后删除，删除前先清除文件标志、恢复权限，删除失败会明确报错，不会掩盖回合本身的错误；
+  - 临时目录里出现多链接的普通文件或不可读的目录，该回合判失败；
+  - Claude 角色不变。
+- **fix（b296-f1e）**：发版前第一次真实探测，P1、P2 都失败，报错 `unexpected argument '-P' found`：`codex exec` 不接受 `-P`，只有 `codex sandbox` 接受。现在改用 `default_permissions` 配置来选择同一个 profile，profile 本身的定义没有变。fake CLI 也改成像真实 CLI 一样拒绝 `-P` 和 `--permission-profile`，避免再出现只有 fake 能通过的 argv。作者的 `codex sandbox -P` escape check 不受影响。
+- **fix（b296-f1f）**：合入 f1e 后的第二次真实探测，P1、P2 都是 UNKNOWN：reviewer 和 gate 探测的 `git checkout --`、`rm` 两步写死了 `tracked.txt`，真实 workspace 里通常没有这个文件，`rm` 只会报 "No such file"，按 f1b 的规则不算显式拒绝。现在这两步改为针对 workspace 里一个真实存在的跟踪文件（从 `git ls-files` 中选普通文件、路径上没有符号链接，优先选没有未暂存改动的），报告里记为 `probe_tracked_file`。workspace 里没有合格文件时，在派发任何回合前就拒绝。如果删除真的成功（沙箱失效），探测判 FAIL 并写明被删的文件，该文件不会自动恢复。`git checkout` 一步用 `--literal-pathspecs`，文件名里的通配符和 pathspec magic 不会被展开（b296-f1g，跨厂商审查发现）。
+- **安全（b296-f1）**：Codex 的 reviewer 探测和 gate 探测现在必须证明：
+  - `$TMPDIR` 可写；
+  - 写 `/tmp`、用户临时目录、run dir、`$TMPDIR/..`、context 和 workspace 都被拒绝；
+  - 把 run dir 里的文件硬链接进 `$TMPDIR` 也被拒绝。
+  回合结束后逐个确认目标不存在、源文件仍只有一个链接。每个 Codex 只读回合前后还会比对 run dir 下普通文件的 inode 和 ctime，有变化即判该回合失败（纵深防御）。
+- **审查**：
+  - B 道由 Opus 5.5 执行、Opus 5.5 审查。b296-f1 审了 3 轮：R1 有 2 个 MAJOR，即探测既没有证明「只有 $TMPDIR 可写」，也没有证明硬链接被拒，均已修复；R3 APPROVE_WITH_ADVISORY。f1b 到 f1e 每批都经过 Opus 审查并 APPROVE。
+  - gpt-6.1-sol 跨厂商审查共 7 轮。前 3 轮提出的问题由 f1b 到 f1d 修复，包括 2 个 MAJOR（指向外部的 role-tmp 符号链接会导致误删；探测把「命令不存在」当成拒绝）和 3 个 MEDIUM（chmod 跟随竞争；清扫前没有确认回合进程组已结束；进程组状态未知时也被当成已结束）。第 4 轮 APPROVE_WITH_ADVISORY；第 5 轮审查 f1e，结论：APPROVE_WITH_ADVISORY；第 6 轮审查 f1f，结论：REQUEST_CHANGES（1 MAJOR：git checkout 的文件名会被当作 pathspec 通配展开；2 MEDIUM），由 b296-f1g 修复；第 7 轮审查 f1g，结论：APPROVE。f1f 和 f1g 各由 Opus 审了 2 轮，均 APPROVE。
+  - 真实 permission-probe 在合入 f1g 后重跑，覆盖 Codex reviewer 和 Codex gate 两种配置。
+  - 全量测试在 GitHub Actions 的 macOS 和 Linux 机器上运行。
+- **已知限制**：
+  - 临时目录和 run dir 在同一个卷上。同卷硬链接的主要防线是探测里那条必须被拒绝的 `ln`；ctime 比对不覆盖 `state.json`、`progress.jsonl`、本回合自己的 evidence 文件、Codex rollout，以及 run dir、workspace、context 和受监控的全局配置之外的同卷文件；检测只持续到 CLI 进程退出；探测只覆盖新开的回合，不覆盖 resume。
+  - Claude 只读角色仍使用 Claude Code 自带的 `/tmp/claude`（同一用户共享）。
+  - v2.9.5 的已知限制（失败的 author 回合把树改了又恢复原样时，operator 证据不作废）仍在，v2.9.7 修。
+
+## 2026-10-03
+
+### v2.9.5：operator 证据通道（attach-verification）、round-limit HOLD 可由 owner 裁决放行、一批来自真实 run 的 operator CLI 修复（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：插件版本绑定在 permission-probe 的 PASS 里，升级后已有的探测报告和探测缓存都会失效，每个 run 目录要重新跑一次 `permission-probe`。已经在跑的 run 不要中途换版本。新的 run 请从固定副本 `~/paired-runs/review-loop-v2.9.5` 运行。
+- **feat（b295-opv）**：新增 `paired-session attach-verification`。operator 在 author 沙箱之外跑某项检查（例如 xcodegen、XCTest、CoreSimulator），再把结果附加到空闲的 ACTIVE、HOLD 或 DONE run 上：
+  - 记录包含命令、cwd、退出码、log sha256（log 复制进 evidence）、时间、actor 和非空 note，绑定当前工作树的快照 digest；
+  - EXEC/POLISH reviewer、shadow 和 gate 的 prompt 会把它作为「针对这棵树的 operator 验证证据」展示（含 log 尾部，不含 note）；
+  - 协调器看到树变化、author 回合改树或 log 副本被改时，记录永久作废；persistent reviewer 看到过的记录作废后，下一轮 prompt 会多一行 `Withdrawn operator verification: Vnnn (原因)`；
+  - 它只是 prompt 证据，不参与任何 verdict 判定。来源：poker-tools N3。
+- **feat（b295-rlo）**：`accept --override-rejection --reason TEXT` 现在也能在 PLAN 或 EXEC 的 round-limit HOLD（含 gate 之后的 EXEC round limit）上由 owner 裁决放行：
+  - 只接受 HOLD 时记录的那棵未变化的树，且该 HOLD 必须仍是当前 HOLD；
+  - 树变了、之后又出现其他原因的 HOLD、树已被 reject、有 active 或 uncertain 回合、reason 为空，都会被拒绝；probe、guard、lease 等原因造成的 HOLD 不能这样越过；
+  - `acceptance.json` 记录这次 HOLD 和当时仍 open 的全部 finding（id、severity、source、security、单行 summary）。
+- **fix（b295-field-a）**：
+  - 任一角色是 Codex 时，run、resume、reject、permission-probe 在派发前检查 `CODEX_HOME` 是否为已存在的目录，否则明确 REFUSED（原来只表现为探测的 "CLI exit 1"）；
+  - Claude author 探测期间 run dir 旁边出现文件变化时仍判 FAIL，HOLD 文案改为提示可能是 operator 自己的文件（例如启动日志），并建议把启动日志写到 run dir 的父目录之外；
+  - Claude reviewer 或 gate 遇到 dontAsk 下跑不了的测试命令（`$(...)`、管道、`;`、`&&`、重定向、循环）时打印 WARNING，README 写明 `/bin/bash /绝对路径/script.sh` 的写法；
+  - 文档：Claude Code 的 auto 模式会拦截 `--accept-unverified-claude-author`，需要 owner 手动启动；
+  - codex-cli 已验证版本表不变：poker-tools N4 的探测 PASS 是 Claude author 加 Codex gate，没有覆盖 Codex author 的沙箱契约。
+- **fix（b295-field-b，poker-tools N4 现场反馈）**：
+  - `accept --reason X` 不再要求 `--accept-*` 标志，`--reason` 作为接受理由记录并被 intent digest 覆盖；
+  - accept 拒绝 `--text`/`--file`（原来生成的 digest 永远对不上）；
+  - DONE 之后、accept 之前也可以 attach-verification，accept 会在 `acceptance.json` 和 stdout 列出对被接受的树仍然有效的 operator 证据。
+- **docs（b295-docs）**：新增 `paired_session/docs/concurrent-runs.md`，说明每条并发 lane 要用独立的绝对 `CODEX_HOME`（默认 `~/.codex` 也算共享），并写明 probe-pass 缓存键的组成；go-reviewer 改为遵从 report-only reviewer 运行时；ADR-8 的模型 pin 措辞改为 ADR-9（模型由 operator 配置）和 ADR-10（gate 默认取 author 的厂商）。
+- **审查**：B 道由 Opus 5.5 执行、Opus 5.5 逐批审查：docs 和 opv 各 2 轮，rlo、field-a、field-b 都是 R1 通过，全部 0 CRITICAL、0 MAJOR。发版前由 gpt-6.1-sol 做跨厂商审查：1 个 MEDIUM，见已知限制，下一版修。
+- **已知限制**：
+  - operator 证据只在协调器看到的树上作废。author 回合中途失败（CLI 非零退出）时，回合内观察到的新树不触发作废；之后树恢复到附加时那棵，旧记录会重新显示。记录内容仍对应当前这棵树，但「树一变就永久作废」的承诺在这条路径上不成立。v2.9.6 修。
+  - FIELD-1（只读角色的临时目录）不在这次发版里，v2.9.6 单独审查后发布。
+  - 以上改动只用 fake CLI 验证过。A 道的真实生命周期提交不在这次发版里，真实生命周期仍然关闭。
+
 ## 2026-10-01
 
 ### v2.9.4：沙箱拒绝建硬链接也能让 Claude 作者探测通过；作者放行只豁免作者那部分探测；FAIL 后探测缓存作废（paired-session 仍是可选入口，默认 legacy）

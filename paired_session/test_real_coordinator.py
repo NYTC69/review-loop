@@ -1,4 +1,5 @@
 import importlib.util
+import copy
 import dataclasses
 import errno
 import hashlib
@@ -102,19 +103,21 @@ class RealCoordinatorTests(unittest.TestCase):
         (self.test_home / '.claude' / 'settings.json').write_text('{}\n')
         (self.test_home / '.claude' / 'plugins' / 'installed_plugins.json').write_text(
             json.dumps({'plugins': []}))
-        self.original_home = os.environ.get('HOME')
-        os.environ['HOME'] = str(self.test_home)
         stub_bin = self.root / 'bin'   # CI-TESTFIX R1: a Coordinator built without --codex-bin/--claude-bin binds these stubs
         stub_bin.mkdir()
         for name in ('codex', 'claude'):
             (stub_bin / name).write_text('#!/bin/sh\necho "test stub: no real provider CLI" >&2\nexit 127\n')
             (stub_bin / name).chmod(0o755)
+        # Start the env patch before changing HOME: its stop (an addCleanup, so after tearDown)
+        # restores the pre-test environment instead of re-installing this test's deleted HOME.
         self._fake_codex_env = patch.dict(os.environ, {
             'PATH': str(stub_bin) + os.pathsep + os.environ.get('PATH', ''),
             'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root),
             tsc.ENV: str(tsc.factor())})   # one load factor per test, shared with every coordinator it starts
         self._fake_codex_env.start()
         self.addCleanup(self._fake_codex_env.stop)
+        self.original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(self.test_home)
         self._unpatched_popen = subprocess.Popen
         self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')   # the stubs and any real CLI behind them
                                      for search in (os.environ['PATH'], os.environ['PATH'].split(os.pathsep, 1)[-1])
@@ -232,6 +235,8 @@ class RealCoordinatorTests(unittest.TestCase):
                        separators=(',', ':')).encode()).hexdigest()
         with self.assertRaisesRegex(RuntimeError, 'author TMP is not isolated'):
             co._verify_frozen_role_dispatch()
+        co.state['lifecycle'] = rc.worktree_lifecycle.initial(co.state['item_uuid'], co.state['base_commit'])
+        co._verify_frozen_role_dispatch()   # ADR-11: the worktree lifecycle accepts the real-EXEC author TMP
 
     def test_global_hash_attribution_accepts_only_trust_and_last_updated_autochanges(self):
         home = self.root / 'global-state'
@@ -3429,7 +3434,10 @@ sys.exit(result.returncode)
 
     def test_lifecycle_on_and_old_done_are_refused_before_dispatch(self):
         self.run_dir = self.root / 'lifecycle-refusal'
-        for flags, message in ((['--lifecycle-mode', 'on'], 'lifecycle remains disabled'),
+        for flags, message in ((['--lifecycle-mode', 'on', '--accept-unverified-claude-author', '--reason', 'opt-in'],
+                                'worktree lifecycle refuses --accept-unverified-claude-author'),
+                               (['--lifecycle-mode', 'on', '--accept-probe-skip', '--reason', 'skip'],
+                                'worktree lifecycle refuses --accept-probe-skip'),
                                (['--lifecycle-mode', 'on', '--adversarial-gate', 'off'], 'lifecycle refuses --adversarial-gate off')):
             with self.subTest(flags=flags):
                 args = rc.parser().parse_args(self.command(*flags)[2:])
@@ -3449,8 +3457,8 @@ sys.exit(result.returncode)
     def test_fake_lifecycle_state_receipts_resume_idempotently_and_cli_stays_off(self):
         command = self.command('--lifecycle-mode', 'on')
         args = rc.parser().parse_args(command[2:])
-        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
-            rc.Coordinator(args)
+        plain = rc.Coordinator(rc.parser().parse_args(command[2:] + ['--run-dir', str(self.root / 'worktree-run')]))
+        self.assertEqual((plain._fake_lifecycle, plain.state['lifecycle']['format']), (False, 'worktree'))   # ADR-11: CLI opens W, never the fake route
         co = rc.Coordinator(args, _fake_lifecycle=True)
         life = co.state['lifecycle']
         self.assertEqual((life['stage'], life['epoch'], life['candidate_oid']), ('EXEC', 0, None))
@@ -3461,7 +3469,7 @@ sys.exit(result.returncode)
         co.fake_lifecycle_event('begin', request)
         self.assertEqual(json.loads(co.state_path.read_text())['lifecycle']['pending'], request)
         resume = command.copy(); resume[2] = 'resume'
-        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled'):
+        with self.assertRaisesRegex(ValueError, 'saved lifecycle run cannot resume'):   # fake-format state, real path
             rc.Coordinator(rc.parser().parse_args(resume[2:]))
         again = rc.Coordinator(rc.parser().parse_args(resume[2:]), _fake_lifecycle=True)
         self.assertEqual(again.state['lifecycle']['pending'], request)
@@ -4496,6 +4504,45 @@ raise AssertionError('fault window was not reached')
         phases = [r['stage'] for r in co.state['lifecycle']['receipts']]
         for phase in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY', 'DELIVERY', 'CLOSE'):
             self.assertIn(phase, phases)
+
+    @DARWIN_SANDBOX   # close_drive_fixture runs the candidate-test sandbox (sandbox-exec)
+    def test_closed_generic_hold_preserves_proofs_without_provider_or_publication(self):
+        co = self.close_drive_fixture()
+        intent = co.fake_prepare_delivery(backlog_item=1, day='2026-10-01')
+        co.args.expect = intent['digest']
+        co.accept()
+        self.assertEqual(co.fake_finish_delivery(intent['digest']), 'CLOSED')
+        before = copy.deepcopy(co.state)
+        disk = co.state_path.read_bytes()
+        receipts = {path: path.read_bytes() for path in co.evidence.glob('delivery-*.json')}
+        head = co._head_commit()
+        with patch.object(co, 'invoke', side_effect=AssertionError('no provider after CLOSE')) as invoke:
+            with patch.object(dr, 'reconcile', side_effect=AssertionError('no publication after CLOSE')) as publish:
+                for reason in ('injected generic failure', 'rejected-tree'):
+                    self.assertEqual(co.hold(reason), 'CLOSED')
+                invoke.assert_not_called()
+                publish.assert_not_called()
+        self.assertEqual(co.state, before)
+        self.assertEqual(co.state_path.read_bytes(), disk)
+        self.assertEqual({path: path.read_bytes() for path in receipts}, receipts)
+        self.assertEqual(co._head_commit(), head)
+        argv = self.command()[2:]
+        argv[0] = 'abort'
+        output = io.StringIO()
+        with patch.object(rc, 'Coordinator', return_value=co), patch('sys.stdout', output):
+            self.assertEqual(rc.main(argv), 0)
+        self.assertEqual(output.getvalue().strip(), 'CLOSED')
+        self.assertEqual(co.state, before)
+        self.assertEqual(co.state_path.read_bytes(), disk)
+        self.assertEqual(co._head_commit(), head)
+        journal = co.evidence / 'delivery-publication.json'
+        row = json.loads(journal.read_text())
+        row['phase'] = 'CAS'
+        journal.write_text(json.dumps(row))
+        with self.assertRaisesRegex(ValueError, 'publication incomplete'):
+            co.hold('corrupt journal must not bypass publication guard')
+        self.assertEqual(co.state, before)
+        self.assertEqual(co.state_path.read_bytes(), disk)
 
     @DARWIN_SANDBOX
     def test_m4_security_error_cannot_reach_q_or_delivery(self):
@@ -10551,6 +10598,22 @@ print(json.dumps(results))
         self.assertTrue(state['polish']['completed'])
         self.assertEqual(sum(t['role'] == 'shadow' for t in state['turns']), 2)
         self.assertTrue((self.run_dir / 'open-findings.md').is_file())
+
+
+class HarnessIsolationTests(unittest.TestCase):
+    def test_real_coordinator_setup_and_cleanup_restore_the_environment(self):
+        before, popen = dict(os.environ), subprocess.Popen
+        helper = RealCoordinatorTests()
+        try:
+            helper.setUp()
+            self.assertEqual(os.environ['HOME'], str(helper.test_home))
+        finally:
+            try:
+                helper.tearDown()
+            finally:
+                helper.doCleanups()
+        self.assertEqual(dict(os.environ), before)
+        self.assertIs(subprocess.Popen, popen)
 
 
 if __name__ == '__main__':

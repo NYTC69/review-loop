@@ -46,6 +46,7 @@ try:
     from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
+    from paired_session import worktree_lifecycle
     from paired_session import timeout_scale
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
@@ -63,6 +64,7 @@ except ModuleNotFoundError:
     import operator_verification as opv
     import sensitive_policy
     import security_repair_policy
+    import worktree_lifecycle
     import timeout_scale
     from program_binding import snapshot as program_snapshot, safe_path
 
@@ -122,7 +124,9 @@ def resolve_exec_turn_timeout(value, general_timeout):
     if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
-ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate')
+ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate',
+                       'EXEC round limit reached after a FINISH write', 'EXEC round limit reached after a DOCS write',
+                       'EXEC round limit reached after a SECURITY-stage change')
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -194,6 +198,10 @@ APPROVE_CONVERSION_NOTE = ('An APPROVE that leaves any blocking or security-tagg
 
 class RunLeaseError(RuntimeError):
     pass
+
+
+class WorktreeDeliveryHold(RuntimeError):
+    """An auto_commit that cannot move HEAD as journaled; the accept HOLDs and a replay with the same --expect finishes."""
 
 
 class RateLimitError(ValueError):
@@ -1378,8 +1386,9 @@ class Coordinator:
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
-            if not (_fake_lifecycle and lifecycle_spine.fake_guard(args)):
+            if _fake_lifecycle and not lifecycle_spine.fake_guard(args):
                 raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
+            if not _fake_lifecycle: worktree_lifecycle.refuse_waivers(args)   # W1a: the real path is the worktree lifecycle (ADR-11)
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
@@ -1408,8 +1417,7 @@ class Coordinator:
             self.state = json.loads(self.state_path.read_text())
             if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
                 raise ValueError('run was created by an older paired-session build; start a new run')
-            if self.state.get('config', {}).get('lifecycle_mode') == 'on' and not self._fake_lifecycle:
-                raise ValueError('saved lifecycle run cannot resume before all stages are implemented')
+            if not self._fake_lifecycle: worktree_lifecycle.refuse_saved(self.state, args)
             self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
             self.state.setdefault('item_blockers', [])
             self.state.setdefault('item_blockers_complete', False)
@@ -1524,6 +1532,8 @@ class Coordinator:
             }
             if self._fake_lifecycle:
                 self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
+            elif args.lifecycle_mode == 'on':
+                self.state['lifecycle'] = worktree_lifecycle.initial(self.state['item_uuid'], self.state['base_commit'])
             self._freeze_role_dispatch()
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
@@ -1557,6 +1567,10 @@ class Coordinator:
                                   item_uuid=old.get('item_uuid') or str(uuid.uuid5(uuid.NAMESPACE_URL, str(parent))),
                                   item_blockers=copy.deepcopy(spec.get('item_blockers', [])),
                                   item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')))
+            if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any probe or turn
+                self.state['lifecycle']['security_baseline'] = (
+                    self._inherited_security_baseline(Path(args.supersedes).resolve()) if args.supersedes else
+                    self._capture_security_baseline())
             self.save()
 
     def _migrate_invocation_budget(self) -> int:
@@ -1631,7 +1645,7 @@ class Coordinator:
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish', 'allowed_models')
+                'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery')
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         gate_prompt = Path(self.args.gate_prompt).expanduser()
@@ -1641,14 +1655,25 @@ class Coordinator:
         config['gate_prompt'] = (
             '<bundled-default>:' + hashlib.sha256(gate_prompt.read_bytes()).hexdigest()
             if gate_prompt == DEFAULT_GATE_PROMPT.resolve() else str(gate_prompt))
+        worktree = self.args.lifecycle_mode == 'on' and not self._fake_lifecycle
         def frozen_doc_path(value):
             if any(char in value for char in '*?['): raise ValueError('lifecycle doc paths must be exact')
             path = (self.workspace / value).expanduser().resolve()
             if self.workspace not in path.parents: raise ValueError('lifecycle doc path escapes workspace')
+            if worktree:   # W: an exact documentation file, reached without a symlink (doc 6 DOCS)
+                if path != Path(os.path.normpath(self.workspace / value)) or path.is_dir():
+                    raise ValueError(f'lifecycle docs path must be a file reached without symlinks: {value}')
+                try:
+                    docs_policy._exact_paths([relative := path.relative_to(self.workspace).as_posix()], True)
+                    if worktree_lifecycle.docs_denied(relative, ''): raise ValueError('in the DOCS HOLD set')
+                except (ValueError, candidate_tree.CandidateError) as exc:
+                    raise ValueError(f'lifecycle docs path is not a documentation path: {value}') from exc
             return str(path)
-        config['docs_file'] = frozen_doc_path(self.args.docs_file) if self.args.docs_file else ''
+        docs_file = (self.args.docs_file if self.args.docs_file is not None else
+                     'CHANGELOG.md' if worktree else '')   # doc 6: the W default; --docs-file '' turns it off
+        config['docs_file'] = frozen_doc_path(docs_file) if docs_file else ''
         config['docs_allowlist'] = sorted({frozen_doc_path(value) for value in
-                                           [*self.args.docs_allowlist, *([self.args.docs_file] if self.args.docs_file else [])]})
+                                           [*self.args.docs_allowlist, *([docs_file] if docs_file else [])]})
         config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text())
         return config
 
@@ -1704,7 +1729,8 @@ class Coordinator:
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
             raise RuntimeError('frozen role dispatch changed; abort or start a new run')
-        if not current['role_flags']['author']['tmp_isolated'] and not self._fake_lifecycle:
+        if (not current['role_flags']['author']['tmp_isolated'] and not self._fake_lifecycle and
+                not worktree_lifecycle.is_worktree(self.state)):   # W accepts the real-EXEC author TMP (ADR-11)
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
     def reviewer_commands(self) -> list[str]:
@@ -2769,10 +2795,13 @@ class Coordinator:
         return [finding for finding in self.state['finding_ledger'] if finding['status'] == 'open']
 
     def blocking_open_findings(self) -> list[dict]:
-        return [finding for finding in self.open_findings()
+        rows = [finding for finding in self.open_findings()
                 if finding['severity'] in BLOCKING_REVIEW_SEVERITIES or
                 finding.get('security') or
                 (finding['source'] == 'adversarial-gate' and finding['severity'] in ('CRITICAL', 'HIGH'))]
+        if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') not in ('SECURITY', 'DONE'):
+            rows = [row for row in rows if row.get('owner_role') != 'security-reviewer']   # only SECURITY can close them
+        return rows
 
     def _coord_doc_blockers(self, docs_path, ids=None):
         blockers = self.blocking_open_findings()
@@ -3097,7 +3126,7 @@ class Coordinator:
 
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
         self._publication_guard()
-        if self.state.get('status') in ('ACCEPTED', 'ABORTED'):
+        if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED'):
             return self.state['status']
         if reason == 'rejected-tree':
             author = next((r for r in reversed(self.state['turns']) if r.get('role') == 'author'), {})
@@ -3105,8 +3134,12 @@ class Coordinator:
                 'rationale': str(author.get('answer', {}).get('body', ''))[:2000],
                 'rationale_evidence': {'run_dir': str(self.run_dir), 'turn_sequence': author.get('sequence')}}
             self.state.update(next='author', pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
-            reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
-            if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
+            if worktree_lifecycle.is_worktree(self.state):   # W accepts no held tree (no --override-rejection)
+                reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
+                           if terminal_kind == 'rejection_limit' else '; note, change the workspace, or abort')
+            else:
+                reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
+                if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
@@ -3287,6 +3320,8 @@ class Coordinator:
 
     def accept(self) -> str:
         self._publication_guard()
+        if worktree_lifecycle.is_worktree(self.state):   # W3b DELIVERY; no accept may skip FINISH-SECURITY
+            return self._worktree_accept()
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
@@ -3320,6 +3355,163 @@ class Coordinator:
         self._progress_terminal('ACCEPTED')
         return 'ACCEPTED'
 
+    def _worktree_accept(self) -> str:
+        """W3b DELIVERY (doc 6, D-1): the operator accepts a W DONE with --expect over an intent that also binds the
+        stage receipts. auto_commit (frozen; default false) decides whether a local commit is made; external
+        delivery is refused (D8), and no held tree is accepted (no --override-rejection)."""
+        if self.state.get('status') == 'ACCEPTED':
+            return 'ACCEPTED'
+        if self.args.override_rejection:   # RLO would accept a tree that skipped FINISH..SECURITY, blockers included
+            raise ValueError('worktree lifecycle refuses accept --override-rejection: a held tree has not passed '
+                             'FINISH..SECURITY and open specialist or security blockers are never accepted; abort or '
+                             'start a successor')
+        config, life = self.state['config'], self.state['lifecycle']
+        if config.get('external_delivery'):
+            raise ValueError('worktree lifecycle refuses external delivery (push, PR, merge; D8); set external_delivery '
+                             'false in the operator profile')
+        journal_path = self.evidence / 'delivery-commit.json'
+        journal = json.loads(journal_path.read_text()) if journal_path.exists() else None
+        receipts = hashlib.sha256(json.dumps(life['receipts'], sort_keys=True).encode()).hexdigest()
+        if journal and self.args.expect == journal['intent']['digest'] and life.get('stage') == 'DONE' and (
+                self.state.get('status') in ('DONE', 'HOLD')) and (   # never ABORTED: a superseded run stays superseded
+                journal['intent'].get('receipts_sha256') == receipts) and not self.state.get('scope_change_intent'):
+            intent = journal['intent']   # a replay of a journaled commit (HEAD may already be the commit)
+            if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
+                raise ValueError('the tree changed since the journaled accept; restore it or abort')
+        else:
+            if self.state.get('status') != 'DONE' or life.get('stage') != 'DONE':
+                raise ValueError('worktree lifecycle accept requires status DONE and stage DONE')
+            if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; someone else did
+                life.update(stage='SECURITY', candidate_oid=self.state['approved_snapshot'])
+                self.state['next'] = 'security'
+                return self.hold(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore '
+                                 'HEAD and the approved tree and resume (SECURITY runs again), or abort')
+            intent = self.operator_intent('accept', None, None, self.args.expect, True)
+            journal = None
+        try:
+            delivery = (self._worktree_commit(intent, journal) if config.get('auto_commit') else
+                        {'auto_commit': False, 'commit': None, 'head': life['parent'], 'external_delivery': False})
+        except WorktreeDeliveryHold as exc:   # resume is refused; only accept with the journaled digest finishes it
+            self.state['delivery_pending'] = intent['digest']
+            return self.hold(f"{exc}; accept --expect {intent['digest']}")
+        record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(), 'intent': intent,
+                  'accepted_state': 'DONE', 'acceptance_state': 'ACCEPTED', 'reason': self.args.reason,
+                  'override_rejection': False, 'delivery': delivery}
+        if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
+            record['operator_verifications'] = verified
+        evidence_path = self.evidence / 'acceptance.json'
+        record['evidence'] = str(evidence_path)
+        atomic_json(evidence_path, record)
+        self.state.setdefault('events', []).append(record)
+        self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
+        self.state.pop('delivery_pending', None)
+        atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
+            self.state, self.run_dir.name, self.workitem.read_text(), delivery))
+        self.save()
+        self.write_comparison()
+        self._progress_terminal('ACCEPTED')
+        return 'ACCEPTED'
+
+    def _worktree_run_cap(self, stage: str) -> int:
+        """A run-wide stage budget; each W reject reruns FINISH..SECURITY, so it adds one more allowance."""
+        return budget_policy.BUDGET_CAPS[stage][0] * (1 + len(self.state.get('rejections', [])))
+
+    def _commit_refusals(self, paths: list[str]) -> None:
+        """W04 parity before an auto_commit: no work staged before the run, no content-transforming attribute or
+        filter, no core.autocrlf, so the commit holds exactly the accepted bytes and checks out as them."""
+        if staged := self._git(['diff-index', '--cached', '--name-only', 'HEAD']).split():
+            raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
+        if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
+            raise ValueError('auto_commit refuses core.autocrlf; unset it or accept with auto_commit false')
+        if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
+            raise ValueError('auto_commit refuses a repository with submodules; accept with auto_commit false')
+        if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
+            raise ValueError('auto_commit refuses skip-worktree (sparse) entries; accept with auto_commit false')
+        proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
+                                           'text', 'eol', 'working-tree-encoding'], cwd=self.workspace,
+                                          input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        fields = proc.stdout.split('\0')
+        transforming = [f'{path}: {attr}={value}' for path, attr, value in zip(fields[0::3], fields[1::3], fields[2::3])
+                        if value not in ('unspecified', 'unset')]
+        if proc.returncode or transforming:
+            raise ValueError('auto_commit refuses content-transforming attributes: ' +
+                             ', '.join(transforming[:10] or [proc.stderr.strip()[-200:]]))
+
+    def _manifest_tree(self, snapshot: list) -> str:
+        """The git tree of exactly the accepted manifest, written through a private index (raw bytes, no filters)."""
+        files = [(path, value) for path, value in snapshot if value != 'missing']
+        if any('\n' in path or path.startswith('"') or path.endswith('\r') for path, _ in files):
+            raise ValueError('auto_commit refuses a path that --stdin-paths would rewrite (newline, leading quote, trailing CR)')
+        regular = [path for path, value in files if not value.startswith('link:')]
+        oids = dict(zip(regular, candidate_tree.run_bounded(
+            candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
+            cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, check=True, timeout=600).stdout.split()))
+        for path, value in files:   # --stdin-paths follows symlinks: a link blob is its target text
+            if value.startswith('link:'):
+                oids[path] = candidate_tree.run_bounded(
+                    candidate_tree.git_command('hash-object', '-w', '--stdin', cwd=self.workspace), cwd=self.workspace,
+                    input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                    timeout=600).stdout.strip()
+        rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if os.lstat(self.workspace / path).st_mode & 0o111 else '100644'}"
+                       f' {oids[path]}\t{path}\0' for path, value in files)
+        index = self.internal / f'delivery-index-{uuid.uuid4().hex[:8]}'
+        env = {**candidate_tree.git_env(), 'GIT_INDEX_FILE': str(index)}
+        try:
+            subprocess.run(candidate_tree.git_command('update-index', '-z', '--index-info', cwd=self.workspace),
+                           cwd=self.workspace, env=env, input=rows, text=True, check=True, capture_output=True, timeout=600)
+            return subprocess.run(candidate_tree.git_command('write-tree', cwd=self.workspace), cwd=self.workspace, env=env,
+                                  text=True, check=True, capture_output=True, timeout=600).stdout.strip()
+        finally:
+            index.unlink(missing_ok=True)
+
+    def _worktree_commit(self, intent: dict, journal: Optional[dict]) -> dict:
+        """D-1 auto_commit: one hook-free local commit (git_command disables hooks) of exactly the accepted manifest,
+        CAS on HEAD and an index sync. A journal written before the ref moves makes a replay finish the same commit."""
+        parent = self.state['lifecycle']['parent']
+        if journal is None:
+            self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
+            tree = self._manifest_tree(intent['tree_snapshot'])
+            if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
+                raise ValueError('the tree changed during the accept; restore the approved tree or abort')
+            title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
+                         'paired-session work item')
+            message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
+                       f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n")
+            commit = self._git(['commit-tree', '--no-gpg-sign', tree, '-p', parent, '-m', message]).strip()
+            journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit}
+            atomic_json(self.evidence / 'delivery-commit.json', journal)
+        if (head := self._head_commit()) == journal['parent']:
+            try:   # compare-and-swap: only from the parent the commit was built on
+                self._git(['update-ref', '-m', 'paired-session accept ' + self.run_dir.name, 'HEAD', journal['commit'], journal['parent']])
+            except RuntimeError as exc:
+                raise WorktreeDeliveryHold(f'auto_commit: HEAD could not move from {journal["parent"][:12]} ({exc}); '
+                                           'restore HEAD to it, or abort') from exc
+        elif head != journal['commit']:
+            raise WorktreeDeliveryHold(f"auto_commit: HEAD is {str(head)[:12]}, neither the parent {journal['parent'][:12]} "
+                                       f"nor the commit {journal['commit'][:12]}; restore it, or abort")
+        self._git(['read-tree', journal['commit']])   # the index follows the new HEAD
+        self._git(['update-index', '-q', '--refresh'], ok=(0, 1))
+        return {'auto_commit': True, 'commit': journal['commit'], 'head': journal['parent'], 'tree': journal['tree'],
+                'external_delivery': False}
+
+    def _inherited_security_baseline(self, parent: Path) -> dict:
+        """Supervisor decision (W3a): a scope-change successor inherits its parent's delivery baseline, so the delivery
+        scope stays relative to the tree before the work item; the copy is bound to the parent's digest."""
+        base = (json.loads((parent / 'state.json').read_text()).get('lifecycle') or {}).get('security_baseline')
+        if not base or Path(base['path']).parent != parent / 'evidence':
+            raise ValueError('a worktree-lifecycle successor inherits its parent delivery baseline, and the parent has '
+                             'none; start a new run instead')
+        try:
+            data = Path(base['path']).read_bytes()
+        except OSError as exc:
+            raise ValueError(f'cannot read the parent delivery baseline: {exc}') from exc
+        if hashlib.sha256(data).hexdigest() != base['sha256']:
+            raise ValueError('the parent delivery baseline changed; start a new run instead')
+        path = self.evidence / f'delivery-baseline-{uuid.uuid4().hex[:8]}.json'
+        path.write_bytes(data)
+        return {'path': str(path), 'sha256': base['sha256'], 'inherited_from': str(parent)}
+
     def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
         if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
         payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
@@ -3331,6 +3523,8 @@ class Coordinator:
                 'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
                 'state_sha256': hashlib.sha256(json.dumps(self.state, sort_keys=True).encode()).hexdigest(),
                 'payload_sha256': hashlib.sha256(payload).hexdigest()}
+        if worktree_lifecycle.is_worktree(self.state):   # W3b: the intent names the stage receipts it accepts
+            data['receipts_sha256'] = hashlib.sha256(json.dumps(self.state['lifecycle']['receipts'], sort_keys=True).encode()).hexdigest()
         data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         override = self.args.override_rejection
         if override and (action != 'accept' or not (self.args.reason or '').strip() or
@@ -3362,6 +3556,8 @@ class Coordinator:
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
         self._refuse_past_deadline('reject')
+        if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') != 'DONE':
+            raise ValueError('worktree lifecycle reject requires stage DONE')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
@@ -3376,6 +3572,9 @@ class Coordinator:
         rejections = self.state.setdefault('rejections', [])
         maximum = self.state.setdefault('max_rejections', DEFAULT_MAX_REJECTIONS)
         self.state['rejected_digests'].append(intent['tree_sha256'])
+        if worktree_lifecycle.is_worktree(self.state):   # W3b: a reject reopens EXEC, then FINISH..SECURITY again
+            life = self.state['lifecycle']
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         if len(rejections) >= maximum:
             return self.hold('rejected-tree', terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
@@ -3440,12 +3639,18 @@ class Coordinator:
             if not path.exists():
                 atomic_json(path, row)
 
-    def done(self) -> str:
+    def done(self, expected: Optional[str] = None, lifecycle_stage: Optional[str] = None) -> str:
         blocking = self.blocking_open_findings()
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
-        self.state['approved_snapshot'], self.state['approved_manifest'] = git_snapshot(self.workspace)
+        snapshot, manifest = git_snapshot(self.workspace)
+        if expected is not None and snapshot != expected:
+            return self.hold('the tree changed before DONE; resume replays EXEC review and gate')
+        self.state['approved_snapshot'], self.state['approved_manifest'] = snapshot, manifest
+        if lifecycle_stage:   # W: the stage moves in the same save as the status
+            self.state['lifecycle']['stage'] = lifecycle_stage
+            self.state['next'] = 'done'
         self.set_effective_verdict('APPROVE')
         self.state['status'] = 'DONE'
         self.state['acceptance_state'] = 'PENDING'
@@ -3466,6 +3671,26 @@ class Coordinator:
         if self._fake_lifecycle:
             self._freeze_fake_exec_source()
             return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
+        if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
+            if blocking := self.blocking_open_findings():   # repair round: author fix, then reviewer and a new gate
+                self.state['gate_ran'] = False
+                if self.state['exec_rounds'] >= self.exec_round_limit():
+                    return self.round_limit_hold('EXEC round limit reached')
+                self.state.update(next='author', phase='EXEC',
+                                  delivered_review=worktree_lifecycle.delivered_findings('convergence', blocking))
+                self.save()
+                return 'ACTIVE'
+            reviewed = git_snapshot(self.workspace)[0]
+            reviewer, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
+            if {reviewer.get('snapshot_before'), gate.get('snapshot_before')} != {reviewed}:
+                self.state.update(gate_ran=False, next='reviewer')   # resume re-reviews and re-gates this tree
+                return self.hold('stale EXEC approval: the reviewer and the gate did not both review the current tree')
+            self.set_effective_verdict('APPROVE')
+            self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
+                'tree': reviewed, 'reviewer_sequence': reviewer.get('sequence'), 'gate_sequence': gate.get('sequence')})
+            self.state['next'] = 'finish'
+            self.save()
+            return 'ACTIVE'
         findings = self.nonblocking_open_findings()
         if (self.args.polish_round == 'off' and not force) or not findings:
             return self.done()
@@ -3650,10 +3875,21 @@ class Coordinator:
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
+            *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
         ])
+
+    def _docs_allowlist(self) -> list[str]:
+        return sorted(Path(path).relative_to(self.workspace).as_posix() for path in self.state['config']['docs_allowlist'])
+
+    def _docs_reserved_note(self) -> str:
+        owned = self.state['lifecycle'].get('docs_owned', {})
+        reserved = [path for path in self._docs_allowlist() if path not in owned]
+        return ' '.join([*(['Reserved for the DOCS stage; do not edit: ' + ', '.join(reserved) + '.'] if reserved else []),
+                         *(['Written by the DOCS stage; edit only to fix a delivered docs finding: ' +
+                            ', '.join(sorted(owned)) + '.'] if owned else [])])
 
     def author_control_contract(self) -> str:
         if self.state['phase'] == 'PLAN':
@@ -3687,8 +3923,13 @@ class Coordinator:
                     'the exact test commands below. Do not modify files or use Git through the shell.')
         return 'Use Read/Grep/Glob on context and workspace; Git through Bash is intentionally unavailable.'
 
+    def _reviewer_open_findings(self) -> list[dict]:
+        """In a W run the persistent reviewer sees only findings it may dispose; owners close their own."""
+        rows = self.open_findings()
+        return [row for row in rows if not row.get('owner_role')] if worktree_lifecycle.is_worktree(self.state) else rows
+
     def open_findings_prompt(self) -> str:
-        findings = self.open_findings()
+        findings = self._reviewer_open_findings()
         if not findings:
             return 'Open finding ledger: none. Return an empty prior_findings array.\n' + APPROVE_CONVERSION_NOTE
         rows = '\n'.join(f"- {finding['id']}: {finding['summary']}" for finding in findings)
@@ -4222,7 +4463,7 @@ class Coordinator:
         if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
         if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
-        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
+        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
                            else self.args.timeout)
         self.state['sequence'] += 1
         seq = self.state['sequence']
@@ -4250,7 +4491,7 @@ class Coordinator:
         if self._fake_lifecycle:
             receipt['run_id'] = self.run_dir.name
         if role == 'reviewer':
-            receipt['open_finding_ids'] = [row['id'] for row in self.open_findings()]
+            receipt['open_finding_ids'] = [row['id'] for row in self._reviewer_open_findings()]
         if rejection:
             receipt['rejection_id'] = rejection['id']
             receipt['rejection_sha256'] = rejection['sha256']
@@ -4536,6 +4777,552 @@ class Coordinator:
         self.state['next'] = 'reviewer'
         self.state.pop('pending_author_result_sequence', None)
         self.save()
+
+    def _writer_git_state(self) -> dict:
+        """HEAD, its branch and the staged entries: what a lifecycle writer must not change (doc 6, D8)."""
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        return {'head': self._head_commit(), 'branch': self._git(['symbolic-ref', '-q', 'HEAD'], ok=(0, 1)).strip(),
+                'index': digest(self._git(['ls-files', '--stage']))}   # tags/other refs are shared across worktrees
+
+    def _lifecycle_writer(self, request: dict, label: str, prompt) -> dict:
+        """A fresh author session in the live worktree that must leave HEAD, its branch and the index unchanged
+        (D8). The git baseline is persisted per attempt; a recorded turn since it is reused, never re-dispatched."""
+        life, phase = self.state['lifecycle'], request['stage']
+        if life['pending'] != request:   # new attempt: persist the git baseline before anything runs
+            life['writer_git'] = {**self._writer_git_state(), 'sequence': self.state['sequence']}
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)   # replay-stable on retry
+        self.save()
+        base = self.state['lifecycle'].get('writer_git')
+        if not base:
+            raise RuntimeError(f'{phase} request is in flight without a recorded git baseline; inspect, then abort')
+        def check_git():   # a violation discards every turn of this stage since the baseline: none is ever reused
+            if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
+                for turn in self.state['turns']:
+                    if turn.get('phase') == phase and turn.get('sequence', 0) > base['sequence']:
+                        turn.setdefault('discarded', 'git guard')
+                self.save()
+                raise RuntimeError(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort')
+        check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
+        recorded = next((turn for turn in reversed(self.state['turns'])
+                         if turn.get('role') == 'author' and turn.get('phase') == phase and not turn.get('error')
+                         and not turn.get('discarded')
+                         and turn.get('sequence', 0) > base['sequence'] and isinstance(turn.get('answer'), dict)), None)
+        result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
+                   'role': 'author'} if recorded else
+                  self.invoke('author', phase, prompt(), author_schema(), fresh=True))
+        check_git()
+        return result
+
+    def worktree_finish_turn(self) -> None:
+        """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
+        request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
+        result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
+            (self.context / 'plan.md').read_text(), self.args.test_command, self._docs_reserved_note()))
+        self.render(result, 'finisher', 'FINISH')
+        answer = result['answer']
+        receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
+                   'output_oid': git_snapshot(self.workspace)[0], 'sequence': result['sequence']}   # the tree now, not as recorded
+        self.state['lifecycle'] = worktree_lifecycle.after_finish(
+            lifecycle_spine.complete(self.state['lifecycle'], receipt), receipt)
+        self.state['lifecycle'].pop('writer_git', None)
+        if answer['status'] == 'HOLD':
+            self.hold('finisher: ' + answer['body'])
+        elif self.state['lifecycle']['stage'] == 'EXEC':   # FINISH wrote: new convergence, reviewer then gate
+            self.state['exec_rounds'] += 1
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after a FINISH write')
+        else:
+            self.state['next'] = 'polish-q'
+        self.save()
+
+    def worktree_docs_turn(self) -> None:
+        """ADR-11 DOCS (legacy Step 3.6): a fresh docs writer; its allowlisted writes get a fresh docs review with an
+        observed test, a protected path HOLDs, and any other write replays EXEC (reviewer, then gate)."""
+        life, workspace = self.state['lifecycle'], self.workspace
+        allow = set(self._docs_allowlist())
+        request = worktree_lifecycle.stage_request(life, 'docs-writer')
+        base_file = self.evidence / f"{request['request_id']}-docs-base.json"
+        if life['pending'] != request:
+            tree, manifest = git_snapshot(workspace)
+            if tree != life['candidate_oid']:
+                raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
+            owned = life.get('docs_owned', {})   # DOCS's own entries: the EXEC author may fix docs findings in them,
+            if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews them again
+                raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
+                                   '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
+            if bad := sorted(path for path in allow if (workspace / path).is_dir() or   # the config-time invariant again:
+                             (workspace / path).resolve() != Path(os.path.normpath(workspace / path))):   # no symlink on the path
+                raise RuntimeError('a docs allowlist path is now a directory or reached through a symlink: ' +
+                                   ', '.join(bad) + '; restore it or abort')   # the writer would write through it
+            atomic_json(base_file, manifest)
+        try:   # bound to the POLISH-Q-approved tree before the writer runs
+            base = json.loads(base_file.read_text())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
+        if hashlib.sha256(json.dumps(base, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest() != request['candidate_oid']:
+            raise RuntimeError('DOCS base manifest differs from the POLISH-Q-approved tree; abort')
+        def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
+            self._docs_budget()
+            return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
+                                                  self.run_dir.name, self.workitem.read_text())
+        result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
+        self.render(result, 'docs-writer', 'DOCS')
+        tree, manifest = git_snapshot(workspace)
+        before, after = dict(base), dict(manifest)
+        changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+        denied = [path for path in changed if worktree_lifecycle.docs_denied(path, after.get(path))]
+        outside = [path for path in changed if path not in allow]
+        receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': result['sequence'], 'docs_paths': changed,
+                   'docs_written': {path: after.get(path) for path in changed if path in allow}}
+        reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
+                            *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
+                              if denied else [])]) or None
+        owned = self.state['lifecycle'].get('docs_owned', {})
+        replay = bool(outside)
+        if not reason and not replay and (changed or owned):   # every DOCS-written doc gets a fresh docs review
+            review = self._docs_review_turn(tree, sorted({*changed, *owned}))
+            receipt['review'] = review
+            replay = review['status'] != 'APPROVE'   # its findings go to the persistent EXEC reviewer, then the gate
+        if not reason and not replay and (blocking := self.blocking_open_findings()):
+            reason = 'DOCS cannot advance with open blocking findings: ' + ', '.join(row['id'] for row in blocking)
+        receipt['route'] = 'HOLD' if reason else 'EXEC' if replay else 'SECURITY'
+        self.state['lifecycle'] = lifecycle_spine.complete(
+            self.state['lifecycle'], {**receipt, 'status': 'HOLD' if reason else 'READY'})
+        self.state['lifecycle'].pop('writer_git', None)
+        if not reason:   # reviewed (SECURITY) or about to be (EXEC replay): DOCS owns what it wrote (values: audit only)
+            self.state['lifecycle']['docs_owned'] = {**owned, **receipt['docs_written']}
+        if reason:
+            self.hold(reason)
+        elif replay:   # a code or comment write, or a docs review REVISE: new EXEC convergence, reviewer then gate
+            life = self.state['lifecycle']
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state['exec_rounds'] += 1
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after a DOCS write')
+        else:
+            self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree)   # SECURITY binds the DOCS output
+            self.state['next'] = 'security'
+        self.save()
+
+    def _docs_review_turn(self, tree: str, paths: list[str]) -> dict:
+        """Fresh docs reviewer over the full diff (legacy 3.6 reviewer-only fast replay). A HOLD, an unusable review
+        or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again."""
+        self.materialize_review_context()
+        prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
+                  'Review the documentation of this uncommitted change against the full diff (legacy review-loop '
+                  'Step 3.6): the docs must describe the implemented behavior, APIs and logic accurately, and the '
+                  'changed code comments must match the code. Do not modify any file. Documentation written by the '
+                  'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
+                  f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'
+                  'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
+        self._docs_budget()
+        result = self.invoke('reviewer', 'DOCS', prompt, review_schema(), fresh=True)
+        turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+        if turn.get('snapshot_before') != tree:
+            raise RuntimeError('docs reviewer reviewed a tree other than the one under review')
+        answer = result['answer']
+        findings = worktree_lifecycle.normalized_findings('docs-reviewer', answer['full_review'], 'docs reviewer')
+        blocking = [row for row in findings if row['severity'] in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
+            raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
+        if not (observed := self._observed_test(answer)):
+            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command; '
+                               'resume reviews again')
+        self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer disposes them
+        self.render(result, 'docs-reviewer', 'DOCS')
+        return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
+                'finding_ids': [row['id'] for row in self.state['finding_ledger']
+                                if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']]}
+
+    def _docs_budget(self) -> None:
+        used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+        if used + 1 > self._worktree_run_cap('DOCS'):
+            raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
+
+    def _observed_test(self, answer: dict):
+        return next((row['command'] for row in answer.get('observed_commands', [])
+                     if observed_test_succeeded(row, self.args.test_command)), None)
+
+    def _capture_security_baseline(self) -> dict:
+        """D-6: the W01 delivery baseline for scripts/security_preflight.py, captured when the W state is created,
+        before any probe or turn; a failure refuses the run instead of surfacing at SECURITY."""
+        path = self.evidence / f'delivery-baseline-{uuid.uuid4().hex[:8]}.json'
+        try:
+            proc = self._security_script('delivery_scope.py', 'capture', '--scope', '.', '--output', str(path))
+        except RuntimeError as exc:
+            raise ValueError(f'worktree lifecycle cannot capture its delivery baseline: {exc}') from exc
+        try:
+            if proc.returncode == 0:
+                return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        except OSError as exc:
+            raise ValueError(f'worktree lifecycle cannot read its delivery baseline: {exc}') from exc
+        raise ValueError(f'worktree lifecycle cannot capture its delivery baseline (delivery_scope exit '
+                         f'{proc.returncode}): {proc.stderr.strip()[-300:]}')
+
+    def _security_script(self, script: str, *args: str) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run([sys.executable, str(HERE.parent / 'scripts' / script), '--repo', str(self.workspace),
+                                   *args], cwd=self.workspace, capture_output=True, text=True, errors='replace', timeout=600)
+        except (OSError, subprocess.SubprocessError) as exc:   # a timeout or a missing interpreter HOLDs
+            raise RuntimeError(f'{script} could not run: {exc}') from exc
+
+    def worktree_security_turn(self) -> None:
+        """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
+        (legacy Step 3.7) run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
+        hit or finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
+        life = self.state['lifecycle']
+        request = worktree_lifecycle.stage_request(life, 'security')
+        tree = git_snapshot(self.workspace)[0]
+        if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: EXEC review and gate again
+            life = lifecycle_spine.complete(lifecycle_spine.begin(life, request),
+                                            {**request, 'status': 'HOLD', 'output_oid': tree, 'route': 'EXEC'})
+            self.state['lifecycle'] = {key: value for key, value in life.items()
+                                       if key not in ('security_base', 'security_turn', 'security_review')}
+            self.state['lifecycle'].update(stage='EXEC', epoch=life['epoch'] + 1, candidate_oid=None)
+            self.state['exec_rounds'] += 1
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after a SECURITY-stage change')
+            self.save()
+            return
+        if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
+            raise RuntimeError(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore it and '
+                               'resume, or abort')
+        if (held := [row['id'] for row in self.open_findings() if row.get('owner_role') == 'security-reviewer']) and (
+                life.get('security_hold_tree') == tree):   # the tree its findings were raised or left open on
+            raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + ', '.join(held) +
+                               '; fix them outside the run and resume (EXEC replays), or abort')
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.save()
+        sensitive = self._sensitive_paths()
+        preflight = self._security_preflight(request['request_id'])
+        reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive)]
+                     if sensitive else []), *([preflight['reason']] if preflight['reason'] else [])]
+        review = None
+        if not reasons and git_snapshot(self.workspace)[0] == tree:   # the reviewer sees only the scanned tree
+            review = self._security_review_turn(tree, request['request_id'])
+            reasons += [review['reason']] if review['reason'] else []
+        if not reasons and (blocking := self.blocking_open_findings()):
+            reasons.append('SECURITY cannot reach DONE with open blocking findings: ' + ', '.join(row['id'] for row in blocking))
+        if (after := git_snapshot(self.workspace)[0]) != tree:
+            reasons.append('SECURITY tree changed during the stage; resume replays EXEC review and gate')
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
+            **request, 'status': 'HOLD' if reasons else 'READY', 'output_oid': after,
+            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive, 'preflight': preflight, 'review': review})
+        for key in ('security_turn', 'security_review'):
+            self.state['lifecycle'].pop(key, None)
+        if reasons:
+            self.hold('; '.join(reasons))
+        else:   # acceptance pending: accept --expect (W3b) delivers it
+            self.done(expected=after, lifecycle_stage='DONE')
+
+    def _security_review_turn(self, tree: str, request_id: str) -> dict:
+        """Fresh security reviewer over the clean scan: any open finding of its own HOLDs (no repair); on the new
+        tree an operator fix produced, it disposes its earlier findings (owner only). Only a turn invoke returned
+        (evidence contract checked) is recorded for reuse on a crash replay; a turn without tool calls, a HOLD, an
+        unusable verdict or a malformed answer is discarded before any ledger write, so resume dispatches again
+        under BUDGET_CAPS['SECURITY']."""
+        life, owner = self.state['lifecycle'], 'security-reviewer'
+        if (stored := life.get('security_review')) and stored['request_id'] == request_id:
+            return stored['review']   # the ledger is already durable for this review
+        owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
+        def discard(turn, reason):
+            turn['discarded'] = reason
+            life.pop('security_turn', None)
+            self.save()
+        recorded = life.get('security_turn') or {}
+        turn = (next((row for row in self.state['turns'] if row['sequence'] == recorded.get('sequence')
+                      and not row.get('discarded')), None) if recorded.get('request_id') == request_id else None)
+        prompt = None
+        for attempt in (1, 2):
+            if turn is None:
+                if prompt is None:
+                    self.materialize_review_context()
+                    prompt = ('Role: security reviewer, fresh. Phase: SECURITY.\n'
+                              'Review this uncommitted change for security defects: secrets or credentials in code, '
+                              'configuration or docs; injection; unsafe deserialization; path traversal; missing '
+                              'authorization or input validation; unsafe subprocess, file or network handling; '
+                              'sensitive files that should be ignored. Do not modify any file. Report every finding '
+                              'in full_review; any finding stops delivery.\n' + worktree_lifecycle.owned_ledger(owned) +
+                              self._review_protocol(self._changed_paths()) +
+                              '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
+                used = sum(row.get('phase') == 'SECURITY' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+                if used + 1 > self._worktree_run_cap('SECURITY'):
+                    raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
+                result = self.invoke('reviewer', 'SECURITY', prompt, review_schema(), fresh=True)
+                turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
+                life['security_turn'] = {'request_id': request_id, 'sequence': turn['sequence']}
+                self.save()
+            if turn.get('observed_tool_calls'):
+                break
+            discard(turn, 'no tool calls')
+            turn = None
+        else:
+            return {'status': 'HOLD', 'finding_ids': [], 'reason': 'security reviewer made no tool calls after one retry'}
+        answer, sequence = turn['answer'], turn['sequence']
+        try:
+            if turn.get('snapshot_before') != tree:
+                raise RuntimeError('security reviewer reviewed a tree other than the one under review')
+            findings = worktree_lifecycle.normalized_findings(owner, answer['full_review'], 'security reviewer')
+            if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings and not any(
+                    row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
+                raise RuntimeError(f"security reviewer returned {answer['status']} without a usable review")
+            ledger = copy.deepcopy(self.state['finding_ledger'])
+            try:
+                if missing := self.apply_dispositions(answer.get('prior_findings') or [], sequence,
+                                                      [row['id'] for row in owned], owner):
+                    raise RuntimeError('security reviewer omitted dispositions for its findings: ' + ', '.join(missing))
+            except (RuntimeError, ValueError):
+                self.state['finding_ledger'] = ledger   # a malformed answer leaves no partial disposition
+                raise
+        except (RuntimeError, ValueError) as exc:
+            discard(turn, str(exc)[:200])   # resume dispatches a fresh review
+            raise RuntimeError(f'{exc}; resume reviews again') from exc
+        self.record_findings(owner, 'SECURITY', sequence, findings)
+        self.render({'answer': answer, 'sequence': sequence, 'snapshot': turn.get('snapshot_after'), 'role': 'reviewer'},
+                    owner, 'SECURITY')
+        open_ids = [row['id'] for row in self.open_findings() if row.get('owner_role') == owner]
+        review = {'sequence': sequence, 'status': answer['status'], 'finding_ids': open_ids,
+                  'reason': ('security reviewer findings: ' + ', '.join(open_ids) + '; fix them outside the run and '
+                             'resume (EXEC replays), or abort') if open_ids else None}
+        life['security_hold_tree'] = tree if open_ids else None   # only a review that wrote the ledger moves it
+        life['security_review'] = {'request_id': request_id, 'review': review}
+        self.save()
+        return review
+
+    def _sensitive_paths(self) -> list[dict]:
+        """sensitive_policy over the tracked and non-ignored untracked paths (legacy 3.7.1)."""
+        hits = []
+        for name in sorted(set(filter(None, self._git(['ls-files', '-z', '-co', '--exclude-standard']).split('\0')))):
+            try:
+                category = sensitive_policy.sensitive_path_category(name)
+            except ValueError:
+                category = 'unclassifiable path'
+            if category:
+                hits.append({'path': name, 'category': category})
+        return hits
+
+    def _security_preflight(self, request_id: str) -> dict:
+        """D-6: scripts/security_preflight.py over a fresh manifest; anything but exit 0 with a clean report HOLDs."""
+        baseline = self.state['lifecycle'].get('security_baseline')
+        if not baseline:
+            return {'status': 'unavailable', 'reason': 'security preflight unavailable: no delivery baseline '
+                                                       '(the run started before W3a); abort'}
+        path = Path(baseline['path'])
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = None
+        if digest != baseline['sha256']:
+            return {'status': 'unavailable', 'reason': 'security preflight unavailable: the delivery baseline changed; abort'}
+        prefix = self.evidence / f'{request_id}-{uuid.uuid4().hex[:8]}'
+        manifest, report = Path(f'{prefix}-manifest.json'), Path(f'{prefix}-preflight.json')
+        proc = self._security_script('delivery_scope.py', 'manifest', '--baseline', str(path), '--output', str(manifest))
+        if proc.returncode:
+            return {'status': 'unavailable', 'reason': f'security preflight unavailable: delivery_scope manifest exited '
+                                                       f'{proc.returncode}: {proc.stderr.strip()[-300:]}'}
+        proc = self._security_script('security_preflight.py', '--manifest', str(manifest), '--output', str(report))
+        try:
+            document = json.loads(report.read_text())
+        except (OSError, ValueError):
+            document = {}
+        result = {'exit': proc.returncode, 'status': document.get('status', 'unknown'), 'report': str(report),
+                  'scanned_files': document.get('scanned_files'),
+                  'findings': [{key: row.get(key) for key in ('rule', 'path', 'line')} for row in document.get('findings', [])],
+                  'uncovered_ignore': [row['category'] for row in document.get('ignore_coverage', []) if not row.get('covered')]}
+        clean = (proc.returncode == 0 and result['status'] == 'clean' and document.get('coverage_complete') is True and
+                 document.get('ignore_coverage_complete') is True)
+        result['reason'] = None if clean else (
+            f"security preflight {result['status']} (exit {proc.returncode})" +
+            ''.join(f'; {row["rule"]} in {row["path"]}' for row in result['findings'][:10]) +
+            ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) if result['uncovered_ignore'] else '') +
+            (f'; {proc.stderr.strip()[-300:]}' if proc.returncode not in (0, 1) and proc.stderr.strip() else ''))
+        return result
+
+    def _changed_paths(self, deleted: bool = False) -> list[str]:
+        diff = (['diff', '--name-only', '-z', '--no-renames', 'HEAD'] if deleted else   # a rename lists both paths
+                ['diff', '--name-only', '-z', '--diff-filter=d', 'HEAD'])
+        return [path for path in (*self._git(diff).split('\0'),
+                                  *self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')) if path]
+
+    def worktree_polish_fix_turn(self) -> None:
+        """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn)."""
+        if self.state['exec_rounds'] >= self.exec_round_limit():
+            self.round_limit_hold('EXEC round limit reached')
+            return
+        owners = self._blocker_owners()   # every owner's re-review must fit before the author writes
+        for name in owners:
+            self._specialist_budget(name)
+        if self.state['lifecycle'].get('polish_calls', 0) + len(owners) + 1 > self._worktree_run_cap('POLISH-Q'):
+            raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
+        if 1 + len(owners) > self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']:
+            raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
+                               'raise --max-invocations or abort')
+        self.author_turn()
+        if self.state['status'] == 'ACTIVE':
+            self.state['next'] = 'polish-recheck'
+            self.save()
+
+    def worktree_polish_recheck_turn(self) -> None:
+        """The owning specialists re-review their blockers on the fixed tree; the write then replays EXEC + gate."""
+        life, tree = self.state['lifecycle'], git_snapshot(self.workspace)[0]
+        if tree == life['fix_base']:   # the tree the blockers were raised or left open on
+            self.state.update(next='polish-fix', delivered_review=worktree_lifecycle.delivered_findings(
+                'polish-q', self.blocking_open_findings()))   # author_turn cleared it; the next fix needs it
+            self.hold('POLISH-Q fix left the tree unchanged; only a fix on a new tree may close a specialist blocker')
+            return
+        progress = life.get('recheck')
+        if not progress or progress['tree'] != tree:   # a replay on the same tree keeps the owners already done
+            progress = life['recheck'] = {'tree': tree, 'owners': self._blocker_owners(), 'done': {}}
+            self.save()
+        paths = self._changed_paths()
+        self.materialize_review_context()
+        for name in progress['owners']:
+            if name not in progress['done']:
+                progress['done'][name] = self._specialist_turn(name, paths, tree)
+                self.save()
+        author = next((turn['sequence'] for turn in reversed(self.state['turns']) if turn.get('role') == 'author'
+                       and turn.get('phase') == 'EXEC' and not turn.get('error')), None)
+        life.setdefault('polish_fixes', []).append({
+            'epoch': life['epoch'], 'base_tree': life['fix_base'], 'tree': tree, 'author_sequence': author,
+            'recheck_turns': [progress['done'][name] for name in progress['owners']]})
+        life.pop('recheck')
+        if remaining := self.blocking_open_findings():
+            life['fix_base'] = tree
+            self.state.update(next='polish-fix', delivered_review=worktree_lifecycle.delivered_findings('polish-q', remaining))
+            self.hold('POLISH-Q blockers remain after the fix: ' + ', '.join(row['id'] for row in remaining))
+        else:   # the fix wrote: a new EXEC convergence (reviewer, then gate), then FINISH and POLISH-Q again
+            life.pop('fix_base')
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+        self.save()
+
+    def worktree_polish_turn(self) -> None:
+        """ADR-11 POLISH-Q (legacy Step 3.5): fresh report-only specialists over the FINISH-approved tree."""
+        life = self.state['lifecycle']
+        if git_snapshot(self.workspace)[0] != life['candidate_oid']:
+            raise RuntimeError('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        last = next((row for row in reversed(life['receipts']) if row['stage'] == 'POLISH-Q'), {})
+        blockers = [row['id'] for row in self.blocking_open_findings() if row.get('owner_role', '').startswith('specialist:')]
+        if blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
+            raise RuntimeError('POLISH-Q blockers need a fix on a new tree, not a re-review: ' + ', '.join(blockers))
+        request = worktree_lifecycle.stage_request(life, 'specialists')
+        if life['pending'] != request:   # a new attempt; a replay keeps the specialists it already completed
+            life['specialist_done'] = {}
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.save()
+        paths = self._changed_paths()
+        names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(paths)
+        done = self.state['lifecycle']['specialist_done']
+        if (need := len([name for name in names if name not in done])) > (
+                self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
+            raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; raise --max-invocations or abort')
+        if names:
+            self.materialize_review_context()
+        for name in names:
+            if name not in done:
+                done[name] = self._specialist_turn(name, paths, request['candidate_oid'])
+                self.save()
+        blocking = self.blocking_open_findings()
+        tree = git_snapshot(self.workspace)[0]
+        receipt = {**request, 'status': 'HOLD' if blocking or tree != request['candidate_oid'] else 'READY',
+                   'output_oid': tree, 'specialists': list(names), 'specialist_turns': [done[name] for name in names],
+                   'skipped': not names}   # skip_quality_polish: a no-op receipt
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
+        self.state['lifecycle'].pop('specialist_done', None)
+        if blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
+            self.state['lifecycle']['fix_base'] = tree
+            self.state.update(phase='EXEC', next='polish-fix',
+                              delivered_review=worktree_lifecycle.delivered_findings('polish-q', blocking))
+        elif blocking:
+            self.hold('POLISH-Q open blocking findings: ' + ', '.join(row['id'] for row in blocking))
+        elif tree != request['candidate_oid']:
+            self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        else:
+            self.state['lifecycle']['stage'] = 'DOCS'
+            self.state['next'] = 'docs'
+        self.save()
+
+    def _blocker_owners(self) -> list[str]:
+        return sorted({row['owner_role'].split(':', 1)[1] for row in self.blocking_open_findings()
+                       if row.get('owner_role', '').startswith('specialist:')})
+
+    def _specialist_budget(self, name: str) -> dict:
+        """Room for two dispatches (invoke may retry); legacy 3.5.2 caps one Step 3.5 run, here one epoch."""
+        life, caps = self.state['lifecycle'], budget_policy.BUDGET_CAPS
+        if life.setdefault('counts_epoch', life['epoch']) != life['epoch']:
+            life.update(counts_epoch=life['epoch'], specialist_counts={})
+        counts = life.setdefault('specialist_counts', {})
+        if life.get('polish_calls', 0) + 2 > self._worktree_run_cap('POLISH-Q') or counts.get(name, 0) + 2 > caps['specialist'][0]:
+            raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)
+        return counts
+
+    def _specialist_turn(self, name: str, paths: list[str], tree: str) -> dict:
+        life = self.state['lifecycle']
+        path = HERE.parent / 'agents' / (name + '.md')
+        try:
+            raw = _read_role_source(path)
+            body = worktree_lifecycle.agent_body(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise RuntimeError(f'specialist {name} body cannot be read: {exc}') from exc
+        body_sha256 = hashlib.sha256(raw).hexdigest()
+        if body_sha256 != self.state['role_dispatch_manifest']['agent_body_sha256'].get(path.name):
+            raise RuntimeError('specialist body differs from the frozen role manifest: ' + name)
+        owner = 'specialist:' + name
+        owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
+        prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
+                                                       self._review_protocol(paths)) +
+                  opv.prompt_block(self, tree, atomic_json))
+        for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
+            counts = self._specialist_budget(name)
+            counts[name] = counts.get(name, 0) + 1
+            life['polish_calls'] = life.get('polish_calls', 0) + 1
+            self.save()
+            before = self.state['sequence']
+            try:
+                result = self.invoke('reviewer', 'POLISH-Q', prompt, review_schema(), fresh=True)
+            finally:   # reconcile the reservation: protocol retries add, refused or refunded launches give back
+                refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
+                               if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
+                if delta := self.state['sequence'] - before - refunded - 1:
+                    counts[name] += delta
+                    life['polish_calls'] += delta
+                    self.save()
+            turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+            if turn.get('snapshot_before') != tree:
+                raise RuntimeError(f'specialist {name} reviewed a tree other than the one under review')
+            if turn.get('observed_tool_calls'):
+                break
+            turn['discarded'] = 'no tool calls'
+            self.save()
+            if attempt == 2:
+                raise RuntimeError(f'specialist {name} made no tool calls after one retry')
+        answer = result['answer']
+        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not answer['full_review'] and not any(
+                row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
+            raise RuntimeError(f"specialist {name} returned {answer['status']} without a usable review")
+        findings = worktree_lifecycle.normalized_findings(name, answer['full_review'])   # validate before any ledger write
+        if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
+                                              [row['id'] for row in owned], owner):
+            raise RuntimeError(f'specialist {name} omitted dispositions for its findings: ' + ', '.join(missing))
+        self.record_findings(owner, 'POLISH-Q', result['sequence'], findings)
+        self.render(result, 'specialist-' + name, 'POLISH-Q')
+        return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree,
+                'observed_test': self._observed_test(answer)}   # W2a-1 L-3: recorded, not enforced
+
+    def _review_protocol(self, paths: list[str]) -> str:
+        return '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
+            f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
+            f'Approved plan: {self.context / "plan.md"}',
+            f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat and status.txt.',
+            'Changed paths: ' + (', '.join(paths) or 'none'), self.inspection_prompt('reviewer'),
+            REVIEW_SEVERITY_GUIDANCE, self.verified_claims_prompt(), self.allowed_command_prompt(),
+            'A command the instructions above ask for that is not in this list is unavailable here; that is not a '
+            'failure and not a reason to HOLD. Analyse those concerns with Read/Grep/Glob instead.',
+            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
+            'Do not report exit codes; the coordinator reads tool results directly.'])
 
     def polish_author_turn(self) -> None:
         polish = self.state['polish']
@@ -6527,6 +7314,9 @@ class Coordinator:
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         while self.state['status'] == 'ACTIVE':
             if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
+            if (self.state['next'] == 'reviewer' and worktree_lifecycle.is_worktree(self.state) and
+                    self.state['lifecycle']['stage'] == 'POLISH-Q'):   # the fix author saved before polish-recheck
+                self.state['next'] = 'polish-recheck'
             try:
                 if self.state['next'] == 'author':
                     self.author_turn()
@@ -6534,6 +7324,18 @@ class Coordinator:
                     self.reviewer_turn()
                 elif self.state['next'] == 'gate':
                     self.gate_turn()
+                elif self.state['next'] == 'finish' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_finish_turn()
+                elif self.state['next'] == 'polish-q' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_polish_turn()
+                elif self.state['next'] == 'polish-fix' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_polish_fix_turn()
+                elif self.state['next'] == 'polish-recheck' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_polish_recheck_turn()
+                elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_docs_turn()
+                elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_security_turn()
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
@@ -6542,6 +7344,8 @@ class Coordinator:
 
     def resume(self, retry_uncertain=False) -> str:
         self._publication_guard()
+        if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
+            raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
@@ -6785,10 +7589,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
-    p.add_argument('--docs-file', default='')
+    p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
+    p.add_argument('--auto-commit', type=config_bool, default=False,
+                   help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree')
+    p.add_argument('--external-delivery', type=config_bool, default=False,
+                   help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
@@ -6856,7 +7664,7 @@ CONFIGURABLE_DESTS = {
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
-    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish',
+    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
 }
 
 
@@ -6951,12 +7759,23 @@ def gate_surface_issue(args: argparse.Namespace):
     return None   # G-a K5: a gate vendor other than the reviewer's is covered by the gate probe in permission-probe (probe_passed), not refused here
 
 
+def _author_writable_profile(profile: Path, workspace: Path, run_dir: Optional[str]) -> bool:
+    """ADR-11 D-4: a profile under the workspace or run dir (incl. author-tmp), compared by inode so case
+    and symlink aliases on case-insensitive filesystems are caught too."""
+    run_root = Path(run_dir).expanduser().resolve() if run_dir else None
+    roots = [root for root in (workspace, run_root, (run_root / 'author-tmp').resolve() if run_root else None)
+             if root is not None and root.exists()]   # author-tmp resolved too, as program_binding does
+    return any(os.path.samefile(candidate, root) for path in (profile, profile.resolve())
+               for candidate in (path, *path.parents) if candidate.exists() for root in roots)
+
+
 def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile: bool = False) -> argparse.ArgumentParser:
     """Load project defaults while preserving explicit CLI argument precedence."""
     if ignore_profile: return p
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument('--workspace', required=True)
     bootstrap.add_argument('--config')
+    bootstrap.add_argument('--run-dir')
     known, _ = bootstrap.parse_known_args(argv)
     workspace = Path(known.workspace).expanduser().resolve()
     config_path = (Path(known.config).expanduser() if known.config else
@@ -6967,6 +7786,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
         if known.config:
             raise ValueError(f'--config file does not exist: {config_path}')
         return p
+    writable_profile = _author_writable_profile(config_path, workspace, known.run_dir)   # decided before reading
     try:
         values = json.loads(config_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -6986,6 +7806,11 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     for key, value in values.items():
         if key in explicit:
             continue
+        if writable_profile and key in worktree_lifecycle.PROFILE_KEYS:
+            p.set_defaults(workspace_lifecycle_keys=sorted({*(p.get_default('workspace_lifecycle_keys') or ()), key}))
+        if key == 'lifecycle_mode' and value == 'on' and writable_profile:
+            raise ValueError('lifecycle remains disabled from a workspace profile; pass --lifecycle-mode on '
+                             'or use an operator --config outside the workspace, run dir and author temp')
         if key == 'allowed_models':
             p.set_defaults(allowed_models=value)
             continue
@@ -7126,8 +7951,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return co.refused(reason + '; run permission-probe before continuing')
     co._probe_gate_required = not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
-        if co.state.get('status') == 'ACCEPTED':
-            print('ACCEPTED')
+        if co.state.get('status') in ('ACCEPTED', 'CLOSED'):
+            print(co.state['status'])
             return 0
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
                   if co.state.get('active') or co.state.get('uncertain_active') else '')

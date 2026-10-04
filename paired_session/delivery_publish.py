@@ -1,5 +1,6 @@
 import os, json, tempfile
 from importlib import import_module
+safe_temp = import_module(('paired_session.' if __package__ else '') + 'safe_temp')
 dj = import_module(('paired_session.' if __package__ else '') + 'delivery_journal')
 protocol = import_module(('paired_session.' if __package__ else '') + 'coordinator')
 ct = dj.ct
@@ -46,7 +47,7 @@ def publish(co, observed_test, atomic_json):
                 os.write(fd, row['lock']['nonce'].encode())
                 os.fsync(fd)
                 atomic_json(co.evidence / 'delivery-publication.json', row)
-                with tempfile.TemporaryDirectory(dir=index.parent, prefix='delivery-') as scratch:
+                with safe_temp.directory(dir=index.parent, prefix='delivery-') as scratch:
                     alternate = ct.Path(scratch) / 'index'
                     alternate.write_bytes(index.read_bytes())
                     env = {**live, 'GIT_INDEX_FILE': str(alternate), 'GIT_WORK_TREE': str(co.workspace)}

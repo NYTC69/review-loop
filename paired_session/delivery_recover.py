@@ -3,6 +3,7 @@ import os
 import tempfile
 
 from importlib import import_module
+safe_temp = import_module(('paired_session.' if __package__ else '') + 'safe_temp')
 dp = import_module(('paired_session.' if __package__ else '') + 'delivery_publish')
 drl = import_module(('paired_session.' if __package__ else '') + 'delivery_recovery_lock')
 ct = dp.ct
@@ -27,7 +28,7 @@ def reconcile(co, observed_test, atomic_json):
                         break
                     if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
                         raise ValueError('foreign recovery prefix: ' + str(parent))
-            with tempfile.TemporaryDirectory(dir=index.parent, prefix='delivery-') as scratch:
+            with safe_temp.directory(dir=index.parent, prefix='delivery-') as scratch:
                 alternate = ct.Path(scratch) / 'index'
                 env = {**live, 'GIT_INDEX_FILE': str(alternate)}
                 ct._git(['read-tree', row['intent']['parent']], env=env)

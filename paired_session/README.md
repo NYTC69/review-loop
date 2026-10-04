@@ -89,7 +89,8 @@ the run dir. When any role is Codex, `run`, `resume`, `reject` and
 For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
 workspace, run directory and author temp directory, then pass it with
-`--config /absolute/path/to/profile.json`. A workspace
+`--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
+so a worktree-lifecycle run keeps its `CHANGELOG.md` default. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there cause HOLD when that profile
 is selected. `--config` replaces the workspace profile; copy any desired limits
@@ -106,11 +107,28 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
-outside-workspace or wildcard doc paths are refused. `lifecycle_mode=on` is
-currently refused before any model dispatch, including resume of a saved
-lifecycle state: FINISH through CLOSE and their isolation checks are not yet
-implemented. Legacy DONE/ACCEPTED, gate-off and `resume --polish` cannot enter
-the incomplete lifecycle. No real lifecycle run is enabled by these fields.
+outside-workspace or wildcard doc paths are refused. Planned (D12, ADR-11): the
+real lifecycle will run as the worktree lifecycle of
+`docs/e2e-6-worktree-lifecycle.md`; the full lifecycle is usable only after
+batch W3b lands. Since W1a, `lifecycle_mode=on` from the command line or an
+operator `--config` starts a worktree-lifecycle run that runs PLAN and EXEC and
+then runs FINISH (a fresh author turn; a change reopens EXEC review and gate)
+and POLISH-Q (fresh report-only specialists, legacy Step 3.5; their blockers
+go to an author fix that the owning specialist re-reviews before EXEC review
+and gate run again) and DOCS (a fresh docs writer; a protected path HOLDs, a
+write outside the docs allowlist reopens EXEC review and gate, an allowlisted
+write gets a fresh docs review that must run the test) and the SECURITY scans
+(`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
+security reviewer (any hit or finding HOLDs), then reaches DONE (acceptance
+pending). `accept --expect` on a W DONE accepts it without touching refs or
+the index, or with an operator `auto_commit: true` makes one hook-free local
+commit of exactly the accepted tree (never a push), and writes a Chinese
+delivery report; `reject` reopens EXEC; a
+workspace profile can neither enable it nor set its docs/skip/polish keys, and
+the run refuses
+`--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy
+DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
+cannot enter it.
 
 The disabled E2E candidate-tree module can materialize a clean HEAD into an
 external scratch checkout with a separate scratch Git directory and index. It
