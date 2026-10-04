@@ -20,9 +20,9 @@ except ImportError:   # run as a script from the package directory
     import candidate_tree
 
 
-def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True) -> str:
+def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None) -> str:
     proc = subprocess.run(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, env={**candidate_tree.git_env(), **(env or {})},
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='surrogateescape', timeout=300)
+                          input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='surrogateescape', timeout=300)
     if check and proc.returncode:
         raise RuntimeError(f'git {args[0]} failed: {proc.stderr.strip()[:300]}')
     return proc.stdout.strip() if proc.returncode == 0 else ''
@@ -95,7 +95,7 @@ def restore(workspace: Path, recorded: dict, keep: Path) -> Optional[str]:
         (keep / 'restore-index').unlink(missing_ok=True)
         _git(workspace, 'read-tree', recorded['tree'], env=env)
         if back := [name for name in changed if name in kept]:          # only the changed paths: the rest keep their mtimes
-            _git(workspace, 'checkout-index', '-f', '--', *back, env=env)
+            _git(workspace, 'checkout-index', '-f', '-z', '--stdin', env=env, input='\0'.join(back) + '\0')   # any number of paths
         index = _index_path(workspace)
         if recorded['index_present']: shutil.copy2(keep / 'index', index)
         else: index.unlink(missing_ok=True)

@@ -80,7 +80,13 @@ If the restore verifies, the turn is re-dispatched once. If it does not, or the 
 
 **Cost:** one `git add -A` into a temporary index per read-only turn. It is stat-cached, so a large repository with few changes stays fast.
 
-**Not covered:** ignored files (as today), submodule contents, refs other than HEAD and its branch, and files outside the workspace.
+**Not covered:** ignored files (as today), submodule contents, refs other than HEAD and its branch, files outside the workspace, and a
+change of file mode alone. A workspace below the repository top is not a case: the coordinator requires `.git` in the workspace.
+
+**A failed undo (eff-c)** leads the HOLD reason ("read-only turn changed the workspace and it could not be restored; manual restore
+needed"), whatever else the turn tripped, and is recorded as `state['unrestored_readonly_turn']`. `run`, `resume` and `reject` refuse
+while it stands; once the workspace is back to the pre-turn snapshot, HEAD, branch and index, the next of them clears it. A failed
+tree capture still records HEAD, branch and index before the turn, so a commit or branch switch is still seen.
 
 ### b. Coordinator records
 

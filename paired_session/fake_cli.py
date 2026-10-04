@@ -459,6 +459,11 @@ def main():
                     'command': "sed -n '1,20p' tracked.txt", 'exit_code': 0, 'aggregated_output': text}}))
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_MUTATE'):
             (Path.cwd() / 'tracked.txt').write_text('forbidden plan review write\n')
+            if os.environ.get('FAKE_PLAN_REVIEWER_FAIL'):   # D-EFF eff-c: a write, then a CLI that exits non-zero
+                return 1
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_COMMIT'):   # D-EFF eff-c: HEAD moves, files stay the same
+            import subprocess
+            subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'plan review commit'], check=True)
 
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
     if snapshot_mode == 'wrong':
