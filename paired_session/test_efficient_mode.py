@@ -103,6 +103,28 @@ class EfficientModeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'safety_mode is fixed for this run: it was created strict'):
             rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
 
+    def test_mode_edges_from_the_eff_a_review(self):
+        self.h.coordinator()
+        state = self.state()
+        del state['config']['safety_mode']
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        self.assertEqual(self.h.coordinator()._saved_config()['safety_mode'], 'strict')   # an old parent's successor config stays strict
+        self.other_run('active-plan')
+        self.h.coordinator()
+        state = self.state()
+        state['active'] = {'sequence': 1, 'role': 'author', 'phase': 'PLAN'}   # a model turn that never reached `turns`
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError, 'safety_mode is fixed for this run'):
+            self.h.coordinator('--strict')
+        argv = [*self.command(), '--strict', '--text', 'a note']
+        argv[2] = 'note'
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            co = rc.Coordinator(rc.parser().parse_args(argv[2:]))   # a command that dispatches no turn: noted, not refused
+        self.assertFalse(co.strict)
+        self.assertIn('NOTE: safety_mode is fixed for this run', out.getvalue())
+        self.assertIn('drop safety_mode from the --config profile', out.getvalue())
+
     # --- category C: dropped in efficient -------------------------------------------------------------------------------------------
     def test_no_permission_probe_or_author_opt_in_is_needed_in_efficient_mode(self):
         for extra in ([], ['--author-vendor', 'claude']):

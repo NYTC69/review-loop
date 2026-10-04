@@ -147,6 +147,9 @@ def mutate(mode):
         (root / 'forbidden.txt').write_text('x\n')
     elif mode == 'checkout':
         (root / 'tracked.txt').write_text('checkout mutation\n')
+    elif mode == 'commit':   # D-EFF: HEAD moves, the files stay the same
+        import subprocess
+        subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'reviewer commit'], check=True)
     elif mode == 'rm':
         target = root / 'tracked.txt'
         if target.exists():
@@ -386,7 +389,9 @@ def main():
         if prior is not None:
             answer['prior_findings'] = prior
         mode = os.environ.get('FAKE_MUTATION')
-        if mode and 'Role: reviewer,' in prompt:
+        once = os.environ.get('FAKE_MUTATION_ONCE')   # D-EFF: a marker file; only the first reviewer turn mutates
+        if mode and 'Role: reviewer,' in prompt and not (once and Path(once).exists()):
+            if once: Path(once).write_text('mutated\n')
             mutate(mode)
         command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]
                           if vendor == 'codex' and role == 'reviewer' and phase == 'EXEC'

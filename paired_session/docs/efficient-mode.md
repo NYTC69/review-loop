@@ -17,7 +17,9 @@ Categories A and B are mandatory in every mode. Only category C is dropped from 
 
 - `safety_mode` is chosen by the command that creates the run state, usually `permission-probe`, and saved in `state['config']`.
   - Pass `--strict` from `permission-probe` on.
-  - A request that differs from the saved mode is refused, with one exception: `--strict` after only probe turns upgrades the run (a tightening; the probe report stays valid, because the flags are identical).
+  - A request that differs from the saved mode is refused by `run`, `resume`, `reject` and `permission-probe`, with one exception: `--strict` after only probe turns (none `active` or `uncertain_active` either) upgrades the run. This is a tightening, and the probe report stays valid because the flags are identical.
+  - Commands that dispatch no turn (`status`, `abort`, `accept`, `note`, `attach-verification`) print a NOTE and keep the saved mode.
+  - A run saved before D-EFF writes `safety_mode: strict` into its successor config.
 - **Default:** `efficient` (module constant `DEFAULT_SAFETY_MODE`).
 - **Strict is opt-in:** `--strict`, or `"safety_mode": "strict"` in an operator profile given with `--config FILE`.
   - The workspace config `<workspace>/.review-loop/paired-session.json` cannot set it; the key is refused there.

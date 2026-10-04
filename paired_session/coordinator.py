@@ -42,6 +42,7 @@ try:
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import evidence_guard
+    from paired_session import readonly_guard
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session import operator_verification as opv
@@ -59,6 +60,7 @@ except ModuleNotFoundError:
     import codex_capability_guard
     import docs_policy
     import evidence_guard
+    import readonly_guard
     import finish_dispatch
     import lifecycle_spine
     import operator_verification as opv
@@ -1473,6 +1475,13 @@ def progress_line(row: dict) -> str:
     return f'[{when}] ' + ' · '.join(str(x) for x in [label, kind, *f.values()] if x not in (None, '', False))
 
 
+class ReadOnlyTurnVoided(ValueError):
+    """D-EFF category A: a reviewer, gate or shadow turn changed the workspace; its verdict is never used."""
+    def __init__(self, message: str, restored: bool):
+        super().__init__(message)
+        self.restored = restored
+
+
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -1509,12 +1518,16 @@ class Coordinator:
             saved_state = json.loads(self.state_path.read_text())
             args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
             if requested and requested != args.safety_mode:
-                probe_only = all(t.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') for t in saved_state.get('turns', []))
-                if not (requested == 'strict' and probe_only):
-                    raise ValueError(f'safety_mode is fixed for this run: it was created {args.safety_mode} by its first command; '
-                                     f'start a new run directory to use {requested}')
-                saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
-                atomic_json(self.state_path, saved_state)
+                probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
+                probe_only = (all(t.get('phase') in probe for t in saved_state.get('turns', []))
+                              and all((saved_state.get(key) or {}).get('phase', 'PROBE') in probe for key in ('active', 'uncertain_active')))
+                fixed = (f'safety_mode is fixed for this run: it was created {args.safety_mode} by its first command; '
+                         f'start a new run directory to use {requested}, or drop safety_mode from the --config profile')
+                if args.action not in ('run', 'resume', 'reject', 'permission-probe'): print(f'NOTE: {fixed}')   # dispatches no turn
+                elif not (requested == 'strict' and probe_only): raise ValueError(fixed)
+                else:
+                    saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
+                    atomic_json(self.state_path, saved_state)
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
@@ -1734,13 +1747,39 @@ class Coordinator:
             setattr(self.args, key, saved[key])
         return saved
 
+    @staticmethod
+    def _readonly_changed(workspace, recorded, before, after) -> bool:   # content (the coordinator's snapshot), HEAD, branch or index
+        if before != after: return True
+        if not recorded or 'error' in recorded: return False
+        try: return readonly_guard.moved(workspace, recorded)
+        except (OSError, RuntimeError, subprocess.SubprocessError): return True   # unknown: void it; the undo then verifies or holds
+
+    def _void_readonly_turn(self, role, receipt, workspace, recorded, keep, prefix, before) -> ReadOnlyTurnVoided:
+        """D-EFF category A (docs/efficient-mode.md §4a): save the change as evidence and undo it from the pre-turn record, only when
+        the undo verifies (HEAD, branch, index, worktree tree, and the coordinator's own snapshot); otherwise the run must hold."""
+        if not recorded or 'error' in recorded:
+            receipt['voided'] = {'restored': False, 'reason': (recorded or {}).get('error', 'no pre-turn record')}
+            return ReadOnlyTurnVoided(f'{role} mutated workspace; there is no verified pre-turn record to restore it from '
+                                      f'({receipt["voided"]["reason"]}); restore the workspace by hand', restored=False)
+        diff = prefix.with_suffix('.workspace-change.diff')
+        try:
+            readonly_guard.evidence(workspace, recorded, keep, diff)
+            why = readonly_guard.restore(workspace, recorded, keep)
+            if why is None and git_snapshot(workspace)[0] != before: why = 'the workspace snapshot still differs after the restore'
+        except Exception as exc: why = f'{type(exc).__name__}: {exc}'
+        receipt['voided'] = {'evidence': str(diff), 'restored': why is None, **({'restore_failure': why} if why else {})}
+        if why: return ReadOnlyTurnVoided(f'{role} mutated workspace and the coordinator could not restore it ({why}); '
+                                          f'restore it by hand, see {diff}', restored=False)
+        return ReadOnlyTurnVoided(f'{role} mutated workspace; the turn is void and the workspace was restored (evidence: {diff})', restored=True)
+
     @property
     def strict(self) -> bool:   # D-EFF: category C (probe gate, a holding evidence guard) as before; anything but 'efficient' is strict
         return getattr(self.args, 'safety_mode', 'strict') != 'efficient'
 
     def _saved_config(self) -> dict:
         """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
-        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived', **self.state['config']}
+        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived',
+                'safety_mode': 'strict', **self.state['config']}   # D-EFF: a run saved before safety_mode is strict
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
@@ -4207,13 +4246,26 @@ class Coordinator:
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
+        redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
             seq0 = self.state['sequence']
             try:
-                result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
-                    role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
+                while True:   # a void read-only turn whose change was undone is re-dispatched once, told why
+                    try:
+                        result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
+                            role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, env_overrides))
+                        break
+                    except RuntimeError as exc:
+                        if not (isinstance(exc.__cause__, ReadOnlyTurnVoided) and exc.__cause__.restored): raise
+                        if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
+                                                            f'restored ({exc})') from exc
+                        redispatched = True
+                        turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
+                                        'answer was discarded and the workspace was restored. Review the current tree again without '
+                                        'creating, editing, staging, committing or deleting anything.')
+                        print(f'NOTE: {exc}; re-dispatching the {role} turn once')
             except BaseException:
                 if role == 'author' and workspace_override is None:   # v2.9.7: a failed author turn may have changed the tree
                     try: self._void_opv_observed(seq0, failed=True)
@@ -4306,6 +4358,10 @@ class Coordinator:
         control_dirs, control_before = git_control_state(snapshot_workspace) if role == 'author' else ([], {})
         if bad := control_before.get('!unreadable') or next((v for v in control_before.values() if v.startswith('UNAVAILABLE')), None): raise RuntimeError('git control state unreadable: ' + bad)   # no further git call in a workspace whose config cannot be read
         before, manifest = git_snapshot(snapshot_workspace)
+        recorded, keep = None, self.internal / 'readonly' / f'{seq:03d}-{role}'   # D-EFF category A, both modes
+        if role in ('reviewer', 'gate', 'shadow') and not allow_mutation_report:
+            try: recorded = readonly_guard.capture(snapshot_workspace, keep)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc: recorded = {'error': f'{type(exc).__name__}: {exc}'}
         head_before = git_head_state(snapshot_workspace) if role == 'author' else None   # D-EFF git guard (category B), both modes
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
@@ -4452,6 +4508,9 @@ class Coordinator:
             if control_problem: raise ValueError(control_problem)
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
                 raise ValueError('author changed HEAD or the branch: a commit, reset or checkout is not allowed in a paired-session run')
+            voided = None   # D-EFF category A: undo first, so a failed or rejected read-only turn is undone too; raised after the other checks
+            if role != 'author' and not allow_mutation_report and self._readonly_changed(snapshot_workspace, recorded, before, after):
+                voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
             if vendor_config_before is not None:
                 config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
                 changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace])
@@ -4516,8 +4575,9 @@ class Coordinator:
                 raise ValueError(f'{role} mutated coordinator context outside workspace')
             if role == 'author' and phase == 'PLAN' and before != after:
                 raise ValueError('author mutated workspace during PLAN')
-            if role != 'author' and before != after and not allow_mutation_report:
-                raise ValueError(f'{role} mutated workspace')
+            if voided is not None:
+                raise voided
+            if recorded is not None: shutil.rmtree(keep, ignore_errors=True)   # a clean read-only turn needs no undo record
             if role != 'author':
                 answer['reviewed_snapshot'] = before
             if receipt['model_identity'] == 'MISMATCH':
