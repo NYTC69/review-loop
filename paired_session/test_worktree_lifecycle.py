@@ -9,6 +9,7 @@ from paired_session import test_real_coordinator as trc
 from paired_session import worktree_lifecycle as wl
 
 rc = trc.rc
+DONE = 'DONE (acceptance pending)'
 COVERING_GITIGNORE = '\n'.join((   # the legacy sensitive patterns (tests/security_preflight_test.py), so preflight is clean
     '__pycache__/', '*.cache', '.review-loop/', '.env', '.env.*', '*.env', '!.env.example', '!.env.sample', '*.pem',
     '*.key', '*.crt', '*.cert', '*.cer', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.ppk', 'id_rsa*', 'id_dsa*',
@@ -88,14 +89,25 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def finish_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'FINISH']
 
-    def test_finish_polish_q_and_a_no_op_docs_writer_advance_to_the_security_hold(self):
+    def test_a_no_op_worktree_run_goes_through_every_stage_and_reaches_done_only_after_security(self):
         result = self.run_coordinator('--lifecycle-mode', 'on')
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         tree = rc.git_snapshot(self.workspace)[0]
-        self.assertEqual((state['status'], state['hold_reason'], state['lifecycle']['stage'], state['next']),
-                         ('HOLD', wl.SECURITY_REVIEW_PENDING, 'SECURITY', 'security'))
+        self.assertEqual((state['status'], state['acceptance_state'], state['lifecycle']['stage'], state['next']),
+                         ('DONE', 'PENDING', 'DONE', 'done'))
+        self.assertEqual([row['stage'] for row in state['lifecycle']['receipts']],
+                         ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])   # DONE only after SECURITY
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual((security['status'], security['route'], security['review']['status'], security['review']['finding_ids']),
+                         ('READY', 'DONE', 'APPROVE', []))
+        review = next(row for row in state['turns'] if row['sequence'] == security['review']['sequence'])
+        self.assertEqual((review['role'], review['phase'], review['fresh'], review['snapshot_before']),
+                         ('reviewer', 'SECURITY', True, tree))
+        prompt = (self.run_dir / 'evidence' / f"{review['sequence']:03d}-security-reviewer.prompt.txt").read_text()
+        for needle in ('Role: security reviewer, fresh. Phase: SECURITY.', 'delta.patch', 'any finding stops delivery'):
+            self.assertIn(needle, prompt)
         [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
         self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['candidate_oid'], docs['output_oid']),
                          ('READY', 'SECURITY', [], tree, tree))
@@ -141,15 +153,14 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         turn = next(row for row in state['turns'] if row['sequence'] == finish['sequence'])
         self.assertTrue(any(row['role'] == 'gate' and row['snapshot_before'] == tree for row in state['turns']))
         self.assertEqual((turn['role'], turn['phase'], turn['fresh']), ('author', 'FINISH', True))
-        self.assertEqual(state['acceptance_state'], 'IN_PROGRESS')
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertEqual(again.returncode, 2, again.stdout + again.stderr)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn(DONE, again.stdout)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
 
     def test_a_finish_write_reopens_exec_review_and_gate_before_finishing_again(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_WRITE': '1'})
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.finish_rows(state)
         self.assertNotEqual(first['output_oid'], first['candidate_oid'])   # the finisher changed the reviewed tree
@@ -177,8 +188,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(crashed.resume(), 'HOLD')
         self.assertIn('uncertain in-flight', crashed.state['hold_reason'])
         with mock.patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
-            self.assertEqual(crashed.resume(retry_uncertain=True), 'HOLD')
-        self.assertEqual(crashed.state['hold_reason'], wl.SECURITY_REVIEW_PENDING)
+            self.assertEqual(crashed.resume(retry_uncertain=True), 'DONE')
         rows = self.finish_rows(crashed.state)
         self.assertEqual([(row['request_id'], row['status']) for row in rows],
                          [('w-FINISH-0-0', 'HOLD'), (request['request_id'], 'READY')])
@@ -199,7 +209,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(violating['discarded'], 'git guard')
         rc.subprocess.run(['git', 'reset', '-q', '--mixed', 'HEAD~1'], cwd=self.workspace, check=True)   # operator restore
         restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        self.assertIn(DONE, restored.stdout, restored.stdout + restored.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finish] = self.finish_rows(state)
         self.assertNotEqual(finish['sequence'], violating['sequence'])   # a fresh FINISH, not the violator's READY
@@ -348,7 +358,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertNotIn(second['id'], [row['id'] for row in co._reviewer_open_findings()])
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
         # a second fix round on a new tree; its owner closes F002, the write replays EXEC + gate + FINISH + POLISH-Q
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout, again.stdout + again.stderr)
+        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == second['id']], ['fixed'])
         first_fix, second_fix = state['lifecycle']['polish_fixes']
@@ -431,7 +441,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_fixed_specialist_blocker_replays_exec_and_gate_then_finish_and_polish_q(self):
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finding] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
         self.assertEqual(finding['status'], 'fixed')
@@ -459,7 +469,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_specialist_without_tool_calls_is_retried_once_then_holds(self):
         marker = self.root / 'no-tools-once'
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_SPECIALIST_NO_TOOLS_ONCE': str(marker)})
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)   # the retry made tool calls
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['lifecycle']['specialist_counts']['python-reviewer'], 2)
         self.assertEqual([row.get('discarded') for row in state['turns'] if row['phase'] == 'POLISH-Q'][:2],
@@ -497,7 +507,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                           'Role: specialist code-reviewer,' in (self.run_dir / 'evidence' /
                           f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text())
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
+        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
         state = json.loads((self.run_dir / 'state.json').read_text())
         attempt = next(row for row in state['lifecycle']['receipts'] if row['request_id'] == 'w-POLISH-Q-0-0')
         self.assertEqual((attempt['status'], [row['name'] for row in attempt['specialist_turns']]),
@@ -509,7 +519,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_skip_quality_polish_records_a_no_op_receipt(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', '--skip-quality-polish', 'true')
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped']), ('READY', [], True))
@@ -520,7 +530,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_an_allowlisted_docs_write_gets_a_fresh_docs_review_with_an_observed_test_and_advances(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'})
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [docs] = self.docs_rows(state)
         digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
@@ -547,7 +557,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual((self.docs_rows(state), state['lifecycle']['pending']['stage']), ([], 'DOCS'))   # no receipt
         again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, again.stdout, again.stdout + again.stderr)
+        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [docs] = self.docs_rows(state)
         writers = [row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'DOCS']
@@ -560,7 +570,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                'FAKE_DOCS_FINDING_STILL_OPEN_ONCE': str(self.root / 'docs-open')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--max-exec-rounds', '6',
                                       env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC'
@@ -610,7 +620,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_docs_review_revise_replays_exec_with_its_findings_then_reviews_again(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         [finding] = first['review']['finding_ids']
@@ -627,7 +637,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_a_docs_comment_write_replays_exec_review_and_gate(self):
         env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         self.assertEqual((first['status'], first['route'], first['docs_paths'], first['docs_written'], first['epoch']),
@@ -656,7 +666,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('HOLD: DOCS tree differs from the POLISH-Q-approved tree', again.stdout, again.stdout + again.stderr)
         (self.workspace / 'CLAUDE.md').unlink()   # operator restore
         restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, restored.stdout, restored.stdout + restored.stderr)
+        self.assertIn(DONE, restored.stdout, restored.stdout + restored.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([(row['request_id'], row['route']) for row in self.docs_rows(state)],
                          [('w-DOCS-0-0', 'HOLD'), ('w-DOCS-0-1', 'SECURITY')])
@@ -664,7 +674,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_docs_own_entry_survives_a_replay_and_may_be_rewritten(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: ' + wl.SECURITY_REVIEW_PENDING, result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
@@ -807,6 +817,113 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, r'cannot capture its delivery baseline \(delivery_scope exit 3\)'):
             rc.Coordinator(self.args())
         self.assertFalse((self.run_dir / 'state.json').exists())   # refused at the start, not at SECURITY
+
+    def test_a_blocking_security_finding_holds_and_only_a_fix_on_a_new_tree_reaches_done(self):
+        env = {'FAKE_Q_MINOR': '1', 'FAKE_Q_SEVERITY': 'CRITICAL', 'FAKE_Q_SECURITY_FLAG': '1'}
+        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn('HOLD: security reviewer findings: ', held.stdout, held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [finding] = [row for row in state['finding_ledger'] if row['source'] == 'security-reviewer']
+        self.assertEqual((finding['owner_role'], finding['severity'], finding['security'], finding['status']),
+                         ('security-reviewer', 'CRITICAL', True, 'open'))
+        self.assertEqual((state['status'], state['lifecycle']['stage']), ('HOLD', 'SECURITY'))
+        reviews = len([row for row in state['turns'] if row['phase'] == 'SECURITY'])
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        self.assertIn('HOLD: security findings need a fix on a new tree, not a re-review: ' + finding['id'], again.stdout,
+                      again.stdout + again.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(len([row for row in state['turns'] if row['phase'] == 'SECURITY']), reviews)
+        (self.workspace / 'NOTES.md').write_text('operator fix outside the run\n')
+        fixed = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        # the blocking security finding does not gate EXEC, POLISH-Q or DOCS; its owner closes it at SECURITY
+        self.assertIn(DONE, fixed.stdout, fixed.stdout + fixed.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == finding['id']], ['fixed'])
+        routes = [row['route'] for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual(routes, ['HOLD', 'EXEC', 'DONE'])
+        self.assertIsNone(state['lifecycle']['security_hold_tree'])
+
+    def security_turn_stub(self, co, tree, answer, tool_calls=1):
+        def invoke(role, phase, prompt, schema, fresh=False):
+            co.state['sequence'] += 1
+            co.state['turns'].append({'sequence': co.state['sequence'], 'role': role, 'phase': phase, 'answer': answer,
+                                      'snapshot_before': tree, 'observed_tool_calls': tool_calls})
+            return {'answer': answer, 'sequence': co.state['sequence'], 'snapshot': tree, 'role': role}
+        return invoke
+
+    def test_a_security_reviewer_without_tool_calls_is_retried_once_and_never_touches_the_ledger(self):
+        co, tree = self.at_security()
+        [owned] = co.record_findings('security-reviewer', 'SECURITY', 1, [
+            {'severity': 'CRITICAL', 'file': 'sum_ints.py', 'summary': 'earlier security finding'}])
+        co.state['lifecycle']['security_hold_tree'] = 'the tree the finding was raised on'
+        answer = {'status': 'APPROVE', 'full_review': [{'severity': 'MAJOR', 'file': 'x', 'summary': 'invented'}],
+                  'prior_findings': [{'id': owned['id'], 'disposition': 'withdrawn', 'evidence': 'never looked'}]}
+        ledger = json.dumps(co.state['finding_ledger'])
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.security_turn_stub(co, tree, answer, tool_calls=0)):
+            review = co._security_review_turn(tree, 'w-SECURITY-0-0')
+        self.assertEqual(review['reason'], 'security reviewer made no tool calls after one retry')
+        self.assertEqual(json.dumps(co.state['finding_ledger']), ledger)   # no disposition, no invented finding
+        self.assertEqual([row.get('discarded') for row in co.state['turns'] if row['phase'] == 'SECURITY'],
+                         ['no tool calls'] * 2)
+        self.assertEqual(co.state['lifecycle']['security_hold_tree'], 'the tree the finding was raised on')
+
+    def test_only_the_recorded_security_turn_is_reused_and_a_malformed_one_is_dispatched_again(self):
+        co, tree = self.at_security()
+        good = {'status': 'APPROVE', 'full_review': [], 'prior_findings': []}
+        stub = self.security_turn_stub(co, tree, good)
+        stub('reviewer', 'SECURITY', '', {})   # a turn invoke rejected for its evidence contract
+        co.state['turns'][-1]['verified_claims_error'] = 'claim not observed'
+        calls = []
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=lambda *a, **k: calls.append(1) or stub(*a, **k)):
+            first = co._security_review_turn(tree, 'w-SECURITY-0-0')
+        self.assertEqual((len(calls), first['status'], first['reason']), (1, 'APPROVE', None))   # never the rejected turn
+        self.assertEqual(co._security_review_turn(tree, 'w-SECURITY-0-0'), first)   # stored review, no re-apply
+        co.state['lifecycle'].pop('security_review')
+        co.state['lifecycle']['security_turn'] = {'request_id': 'w-SECURITY-0-1', 'sequence': first['sequence']}
+        with mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=AssertionError('second security review')):
+            self.assertEqual(co._security_review_turn(tree, 'w-SECURITY-0-1')['status'], 'APPROVE')   # crash replay
+
+    def test_a_malformed_security_review_is_discarded_and_reviewed_again(self):
+        co, tree = self.at_security()
+        [owned] = co.record_findings('security-reviewer', 'SECURITY', 1, [
+            {'severity': 'CRITICAL', 'file': 'sum_ints.py', 'summary': 'earlier security finding'}])
+        ledger = json.dumps(co.state['finding_ledger'])
+        omitted = {'status': 'APPROVE', 'full_review': [], 'prior_findings': []}   # no disposition for its finding
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.security_turn_stub(co, tree, omitted)), \
+                self.assertRaisesRegex(RuntimeError, 'omitted dispositions for its findings: .*; resume reviews again'):
+            co._security_review_turn(tree, 'w-SECURITY-0-0')
+        self.assertEqual((co.state['turns'][-1]['discarded'][:40], co.state['lifecycle'].get('security_turn')),
+                         ('security reviewer omitted dispositions f', None))
+        self.assertEqual(json.dumps(co.state['finding_ledger']), ledger)
+        fixed = {'status': 'APPROVE', 'full_review': [],
+                 'prior_findings': [{'id': owned['id'], 'disposition': 'fixed', 'evidence': 'removed the secret'}]}
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.security_turn_stub(co, tree, fixed)):
+            review = co._security_review_turn(tree, 'w-SECURITY-0-0')   # resume dispatches a fresh review
+        self.assertEqual((review['finding_ids'], co.state['lifecycle']['security_hold_tree']), ([], None))
+
+    def test_the_security_budget_caps_reviewer_dispatches(self):
+        co, tree = self.at_security()
+        co.state['turns'].extend({'sequence': 900 + index, 'role': 'reviewer', 'phase': 'SECURITY', 'discarded': 'x'}
+                                 for index in range(3))
+        with mock.patch.object(co, 'materialize_review_context'), \
+                mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched past the SECURITY budget')), \
+                self.assertRaisesRegex(RuntimeError, r'SECURITY budget exhausted \(3 security reviews'):
+            co._security_review_turn(tree, 'w-SECURITY-0-0')
+
+    def test_a_worktree_done_refuses_reject_and_binds_the_scanned_tree(self):
+        co, tree = self.at_security()
+        self.assertEqual(co.done(expected='another tree'), 'HOLD')
+        self.assertEqual(co.state['hold_reason'], 'the tree changed before DONE; resume replays EXEC review and gate')
+        co.state['status'] = 'ACTIVE'
+        self.assertEqual(co.done(expected=tree, lifecycle_stage='DONE'), 'DONE')
+        self.assertEqual((co.state['lifecycle']['stage'], co.state['next']), ('DONE', 'done'))   # one save with the status
+        with self.assertRaisesRegex(ValueError, 'worktree lifecycle reject is not available before W3b'):
+            co.reject('please change it', None)
 
     def test_the_docs_hold_set(self):
         for path, value, denied in (('CLAUDE.md', 'x', True), ('pkg/AGENTS.md', 'x', True), ('agents/new.md', 'x', True),

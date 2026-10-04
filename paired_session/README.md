@@ -118,9 +118,9 @@ go to an author fix that the owning specialist re-reviews before EXEC review
 and gate run again) and DOCS (a fresh docs writer; a protected path HOLDs, a
 write outside the docs allowlist reopens EXEC review and gate, an allowlisted
 write gets a fresh docs review that must run the test) and the SECURITY scans
-(`sensitive_policy` paths and `scripts/security_preflight.py`; any hit HOLDs),
-then HOLDs before the security review (W3a-2; such a run cannot be accepted
-before W3b); a
+(`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
+security reviewer (any hit or finding HOLDs), then reaches DONE (acceptance
+pending; a W DONE cannot be accepted before W3b); a
 workspace profile can neither enable it nor set its docs/skip/polish keys, and
 the run refuses
 `--accept-unverified-claude-author` and `--accept-probe-skip`. Legacy

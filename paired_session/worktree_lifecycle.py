@@ -9,7 +9,6 @@ except ModuleNotFoundError:
     import lifecycle_spine
 
 FORMAT = 'worktree'
-SECURITY_REVIEW_PENDING = 'worktree lifecycle SECURITY review not implemented yet (W3a-2)'
 DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
 LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
                    **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),
@@ -136,12 +135,16 @@ def agent_body(raw):
     return text.strip()
 
 
+def owned_ledger(owned):
+    if not owned:
+        return ''
+    return (f'Open finding ledger ({len(owned)} open, owned by you): give each a prior_findings disposition '
+            '(fixed, withdrawn or still_open) with evidence from the current tree, and do not repeat these '
+            'findings in full_review.\n' + ''.join(f"- {row['id']}: {row['summary']}\n" for row in owned))
+
+
 def specialist_prompt(name, body, test_command, owned, protocol):
-    ledger = ''
-    if owned:
-        ledger = (f'Open finding ledger ({len(owned)} open, owned by you): give each a prior_findings disposition '
-                  '(fixed, withdrawn or still_open) with evidence from the current tree, and do not repeat these '
-                  'findings in full_review.\n' + ''.join(f"- {row['id']}: {row['summary']}\n" for row in owned))
+    ledger = owned_ledger(owned)
     return (body + '\n\n'
             f'Role: specialist {name}, fresh. Phase: POLISH-Q.\n'
             'You are a report-only quality specialist (legacy review-loop Step 3.5). Review only the changed paths of '

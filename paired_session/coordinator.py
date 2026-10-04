@@ -2769,10 +2769,13 @@ class Coordinator:
         return [finding for finding in self.state['finding_ledger'] if finding['status'] == 'open']
 
     def blocking_open_findings(self) -> list[dict]:
-        return [finding for finding in self.open_findings()
+        rows = [finding for finding in self.open_findings()
                 if finding['severity'] in BLOCKING_REVIEW_SEVERITIES or
                 finding.get('security') or
                 (finding['source'] == 'adversarial-gate' and finding['severity'] in ('CRITICAL', 'HIGH'))]
+        if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') not in ('SECURITY', 'DONE'):
+            rows = [row for row in rows if row.get('owner_role') != 'security-reviewer']   # only SECURITY can close them
+        return rows
 
     def _coord_doc_blockers(self, docs_path, ids=None):
         blockers = self.blocking_open_findings()
@@ -3338,6 +3341,8 @@ class Coordinator:
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
+        if worktree_lifecycle.is_worktree(self.state):   # W3b defines reject on a W DONE with DELIVERY
+            raise ValueError('worktree lifecycle reject is not available before W3b; abort or wait for the remaining stages')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
@@ -3416,12 +3421,18 @@ class Coordinator:
             if not path.exists():
                 atomic_json(path, row)
 
-    def done(self) -> str:
+    def done(self, expected: Optional[str] = None, lifecycle_stage: Optional[str] = None) -> str:
         blocking = self.blocking_open_findings()
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
-        self.state['approved_snapshot'], self.state['approved_manifest'] = git_snapshot(self.workspace)
+        snapshot, manifest = git_snapshot(self.workspace)
+        if expected is not None and snapshot != expected:
+            return self.hold('the tree changed before DONE; resume replays EXEC review and gate')
+        self.state['approved_snapshot'], self.state['approved_manifest'] = snapshot, manifest
+        if lifecycle_stage:   # W: the stage moves in the same save as the status
+            self.state['lifecycle']['stage'] = lifecycle_stage
+            self.state['next'] = 'done'
         self.set_effective_verdict('APPROVE')
         self.state['status'] = 'DONE'
         self.state['acceptance_state'] = 'PENDING'
@@ -4737,35 +4748,125 @@ class Coordinator:
             raise RuntimeError(f'{script} could not run: {exc}') from exc
 
     def worktree_security_turn(self) -> None:
-        """ADR-11 SECURITY (legacy Step 3.7) over the DOCS-approved tree: the sensitive path scan and
-        scripts/security_preflight.py run every time, a no-op run included; any hit HOLDs (no repair)."""
+        """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
+        (legacy Step 3.7) run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
+        hit or finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
         life = self.state['lifecycle']
         request = worktree_lifecycle.stage_request(life, 'security')
         tree = git_snapshot(self.workspace)[0]
         if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: EXEC review and gate again
             life = lifecycle_spine.complete(lifecycle_spine.begin(life, request),
                                             {**request, 'status': 'HOLD', 'output_oid': tree, 'route': 'EXEC'})
-            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state['lifecycle'] = {key: value for key, value in life.items()
+                                       if key not in ('security_base', 'security_turn', 'security_review')}
+            self.state['lifecycle'].update(stage='EXEC', epoch=life['epoch'] + 1, candidate_oid=None)
             self.state['exec_rounds'] += 1
             self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
             if self.state['exec_rounds'] > self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after a SECURITY-stage change')
             self.save()
             return
+        if (held := [row['id'] for row in self.open_findings() if row.get('owner_role') == 'security-reviewer']) and (
+                life.get('security_hold_tree') == tree):   # the tree its findings were raised or left open on
+            raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + ', '.join(held) +
+                               '; fix them outside the run and resume (EXEC replays), or abort')
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
         sensitive = self._sensitive_paths()
         preflight = self._security_preflight(request['request_id'])
         reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive)]
                      if sensitive else []), *([preflight['reason']] if preflight['reason'] else [])]
-        if not reasons:
-            reasons.append(worktree_lifecycle.SECURITY_REVIEW_PENDING)
+        review = None
+        if not reasons and git_snapshot(self.workspace)[0] == tree:   # the reviewer sees only the scanned tree
+            review = self._security_review_turn(tree, request['request_id'])
+            reasons += [review['reason']] if review['reason'] else []
+        if not reasons and (blocking := self.blocking_open_findings()):
+            reasons.append('SECURITY cannot reach DONE with open blocking findings: ' + ', '.join(row['id'] for row in blocking))
         if (after := git_snapshot(self.workspace)[0]) != tree:
             reasons.append('SECURITY tree changed during the stage; resume replays EXEC review and gate')
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
             **request, 'status': 'HOLD' if reasons else 'READY', 'output_oid': after,
-            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive, 'preflight': preflight})
-        self.hold('; '.join(reasons))
+            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive, 'preflight': preflight, 'review': review})
+        for key in ('security_turn', 'security_review'):
+            self.state['lifecycle'].pop(key, None)
+        if reasons:
+            self.hold('; '.join(reasons))
+        else:   # acceptance pending; accept on W DONE arrives with W3b
+            self.done(expected=after, lifecycle_stage='DONE')
+
+    def _security_review_turn(self, tree: str, request_id: str) -> dict:
+        """Fresh security reviewer over the clean scan: any open finding of its own HOLDs (no repair); on the new
+        tree an operator fix produced, it disposes its earlier findings (owner only). Only a turn invoke returned
+        (evidence contract checked) is recorded for reuse on a crash replay; a turn without tool calls, a HOLD, an
+        unusable verdict or a malformed answer is discarded before any ledger write, so resume dispatches again
+        under BUDGET_CAPS['SECURITY']."""
+        life, owner = self.state['lifecycle'], 'security-reviewer'
+        if (stored := life.get('security_review')) and stored['request_id'] == request_id:
+            return stored['review']   # the ledger is already durable for this review
+        owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
+        def discard(turn, reason):
+            turn['discarded'] = reason
+            life.pop('security_turn', None)
+            self.save()
+        recorded = life.get('security_turn') or {}
+        turn = (next((row for row in self.state['turns'] if row['sequence'] == recorded.get('sequence')
+                      and not row.get('discarded')), None) if recorded.get('request_id') == request_id else None)
+        prompt = None
+        for attempt in (1, 2):
+            if turn is None:
+                if prompt is None:
+                    self.materialize_review_context()
+                    prompt = ('Role: security reviewer, fresh. Phase: SECURITY.\n'
+                              'Review this uncommitted change for security defects: secrets or credentials in code, '
+                              'configuration or docs; injection; unsafe deserialization; path traversal; missing '
+                              'authorization or input validation; unsafe subprocess, file or network handling; '
+                              'sensitive files that should be ignored. Do not modify any file. Report every finding '
+                              'in full_review; any finding stops delivery.\n' + worktree_lifecycle.owned_ledger(owned) +
+                              self._review_protocol(self._changed_paths()) +
+                              '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
+                used = sum(row.get('phase') == 'SECURITY' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+                if used + 1 > budget_policy.BUDGET_CAPS['SECURITY'][0]:
+                    raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
+                result = self.invoke('reviewer', 'SECURITY', prompt, review_schema(), fresh=True)
+                turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
+                life['security_turn'] = {'request_id': request_id, 'sequence': turn['sequence']}
+                self.save()
+            if turn.get('observed_tool_calls'):
+                break
+            discard(turn, 'no tool calls')
+            turn = None
+        else:
+            return {'status': 'HOLD', 'finding_ids': [], 'reason': 'security reviewer made no tool calls after one retry'}
+        answer, sequence = turn['answer'], turn['sequence']
+        try:
+            if turn.get('snapshot_before') != tree:
+                raise RuntimeError('security reviewer reviewed a tree other than the one under review')
+            findings = worktree_lifecycle.normalized_findings(owner, answer['full_review'], 'security reviewer')
+            if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings and not any(
+                    row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
+                raise RuntimeError(f"security reviewer returned {answer['status']} without a usable review")
+            ledger = copy.deepcopy(self.state['finding_ledger'])
+            try:
+                if missing := self.apply_dispositions(answer.get('prior_findings') or [], sequence,
+                                                      [row['id'] for row in owned], owner):
+                    raise RuntimeError('security reviewer omitted dispositions for its findings: ' + ', '.join(missing))
+            except (RuntimeError, ValueError):
+                self.state['finding_ledger'] = ledger   # a malformed answer leaves no partial disposition
+                raise
+        except (RuntimeError, ValueError) as exc:
+            discard(turn, str(exc)[:200])   # resume dispatches a fresh review
+            raise RuntimeError(f'{exc}; resume reviews again') from exc
+        self.record_findings(owner, 'SECURITY', sequence, findings)
+        self.render({'answer': answer, 'sequence': sequence, 'snapshot': turn.get('snapshot_after'), 'role': 'reviewer'},
+                    owner, 'SECURITY')
+        open_ids = [row['id'] for row in self.open_findings() if row.get('owner_role') == owner]
+        review = {'sequence': sequence, 'status': answer['status'], 'finding_ids': open_ids,
+                  'reason': ('security reviewer findings: ' + ', '.join(open_ids) + '; fix them outside the run and '
+                             'resume (EXEC replays), or abort') if open_ids else None}
+        life['security_hold_tree'] = tree if open_ids else None   # only a review that wrote the ledger moves it
+        life['security_review'] = {'request_id': request_id, 'review': review}
+        self.save()
+        return review
 
     def _sensitive_paths(self) -> list[dict]:
         """sensitive_policy over the tracked and non-ignored untracked paths (legacy 3.7.1)."""
