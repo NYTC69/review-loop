@@ -22,6 +22,13 @@ the first command that runs `bin/paired-session`):
   host skill's long-command execution failure, which is reported as HOLD with
   the reason. On an `entry: paired-session` handoff, print other refusals as
   `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
+- Every host setup step before the first coordinator command (loading this
+  contract, creating the run directory, writing `WORKITEM.md`, resolving the
+  plugin) belongs to stage A. If one fails or is denied, stop and report
+  `stage A failure: <reason>`. Do not retry in another location or improvise,
+  and never start or continue another workflow from this skill (no legacy
+  session file, lock or evidence snapshot): only the review-loop entry falls
+  back, and only through its documented notice.
 - From the first `bin/paired-session` command on, every refusal or HOLD is
   reported verbatim and never falls back to legacy.
 

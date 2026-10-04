@@ -36,13 +36,22 @@ adds only the Claude Code host rules:
   unavailable background execution (a failed stage A check; on the explicit
   entry, HOLD with the reason).
 - Run directory: create a UUID; the run directory is
-  `${CLAUDE_PLUGIN_DATA}/runs/<UUID>/`, outside the product worktree. Create it,
-  then write `WORKITEM.md` there. Resolve `WORKSPACE` to the intended worktree
-  root and `WORKITEM`/`RUN_DIR` to absolute paths. Claude Code substitutes
-  `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` in skill content. Define
-  path variables anew in each Bash tool call; shell variables do not persist
-  across separate calls. Pass arguments as an array. Write any launcher log
-  under `${CLAUDE_PLUGIN_DATA}/logs/`, never under `runs/`.
+  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop/runs/<UUID>/`, outside the
+  product worktree and outside `~/.claude` (Claude Code treats paths there as
+  sensitive and denies or prompts for every write). Resolve the run root once
+  with its own Bash call, `printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/review-loop"`,
+  and use the absolute path it prints (if it is not absolute, use
+  `$HOME/.local/state/review-loop`: XDG ignores a relative `XDG_STATE_HOME`).
+  Create the run directory (`mkdir -p`), then write `WORKITEM.md` there. The
+  root is outside the session's working directory, so a restricted permission
+  mode may need the operator to grant it (for example `--add-dir <run root>`).
+  If either step fails or is denied, stop: that is a failed stage A check,
+  reported as `stage A failure: <reason>`; never try another location. Resolve `WORKSPACE` to the intended worktree root and
+  `WORKITEM`/`RUN_DIR` to absolute paths. Claude Code substitutes
+  `${CLAUDE_PLUGIN_ROOT}` in skill content. Define path variables anew in each
+  Bash tool call; shell variables do not persist across separate calls. Pass
+  arguments as an array. Write any launcher log under the run root's `logs/`
+  (`.../review-loop/logs/`), never under `runs/`.
 - Long-command form: run every command that can dispatch model turns
   (`permission-probe`, `run`, `resume`, `reject --expect`) as its own Bash call
   with `run_in_background: true`; wait for the background task completion
@@ -58,8 +67,8 @@ Strict only, first Bash call (`run_in_background: true`):
 
 ```sh
 WORKSPACE='/absolute/path/to/worktree'
-WORKITEM='${CLAUDE_PLUGIN_DATA}/runs/<UUID>/WORKITEM.md'
-RUN_DIR='${CLAUDE_PLUGIN_DATA}/runs/<UUID>'
+WORKITEM='/absolute/run/root/runs/<UUID>/WORKITEM.md'
+RUN_DIR='/absolute/run/root/runs/<UUID>'
 TEST_COMMAND='the verified project command'
 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" permission-probe \
   --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
@@ -70,8 +79,8 @@ TEST_COMMAND='the verified project command'
 
 ```sh
 WORKSPACE='/absolute/path/to/worktree'
-WORKITEM='${CLAUDE_PLUGIN_DATA}/runs/<UUID>/WORKITEM.md'
-RUN_DIR='${CLAUDE_PLUGIN_DATA}/runs/<UUID>'
+WORKITEM='/absolute/run/root/runs/<UUID>/WORKITEM.md'
+RUN_DIR='/absolute/run/root/runs/<UUID>'
 TEST_COMMAND='the verified project command'
 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run \
   --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
