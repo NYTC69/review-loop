@@ -1,0 +1,73 @@
+name: paired-session tests
+
+# Trial (owner 2026-10-04): move full paired_session suites off the CPU-bound dev Mac.
+# One job per test module, on Linux and macOS, both on Python 3.9 (the dev Mac runs Xcode's 3.9).
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  modules:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          echo "list=$(ls paired_session/test_*.py | xargs -n1 basename | sed 's/\.py$//' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: modules
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        module: ${{ fromJson(needs.modules.outputs.list) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: runner.os == 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Environment
+        run: |
+          uname -a; nproc 2>/dev/null || sysctl -n hw.ncpu
+          if [ "$RUNNER_OS" = macOS ]; then echo PY=/usr/bin/python3 >> "$GITHUB_ENV"; else echo PY=python3 >> "$GITHUB_ENV"; fi
+          git config --global user.name ci; git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+      - name: Run ${{ matrix.module }}
+        run: |
+          $PY --version
+          set -o pipefail
+          $PY -m unittest -v paired_session.${{ matrix.module }} 2>&1 | tee test.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-${{ matrix.os }}-${{ matrix.module }}
+          path: test.log
+          retention-days: 14
+
+  lint:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/run-skill-lint
