@@ -144,7 +144,8 @@ implementation time. All are in `test_operator_roles.py`:
   still block the lock by holding a `flock` on it. The design therefore also adds
   the lock directory to the Claude sandbox read-deny list. A Codex turn keeps full
   read access, so this delay stays a residual (§4.5); it costs availability only.
-  §5 test 4 settles the behaviour per OS.
+  §5 test 4 settles the behaviour per OS. (Owner decision D3, 2026-10-04: no
+  read-deny entry; see §9 for the known limitation.)
 - **POSIX-lock pitfalls.** Closing *any* fd of the file in the coordinator process
   drops the lock. So the payload is read and written only through the locked fd,
   and the file is never opened a second time. The lock also belongs to a process,
@@ -384,9 +385,10 @@ the real host-wide listing still FAILs on a foreign name.
     dedicated reason. The reason must stay out of `_author_probe_waived`'s waivable
     set and must not trigger `_probe_void_on_non_pass`. It does not cover run-dir
     creation, so new run dirs in case 1 would still FAIL a probe.
-- **D3. Lock kind on macOS.**
-  - **Recommended:** `lockf`, plus the read-deny entry for Claude roles. Codex
-    readers stay an availability-only residual.
+- **D3. Lock kind on macOS.** **Decided (owner 2026-10-04): `lockf`, no read-deny
+  entry.** The macOS `flock` limitation is a known limitation (§9).
+  - Proposed before the decision: `lockf`, plus the read-deny entry for Claude
+    roles, with Codex readers as an availability-only residual.
   - Alternative: `flock` everywhere. It is simpler, but any reader can hold it.
 - **D4. Candidate C** (a registry that allows truly parallel probes). Only if the
   owner accepts that its soundness rests on the sandbox under test.
@@ -418,10 +420,14 @@ The code is `ProbeParentLock` in `../coordinator.py`, wired into `main` around `
 - **No `--probe-lock-wait-seconds` flag.** The bound is the module constant `PROBE_LOCK_WAIT_FACTOR` (3) times the
   command's own estimate, which is 3 × `--timeout` + 300 s. A holder publishes `wait_bound_s` (the same estimate, or
   60 s for a mkdir-only hold).
-- **No read-deny entry for the lock directory.** A measurement on this macOS host (Darwin 25.3) shows that an `flock`
-  taken through a read-only fd in another process blocks `lockf`. Any reader can therefore delay probes in a parent.
-  This costs availability only. The read-deny entry would change every Claude role surface and digest, so it stays
-  owner decision D3. A Codex reader could not be denied in any case.
+- **No read-deny entry for the lock directory (owner decision D3, 2026-10-04).** The read-deny entry would change
+  every Claude role surface and digest, and a Codex reader could not be denied in any case.
+- **Known limitation: macOS `flock` from a reader.** A measurement on this macOS host (Darwin 25.3) shows that an
+  `flock` taken through a read-only fd in another process blocks `lockf` (EAGAIN). Any process that can read the lock
+  file, including an author or reviewer turn, can therefore hold the lock and delay probes in that parent. After the
+  wait bound, the command ends REFUSED. This costs availability only: holding the lock never turns a probe into a
+  PASS, and it does not let a concurrent tree be excused. On Linux, `flock` and `lockf` locks are independent, so a
+  reader's `flock` does not block the probe lock.
 - **Codex `slash_tmp_path` is not renamed**, because that needs the `CODEX_PROBE_SHA256` ruling (D5).
 - **Changed tests.** The tree-prefix tests listed in §4.1 now use `cap.TREE_PREFIX`. These are fixture names only.
 - **Cross-OS testing.** Test 4 checks only that a read-only fd cannot take `lockf`. The macOS `flock` result is recorded

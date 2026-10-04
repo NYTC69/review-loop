@@ -41,6 +41,7 @@ try:
     from paired_session import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
+    from paired_session import evidence_guard
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session import operator_verification as opv
@@ -57,6 +58,7 @@ except ModuleNotFoundError:
     import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     import codex_capability_guard
     import docs_policy
+    import evidence_guard
     import finish_dispatch
     import lifecycle_spine
     import operator_verification as opv
@@ -998,7 +1000,8 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
                         command = outer[2]
                 except ValueError:
                     pass
-                call = {'tool': 'command_execution', 'input': {'command': command},
+                workdir = next((item[k] for k in ('workdir', 'cwd') if isinstance(item.get(k), str)), None)   # v297-eg-wire: kept, not dropped
+                call = {'tool': 'command_execution', 'input': {'command': command, **({'workdir': workdir} if workdir else {})},
                         'error': type(exit_code) is int and exit_code != 0}
                 calls.append(call)
                 commands.append({'command': command, 'raw_command': raw_command,
@@ -1045,8 +1048,44 @@ def observed_test_succeeded(row: dict, configured: str) -> bool:
     return failure is None
 
 
-def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path) -> Optional[str]:
-    """Reject attempts to read hidden reviewer/evidence transport from a model thread."""
+SECRET_ENV_NAME = re.compile(r'(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|(?:^|_)(?:KEY|PASS|PWD)(?:_|$))', re.I)
+
+
+def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path, cwd: Optional[Path] = None, env: Optional[dict] = None,
+                     writable_roots: tuple = (), configured: tuple = (), fallbacks: Optional[list] = None) -> Optional[str]:
+    """v297-eg-wire, the hybrid (owner 2026-10-04): the typed-operation evidence guard (evidence_guard.py) decides every call it can
+    resolve: PROTECTED holds, ALLOW passes even where the old substring match would have held. A call it cannot resolve falls back to
+    the pre-v2.9.7 substring guard, exactly as before, and its reason (cut to 300 characters) is appended to `fallbacks` (the receipt
+    counts them). Secret-named variables never expand, so no secret value reaches a reason; other values may, as in the stdout evidence.
+    Known limit: the guard runs after the turn, so a symlink made and removed inside the turn is not seen."""
+    ctx = evidence_guard.Context(evidence, rounds, cwd, {k: v for k, v in (env or {}).items() if not SECRET_ENV_NAME.search(k)},
+                                 tuple(writable_roots), tuple(c for c in configured if isinstance(c, str)))
+    try: verdicts = evidence_guard.turn_verdicts(calls, ctx)
+    except Exception as exc:   # a guard failure (RecursionError, ...) falls back to the substring guard for every call
+        verdicts = [(evidence_guard.UNKNOWN, f'evidence guard error: {type(exc).__name__}')] * len(calls)
+    if found := next((reason for verdict, reason in verdicts if verdict == evidence_guard.PROTECTED), None): return found
+    for call, (verdict, reason) in zip(calls, verdicts):
+        if verdict == evidence_guard.UNKNOWN:
+            if fallbacks is not None: fallbacks.append(reason[:300])
+            if legacy := _legacy_sensitive_access([call], role, evidence, rounds): return legacy
+    return None
+
+
+def configured_command_issue(workspace: Path, run_dir: Path, commands: list) -> Optional[str]:
+    """v297-eg-wire admission (hybrid): only a configured test or reviewer command that names a protected path is refused, before any
+    model turn; a form the guard cannot resolve is not refused (its runs fall back to the substring guard)."""
+    for command in commands:
+        ctx = evidence_guard.Context(run_dir / 'evidence', run_dir / 'rounds', Path(workspace).resolve(),
+                                     {k: v for k, v in cli_env().items() if not SECRET_ENV_NAME.search(k)}, configured=(command,))
+        found = evidence_guard.first_violation([{'tool': 'Bash', 'input': {'command': command}}], ctx)
+        if found and found[0] == evidence_guard.PROTECTED:
+            return (f'configured command {command!r} names a protected path ({found[1]}); keep its operands and output paths '
+                    'outside the run directory')
+    return None
+
+
+def _legacy_sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path) -> Optional[str]:
+    """The pre-v2.9.7 substring guard, unchanged: the hybrid's fallback for calls the typed guard cannot resolve."""
     evidence_text = str(evidence)
     rounds_text = str(rounds)
     for call in calls:
@@ -1918,8 +1957,7 @@ class Coordinator:
         """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
         secret_names = set(self._probe_env_names) if self._probe_env_names is not None else {
             name for name in os.environ
-            if re.search(r'(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|'
-                         r'(?:^|_)(?:KEY|PASS|PWD)(?:_|$))', name, re.I)
+            if SECRET_ENV_NAME.search(name)
         }
         secret_names.update({
             'ANTHROPIC_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
@@ -4327,7 +4365,12 @@ class Coordinator:
             receipt['observed_tool_calls'] = tool_calls
             receipt['observed_commands'] = observed_commands
             answer['observed_commands'] = observed_commands
-            forbidden = sensitive_access(tool_calls, role, self.evidence, self.rounds)
+            fallbacks = []   # configured bytes: CLI commands only (a work item may sit in the workspace the author writes)
+            forbidden = sensitive_access(tool_calls, role, self.evidence, self.rounds,
+                                         None if receipt['vendor'] == 'codex' else active_workspace,   # Codex events carry no workdir
+                                         env, (self.workspace, active_workspace, self.author_temp_dir),
+                                         (self.args.test_command, *self.args.reviewer_command), fallbacks)
+            receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20]}   # v297-eg-wire: substring-guard calls
             if forbidden:
                 raise ValueError(f'{role} accessed isolated {forbidden}')
             if context_before != context_after:
@@ -7020,6 +7063,11 @@ def main(argv=None) -> int:
             resolve_test_executable(workspace, args.test_command)
         except ValueError as exc:
             print('REFUSED: ' + str(exc))
+            return 2
+        try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text())
+        except (OSError, ValueError): workitem_commands = []                    # the coordinator reports an unreadable work item itself
+        if issue := configured_command_issue(workspace, run_dir, [args.test_command, *args.reviewer_command, *workitem_commands]):
+            print('REFUSED: ' + issue)                                           # v297-eg-wire: before any model turn
             return 2
     if args.action == 'status' and args.brief is not None:
         return status_brief(run_dir, args.brief)

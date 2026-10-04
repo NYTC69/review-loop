@@ -67,7 +67,6 @@ FOLLOW_FLAGS = {'grep': 'R', 'egrep': 'R', 'fgrep': 'R', 'find': 'L', 'rg': 'L',
 DEFAULT_SCOPE = {'rg', 'ag', 'ack', 'find', 'tree', 'du', 'fd', 'fdfind'}        # these search the cwd when given no path
 FILTER_OPTS = {'--exclude', '--include', '--exclude-dir', '--include-dir'}   # in these commands only, the value is a filter pattern
 FILTER_COMMANDS = {'rsync', 'tar', 'grep', 'egrep', 'fgrep', 'du', 'ag', 'ack'}   # (gcc --include, for one, reads the file)
-STDIN_PROGRAM = re.compile(r'-|/dev/stdin|/dev/fd/\d+|/proc/(?:self|\d+)/fd/\d+')
 DIR_OPTS = {'-C', '--directory', '--chdir', '--cwd', '--prefix', '--work-tree', '--git-dir', '--rootdir', '--package-path'}
 TEXT_TOOLS = {'StructuredOutput', 'TodoWrite', 'Agent', 'Task', 'ExitPlanMode', 'BashOutput', 'KillShell', 'KillBash'}
 PATH_TOOLS = {'Read': 'file_path', 'Write': 'file_path', 'Edit': 'file_path', 'MultiEdit': 'file_path', 'NotebookEdit': 'notebook_path',
@@ -98,13 +97,18 @@ class Context:
 def first_violation(calls: list, ctx: Context) -> Optional[tuple]:
     """(PROTECTED, reason) if any call has a protected operand, else the first (UNKNOWN, reason), else None. Warm-up passes gather every
     cwd candidate and changed variable of the turn until nothing grows, so the order the stream lists the calls in does not matter."""
+    found = [verdict for verdict in turn_verdicts(calls, ctx) if verdict[0] != ALLOW]
+    return next((v for v in found if v[0] == PROTECTED), found[0] if found else None)
+
+
+def turn_verdicts(calls: list, ctx: Context) -> list:
+    """(verdict, reason) per call, after the warm-up passes of first_violation (v297-eg-wire: the hybrid needs each call's verdict)."""
     guard = TurnGuard(ctx)
     for _ in range(len(calls) + 2):
         before = (set(guard.cwds), set(guard.tainted))
         for call in calls: guard.classify(call)
         if (set(guard.cwds), set(guard.tainted)) == before: break
-    found = [verdict for verdict in map(guard.classify, calls) if verdict[0] != ALLOW]
-    return next((v for v in found if v[0] == PROTECTED), found[0] if found else None)
+    return [guard.classify(call) for call in calls]
 
 
 def code_mode_exec(code) -> Optional[dict]:
@@ -158,17 +162,27 @@ class TurnGuard:
 
     def __init__(self, ctx: Context):
         self.ctx, self.cwds, self.tainted, self._aliases, self.opaque_ok, self.partial = ctx, {ctx.cwd}, set(), None, False, None
+        self.unresolved, self.current = set(), None   # ids of Bash calls that did not resolve; the call being classified
         self.roots = [(_canonical(ctx.evidence), 'evidence directory'), (_canonical(ctx.rounds), 'review output directory')]
         texts = {str(p).rstrip('/') for p, _ in self.roots} | {str(ctx.evidence).rstrip('/'), str(ctx.rounds).rstrip('/')}
         self.literal = re.compile('(?:' + '|'.join(map(re.escape, sorted(texts, key=len, reverse=True))) + r')(?![^/\s"\'`;:,=)|&<>])')
 
     def classify(self, call: dict) -> tuple:
-        self.partial = None
+        self.partial, self.current = None, id(call)
         try: return (PROTECTED, reason) if (reason := self._call(call)) else (ALLOW, None)
         except Unresolved as exc:   # a protected operand found before the unresolved part, or a literal root anywhere, still counts
             if self.partial: return PROTECTED, self.partial
             if self.literal.search(json.dumps(call.get('input'), ensure_ascii=False)): return PROTECTED, 'evidence or review output path in unresolved input'
             return UNKNOWN, str(exc)
+
+    def scope(self) -> set:
+        """The cwd candidates for this call: unknown (None) too once another Bash call of the turn did not resolve, since its unparsed
+        rest may have run cd ($(echo cd) ../run, eval). The call's own failure does not count against itself."""
+        return self.cwds | {None} if self.unresolved - {self.current} else set(self.cwds)
+
+    def taint(self) -> set:
+        """Changed variables for this call: every variable once another Bash call of the turn did not resolve (it may export)."""
+        return self.tainted | {'*'} if self.unresolved - {self.current} else self.tainted
 
     # --- protected checks ---------------------------------------------------------------------------------------------------------------
     def aliases(self) -> set:
@@ -231,7 +245,7 @@ class TurnGuard:
         if tool == 'Glob':
             base, pattern = given.get('path', '.'), given.get('pattern')
             if not isinstance(base, str) or not isinstance(pattern, str): raise Unresolved('Glob pattern or path is not a string')
-            return self.operand(os.path.join(base, pattern), self.cwds, glob=True)   # a pattern can move the scope (../run/...)
+            return self.operand(os.path.join(base, pattern), self.scope(), glob=True)   # a pattern can move the scope (../run/...)
         if tool == 'Bash': return self.command(given.get('command'), persistent=True)
         if tool == 'command_execution': return self.command(given.get('command'), persistent=False, workdir=given.get('workdir'))
         if tool == 'code_mode':
@@ -241,27 +255,30 @@ class TurnGuard:
             changes = given.get('changes')
             if not isinstance(changes, list) or not all(isinstance(c, dict) and isinstance(c.get('path'), str) for c in changes):
                 raise Unresolved('file_change without literal paths')
-            return next(filter(None, (self.operand(c['path'], self.cwds) for c in changes)), None)
+            return next(filter(None, (self.operand(c['path'], self.scope()) for c in changes)), None)
         raise Unresolved(f'unknown tool {tool}')
 
     def _structured(self, value, recursive: bool) -> Optional[str]:
         """A structured path is literal ($NAME stays text); a leading ~ is checked both as text and as the home directory. The tool's
         traversal policy is not established, so a recursive scope counts symlinks it may follow."""
         if not isinstance(value, str) or not value: raise Unresolved('missing literal path')
-        if (reason := self.operand(value, self.cwds, recursive, follow=recursive)) or not re.match(r'~(?:/|$)', value): return reason
+        if (reason := self.operand(value, self.scope(), recursive, follow=recursive)) or not re.match(r'~(?:/|$)', value): return reason
         if 'HOME' not in self.ctx.env: raise Unresolved('~ with an unknown HOME')
-        return self.operand(self.ctx.env['HOME'] + value[1:], self.cwds, recursive, follow=recursive)
+        return self.operand(self.ctx.env['HOME'] + value[1:], self.scope(), recursive, follow=recursive)
 
     def command(self, text, persistent: bool, workdir=None) -> Optional[str]:
         """A Claude Bash command keeps its cwd and variables across calls; a Codex command starts fresh in its workdir."""
         if not isinstance(text, str) or not text.strip(): raise Unresolved('missing command text')
         self.opaque_ok = text.strip() in {c.strip() for c in self.ctx.configured}   # configured bytes, never a model-declared label
-        cwds = set(self.cwds) if persistent else {self.ctx.cwd}
+        cwds = self.scope() if persistent else {self.ctx.cwd}
         if workdir is not None:
             if not isinstance(workdir, str) or not workdir: raise Unresolved('workdir is not a literal path')
             cwds = {Path(workdir)} if Path(workdir).is_absolute() else {None if c is None else c / workdir for c in cwds}
-        reason, cwds = self._run(text, cwds, {k: v for k, v in self.ctx.env.items() if k not in ('PWD', 'OLDPWD')})
-        if persistent: self.cwds |= cwds
+        try: reason, cwds = self._run(text, cwds, {k: v for k, v in self.ctx.env.items() if k not in ('PWD', 'OLDPWD')})
+        except Unresolved:   # the unparsed rest may cd or set variables ($(echo cd) ../run): see scope()
+            if persistent and not self.unresolved - {self.current}: self.unresolved.add(self.current)   # only a call no other one poisoned
+            raise
+        if persistent: self.cwds |= cwds - {None}
         return reason
 
     def _run(self, text: str, cwds: set, env: dict):
@@ -269,10 +286,14 @@ class TurnGuard:
         for _, words in _simple_commands(_tokens(text, {}, set(), expand=False)):   # pass 1: the variables this command may change
             self._taint(words)
         reason = None
-        for redirects, words in _simple_commands(_tokens(text, env, self.tainted)):
-            if None in cwds: raise Unresolved('command with an unknown cwd')
-            for target, glob in redirects: reason = reason or self.word(target, cwds, False, glob)
-            reason, cwds = self._simple(words, cwds, env, reason)
+        for redirects, words in _simple_commands(_tokens(text, env, self.taint())):
+            known = cwds - {None}                                                 # the known candidates first: a protected operand still counts
+            for target, glob in redirects: reason = reason or self.word(target, known, False, glob)
+            reason, known = self._simple(words, known, env, reason)
+            if None in cwds:
+                if reason: return reason, cwds
+                raise Unresolved('command with an unknown cwd')
+            cwds = known
         return reason, cwds
 
     def _taint(self, words: list) -> None:
@@ -360,15 +381,15 @@ class TurnGuard:
             local |= {c / link for c in cwds} | {(c / link).parent for c in cwds}
             recursive = follow = True
         for word, glob in operands: reason = reason or self.word(word, local, recursive, glob, follow)
-        if family in INTERPRETERS or family in RARE_SHELLS: self._interpreter(name, family, args)   # after the operands: a protected one wins
+        if family in INTERPRETERS or family in RARE_SHELLS: self._interpreter(name, family, args, cwds)   # after the operands: protected wins
         return reason, cwds
 
     def _cd(self, args: list, cwds: set, env: dict) -> set:
         if len(args) > 1 or (args and (args[0][0].startswith('-') or args[0][1])): raise Unresolved('cd with options, - or a wildcard')
-        if not args and ('HOME' not in env or {'HOME', '*'} & self.tainted): raise Unresolved('cd to an unknown HOME')
+        if not args and ('HOME' not in env or {'HOME', '*'} & self.taint()): raise Unresolved('cd to an unknown HOME')
         target = Path(args[0][0] if args else env['HOME'])
         if args and not target.is_absolute() and not args[0][0].startswith(('./', '../')) and args[0][0] not in ('.', '..') \
-                and ('CDPATH' in env or {'CDPATH', '*'} & self.tainted): raise Unresolved('cd may follow CDPATH')
+                and ('CDPATH' in env or {'CDPATH', '*'} & self.taint()): raise Unresolved('cd may follow CDPATH')
         return cwds | ({_canonical(target)} if target.is_absolute() else {_canonical(c / target) for c in cwds})
 
     def _env(self, words: list, cwds: set, env: dict, reason):
@@ -377,14 +398,25 @@ class TurnGuard:
             if flag in ('-C', '--chdir') or flag.startswith('--chdir='): raise Unresolved('env changes the directory')
             if flag in ('-S', '--split-string') or flag.startswith('--split-string='):
                 inner = flag.split('=', 1)[1] if '=' in flag else (words.pop(0)[0] if words else '')
-                parts = _simple_commands(_tokens(inner, env, self.tainted))
+                parts = _simple_commands(_tokens(inner, env, self.taint()))
                 if len(parts) != 1 or parts[0][0]: raise Unresolved('env -S string with shell syntax')
                 words = parts[0][1] + words
             elif flag in ('-u', '--unset'): words = words[1:]
             elif not flag.startswith('-'): reason = reason or self.word(flag.split('=', 1)[1] or '.', cwds, True, glob)
         return words, reason
 
-    def _interpreter(self, name: str, family: str, args: list) -> None:
+    @staticmethod
+    def _stdin_path(word: str, cwds) -> bool:
+        """`-`, or a script path that is (or resolves to) something under /dev or /proc, however it is spelled (/dev/./stdin,
+        //dev/stdin, a relative path from /dev, a planted link): the program comes from stdin or a descriptor."""
+        if word == '-': return True
+        if word.startswith('-'): return False
+        bases = [Path(word)] if word.startswith('/') else [c / word for c in cwds if c is not None]
+        try: spellings = {s for b in bases for s in (re.sub(r'^/+', '/', os.path.normpath(str(b))), os.path.realpath(b))}
+        except (OSError, ValueError): return True
+        return any(re.match(r'/(?:dev|proc)(?:/|$)', s) for s in spellings)
+
+    def _interpreter(self, name: str, family: str, args: list, cwds=()) -> None:
         """Inline code or a program read from stdin is an OpaqueProgram, allowed only inside a configured command. A POSIX shell is fine
         only as `shell [plain flags | -o NAME | -O NAME] script.sh`: any other option before the script (-c, -s, --rcfile, ...), `-` or no
         script is opaque; a rare shell is opaque unless it only prints its version or help. Other interpreters take bounded forms only:
@@ -404,7 +436,7 @@ class TurnGuard:
                 if letters[-1:] in ('o', 'O') and set(letters[:-1]) <= SHELL_FLAGS and index + 1 < len(args) \
                         and re.fullmatch(r'[a-z_]+', args[index + 1][0]): skip = True; continue   # -o pipefail, -eo pipefail, -O extglob
                 if word.startswith('--') and word not in SHELL_LONG and not prints_only or \
-                        letters and not set(letters) <= SHELL_FLAGS or word == '+' or STDIN_PROGRAM.fullmatch(word):
+                        letters and not set(letters) <= SHELL_FLAGS or word == '+' or self._stdin_path(word, cwds):
                     return opaque('runs inline code, reads its program from stdin or takes an option value')
                 if not word.startswith(('-', '+')): return                         # the script; later words are its arguments
             if not prints_only: opaque('reads its program from stdin')
@@ -414,13 +446,18 @@ class TurnGuard:
         for index, (word, _) in enumerate(args):
             if skip: skip = False; continue
             option, eq, value = word.partition('=')
-            if option in valued:                                                  # a known value option and its value
-                value = value if eq else (args[index + 1][0] if index + 1 < len(args) else '')
+            attached = not word.startswith('--') and len(word) > 2 and word[:2] in valued   # -Ilib, -Wignore, -Mstrict
+            if option in valued or attached:                                      # a known value option and its value
+                value = word[2:] if attached else value if eq else (args[index + 1][0] if index + 1 < len(args) else '')
                 scheme = re.match(r'\s*([A-Za-z][A-Za-z0-9+.-]*):', value)          # a data: (or other) URL can carry the program itself
                 if option in ('--import', '--loader', '--experimental-loader') and scheme and scheme.group(1).lower() not in ('node', 'file'):
                     return opaque('runs inline code')
-                skip = not eq; continue
-            if option in ('--eval', '--print', 'eval') or STDIN_PROGRAM.fullmatch(word) or \
+                if family == 'perl' and word[:2] in ('-M', '-m') and not re.fullmatch(r'-?\w+(?:::\w+)*(?:=[\w,]*)?', value):
+                    return opaque('runs inline code')                             # -M'Mod;CODE' becomes `use Mod;CODE`
+                if family == 'php' and word[:2] == '-d' and re.match(r'\s*auto_(?:prepend|append)_file\s*=', value, re.I):
+                    return opaque('runs inline code')                             # php://stdin or a data:// program
+                skip = not eq and not attached; continue                          # _simple checks the value as an operand
+            if option in ('--eval', '--print', 'eval') or self._stdin_path(word, cwds) or \
                     (word[:1] in '-+' and not word.startswith('--') and set(word[1:]) & set(code)):
                 return opaque('runs inline code or reads its program from stdin')
             if family in ('python', 'pypy') and word == '-m': return

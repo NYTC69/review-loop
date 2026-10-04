@@ -7,6 +7,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from paired_session import evidence_guard as eg
 
@@ -276,6 +277,46 @@ class EvidenceGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(guard.classify({'tool': 'Bash', 'input': {'command': command}})[0], U)
                 self.assertIn('inline code', guard.classify({'tool': 'Bash', 'input': {'command': command}})[1])
+
+    def test_eg_b3_r3_attached_option_values_and_stdin_spellings(self):   # v297-eg-wire: the two eg-b3 R3 MEDIUMs
+        (self.roots['W'] / 'devlink').symlink_to('/dev', target_is_directory=True)
+        for command, desired in (('ruby -Ilib x.rb', A), ('perl -Ilib x.pl', A), ('perl -Mstrict x.pl', A), ('python3 -Wignore x.py', A),
+                                 ('python3 -Wignore::DeprecationWarning x.py', A), ('php -dmemory_limit=1G x.php', A),
+                                 ('perl -MList::Util=sum,max x.pl', A), ('perl -M-warnings x.pl', A),
+                                 ("perl '-Mstrict;print 1' x.pl", U), ("perl -M 'strict;print 1' x.pl", U), ('perl -mPOSIX=() x.pl', U),
+                                 ("node '--import=data:text/javascript,1' x.js", U), ('php -dauto_prepend_file=php://stdin x.php', U),
+                                 ("php -d 'auto_append_file=data://text/plain,x' x.php", U), ('php -dAUTO_PREPEND_FILE=/dev/stdin x.php', U),
+                                 ('ruby -I../run/evidence x.rb', P),          # the attached value is still an operand
+                                 ('printf x | bash /dev/./stdin', U), ('printf x | bash //dev/stdin', U), ('printf x | bash /dev/fd/../fd/0', U),
+                                 ('cd /dev && bash stdin', U), ('printf x | python3 /dev/./stdin', U), ('printf x | bash devlink/stdin', U),
+                                 ('printf x | python3 ' + '../' * 40 + 'dev/stdin', U), ('bash scripts/check.sh', A), ('tcsh x.csh', U)):
+            with self.subTest(command=command):
+                self.assertEqual(self.verdict([('Bash', {'command': command})], aliases=False), desired)
+        with mock.patch('os.path.realpath', lambda path: '/home/u/input.txt'):   # Linux: /dev/stdin -> /proc/self/fd/0 -> a regular file
+            self.assertTrue(eg.TurnGuard._stdin_path('//dev/stdin', ()))
+            self.assertTrue(eg.TurnGuard._stdin_path('../' * 40 + 'dev/stdin', (self.roots['W'],)))
+        with mock.patch('os.path.realpath', side_effect=OSError('loop')):         # unresolvable: treated as stdin
+            self.assertTrue(eg.TurnGuard._stdin_path('scripts/check.sh', (self.roots['W'],)))
+        self.assertFalse(eg.TurnGuard._stdin_path('scripts/check.sh', (self.roots['W'],)))
+
+    def test_an_unresolved_bash_call_drops_the_cwd_and_variables(self):   # v297-eg-wire: $(echo cd) ../run may run cd, eval may export
+        for first, second in (('cd ../run && ls $(echo .)', 'cat evidence/a.txt'), ('export HOME=../run; $(true)', 'cat ~/evidence/a.txt'),
+                              ('eval "cd ../run"', 'cat evidence/a.txt'), ("python3 -c 'pass'; cd ../run", 'cat evidence/a.txt'),
+                              ('ls $(echo .)', 'cat "$WORKSPACE/src/a.py"')):
+            with self.subTest(first=first):
+                calls = [{'tool': 'Bash', 'input': {'command': c}} for c in (first, second)]
+                self.assertEqual([v for v, _ in eg.turn_verdicts(calls, self.ctx())], [U, U])
+                self.assertEqual([v for v, _ in eg.turn_verdicts(calls[1:], self.ctx())], [A])   # alone, it resolves
+        calls = [{'tool': 'Bash', 'input': {'command': c}} for c in ('export RUN=/elsewhere; $(true)', 'cat "$RUN/evidence/a.txt"')]
+        self.assertEqual([v for v, _ in eg.turn_verdicts(calls, self.ctx())], [U, U])            # $RUN may have changed
+        protected = 'cd ../run && cat evidence/a.txt && python3 -c pass2'                        # PROTECTED, with an unresolved tail
+        calls = [{'tool': 'Bash', 'input': {'command': c}} for c in ('cat src/a.py', protected)]
+        self.assertEqual([v for v, _ in eg.turn_verdicts(calls, self.ctx())], [U, P])            # the benign call does not poison it back
+        self.assertEqual([v for v, _ in eg.turn_verdicts(calls[::-1], self.ctx())], [P, U])
+        calls = [{'tool': 'Bash', 'input': {'command': 'ls $(echo .)'}}, {'tool': 'Read', 'input': {'file_path': self.at('@W/src/a.py')}}]
+        self.assertEqual([v for v, _ in eg.turn_verdicts(calls, self.ctx())], [U, A])   # an absolute path needs no cwd
+        calls = [{'tool': 'command_execution', 'input': {'command': c}} for c in ('ls $(echo .)', 'cat src/a.py')]
+        self.assertEqual([v for v, _ in eg.turn_verdicts(calls, self.ctx())], [U, A])   # a Codex command starts fresh
 
     def test_an_alias_through_another_alias_is_followed(self):
         hop = self.roots['ROOT'] / 'hop'
