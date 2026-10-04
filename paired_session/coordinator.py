@@ -1959,9 +1959,35 @@ class Coordinator:
             finally: self._probe_env_names = saved
         digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
         if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
-            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest}
+            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest,
+                               **self._void_cause(optin, {'author_flags_digest': self.author_flags_digest})}   # ENV-NAME: say why
             self.save()
         return optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided')
+
+    def _env_names_now(self) -> list[str]:   # ENV-NAME: the secret env-var names the Claude sandbox denies in this environment
+        return sorted(entry['name'] for entry in self._claude_sandbox_settings('author')['sandbox']['credentials']['envVars'])
+
+    def _under_env_names(self, names, compute):   # FIELD-10's comparison: evaluate with another env-name set, then restore
+        saved, self._probe_env_names = self._probe_env_names, set(names)
+        try: return compute()
+        finally: self._probe_env_names = saved
+
+    def _void_cause(self, record: dict, digests: dict) -> dict:
+        """ENV-NAME (docs/env-name-effects.md): why an operator acceptance stopped matching. Only the secret env-var names changed when
+        its recorded digests come back under the names recorded with it; the void itself is unchanged (owner decision D-ENV-1)."""
+        names = record.get('secret_env_names')
+        if not (isinstance(names, list) and all(isinstance(n, str) for n in names)): return {'cause': 'flags changed'}
+        if any(self._under_env_names(names, compute) != record.get(key) for key, compute in digests.items()): return {'cause': 'flags changed'}
+        now = set(self._env_names_now())
+        return {'cause': 'secret env-var names changed', 'names_added': sorted(now - set(names)), 'names_removed': sorted(set(names) - now)}
+
+    @staticmethod
+    def _void_text(record: dict) -> str:
+        voided = record.get('voided') if isinstance(record.get('voided'), dict) else {}
+        if 'cause' not in voided and isinstance(voided.get('reason'), str): return voided['reason']   # e.g. permission-probe re-run
+        if voided.get('cause') != 'secret env-var names changed': return 'flags changed'
+        return ('only the secret env-var names changed: added ' + (', '.join(voided.get('names_added') or []) or 'none')
+                + '; removed ' + (', '.join(voided.get('names_removed') or []) or 'none'))
 
     def _author_probe_waived(self, report: dict) -> bool:
         """HL-FIX: the opt-in waives only the Claude author probe: the report is UNKNOWN solely for the author's model-escape-unknown / refused
@@ -1987,7 +2013,7 @@ class Coordinator:
         except (OSError, ValueError, AttributeError):
             probed = False
         if probed and (passed := self.probe_passed())[0]: return True, ''
-        voided = '; the earlier operator opt-in is void (author flags changed)' if optin.get('voided') else ''
+        voided = f'; the earlier operator opt-in is void ({self._void_text(optin)})' if optin.get('voided') else ''
         detail = ('; the recorded probe does not pass: ' + passed[1]) if probed else '; no Claude author probe PASS is recorded in permission-probe.json'   # FIELD-10
         return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
                        'author permission-probe passes (P0-3b) or the operator opts in with `run '
@@ -2147,7 +2173,8 @@ class Coordinator:
         if not self._gate_probe_covered(): return False   # RF-1: also for an acceptance saved earlier
         acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest()}
         if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
-            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen}; self.save()
+            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen, **self._void_cause(acc, {   # ENV-NAME: say why
+                'reviewer_flags_digest': self.reviewer_flags_digest, 'author_flags_digest': self.author_flags_digest, 'gate_flags_digest': self.gate_flags_digest})}; self.save()
         return acc.get('actor') == 'operator' and not acc.get('voided') and all(acc.get(k) == v for k, v in seen.items())
 
     def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
@@ -2219,9 +2246,10 @@ class Coordinator:
     def _probe_negative_status(self) -> str:   # P0-4b H1: status of this run's current, bound report when it is not a PASS, else ''
         try:
             raw = (self.run_dir / 'permission-probe.json').read_bytes(); report = json.loads(raw)
+            same = lambda: (report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
+                            and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
             current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
-                       and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
-                       and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
+                       and (same() or ((names := self._probe_report_env_names()) is not None and self._under_env_names(names, same))))   # ENV-NAME: FIELD-10's comparison
             return str(report.get('status')) if current and report.get('status') != 'PASS' and not self._author_probe_waived(report) else ''   # HL-FIX: the opted-in author part is not negative evidence
         except (OSError, ValueError, AttributeError): return ''
 
@@ -2229,6 +2257,8 @@ class Coordinator:
         passed, reason = self.probe_passed()
         if passed: return True, ''
         if self._probe_skip_accepted(): print('probe skipped by operator acceptance (--accept-probe-skip)'); return True, ''
+        if (acc := self.state.get('probe_skip_override') or {}).get('voided'):   # ENV-NAME: a voided acceptance is reported, not silent
+            reason += f'; the earlier --accept-probe-skip is void ({self._void_text(acc)}; pass --accept-probe-skip --reason TEXT again or run permission-probe)'
         if lifecycle_spine.fake_dispatch_guard(self.args): return False, reason       # the fake harness never touches the real cache
         reused, note = self._probe_cache_reuse()
         return (True, '') if reused else (False, reason + '; ' + note)
@@ -6989,7 +7019,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         if args.accept_unverified_claude_author:
             co.state['claude_author_override'] = {
                 'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
-                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
             co.save()
         if not (claude_ok := co.claude_author_verified())[0]:
             return co.refused(claude_ok[1])
@@ -7033,7 +7063,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
         if not co._gate_probe_covered():
             return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
-        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}; co.save()
+        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}; co.save()
     if args.action == 'reject':
         if not args.skip_probe:
             passed, reason = co.probe_gate()
