@@ -59,7 +59,7 @@ class WiDeadlineTests(unittest.TestCase):
             self.resumed('--wi-deadline', '100')
         self.assertIsNone(self.resumed().args.wi_deadline)
 
-    def test_a_held_run_past_its_deadline_holds_again_on_resume_without_a_turn(self):
+    def test_a_held_run_past_its_deadline_refuses_resume_and_keeps_its_hold(self):
         done = self.run_coordinator('--wi-deadline', '100000', '--stop-after-plan')
         state_path = self.run_dir / 'state.json'
         state = json.loads(state_path.read_text())
@@ -72,8 +72,77 @@ class WiDeadlineTests(unittest.TestCase):
             held = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
             after = json.loads(state_path.read_text())
             self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
-            self.assertIn('whole-WI deadline reached', after['hold_reason'])
+            self.assertIn('resume refused: whole-WI deadline reached', held.stdout + held.stderr)
+            self.assertEqual((after['status'], after['hold_reason']), ('HOLD', state['hold_reason']))   # F2b: never rewritten
             self.assertEqual((after['sequence'], after['invocations_used']), (state['sequence'], state['invocations_used']))
+
+    def test_an_uncertain_turn_past_the_deadline_is_settled_without_a_dispatch_and_can_be_rescoped(self):
+        done = self.run_coordinator('--wi-deadline', '100000', '--stop-after-plan')
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        state_path = self.run_dir / 'state.json'
+        state = json.loads(state_path.read_text())
+        gone = subprocess.Popen(['true'], start_new_session=True)
+        gone.wait()                                                   # its process group no longer exists
+        uncertain = {'pid': gone.pid, 'role': 'author', 'phase': 'EXEC', 'sequence': state['sequence'] + 1}
+        state.update(started_at=state['started_at'] - 100001, uncertain_active=uncertain)
+        state_path.write_text(json.dumps(state))
+        command = self.command('--wi-deadline', '100000', '--skip-probe', '--retry-uncertain')
+        command[2] = 'resume'
+        held = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        after = json.loads(state_path.read_text())
+        self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
+        self.assertIn('whole-WI deadline reached', after['hold_reason'])
+        self.assertEqual((after['uncertain_active'], after['active'], after['sequence'], after['invocations_used']),
+                         (None, None, state['sequence'], state['invocations_used']))   # settled, nothing dispatched
+        self.assertEqual([row['sequence'] for row in after['abandoned_turns']], [uncertain['sequence']])
+        rescoped = self.run_operator_action('note', '--scope-change', '--text', 'Split the work item.')
+        self.assertEqual(rescoped.returncode, 0, rescoped.stdout + rescoped.stderr)
+        self.assertEqual(json.loads(state_path.read_text())['status'], 'ABORTED')
+
+    def test_an_uncertain_probe_turn_past_the_deadline_is_settled_without_a_new_probe(self):
+        done = self.run_coordinator('--wi-deadline', '100000', '--stop-after-plan')
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        state_path, report = self.run_dir / 'state.json', self.run_dir / 'permission-probe.json'
+        state = json.loads(state_path.read_text())
+        gone = subprocess.Popen(['true'], start_new_session=True)
+        gone.wait()
+        uncertain = {'pid': gone.pid, 'role': 'probe', 'phase': 'PROBE', 'sequence': state['sequence'] + 1}
+        state.update(started_at=state['started_at'] - 100001, uncertain_active=uncertain)
+        state_path.write_text(json.dumps(state))
+        had_report = report.exists()
+        command = self.command('--retry-uncertain')
+        command[2] = 'permission-probe'
+        held = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        after = json.loads(state_path.read_text())
+        self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
+        self.assertIn('whole-WI deadline reached', after['hold_reason'])
+        self.assertEqual((after['uncertain_active'], after['sequence'], after['invocations_used']),
+                         (None, state['sequence'], state['invocations_used']))
+        self.assertEqual([row['sequence'] for row in after['abandoned_turns']], [uncertain['sequence']])
+        self.assertEqual((report.exists(), after.get('permission_probe'), after.get('probe_skip_override'), 'permission_probe_superseded' in after),
+                         (had_report, state.get('permission_probe'), state.get('probe_skip_override'), 'permission_probe_superseded' in state))
+        rescoped = self.run_operator_action('note', '--scope-change', '--text', 'Split the work item.')
+        self.assertEqual(rescoped.returncode, 0, rescoped.stdout + rescoped.stderr)
+
+    def test_a_round_limit_hold_past_the_deadline_keeps_its_owner_override(self):
+        flags = ('--wi-deadline', '100000', '--exercise-revisions', '--max-exec-rounds', '1', '--shadow', 'off',
+                 '--polish-round', 'off', '--gate-vendor', 'claude')
+        held = self.run_coordinator(*flags)
+        state_path = self.run_dir / 'state.json'
+        state = json.loads(state_path.read_text())
+        self.assertEqual((held.returncode, state['hold_reason']), (2, 'EXEC round limit reached'), held.stdout + held.stderr)
+        state['started_at'] -= 100001
+        state_path.write_text(json.dumps(state))
+        for action in ('resume', 'permission-probe'):
+            command = self.command(*flags, '--skip-probe')
+            command[2] = action
+            refused = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(action + ' refused: whole-WI deadline reached', refused.stdout + refused.stderr)
+            self.assertEqual(json.loads(state_path.read_text()), state)   # no dispatch, nothing rewritten
+        done = self.run_operator_action('accept', '--override-rejection', '--reason', 'Owner ruling: accepted as held.')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(json.loads(state_path.read_text())['status'], 'ACCEPTED')
 
     def test_a_done_run_past_its_deadline_refuses_reject_and_stays_acceptable(self):
         done = self.run_coordinator('--wi-deadline', '100000', '--shadow', 'off', '--polish-round', 'off')

@@ -393,8 +393,16 @@ restarts all count. It is checked before every dispatch: once the deadline has
 passed, the run HOLDs instead of starting the next turn. A running turn is never
 cut short and keeps its own timeout. The value is fixed at `run`: `resume`
 keeps the saved deadline and refuses a different one, and the operator actions
-keep the saved deadline. A run held by its deadline holds again on `resume`;
-abort it, or use `note --scope-change` to start a successor. A `DONE` run past
+keep the saved deadline. The deadline only blocks new dispatches: once it has
+passed, `resume` and `permission-probe` are refused without dispatching or
+touching the HOLD, so every HOLD keeps its reason and its exits
+(`accept --override-rejection` at a round-limit or rejected-tree HOLD,
+`note --scope-change`, `abort`). The one exception is an uncertain in-flight
+turn: `resume` records it, and `resume --retry-uncertain` (or
+`permission-probe --retry-uncertain` for a probe turn) still verifies its
+process group is gone and archives it, then HOLDs with the deadline reason
+instead of dispatching, so `note --scope-change` works afterwards. A wall clock
+that moved back (below) is treated the same way. A `DONE` run past
 its deadline stays acceptable: `accept` and `reject --scope-change` work, while
 `reject` and `resume --polish` are refused because their next dispatch could
 only HOLD. If the wall clock moves back by more than 60 seconds

@@ -2149,7 +2149,8 @@ class Coordinator:
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
             self.args.wi_deadline = self.state['config'].get('wi_deadline')
         elif 'wi_deadline' not in self.state['config']:
-            raise ValueError('--wi-deadline is fixed at run start; this run was started without one')
+            raise ValueError('--wi-deadline is fixed at run start (the run or permission-probe that creates the run directory); '
+                             'this run directory was created without one')
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
@@ -3126,21 +3127,23 @@ class Coordinator:
         if not limit: return None
         now, seen = time.time(), self.state.get('wi_clock', 0)
         if now + 60 < seen:   # never a negative elapsed: no refund after the clock moves back
-            return (f'whole-WI deadline: the wall clock moved back {seen - now:.0f}s since the last dispatch; check the clock '
-                    '(resume works again once it is past the last dispatch time), or abort')
+            return (f'whole-WI deadline: the wall clock moved back {seen - now:.0f}s since the last dispatch '
+                    '(check the clock; dispatches work again once it is past the last dispatch time)')
         clock = max(now, seen)
         if record: self.state['wi_clock'] = clock   # a dispatch saves it; an operator-action check must not change the state its intent digest covers
         elapsed = clock - self.state['started_at']
         if elapsed >= limit:
             return (f'whole-WI deadline reached: {elapsed:.0f}s since the run started (--wi-deadline {limit}s); '
-                    'no new turn was started and resume holds again; abort, or note --scope-change to start a successor '
+                    'no new turn was started and resume is refused; abort, or note --scope-change to start a successor '
                     'with its own --wi-deadline')
         return None
 
-    def _refuse_past_deadline(self, action: str) -> None:   # F2: on a DONE run a dispatch past the deadline could only HOLD
+    def _refuse_past_deadline(self, action: str) -> None:   # F2: a deadline blocks new dispatches only; it never rewrites a DONE or a HOLD
         if issue := self._wi_deadline_issue(record=False):
-            raise ValueError(f'{action} refused: {issue.split(";")[0]}; the DONE tree stays acceptable: '
-                             'accept it, abort, or reject --scope-change')
+            kept = ('the DONE tree stays acceptable: accept it, abort, or reject --scope-change' if self.state.get('status') == 'DONE'
+                    else 'nothing changed: the HOLD keeps its reason, so its accept/override, note and abort paths stay as they are'
+                    if self.state.get('status') == 'HOLD' else 'nothing changed; abort, or note --scope-change to start a successor')
+            raise ValueError(f'{action} refused: {issue.split(";")[0]}; {kept}')
 
     def round_limit_hold(self, reason: str) -> str:   # RLO: the held tree, so accept --override-rejection can rule on exactly it
         self.state['round_limit_hold'] = {'hold_reason': reason, 'phase': self.state['phase'], 'tree_sha256': git_snapshot(self.workspace)[0],
@@ -5529,6 +5532,8 @@ class Coordinator:
         """One fresh reviewer turn proving allowlist use and write denial/detection."""
         self._publication_guard()
         uncertain = self.state.get('active') or self.state.get('uncertain_active')
+        if not uncertain:   # F2b: no FAIL record, no cache void, no rewritten HOLD after the deadline
+            self._refuse_past_deadline('permission-probe')
         if uncertain:
             if uncertain.get('phase') not in ('PROBE', 'AUTHOR_PERMISSION_PROBE'):
                 self.state['uncertain_active'] = uncertain
@@ -5567,6 +5572,9 @@ class Coordinator:
                      'uncertain in-flight CLI turn')):
                 self.state['hold_reason'] = 'permission probe retry cleared; permission probe is pending'
             self.save()
+            if past_deadline := self._wi_deadline_issue(record=False):   # F2b: settled and archived; no new probe, report or cache untouched
+                self.hold(past_deadline)
+                return False
         report_file = self.run_dir / 'permission-probe.json'      # P0-4 V0: an aborted re-probe must not leave the old PASS valid
         if report_file.exists(): os.replace(report_file, report_file.with_name('permission-probe.superseded.json'))
         self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
@@ -6549,6 +6557,9 @@ class Coordinator:
                 return self.hold('DONE state rejected with open blocking findings: ' +
                                  ', '.join(row['id'] for row in blocking))
             return 'DONE'
+        if not (self.state.get('active') or self.state.get('uncertain_active')):
+            self._refuse_past_deadline('resume')   # F2b: before any state change, so the HOLD (and RLO) survives
+        past_deadline = self._wi_deadline_issue(record=False)   # with an uncertain turn: settle it below, then HOLD instead of a dispatch
         reason = self.state.get('hold_reason', '')
         if self.state.get('active'):
             self.state['uncertain_active'] = self.state['active']
@@ -6583,6 +6594,9 @@ class Coordinator:
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
+        if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
+            self.state['active'] = self.state['uncertain_active'] = None
+            return self.hold(past_deadline)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state['active'] = None
