@@ -1,5 +1,49 @@
 # Changelog
 
+### v2.9.7：可选的整个工作项截止时间（FIELD-2）；同一类阻断连续三次就停下（FIELD-5）；Codex 默认模型改为 gpt-6.1-sol（paired-session 仍是可选入口，默认 legacy）
+
+- **升级须知**：
+  - Codex 角色（author、reviewer、gate）没有显式指定模型时，默认改为 `gpt-6.1-sol`（ADR-12）。这需要 codex-cli 0.159.2 或更新：版本更低或读不出时，`run`、`resume`、`permission-probe` 在创建 run state 之前就拒绝，提示升级 CLI，或对取了默认值的角色显式传 `--author-model/--reviewer-model/--gate-model gpt-6-luna`。版本只从已通过程序绑定的 codex 路径读取，绝不执行 workspace 指定的程序。
+  - 已经开始的 run 保留 state 里冻结的模型，不迁移，也不做版本检查；`abort`、`status` 照常可用。
+  - author 模型是 permission-probe 的键的一部分：依赖默认值的运营者升级后，每个 run 目录要重跑一次 `permission-probe`（旧 PASS 和探测缓存不再命中）。
+  - codex-cli 0.160.0 加入已验证版本（v2.9.6 发版时的真实 permission-probe：Codex reviewer 和 Codex gate 都 PASS）。
+- **feat（FIELD-2，v297-f2 / f2b）**：新增可选的 `--wi-deadline SECONDS`，默认关闭，从 run 开始按墙钟计时（HOLD、等待、重启都计入）。截止之后：
+  - 不再启动新的回合，在下一次派发处 HOLD；正在跑的回合不会被打断，单回合超时不变；
+  - 截止时间在 `run` 时固定，`resume` 沿用保存值、拒绝不同的值；
+  - 截止只拦新派发，绝不改写已有的 HOLD，也不拿掉 owner 的出口：`resume` 和 `permission-probe` 在不改任何东西的情况下被拒，round-limit HOLD 上的 `accept --override-rejection` 等出口都保留；还没收尾的不确定回合仍可用 `--retry-uncertain` 确认进程组已结束并归档，然后可以 `note --scope-change`；
+  - 已到 DONE 的 run 仍可 `accept` 或 `reject --scope-change`；`reject` 和 `resume --polish` 被拒，因为它们的下一次派发只会 HOLD；
+  - 墙钟回拨超过 60 秒时也 HOLD，已用时间不退还；
+  - scope-change 产生的后继 run 不继承截止时间，需要显式传入。
+- **feat（FIELD-5，v297-f5）**：EXEC reviewer、shadow 和 gate 的提示要求每个阻断 finding 以 `[class: <kebab-case-name>]` 开头。coordinator 只用正则读取这个显式标签，不做文本相似度判断。
+  - 同一类别在连续三次 EXEC reviewer 或 gate 的阻断里都出现时，run 先把下一回合交回 author，然后 HOLD "structural fix / re-scope needed"，并列出每次阻断的 finding 编号。
+  - 转去 gate 的批准、只带旧阻断项的 REVISE 不算打断；真正结束审查的批准会打断计数；HOLD 之后从头计数。
+  - 不关闭、不接受任何 finding；round-limit HOLD 和它的 override 优先。
+  - 没带标签的阻断项只计数（`unlabeled_blocking_findings`，run 合计和每个回合的 receipt），永不 HOLD。
+  - gate 的标签保留在 ledger summary 开头，persistent reviewer 能看到并复用。
+- **fix（v297-cwd，发版前真实 run 发现）**：在不是 git 仓库的目录里启动 run 时，第一次审查之后生成 review-mirror diff 的那条 git 命令在协调器自己的当前目录里执行；git 2.40 起在仓库外拒绝 `--attr-source`，run 在下一次派发前 HOLD（`cannot use --attr-source or GIT_ATTR_SOURCE without repo`）。现在这条命令在 workspace 里执行。这个问题从 v2.9.x 起就存在，之前的真实 run 都是在仓库里启动的。
+- **test（v297-tscale）**：测试里 10 秒以内的固定超时和 settle 等待改为随负载放大（系数 = clamp(load1/CPU 数, 1, 6)，可用 `PAIRED_SESSION_TEST_TIMEOUT_SCALE` 覆盖）。产品侧只认这个显式变量，未设置时生产超时完全不变。
+- **test（v297-linux-zombie）**：一个只在 Linux 上失败的测试改为像生产一样回收自己的进程组 leader（Linux 上只剩僵尸的进程组仍会回应 `killpg(pid, 0)`）；原来只靠它覆盖的"EPERM 视为已结束"分支另加了 mock 测试。
+- **test（CI-TESTFIX）**：测试不再依赖开发机：
+  - 本机没有 codex/claude 时用测试自带的存根，守卫仍拦截真实 CLI；
+  - 候选测试的工作区带一个最简单的测试（Python 3.12 起，unittest 找不到测试时退出码为 5）；
+  - 91 个依赖 macOS sandbox-exec 的测试在其他平台自动跳过（候选测试沙箱只在 macOS 上可用，其他平台拒绝派发）；
+  - 修了两处与文件系统顺序和 CPython 3.9.25 相关的写法。
+  - 另修了 models-a 引入的两个回归（v297-ci-regress）：args 上的记录不能被 JSON 序列化；一个 fake CLI 把启动时的 `--version` 当成了回合。
+- **审查**：B 道由 Opus 5.5 执行、Opus 5.5 审查。
+  - tscale：2 轮，R2 APPROVE。
+  - F2：3 轮（每轮各 1 个 MAJOR，均已修复），加 1 轮验证，APPROVE_WITH_ADVISORY。
+  - F2b：3 轮（2 个 MAJOR，均已修复），APPROVE_WITH_ADVISORY。
+  - F5：2 轮（R1 的 MAJOR：转去 gate 的批准打断了计数），R2 APPROVE_WITH_ADVISORY。
+  - models-a：2 轮（R1 有 1 个 CRITICAL：版本检查曾在程序绑定之前执行；1 个 MAJOR：abort/status 被拒），R2 APPROVE_WITH_ADVISORY。
+  - linux-zombie：2 轮。ci-regress：1 轮 APPROVE_WITH_FINDINGS。CI-TESTFIX：2 轮，R2 APPROVE。v297-cwd：1 轮，结论为修复正确。
+  - 按新的发版门禁，本版不做跨厂商审查（只在 v2.10.0 做）；全量测试在 GitHub Actions 的 macOS 和 Linux 上运行，发版前另做一次真实 run，走到 ACCEPTED。
+- **已知限制**：
+  - 截止 HOLD 本身不能用 `accept --override-rejection` 接受，出口是 abort 或 `note --scope-change`；
+  - FIELD-5 依赖评审方给出一致的标签，fresh gate 看不到历史，只能靠 ledger summary 里的标签对齐；
+  - 候选测试沙箱只在 macOS 上可用；
+  - 没有任何测试的仓库在 Python 3.12 及以上用 `python3 -m unittest` 时会被判为测试失败（待 owner 决定）。
+  - v2.9.5 的已知限制（失败的 author 回合把树改了又恢复原样时，operator 证据不作废）这一版仍未修复，延后处理。
+
 ## 2026-10-04
 
 ### v2.9.6：Codex 只读角色有了自己的临时目录（FIELD-1/FIELD-6）；只读边界和硬链接由探测证明（paired-session 仍是可选入口，默认 legacy）
