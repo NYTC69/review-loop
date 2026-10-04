@@ -4,7 +4,8 @@ Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_
 W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg (the simplifier and test-consolidation
 writers are not implemented and not scheduled in W2a); W2b runs DOCS (writer, docs review with an observed
 test); W3a runs SECURITY (scans and a fresh security reviewer) and reaches DONE (acceptance pending);
-accepting a W DONE (DELIVERY) arrives in W3b. Sources: ADR-11, the lane A
+W3b-1 accepts a W DONE without a commit (`auto_commit` false) and reject reopens EXEC; the auto_commit
+local commit arrives in W3b-2. Sources: ADR-11, the lane A
 legacy-parity map (supervisor-accepted 2026-10-03; kept in the lane A run notes), legacy
 `docs/protocol/execution.md` Step 3.4–Step 4, [doc 1](e2e-1-stages-and-roles.md),
 [doc 3](e2e-3-docs-security.md), [doc 4](e2e-4-delivery-close.md). D8 (legacy parity of the trust
@@ -108,11 +109,10 @@ whose `baseline` is captured before the task starts (`scripts/delivery_scope.py`
 is not accepted. Implemented (W3a-1): creating a W run's state, before any probe or turn, runs
 `delivery_scope.py capture --scope .` into `evidence/delivery-baseline-<random>.json` (its sha256 is in the
 state); a capture failure refuses the run, and a W run created before W3a has no baseline and HOLDs at
-SECURITY. Known limit: a scope-change successor captures its own baseline over the parent's uncommitted
-changes, which the manifest then marks `ambiguous-baseline-overlap`; scanning stays complete (stricter),
-but a parent's uncommitted `.gitignore` fix never counts as coverage, so such a successor HOLDs
-`review-required` until the patterns are committed. Inheriting the parent's baseline is decided before W3b,
-whose task delta depends on it. Each SECURITY attempt writes a fresh
+SECURITY. A scope-change successor inherits its parent's baseline (supervisor decision after W3a; W3b-1):
+the file is copied into the successor's evidence and bound to the parent's recorded sha256, so the delivery
+scope stays relative to the tree before the work item; a parent without a baseline, or one whose file
+changed, refuses the successor. Each SECURITY attempt writes a fresh
 manifest and runs `security_preflight.py` as a subprocess (`sys.executable`); anything but exit 0 with a
 `clean`, coverage-complete report HOLDs, and the HOLD reason names rules and paths, never matched values.
 The `sensitive_policy` scan covers tracked plus non-ignored untracked paths. A repository without the legacy
@@ -171,8 +171,16 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
 - Added in W1b–W3b: every writer turn must leave HEAD, refs and the index unchanged, otherwise HOLD; the
   run_dir denyWrite and lease stop writers from calling accept or close (D8) but do not stop a `git commit`
   inside the worktree.
-- Added in W3b: a lifecycle accept is allowed only from W DONE with `--expect`; the rejection-limit HOLD and
-  `--override-rejection` paths of `accept()` are refused for lifecycle runs (doc 4 §Acceptance).
+- Added in W3b-1: a W accept needs status DONE and stage DONE and `--expect` over an intent that also binds
+  the stage receipts (`receipts_sha256`); `--override-rejection` is refused, so neither a rejected tree nor a
+  round-limit HOLD (FINISH, DOCS or SECURITY reasons included) is accepted, and open specialist or security
+  blockers are never put into an accepted record; at the rejection limit a W run can only abort. A HEAD
+  that moved since the run started HOLDs the accept and sends the run back to SECURITY (restore HEAD and
+  resume). `auto_commit` and `external_delivery` are frozen operator-only keys (default false);
+  `external_delivery` true refuses the accept (D8). With `auto_commit` false the accept changes no ref and
+  no index; the Chinese delivery report is `delivery-report.md` in the run directory. A reject on a W DONE
+  reopens EXEC (epoch+1, the persistent author gets the rejection note, then reviewer, gate, FINISH,
+  POLISH-Q, DOCS and SECURITY again).
 - Not a refusal: author and reviewer may share a vendor exactly as in real EXEC (ADR-11 D-8).
 
 ## Fake-only (unchanged)

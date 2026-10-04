@@ -915,15 +915,102 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, r'SECURITY budget exhausted \(3 security reviews'):
             co._security_review_turn(tree, 'w-SECURITY-0-0')
 
-    def test_a_worktree_done_refuses_reject_and_binds_the_scanned_tree(self):
+    def test_a_worktree_done_binds_the_scanned_tree_in_one_save(self):
         co, tree = self.at_security()
         self.assertEqual(co.done(expected='another tree'), 'HOLD')
         self.assertEqual(co.state['hold_reason'], 'the tree changed before DONE; resume replays EXEC review and gate')
         co.state['status'] = 'ACTIVE'
         self.assertEqual(co.done(expected=tree, lifecycle_stage='DONE'), 'DONE')
         self.assertEqual((co.state['lifecycle']['stage'], co.state['next']), ('DONE', 'done'))   # one save with the status
-        with self.assertRaisesRegex(ValueError, 'worktree lifecycle reject is not available before W3b'):
-            co.reject('please change it', None)
+
+    def git_state(self):
+        refs = rc.subprocess.run(['git', 'for-each-ref', '--format=%(refname) %(objectname)'], cwd=self.workspace,
+                                 check=True, capture_output=True, text=True).stdout
+        head = rc.subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=self.workspace, check=True, capture_output=True,
+                                 text=True).stdout
+        return head, refs, hashlib.sha256((self.workspace / '.git' / 'index').read_bytes()).hexdigest()
+
+    def test_accept_on_a_worktree_done_changes_no_ref_or_index_and_writes_the_delivery_report(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on').stdout)
+        before = self.git_state()
+        accepted = self.run_operator_action('accept', '--lifecycle-mode', 'on', '--reason', 'looks right')
+        self.assertEqual((accepted.returncode, accepted.stdout.strip().splitlines()[-1]), (0, 'ACCEPTED'),
+                         accepted.stdout + accepted.stderr)
+        self.assertEqual(self.git_state(), before)   # auto_commit false: no ref, no index change
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        record = json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())
+        receipts = hashlib.sha256(json.dumps(state['lifecycle']['receipts'], sort_keys=True).encode()).hexdigest()
+        self.assertEqual((state['status'], record['delivery']['auto_commit'], record['delivery']['commit'],
+                          record['intent']['receipts_sha256']), ('ACCEPTED', False, None, receipts))
+        report = (self.run_dir / 'delivery-report.md').read_text()
+        for needle in ('# 交付报告（worktree lifecycle）', 'auto_commit 关闭，没有改动任何 ref 或 index',
+                       '外部交付（push、PR、merge）：未执行', 'SECURITY：敏感路径 0 个；preflight clean'):
+            self.assertIn(needle, report)
+        again = self.run_operator_action('accept', '--lifecycle-mode', 'on', '--reason', 'looks right')
+        self.assertEqual(again.stdout.strip().splitlines()[-1], 'ACCEPTED')
+
+    def test_worktree_accept_refusals(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on').stdout)
+        for change, message in (
+                (lambda co: setattr(co.args, 'override_rejection', True), 'refuses accept --override-rejection'),
+                (lambda co: co.state['config'].update(external_delivery=True), 'refuses external delivery'),
+                (lambda co: co.state['lifecycle'].update(stage='SECURITY'), 'requires status DONE and stage DONE'),
+                (lambda co: co.state.update(status='HOLD'), 'requires status DONE and stage DONE'),
+                (lambda co: co.state['config'].update(auto_commit=True), 'auto_commit arrives with W3b-2')):
+            with self.subTest(message=message):
+                co = rc.Coordinator(self.args(action='accept'))
+                change(co)
+                with self.assertRaisesRegex(ValueError, message):
+                    co.accept()
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'DONE')
+
+    def test_a_moved_head_holds_the_accept_and_security_runs_again_after_the_restore(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on').stdout)
+        git = ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.test']
+        rc.subprocess.run([*git, 'commit', '-q', '--allow-empty', '-m', 'someone else'], cwd=self.workspace, check=True)
+        held = self.run_operator_action('accept', '--lifecycle-mode', 'on')
+        self.assertIn('HEAD moved since the run started', held.stdout, held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['status'], state['lifecycle']['stage'], state['next']), ('HOLD', 'SECURITY', 'security'))
+        rc.subprocess.run(['git', 'reset', '-q', '--soft', 'HEAD~1'], cwd=self.workspace, check=True)   # operator restore
+        self.assertIn(DONE, self.run_operator_action('resume', '--lifecycle-mode', 'on').stdout)
+        accepted = self.run_operator_action('accept', '--lifecycle-mode', 'on')
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        routes = [row['route'] for row in json.loads((self.run_dir / 'state.json').read_text())['lifecycle']['receipts']
+                  if row['stage'] == 'SECURITY']
+        self.assertEqual(routes, ['DONE', 'DONE'])
+
+    def test_reject_on_a_worktree_done_reopens_exec_and_runs_every_stage_again(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60').stdout)
+        first = json.loads((self.run_dir / 'state.json').read_text())
+        rejected = self.run_operator_action('reject', '--lifecycle-mode', 'on', '--max-invocations', '60',
+                                            '--text', 'Also reject floats.')
+        self.assertIn(DONE, rejected.stdout, rejected.stdout + rejected.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((len(state['rejections']), state['lifecycle']['epoch'], state['acceptance_state']),
+                         (1, first['lifecycle']['epoch'] + 1, 'PENDING'))
+        later = [row['stage'] for row in state['lifecycle']['receipts'][len(first['lifecycle']['receipts']):]]
+        self.assertEqual(later, ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
+        reopened = [(row['role'], row['phase']) for row in state['turns'] if row['sequence'] > first['sequence']]
+        self.assertEqual(reopened[0], ('author', 'EXEC'))
+        self.assertIn(('gate', 'EXEC'), reopened)
+        self.assertIn('# rejection applied', (self.workspace / 'sum_ints.py').read_text())
+
+    def test_a_successor_inherits_its_parent_delivery_baseline(self):
+        parent = rc.Coordinator(self.args())
+        base = parent.state['lifecycle']['security_baseline']
+        child_dir = self.root / 'child'
+        with mock.patch.object(rc.Coordinator, '_capture_security_baseline', side_effect=AssertionError('captured')):
+            self.run_dir = child_dir
+            child = rc.Coordinator.__new__(rc.Coordinator)   # only the inheritance step, not the successor checks
+            child.evidence = child_dir / 'evidence'
+            child.evidence.mkdir(parents=True)
+            inherited = child._inherited_security_baseline(parent.run_dir)
+        self.assertEqual((inherited['sha256'], inherited['inherited_from']), (base['sha256'], str(parent.run_dir)))
+        self.assertEqual(Path(inherited['path']).read_bytes(), Path(base['path']).read_bytes())
+        Path(base['path']).write_text('{}')   # the parent copy changed
+        with self.assertRaisesRegex(ValueError, 'the parent delivery baseline changed'):
+            child._inherited_security_baseline(parent.run_dir)
 
     def test_the_docs_hold_set(self):
         for path, value, denied in (('CLAUDE.md', 'x', True), ('pkg/AGENTS.md', 'x', True), ('agents/new.md', 'x', True),
@@ -1007,12 +1094,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, 'POLISH-Q needs at least 3 more invocations'):
             co.worktree_polish_turn()
 
-    def test_accept_is_refused_for_worktree_runs_even_on_override_paths(self):
+    def test_accept_is_refused_before_the_worktree_done_stage_even_on_override_paths(self):
         co = rc.Coordinator(self.args())
-        for status, kind in (('DONE', None), ('HOLD', 'rejection_limit')):
+        for status, kind in (('DONE', None), ('HOLD', 'rejection_limit')):   # stage EXEC: FINISH..SECURITY not run
             with self.subTest(status=status):
                 co.state.update(status=status, terminal_hold_kind=kind)
-                with self.assertRaisesRegex(ValueError, 'worktree lifecycle accept is not available before W3b'):
+                with self.assertRaisesRegex(ValueError, 'worktree lifecycle accept requires status DONE and stage DONE'):
                     co.accept()
                 self.assertNotEqual(co.state['status'], 'ACCEPTED')
 

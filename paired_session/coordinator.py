@@ -1550,7 +1550,9 @@ class Coordinator:
                                   item_blockers=copy.deepcopy(spec.get('item_blockers', [])),
                                   item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')))
             if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any probe or turn
-                self.state['lifecycle']['security_baseline'] = self._capture_security_baseline()
+                self.state['lifecycle']['security_baseline'] = (
+                    self._inherited_security_baseline(Path(args.supersedes).resolve()) if args.supersedes else
+                    self._capture_security_baseline())
             self.save()
 
     def _migrate_invocation_budget(self) -> int:
@@ -1625,7 +1627,7 @@ class Coordinator:
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish', 'allowed_models')
+                'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery')
         config = {key: getattr(self.args, key) for key in keys}
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
@@ -3265,8 +3267,8 @@ class Coordinator:
 
     def accept(self) -> str:
         self._publication_guard()
-        if worktree_lifecycle.is_worktree(self.state):   # W3b adds lifecycle DELIVERY; no accept may skip FINISH-SECURITY
-            raise ValueError('worktree lifecycle accept is not available before W3b; abort or wait for the remaining stages')
+        if worktree_lifecycle.is_worktree(self.state):   # W3b DELIVERY; no accept may skip FINISH-SECURITY
+            return self._worktree_accept()
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
@@ -3300,6 +3302,65 @@ class Coordinator:
         self._progress_terminal('ACCEPTED')
         return 'ACCEPTED'
 
+    def _worktree_accept(self) -> str:
+        """W3b DELIVERY (doc 6, D-1): the operator accepts a W DONE with --expect over an intent that also binds the
+        stage receipts. auto_commit (frozen; default false) decides whether a local commit is made; external
+        delivery is refused (D8), and no held tree is accepted (no --override-rejection)."""
+        if self.state.get('status') == 'ACCEPTED':
+            return 'ACCEPTED'
+        if self.args.override_rejection:   # RLO would accept a tree that skipped FINISH..SECURITY, blockers included
+            raise ValueError('worktree lifecycle refuses accept --override-rejection: a held tree has not passed '
+                             'FINISH..SECURITY and open specialist or security blockers are never accepted; abort or '
+                             'start a successor')
+        config, life = self.state['config'], self.state['lifecycle']
+        if config.get('external_delivery'):
+            raise ValueError('worktree lifecycle refuses external delivery (push, PR, merge; D8); set external_delivery '
+                             'false in the operator profile')
+        if self.state.get('status') != 'DONE' or life.get('stage') != 'DONE':
+            raise ValueError('worktree lifecycle accept requires status DONE and stage DONE')
+        if config.get('auto_commit'):
+            raise ValueError('worktree lifecycle auto_commit arrives with W3b-2; set auto_commit false or wait')
+        if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; someone else did
+            life.update(stage='SECURITY', candidate_oid=self.state['approved_snapshot'])
+            self.state['next'] = 'security'
+            return self.hold(f'HEAD moved since the run started ({life["parent"][:12]} -> {head[:12]}); restore it and '
+                             'resume (SECURITY runs again), or abort')
+        intent = self.operator_intent('accept', None, None, self.args.expect, True)
+        delivery = {'auto_commit': False, 'commit': None, 'head': head, 'external_delivery': False}
+        record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(), 'intent': intent,
+                  'accepted_state': 'DONE', 'acceptance_state': 'ACCEPTED', 'reason': self.args.reason,
+                  'override_rejection': False, 'delivery': delivery}
+        if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
+            record['operator_verifications'] = verified
+        evidence_path = self.evidence / 'acceptance.json'
+        record['evidence'] = str(evidence_path)
+        atomic_json(evidence_path, record)
+        self.state.setdefault('events', []).append(record)
+        self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
+        atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
+            self.state, self.run_dir.name, self.workitem.read_text(), delivery))
+        self.save()
+        self.write_comparison()
+        self._progress_terminal('ACCEPTED')
+        return 'ACCEPTED'
+
+    def _inherited_security_baseline(self, parent: Path) -> dict:
+        """Supervisor decision (W3a): a scope-change successor inherits its parent's delivery baseline, so the delivery
+        scope stays relative to the tree before the work item; the copy is bound to the parent's digest."""
+        base = (json.loads((parent / 'state.json').read_text()).get('lifecycle') or {}).get('security_baseline')
+        if not base or Path(base['path']).parent != parent / 'evidence':
+            raise ValueError('a worktree-lifecycle successor inherits its parent delivery baseline, and the parent has '
+                             'none; start a new run instead')
+        try:
+            data = Path(base['path']).read_bytes()
+        except OSError as exc:
+            raise ValueError(f'cannot read the parent delivery baseline: {exc}') from exc
+        if hashlib.sha256(data).hexdigest() != base['sha256']:
+            raise ValueError('the parent delivery baseline changed; start a new run instead')
+        path = self.evidence / f'delivery-baseline-{uuid.uuid4().hex[:8]}.json'
+        path.write_bytes(data)
+        return {'path': str(path), 'sha256': base['sha256'], 'inherited_from': str(parent)}
+
     def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
         if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
         payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
@@ -3311,6 +3372,8 @@ class Coordinator:
                 'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
                 'state_sha256': hashlib.sha256(json.dumps(self.state, sort_keys=True).encode()).hexdigest(),
                 'payload_sha256': hashlib.sha256(payload).hexdigest()}
+        if worktree_lifecycle.is_worktree(self.state):   # W3b: the intent names the stage receipts it accepts
+            data['receipts_sha256'] = hashlib.sha256(json.dumps(self.state['lifecycle']['receipts'], sort_keys=True).encode()).hexdigest()
         data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         override = self.args.override_rejection
         if override and (action != 'accept' or not (self.args.reason or '').strip() or
@@ -3341,8 +3404,8 @@ class Coordinator:
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
-        if worktree_lifecycle.is_worktree(self.state):   # W3b defines reject on a W DONE with DELIVERY
-            raise ValueError('worktree lifecycle reject is not available before W3b; abort or wait for the remaining stages')
+        if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') != 'DONE':
+            raise ValueError('worktree lifecycle reject requires stage DONE')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
@@ -3374,6 +3437,9 @@ class Coordinator:
         self.state.update(status='ACTIVE', phase='EXEC', next='author', gate_ran=False,
                           delivered_review='')
         self.state['force_gate_after_reject'] = True
+        if worktree_lifecycle.is_worktree(self.state):   # W3b: a reject reopens EXEC, then FINISH..SECURITY again
+            life = self.state['lifecycle']
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         self.save()
         self.write_comparison()
         return 'ACTIVE'
@@ -7309,6 +7375,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
+    p.add_argument('--auto-commit', type=config_bool, default=False,
+                   help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree')
+    p.add_argument('--external-delivery', type=config_bool, default=False,
+                   help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
@@ -7373,7 +7443,7 @@ CONFIGURABLE_DESTS = {
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
-    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish',
+    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
 }
 
 

@@ -18,7 +18,8 @@ SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM':
             'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
 WAIVERS = (('accept_unverified_claude_author', '--accept-unverified-claude-author'),
            ('accept_probe_skip', '--accept-probe-skip'))
-PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'polish_round')   # E-4: operator-only
+PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'polish_round',   # E-4: operator-only
+                'auto_commit', 'external_delivery')
 
 
 def refuse_waivers(args):
@@ -133,6 +134,31 @@ def agent_body(raw):
     if text.startswith('---\n') and '\n---\n' in text[4:]:
         text = text[4:].split('\n---\n', 1)[1]
     return text.strip()
+
+
+def delivery_report(state, run_id, workitem, delivery):
+    """The Chinese delivery report (doc 6): stage outcomes, SECURITY, delivery and totals, never secrets."""
+    life = state['lifecycle']
+    last = {row['stage']: row for row in life['receipts']}
+    security = last.get('SECURITY', {})
+    preflight, review = security.get('preflight') or {}, security.get('review') or {}
+    open_ids = [row['id'] for row in state['finding_ledger'] if row.get('status') == 'open']
+    minutes = (state.get('completed_at') or state['started_at']) - state['started_at']
+    title = next((line.lstrip('# ').strip() for line in workitem.splitlines() if line.strip()), '')
+    lines = ['# 交付报告（worktree lifecycle）', '',
+             f'- 运行：`{run_id}`；工作项：{title}',
+             f"- 结论：已接受（ACCEPTED），{state.get('accepted_at', '')}",
+             ('- 交付：auto_commit 开启，本地提交 `' + str(delivery.get('commit')) + '`（父提交 `' + str(delivery.get('head'))
+              + '`），未推送。' if delivery.get('auto_commit') else '- 交付：auto_commit 关闭，没有改动任何 ref 或 index。'),
+             '- 外部交付（push、PR、merge）：未执行（D8）。',
+             '- 各阶段（最后一条 receipt）：' + '；'.join(
+                 f"{stage} {row.get('status')}/{row.get('route', '-')}（epoch {row.get('epoch')}）"
+                 for stage, row in last.items()),
+             f"- SECURITY：敏感路径 {len(security.get('sensitive_paths') or [])} 个；preflight {preflight.get('status')}，"
+             f"扫描 {preflight.get('scanned_files')} 个文件；安全评审 {review.get('status')}",
+             f"- 未关闭的发现：{len(open_ids)} 条" + (f"（{', '.join(open_ids)}）" if open_ids else ''),
+             f"- 用量：调用 {state.get('invocations_used')} 次，epoch {life.get('epoch')}，用时约 {minutes / 60:.0f} 分钟", '']
+    return '\n'.join(lines)
 
 
 def owned_ledger(owned):
