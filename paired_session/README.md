@@ -374,6 +374,21 @@ from `max(7200, saved --timeout)`, capped at 14400 seconds. The existing
 `resume --resume-timeout N` option raises the general per-turn timeout up to
 7200 seconds for phases that use `--timeout`.
 
+`--wi-deadline SECONDS` (off by default) bounds the whole work item in wall-clock
+time, counted from the run's start; HOLDs, operator waits and coordinator
+restarts all count. It is checked before every dispatch: once the deadline has
+passed, the run HOLDs instead of starting the next turn. A running turn is never
+cut short and keeps its own timeout. The value is fixed at `run`: `resume`
+keeps the saved deadline and refuses a different one, and the operator actions
+keep the saved deadline. A run held by its deadline holds again on `resume`;
+abort it, or use `note --scope-change` to start a successor. A `DONE` run past
+its deadline stays acceptable: `accept` and `reject --scope-change` work, while
+`reject` and `resume --polish` are refused because their next dispatch could
+only HOLD. If the wall clock moves back by more than 60 seconds
+since the last dispatch, the run HOLDs until the clock is past that time again;
+elapsed time is never refunded. A scope-change successor starts without a
+deadline; pass the time it may use as its own `--wi-deadline`.
+
 A run ending in `DONE` is awaiting explicit operator acceptance. Use `accept` to
 record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
 no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope

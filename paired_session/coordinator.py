@@ -1344,6 +1344,7 @@ class Coordinator:
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
+        if getattr(args, 'wi_deadline', None) is not None and args.wi_deadline <= 0: raise ValueError('--wi-deadline must be a positive number of seconds')
         self.args = args
         self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
         self._fake_dispatching = False
@@ -1593,6 +1594,7 @@ class Coordinator:
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
                 'skip_globs', 'skip_quality_polish', 'allowed_models')
         config = {key: getattr(self.args, key) for key in keys}
+        if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -2109,6 +2111,10 @@ class Coordinator:
                 requested_exec_timeout, self.args.timeout)
         self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
         validate_role_models(self.args)
+        if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
+            self.args.wi_deadline = self.state['config'].get('wi_deadline')
+        elif 'wi_deadline' not in self.state['config']:
+            raise ValueError('--wi-deadline is fixed at run start; this run was started without one')
         current_config = self._config()
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
@@ -3078,6 +3084,27 @@ class Coordinator:
         self._progress_terminal('HOLD', reason)
         return 'HOLD'
 
+    def _wi_deadline_issue(self, record=True) -> Optional[str]:   # F2: checked before every dispatch; a running turn is never cut
+        limit = self.state['config'].get('wi_deadline')
+        if not limit: return None
+        now, seen = time.time(), self.state.get('wi_clock', 0)
+        if now + 60 < seen:   # never a negative elapsed: no refund after the clock moves back
+            return (f'whole-WI deadline: the wall clock moved back {seen - now:.0f}s since the last dispatch; check the clock '
+                    '(resume works again once it is past the last dispatch time), or abort')
+        clock = max(now, seen)
+        if record: self.state['wi_clock'] = clock   # a dispatch saves it; an operator-action check must not change the state its intent digest covers
+        elapsed = clock - self.state['started_at']
+        if elapsed >= limit:
+            return (f'whole-WI deadline reached: {elapsed:.0f}s since the run started (--wi-deadline {limit}s); '
+                    'no new turn was started and resume holds again; abort, or note --scope-change to start a successor '
+                    'with its own --wi-deadline')
+        return None
+
+    def _refuse_past_deadline(self, action: str) -> None:   # F2: on a DONE run a dispatch past the deadline could only HOLD
+        if issue := self._wi_deadline_issue(record=False):
+            raise ValueError(f'{action} refused: {issue.split(";")[0]}; the DONE tree stays acceptable: '
+                             'accept it, abort, or reject --scope-change')
+
     def round_limit_hold(self, reason: str) -> str:   # RLO: the held tree, so accept --override-rejection can rule on exactly it
         self.state['round_limit_hold'] = {'hold_reason': reason, 'phase': self.state['phase'], 'tree_sha256': git_snapshot(self.workspace)[0],
                                           'time': datetime.now().astimezone().isoformat()}
@@ -3289,6 +3316,7 @@ class Coordinator:
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
+        self._refuse_past_deadline('reject')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
@@ -3443,6 +3471,7 @@ class Coordinator:
         if blocking:
             return self.hold('resume --polish rejected with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
+        self._refuse_past_deadline('resume --polish')
         self.import_gate_findings()
         self.state['status'] = 'ACTIVE'
         self.state['phase'] = 'EXEC'
@@ -4146,6 +4175,7 @@ class Coordinator:
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
         if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
             raise RuntimeError('invocation limit reached')
+        if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
         timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase == 'EXEC'
                            else self.args.timeout)
         self.state['sequence'] += 1
@@ -6649,6 +6679,9 @@ def parser() -> argparse.ArgumentParser:
                         f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
     p.add_argument('--resume-timeout', type=int, default=None,
                    help=f'increase the saved timeout on resume, up to {MAX_RESUME_TIMEOUT_SECONDS} seconds')
+    p.add_argument('--wi-deadline', type=int, default=None, metavar='SECONDS',
+                   help='optional whole work-item wall-clock deadline from the run start (off by default); once it has '
+                        'passed the run HOLDs at the next dispatch, never mid-turn; fixed at run, kept across HOLD, resume and restart')
     p.add_argument('--test-command', default='npm test')
     p.add_argument('--reviewer-command', action='append', default=[],
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
