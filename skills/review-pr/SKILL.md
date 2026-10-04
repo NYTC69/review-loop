@@ -48,7 +48,7 @@ Read `.review-loop/config.md` if it exists. Extract:
 
 - `judgment_model`: shared tier override for judgment-tier review agents
 - `cheap_model`: shared tier override for cheap-tier review agents; if absent,
-  cheap-tier dispatches backstop to `claude-haiku-4-5-20251001`
+  cheap-tier dispatches backstop to `claude-opus-5-5`
 - `review_style`: optional review tone / cross-cutting rules
 
 Missing agent `tier` defaults to `judgment`.
@@ -146,9 +146,9 @@ Role mapping (inline each role body into the native launcher prompt):
 Concrete dispatch inventory:
 - `review_pr_code_reviewer_dispatch` -> `code-reviewer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
 - `review_pr_silent_failure_hunter_dispatch` -> `silent-failure-hunter`; tier: `judgment`; `model: {judgment_model if set; else omit}`
-- `review_pr_comment_analyzer_dispatch` -> `comment-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
+- `review_pr_comment_analyzer_dispatch` -> `comment-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
 - `review_pr_type_design_analyzer_dispatch` -> `type-design-analyzer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
-- `review_pr_pr_test_analyzer_dispatch` -> `pr-test-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
+- `review_pr_pr_test_analyzer_dispatch` -> `pr-test-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
 
 **Completion and inspection evidence**: Accept a report only when launcher exit
 is 0 and returned `status` is `ok`; read its returned `result_file` and validate
@@ -185,7 +185,7 @@ Agent tool parameters:
 
 Concrete dispatch anchor: `review_pr_code_simplifier_dispatch`.
 `code-simplifier` is a `cheap`-tier dispatch and resolves `model` as
-`cheap_model` if set, else `claude-haiku-4-5-20251001`.
+`cheap_model` if set, else `claude-opus-5-5`.
 
 **Important**: `simplify` always runs last (after all read-only reviews), because
 it modifies files. **Skip `simplify` if any prior review returned CRITICAL

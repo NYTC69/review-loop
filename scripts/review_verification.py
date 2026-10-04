@@ -173,13 +173,13 @@ def _resolve_reviewer_model(
     """Resolve the per-job reviewer model.
 
     Precedence per planning.md §Shared model-tier contract:
-        job.reviewer_model > judgment_model > "claude-sonnet-4-6"
+        job.reviewer_model > judgment_model > "claude-opus-5-5"
     """
     if job.reviewer_model:
         return job.reviewer_model
     if judgment_model:
         return judgment_model
-    return "claude-sonnet-4-6"
+    return "claude-opus-5-5"
 
 
 def _job_session_id(job: ReviewJob) -> str:

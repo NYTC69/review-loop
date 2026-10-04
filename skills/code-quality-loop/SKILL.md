@@ -54,7 +54,7 @@ If neither `--skip-reorganize` nor `--reorganize` is specified, the Orchestrator
    - `quality_focus`: free-text field injected into all agent prompts during this loop. Tells agents what to prioritize.
    - `review_style`: free-text field injected into ALL agent prompts. Sets tone and cross-cutting rules.
    - `judgment_model`: shared tier override for judgment-tier review agents in this loop.
-   - `cheap_model`: shared tier override for cheap-tier agents in this loop. If absent, cheap-tier agents backstop to `claude-haiku-4-5-20251001`.
+   - `cheap_model`: shared tier override for cheap-tier agents in this loop. If absent, cheap-tier agents backstop to `claude-opus-5-5`.
    If the config file does not exist or the fields are empty/absent, skip injection.
 
    Shared tier rule for this skill: missing agent `tier` defaults to `judgment`.
@@ -156,10 +156,10 @@ Role mapping (inline each role body into the native launcher prompt):
 - `frontend-security-reviewer` -> inline `agents/frontend-security-reviewer.md` body
 
 Concrete dispatch inventory:
-- `code_quality_go_reviewer_dispatch` -> `go-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
-- `code_quality_rust_reviewer_dispatch` -> `rust-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
-- `code_quality_python_reviewer_dispatch` -> `python-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
-- `code_quality_frontend_security_reviewer_dispatch` -> `frontend-security-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
+- `code_quality_go_reviewer_dispatch` -> `go-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
+- `code_quality_rust_reviewer_dispatch` -> `rust-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
+- `code_quality_python_reviewer_dispatch` -> `python-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
+- `code_quality_frontend_security_reviewer_dispatch` -> `frontend-security-reviewer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
 
 If multiple language agents apply, launch them sequentially (each may find issues that require fixes before the next can run cleanly).
 
@@ -206,7 +206,7 @@ commands or modifying files.
 Concrete dispatch inventory:
 - `code_quality_code_reviewer_dispatch` -> `code-reviewer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
 - `code_quality_silent_failure_hunter_dispatch` -> `silent-failure-hunter`; tier: `judgment`; `model: {judgment_model if set; else omit}`
-- `code_quality_comment_analyzer_dispatch` -> `comment-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-haiku-4-5-20251001}`
+- `code_quality_comment_analyzer_dispatch` -> `comment-analyzer`; tier: `cheap`; `model: {cheap_model if set; else claude-opus-5-5}`
 - `code_quality_type_design_analyzer_dispatch` -> `type-design-analyzer`; tier: `judgment`; `model: {judgment_model if set; else omit}`
 Native reviewer prompt (code-reviewer):
   prompt: |
@@ -461,7 +461,7 @@ Agent tool parameters:
 
 Concrete dispatch anchor: `code_quality_code_simplifier_dispatch`.
 `code-simplifier` is a `cheap`-tier dispatch and resolves `model` as
-`cheap_model` if set, else `claude-haiku-4-5-20251001`.
+`cheap_model` if set, else `claude-opus-5-5`.
 
 Then verify compilation. Detect build command from the languages found during initialization:
 - Go files present: `go build ./...`
@@ -539,7 +539,7 @@ Native reviewer prompt:
 
 Concrete dispatch anchor: `code_quality_pr_test_analyzer_dispatch`.
 `pr-test-analyzer` is a `cheap`-tier dispatch and resolves `model` as
-`cheap_model` if set, else `claude-haiku-4-5-20251001`.
+`cheap_model` if set, else `claude-opus-5-5`.
 
 If issues found -> fix and re-run tests.
 

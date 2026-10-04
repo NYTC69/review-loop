@@ -62,11 +62,11 @@ The execution-phase implications are:
 
 - Execution-phase Executor dispatch remains a `judgment`-tier dispatch.
 - Missing `tier` still defaults to `judgment`.
-- Cheap-tier agent dispatches still backstop to `claude-haiku-4-5-20251001`.
+- Cheap-tier agent dispatches still backstop to `claude-opus-5-5`.
 - Codex Stage 1 keeps review on the outside-sandbox Claude reviewer path
   unless `codex_reviewer_backend: codex` is explicitly set.
 - On that default Codex Stage 1 Claude reviewer path, the model resolves as
-  `reviewer_model` > `judgment_model` > `claude-sonnet-4-6`.
+  `reviewer_model` > `judgment_model` > `claude-opus-5-5`.
 - Codex Stage 1 accepts `cheap_model` in shared config, but Stage 1
   currently has no cheap-tier Codex agent consumers, so that key is
   accepted-but-no-op there.
@@ -960,7 +960,7 @@ For each detected language, invoke the corresponding agent.
 
 Concrete dispatch anchor: `protocol_execution_language_static_analysis_dispatch`.
 These language agents are `cheap` tier dispatches and therefore resolve
-`model` as `cheap_model` if set, else `claude-haiku-4-5-20251001`.
+`model` as `cheap_model` if set, else `claude-opus-5-5`.
 
 #### Dispatch {{claude_code|codex}}
 
@@ -1040,7 +1040,7 @@ Invoke `code-simplifier` (it needs Write/Edit tools).
 
 Concrete dispatch anchor: `protocol_execution_code_simplifier_dispatch`.
 `code-simplifier` is a `cheap` tier dispatch and therefore resolves
-`model` as `cheap_model` if set, else `claude-haiku-4-5-20251001`.
+`model` as `cheap_model` if set, else `claude-opus-5-5`.
 
 #### Dispatch {{claude_code|codex}}
 
@@ -1089,7 +1089,7 @@ Invoke `pr-test-analyzer`.
 
 Concrete dispatch anchor: `protocol_execution_pr_test_analyzer_dispatch`.
 `pr-test-analyzer` is a `cheap` tier dispatch and therefore resolves
-`model` as `cheap_model` if set, else `claude-haiku-4-5-20251001`.
+`model` as `cheap_model` if set, else `claude-opus-5-5`.
 
 #### Dispatch {{claude_code|codex}}
 

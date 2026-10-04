@@ -89,7 +89,7 @@ continue with Step 0.5. With `entry: paired-session`, a failed check refuses: pr
 `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or use /review-loop:legacy`
 and end this workflow (except where a row says otherwise).
 - Host, key absent only: `uname -s` is not `Darwin` → `review-loop: paired-session default entry needs a verified host (macOS); using legacy workflow`.
-  With the key set there is no host check; the permission probe decides.
+  With the key set there is no host check; in strict mode the permission probe decides, in efficient mode nothing does.
 - CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
   `codex` and `claude`). Missing → `review-loop: paired-session default entry needs <cli> for the <role> role; using legacy workflow`.
 - Background commands: this host cannot run long background commands (or Codex cannot run

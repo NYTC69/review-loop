@@ -716,7 +716,7 @@ class BuildArgvTest(unittest.TestCase):
             sched = rv.Scheduler(tmp_dir=tmp)
             job = _make_job(runtime="codex", reviewer_model="")
             argv = rv._build_argv(job, sched)
-        self.assertIn("claude-sonnet-4-6", argv)
+        self.assertIn("claude-opus-5-5", argv)
 
     def test_claude_code_runtime_is_read_only_and_uses_configured_model(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -735,7 +735,7 @@ class BuildArgvTest(unittest.TestCase):
             job = _make_job(runtime="claude_code", reviewer_model="")
             argv = rv._build_argv(job, sched)
         self.assertNotIn("--model", argv)
-        self.assertNotIn("claude-sonnet-4-6", argv)
+        self.assertNotIn("claude-opus-5-5", argv)
 
     def test_unknown_runtime_raises_value_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -767,7 +767,7 @@ class BuildArgvTest(unittest.TestCase):
         )
         self.assertEqual(
             rv._resolve_reviewer_model(job_no_explicit, judgment_model=None),
-            "claude-sonnet-4-6",
+            "claude-opus-5-5",
         )
 
 

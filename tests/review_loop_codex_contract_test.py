@@ -16,7 +16,7 @@ class CodexAgentContractTest(unittest.TestCase):
                 self.assertNotIn('tier = "', text)
 
     def test_codex_default_claude_reviewer_backstop_uses_claude_model(self):
-        expected = "claude-sonnet-4-6"
+        expected = "claude-opus-5-5"
         legacy = "gpt-5.4"
         for relative_path in (
             "README.md",

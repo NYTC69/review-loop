@@ -1,0 +1,164 @@
+# Paired-session entry (shared contract)
+
+Both paired-session entry skills (`skills/paired-session/SKILL.md` for Claude Code,
+`.agents/skills/paired-session/SKILL.md` for Codex) load this file through the
+`entry-paired-session` stage. It holds every rule the two hosts share. The host
+skill adds its host rules, for example run-directory paths, shell form, how a
+long coordinator command runs and is stopped, its legacy pointer, and the exit
+codes of its own setup steps; a host rule is more specific and wins. Use the
+paired-session coordinator shipped with this plugin. Do not load or invoke the
+legacy review-loop workflow for this task. The coordinator owns reviewer
+dispatch and limits.
+
+## Entry and failure handling
+
+How this skill was entered decides failure handling (stage A = everything before
+the first command that runs `bin/paired-session`):
+- Default entry (review-loop handoff with the `entry` key absent): a failed
+  stage A check is reported back as `stage A failure: <reason>`; the review-loop
+  entry then prints its fallback notice and runs legacy.
+- Explicit entry (`entry: paired-session` handoff, or the user asked for
+  paired-session): a failed stage A check refuses with the reason, except the
+  host skill's long-command execution failure, which is reported as HOLD with
+  the reason. On an `entry: paired-session` handoff, print other refusals as
+  `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
+- From the first `bin/paired-session` command on, every refusal or HOLD is
+  reported verbatim and never falls back to legacy.
+
+## Stage A checks
+
+When the user invoked this skill directly, first check that every CLI the
+resolved roles need is on PATH (`command -v`; the default roles need `codex`
+and `claude`); the review-loop entry has already checked this on a handoff.
+Identify the intended Git worktree. Use a dedicated task worktree; preserve
+unrelated user changes and do not switch away from a dirty checkout. If a
+dedicated worktree is unavailable, ask before creating one. Determine the
+project's test command from its docs/manifests and ask only if it cannot be
+established safely. When a Claude role (reviewer or gate) runs it, the command
+must be one exact command without `$(`, backticks, `|`, `;`, `&&`, redirection
+or loops; otherwise ask for a `/bin/bash /absolute/path/script.sh` form. A
+declined or unanswered question is a failed stage A check. Under `--handsfree`
+or `handsfree: true` nobody answers, so any such question is a failed stage A
+check, reported as `stage A failure: handsfree cannot answer (<question>)`.
+
+## Profile and settings
+
+Use the operator profile the user names; otherwise use
+`~/.config/review-loop/paired-session.json` when it exists. Pass its absolute
+path with `--config` on every call. `--config` replaces
+`<workspace>/.review-loop/paired-session.json`, which may set non-program limits
+only; copy any desired non-program limits into the operator profile.
+Role/vendor/program/test-command settings belong in the operator profile,
+outside the workspace and run directory. CLI options override the profile.
+Models are operator-set (ADR-9); a role without one gets its vendor's default
+(`claude-opus-5-5` for Claude; `gpt-6.1-sol` for Codex), and the gate defaults
+to the author's vendor (ADR-10).
+Legacy keys in `.review-loop/config.md` that are set map to one-run options:
+`docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish
+true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /
+`--max-exec-rounds`. Do not apply, but print a warning for, `auto_commit: true`
+(`review-loop: auto_commit in .review-loop/config.md is not applied by
+paired-session; set it in the operator profile`) and a `reviewer_model` /
+`executor_model` set to anything other than empty or `inherit` (models come
+from the operator profile, ADR-9). Never pass `--adversarial-gate off`.
+
+## Work item
+
+Write `WORKITEM.md` in the run directory the host skill names (always outside
+the product worktree) with goal, acceptance criteria, scope, and verification.
+Include only user-approved requirements; mark uncertainties as questions
+instead of inventing acceptance criteria. Set the test command from the loaded
+profile or the verified project command and pass it as one quoted argument;
+never interpolate user text as shell code.
+
+## Safety mode and the first commands
+
+For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to
+`permission-probe`, identically; the CLI value overrides any profile value. Never pass
+`--skip-probe`, `--accept-unverified-codex-cli`,
+`--accept-unverified-claude-author`, `--accept-probe-skip` or
+`--override-rejection` on your own initiative.
+`--strict` comes only from the user or the operator profile (`safety_mode`),
+and goes to `permission-probe` and `run` alike:
+both modes keep every sandbox; the default `efficient` mode does not require
+the probe PASS and its evidence guard only logs, while `--strict` restores
+both (`paired_session/docs/efficient-mode.md`). A strict lifecycle run also
+refuses `--accept-unverified-claude-author` and `--accept-probe-skip` (D-7);
+an efficient run needs no waiver. The run is strict when the user asked for
+`--strict` or the operator profile sets `"safety_mode": "strict"`; read the
+profile before choosing the flow.
+- Default (efficient): no permission probe; the first coordinator command is
+  `run`. If `run` ends before `RUN_DIR/state.json` exists, report its output
+  verbatim as a refusal (a host setup step's stage A exit stays a stage A
+  failure).
+- Strict: `permission-probe` first (same arguments, without
+  `--stop-after-plan`), then `run` as a separate command. Exit 0 from the probe
+  means PASS or PASS_RESIDUAL_RISK; any other result is a HOLD: report it and
+  stop. On exit 0, read `RUN_DIR/permission-probe.json` and tell the user if
+  the status is PASS_RESIDUAL_RISK.
+
+Add the same `--config` and mapped one-run options to every call; add
+`--stop-after-plan` only to `run` when requested. Every command that can
+dispatch model turns (`permission-probe`, `run`, `resume`, `reject --expect`)
+uses the host skill's long-command form. Wait for each such command to finish
+before starting the next; do not start a second run while one is active.
+
+## Start line and lifecycle-mode backstop
+
+Once `RUN_DIR/state.json` exists (strict: after the probe, before `run`), read
+its frozen `config` and print one start line from it: author, reviewer and gate
+vendor and model; plan and exec rounds, invocations and timeout; docs file and
+skip-quality-polish; and which values came from `.review-loop/config.md`. In
+strict mode, if `config.lifecycle_mode` is not `on`, run `abort` with the run's
+saved options and report a plugin version mismatch instead of starting the run.
+
+While the run is active, do not call plain `status`: it needs the run lease
+and, while the run holds it, prints
+`HOLD: another coordinator currently owns this run` although the run is not on
+HOLD. Read `RUN_DIR/state.json` directly or use `status --brief`. As a
+backstop, if the running state shows `config.lifecycle_mode` other than `on`,
+stop the running coordinator command (host skill), wait until the child in
+`state.active` has exited, run `abort` with the run's saved options, and report
+a plugin version mismatch.
+
+## Existing runs and HOLD
+
+Later commands on an existing run (`resume`, `permission-probe
+--retry-uncertain`, `abort`, `reject`, `accept`, `note`,
+`attach-verification`) pass the saved `state.json` `config.lifecycle_mode`
+value and the run's original workspace, work item, run directory, profile and
+options, never the current default. Report DONE/HOLD and the run directory. On
+HOLD, inspect its state, findings, and receipts before resuming. In both modes
+a reviewer, gate or shadow turn that changes the workspace is void: the
+coordinator restores the workspace and re-dispatches it once, and a second
+change or a failed restore is a HOLD; an author turn that changes HEAD or the
+branch (a commit, reset or checkout) is a HOLD. If `uncertain_active` is
+present, do not rerun the probe or resume automatically: check its pid and
+receipts; if the child is still alive, wait for it to stop. If its phase is
+`PROBE` or `AUTHOR_PERMISSION_PROBE`, ask before rerunning the disposable probe
+with `permission-probe --retry-uncertain`. For a product-work turn, ask before
+`resume --retry-uncertain` because this may replay a model turn. After
+recovering an interrupted probe, use `resume` on the existing run directory;
+do not use `run` again or start a new work item. In strict mode, re-run the
+permission probe first if it is missing or no longer matches.
+
+## DONE and acceptance
+
+With the saved `config.lifecycle_mode` `on`, DONE means the security stage
+passed and acceptance is pending; with `off` (a run started before v2.10.0),
+DONE has no finish, quality-polish, docs or security stages, so say so. Report
+the stage receipts, open findings, operator verification records still valid
+for the tree, and whether the operator profile's `auto_commit` will make one
+local commit on acceptance; offer `accept` or `reject`. Never accept or reject
+under handsfree, and never on your own judgment:
+- Accept only after the user explicitly accepts in this conversation. Run
+  `accept --intent-only` with the user's reason as `--reason TEXT` (or no
+  `--reason` if they give none), show the digest, then run
+  `accept --expect <digest>` with the same `--reason`.
+- Reject only on the user's explicit rejection with their note: run
+  `reject --intent-only --text NOTE`, show the digest, then run
+  `reject --expect <digest> --text NOTE` in the host's long-command form (it
+  reopens EXEC and dispatches model turns) and inspect the final status.
+- Use `--override-rejection` only when the user asks for it with a reason.
+
+Do not imply user acceptance or delivery authorization from DONE.

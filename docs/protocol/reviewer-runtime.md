@@ -15,7 +15,7 @@ model-selection policy:
 |---|---|---|
 | Claude `reviewer: codex` | `run_codex_reviewer.py` | `reviewer_model`, otherwise Codex default |
 | Claude `reviewer: subagent` (compatibility name) | `run_claude_reviewer.py` | `reviewer_model` > `judgment_model` > Claude CLI runtime default |
-| Codex default Claude reviewer | `run_claude_reviewer.py` | `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` |
+| Codex default Claude reviewer | `run_claude_reviewer.py` | `reviewer_model` > `judgment_model` > `claude-opus-5-5` |
 | Codex `codex_reviewer_backend: codex` | `run_codex_reviewer.py` | `codex_reviewer_model`, otherwise Codex default |
 | Claude report-only quality specialist | `run_claude_reviewer.py` | existing `judgment` / `cheap` tier resolution; omit `--model` when no override is resolved |
 | Codex report-only quality specialist | `run_codex_reviewer.py` | `codex_reviewer_model`, otherwise Codex default |
@@ -63,13 +63,22 @@ descendant cleanup; run it outside a parent tool sandbox that blocks process
 inspection. If inspection is unavailable, cleanup fails closed and no review is
 accepted.
 
-Do not give report-only agents Bash/Write/Edit/Agent tools. Materialize patches
+On this launcher dispatch path, a report-only reviewer or specialist gets no
+Bash/Write/Edit/Agent tools: Claude gets Read/Grep/Glob only, Codex the
+read-only sandbox above. Materialize patches
 and run required verification commands in the authorized caller; pass the
 artifact paths, command, exit status and relevant output to the reviewer.
 Reviewers inspect the evidence and request missing verification. They do not
 install tools or run a write-requiring test suite themselves. For quality
 agents whose old body asks for Bash, this boundary takes precedence: the caller
 runs the named static analysis commands and supplies their results.
+
+The `tools:` frontmatter of the report-only agents in `agents/*.md` keeps
+`Bash` (owner decision 2026-10-04). It serves direct native use only, when a
+user invokes such an agent themselves and it needs `git diff` and its static
+analysis commands. The launchers do not read that frontmatter: they set their
+own read-only tools (`--tools` Read/Grep/Glob for Claude, the read-only sandbox
+for Codex), so the frontmatter never widens this dispatch boundary.
 
 The launcher counts root-agent native tool-use events without retaining their
 payloads. `tool_uses: 0` is a failed review. The caller retries it once where the active
@@ -134,7 +143,7 @@ Severities are the shared schema's (reviewer-output.md): a blocking finding is `
   Record `cross-vendor review: <VERDICT> (...)`.
 - Model is the other backend's own key: codex uses `reviewer_model` only when it names a Codex model, else
   `codex_reviewer_model`, else the Codex default; claude uses `reviewer_model` > `judgment_model` > the Claude
-  runtime default (`claude-sonnet-4-6` on the Codex runtime, Claude CLI default on the Claude runtime).
+  runtime default (`claude-opus-5-5` on the Codex runtime, Claude CLI default on the Claude runtime).
 - At most once per convergence: the pass never reruns for the same convergence. It reruns only after a reopened
   round that changed files, and that round starts a new convergence.
 - A `[CRITICAL]` blocks delivery and reopens a normal execution fix round, which counts toward `soft_limit_exec`.

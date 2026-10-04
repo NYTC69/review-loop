@@ -65,7 +65,7 @@
   the local Codex reviewer directly.
 - `reviewer_model` applies only to the Claude CLI reviewer path.
 - `judgment_model` is the shared-tier fallback for that Claude CLI reviewer
-  path before the explicit `claude-sonnet-4-6` backstop.
+  path before the explicit `claude-opus-5-5` backstop.
 - `cheap_model` is accepted in shared config but is a documented no-op in
   Codex Stage 1 because Stage 1 currently ships no cheap-tier Codex agents.
 - `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
@@ -87,7 +87,7 @@ Both use fresh self-contained prompts and enforced read-only capabilities.
 
 The default launcher is `python3 scripts/run_claude_reviewer.py --session-id
 {session_id} --parent-session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else
-claude-sonnet-4-6} --stage {phase}`. Resolve the script against the support root,
+claude-opus-5-5} --stage {phase}`. Resolve the script against the support root,
 keep cwd in the task workspace, and run outside the parent Codex sandbox.
 The alternate launcher is `scripts/run_codex_reviewer.py`. The legacy
 `review_loop_reviewer` role is not the dispatch path for these reviews.

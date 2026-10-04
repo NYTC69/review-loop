@@ -43,12 +43,12 @@ Shared tier contract:
 - Dispatch precedence is path-specific override -> tier override -> runtime
   backstop.
 - Missing `tier` defaults to `judgment`.
-- Cheap-tier backstop is `claude-haiku-4-5-20251001`.
+- Cheap-tier backstop is `claude-opus-5-5`.
 - In Codex Stage 1, `cheap_model` is accepted by the shared config but is a
   documented no-op because Stage 1 only ships judgment-tier Codex agents.
 - In Codex Stage 1, review stays on the outside-sandbox Claude CLI reviewer
   path unless `codex_reviewer_backend: codex` is explicitly set.
 - On that default Codex Stage 1 Claude reviewer path, the model resolves as
-  `reviewer_model` -> `judgment_model` -> `claude-sonnet-4-6`.
+  `reviewer_model` -> `judgment_model` -> `claude-opus-5-5`.
 
 ---

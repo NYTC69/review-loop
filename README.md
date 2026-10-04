@@ -26,7 +26,7 @@ entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
-`--config` to both probe and run; the paired-session skill uses
+`--config` to every command (probe and run in strict mode); the paired-session skill uses
 `~/.config/review-loop/paired-session.json` when it exists and you name no other
 profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
@@ -36,10 +36,14 @@ modes. `efficient`, the default, does not require a permission-probe PASS before
 dispatch, and its evidence guard only records what it would have held. `strict`
 (`--strict`, or `"safety_mode": "strict"` in the operator profile; the
 workspace file cannot set it) also requires the probe PASS and lets the evidence
-guard hold. The first command that creates the run (usually `permission-probe`)
-fixes its mode, so pass `--strict` from `permission-probe` on; a `--strict` that
+guard hold. The first command that creates the run (`run` by default,
+`permission-probe` in strict mode) fixes its mode, so pass `--strict` from that
+first command on; a `--strict` that
 arrives after only the probe has run still upgrades the run, later it is
-refused. Runs made before this change resume strict. See
+refused. Runs made before this change resume strict. In both modes a reviewer
+turn that changes the workspace is voided, restored and re-dispatched once (a
+second change or a failed restore is a HOLD), and an author turn that changes
+HEAD or the branch is a HOLD. See
 [`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
 **Optional** — copy the config template to customize per-project defaults:
@@ -73,11 +77,11 @@ explicitly opt into the local Codex reviewer with
 `codex_reviewer_backend: codex` in `.review-loop/config.md`.
 When a Claude reviewer is selected, the permission probe checks unique writes
 to host `/tmp`, the run directory, and the `context` directory passed through
-`--add-dir`. Strict sandboxing requires a supported Claude host/backend; the
-probe fails closed when the OS sandbox is unavailable.
+`--add-dir`. The Claude reviewer sandbox requires a supported Claude host/backend;
+the probe (required only in strict mode) fails closed when the OS sandbox is unavailable.
 In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
 `judgment_model` is its shared-tier fallback, and the empty backstop is an
-explicit `--model claude-sonnet-4-6`.
+explicit `--model claude-opus-5-5`.
 The shared `cheap_model` key is accepted for cross-runtime config
 compatibility, but Stage 1 currently has no cheap-tier Codex agents, so it is
 a documented no-op there.
@@ -356,7 +360,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
 | `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |
-| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |
 | `executor_model` | `inherit` | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |
 | `codex_reviewer_backend` | `claude_cli` | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
 | `codex_reviewer_model` | `""` | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
@@ -377,7 +381,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 For Codex Stage 1, the reviewer separation policy is explicit: unless
 `codex_reviewer_backend: codex` is set, review stays on the
 outside-sandbox Claude CLI reviewer path. That default path resolves its model
-as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` and passes it via
+as `reviewer_model` > `judgment_model` > `claude-opus-5-5` and passes it via
 `--model`. The local Codex reviewer is opt-in only. The `cheap_model` entry is
 accepted in the shared config but remains a no-op in Stage 1 because only
 judgment-tier Codex agents are currently shipped.

@@ -3382,7 +3382,7 @@ sys.exit(result.returncode)
 
     def test_example_config_uses_adr8_pins(self):
         example = json.loads(Path(__file__).with_name('paired-session-config.example.json').read_text())
-        self.assertEqual(example['author_model'], 'gpt-6-luna')
+        self.assertEqual(example['author_model'], 'gpt-6.1-sol')
         self.assertEqual(example['reviewer_model'], 'claude-opus-5-5')
         self.assertEqual(example['gate_model'], 'claude-opus-5-5')
         rc.validate_role_models(rc.configure_parser(rc.parser(), [

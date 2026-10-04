@@ -50,7 +50,7 @@ def refuse_saved(state, args):
         if 'on' in (state.get('config', {}).get('lifecycle_mode'), getattr(args, 'lifecycle_mode', None)):
             raise ValueError('saved lifecycle run cannot resume: it is not a worktree-lifecycle run')
         return
-    refuse_waivers(args)   # also on reject/accept/note, whose lifecycle_mode comes from the saved config
+    refuse_waivers(args)   # also on reject/accept/note, whose lifecycle_mode and safety_mode come from the saved config
     if state.get('claude_author_override') or state.get('probe_skip_override'):
         raise ValueError('worktree lifecycle refuses a recorded author waiver or probe-skip acceptance')
 

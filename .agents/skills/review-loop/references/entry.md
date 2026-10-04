@@ -44,7 +44,7 @@ then `## Initialize / route`); no UUID or lock exists yet. With
 `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or ask for "the legacy review-loop workflow"`
 and end this workflow (except where a row says otherwise).
 - Host, key absent only: `uname -s` is not `Darwin` → `review-loop: paired-session default entry needs a verified host (macOS); using legacy workflow`.
-  With the key set there is no host check; the permission probe decides.
+  With the key set there is no host check; in strict mode the permission probe decides, in efficient mode nothing does.
 - CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
   `codex` and `claude`). Missing → `review-loop: paired-session default entry needs <cli> for the <role> role; using legacy workflow`.
 - Outside-sandbox execution: the coordinator needs full host permission outside the Codex
@@ -82,7 +82,7 @@ dispatch, schema validation, or `completed_stages` minting.
 ── review-loop: Starting ──────────────────────────
 Work item: {title}
 Problem: {problem_description}
-Reviewer backend: {claude-cli ({reviewer_model | judgment_model | claude-sonnet-4-6}) | codex (review_loop_reviewer / {codex_reviewer_model})}
+Reviewer backend: {claude-cli ({reviewer_model | judgment_model | claude-opus-5-5}) | codex (review_loop_reviewer / {codex_reviewer_model})}
 Mode: {interactive | handsfree}
 Soft limit: {soft_limit_plan} (plan) / {soft_limit_exec} (exec)
 {if `## Historical Context` was populated by the plan sub-skill: Historical context: {N} relevant memories loaded}
@@ -95,7 +95,7 @@ sub-skill resume or per-round dispatch.
 
 The `Reviewer backend` row uses backend-appropriate labels resolved per
 §Config Loading: the `claude-cli` branch shows the model resolved
-through the `reviewer_model | judgment_model | claude-sonnet-4-6` chain;
+through the `reviewer_model | judgment_model | claude-opus-5-5` chain;
 the `codex` branch shows the local Codex reviewer agent name plus
 `codex_reviewer_model`. Codex Stage 1 ignores the shared `reviewer`
 config key for backend selection (per §Config Loading), so the banner

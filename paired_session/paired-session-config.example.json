@@ -1,6 +1,6 @@
 {
   "author_vendor": "codex",
-  "author_model": "gpt-6-luna",
+  "author_model": "gpt-6.1-sol",
   "author_effort": "medium",
   "reviewer_vendor": "claude",
   "reviewer_model": "claude-opus-5-5",
@@ -11,7 +11,7 @@
   "shadow": "on",
   "adversarial_gate": "on",
   "polish_round": "on",
-  "lifecycle_mode": "off",
+  "lifecycle_mode": "on",
   "docs_allowlist": [],
   "skip_globs": [],
   "skip_quality_polish": false,

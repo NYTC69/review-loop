@@ -62,7 +62,7 @@ session already exists. Two explicit entry commands sit beside it:
 
 | Command | What it does |
 |---|---|
-| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: probe, independent PLAN review, EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
+| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
 | `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice) |
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
@@ -80,6 +80,10 @@ started, a refusal or HOLD is reported, never turned into a legacy run.
 `entry: legacy` keeps the legacy workflow without a notice. Roles come from the
 operator profile you name or `~/.config/review-loop/paired-session.json`;
 without one, Codex is the author and gate and Claude the reviewer.
+Runs are `efficient` by default: every sandbox applies, but no permission-probe
+PASS is required; `--strict` or `"safety_mode": "strict"` in the operator
+profile adds the probe gate. In both modes a reviewer turn that changes the
+workspace is voided and restored, and an author commit is a HOLD.
 `/review-loop:plan`, `/review-loop:execute` and `/review-loop:review-pr` ignore
 `entry`. On Codex, ask "use paired-session for this task" or "use the legacy
 review-loop workflow". Details: `docs/paired-session-migration.md`.
@@ -198,7 +202,7 @@ Create `.review-loop/config.md` in your project to customize:
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
 | `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | "" | Shared tier override for judgment-tier agents |
-| `cheap_model` | "" | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `cheap_model` | "" | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |
 | `executor_model` | inherit | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model` |
 | `codex_reviewer_backend` | claude_cli | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
 | `codex_reviewer_model` | "" | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
@@ -226,7 +230,7 @@ default. The local Codex reviewer is explicit opt-in only via
 `codex_reviewer_backend: codex`. `cheap_model` remains accepted-but-no-op in
 Codex Stage 1 because only judgment-tier Codex agents are shipped today. When
 neither `reviewer_model` nor `judgment_model` is set, that default Claude
-reviewer path backstops to `claude-sonnet-4-6`.
+reviewer path backstops to `claude-opus-5-5`.
 `quality_focus` applies only when Step 3.5 Quality Polish actually runs.
 `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
 

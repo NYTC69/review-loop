@@ -1,1 +1,1 @@
-"""Experimental paired-session coordinator candidate."""
+"""paired-session coordinator."""
