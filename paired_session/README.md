@@ -243,11 +243,13 @@ active CODEX_HOME plugin cache. Every Codex dispatch (author, reviewer, gate,
 probe) passes `-c features.plugins=false`, which makes cached bundles inert
 (empirical evidence: `.compass/results/2026-10-01_cg-codex-plugin-evidence.md`;
 `apps = false` or `remote_plugin = false` alone is not relied on). The argv is
-bound into the reviewer, gate and author flags digests. The guard still reports
-cached bundles unless the effective `$CODEX_HOME/config.toml` itself sets
-`[features] plugins = false`, so a ChatGPT default home (`chatgpt-global`,
-`openai-curated-remote`) HOLDs. Recipe for a dedicated `CODEX_HOME`:
-`[features]` with `remote_plugin = false`, `plugins = false`, `apps = false`.
+bound into the reviewer, gate and author flags digests. Since rel210-fixCG the
+coordinator's guard therefore records cached MCP/app bundles as inert (path and
+sha256 in `plugin_bundles_inert`, and in each Codex turn receipt as
+`codex_plugin_bundles_inert`) instead of reporting them, so a ChatGPT default
+home (`chatgpt-global`, `openai-curated-remote`) runs. A dedicated `CODEX_HOME`
+with `[features]` `remote_plugin = false`, `plugins = false`, `apps = false`
+remains a stricter option.
 MCP servers declared in config.toml are flagged either way. Managed feature
 settings and unreadable MDM preferences fail closed. After its Codex turns the
 permission probe runs the guard again; a new finding FAILs the probe.

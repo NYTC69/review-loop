@@ -2187,7 +2187,8 @@ class Coordinator:
         return flags
 
     def codex_capabilities(self, workspace=None) -> dict:
-        return codex_capability_guard.inspect(self.global_codex_home, workspace or self.workspace)
+        return codex_capability_guard.inspect(self.global_codex_home, workspace or self.workspace,   # rel210-fixCG: every
+                                              launch_plugins_off=CODEX_PLUGINS_OFF == ('-c', 'features.plugins=false'))   # Codex argv has it
 
     def _codex_cli_version(self) -> str:
         try:
@@ -4967,6 +4968,7 @@ class Coordinator:
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
         self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
+        capability = {}
         if self._role_vendor(role) == 'codex':
             capability = self.codex_capabilities(active_workspace)
             if capability['status'] != 'PASS':
@@ -5000,10 +5002,13 @@ class Coordinator:
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh, active_workspace)
         command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
+        if self._role_vendor(role) == 'codex' and ('-c', 'features.plugins=false') not in zip(command, command[1:]):   # rel210-fixCG:
+            raise RuntimeError('Codex argv lacks -c features.plugins=false, so cached plugin bundles would not be inert')   # the guard's premise
         now = time.time()
         receipt = {'sequence': seq, 'role': role, 'phase': phase, 'vendor': self._role_vendor(role),
                    'model': self._model_effort(role)[0], 'command': command, 'snapshot_before': before,
                    'workspace': str(active_workspace), 'global_codex_home': str(self.global_codex_home), 'global_config_home': str(self.global_config_home),
+                   **({'codex_plugin_bundles_inert': capability['plugin_bundles_inert']} if capability.get('plugin_bundles_inert') else {}),
                    'context_before': context_before,
                    'start': now, 'gap': now - self.state['last_end'].get(role, now), 'fresh': fresh,
                    'role_identity_sha256': self.state.get('role_dispatch_manifest_sha256'),

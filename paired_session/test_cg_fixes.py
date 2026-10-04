@@ -45,6 +45,28 @@ class PluginBundleScopeTests(unittest.TestCase):
             with self.subTest(config=text):
                 self.assertEqual(self.inspect(text)['status'], 'PASS')
 
+    def test_the_launch_flag_makes_cached_bundles_inert_and_they_stay_recorded(self):   # rel210-fixCG
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home, workspace = root / 'home', root / 'workspace'
+            workspace.mkdir()
+            app = home / 'plugins/cache/chatgpt-global/documents-router/0.1.3/.app.json'
+            manifest = home / 'plugins/cache/market/tool/1.0/.codex-plugin/plugin.json'
+            for path, text in ((app, '{"apps":{"documents":{}}}'), (manifest, '{"mcpServers":"./.mcp.json"}')):
+                path.parent.mkdir(parents=True)
+                path.write_text(text)
+            result = guard.inspect(home, workspace, platform='linux', launch_plugins_off=True)
+            self.assertEqual((result['status'], result['issues']), ('PASS', []), result)
+            self.assertEqual(set(result['plugin_bundles_inert']), {str(app.resolve()), str(manifest.resolve())})
+            self.assertEqual(result['plugin_bundles_inert'][str(app.resolve())], hashlib.sha256(app.read_bytes()).hexdigest())
+            with patch.object(Path, 'read_bytes', side_effect=OSError('denied')):   # an unreadable bundle stays an issue
+                self.assertIn('cannot inspect plugin capability bundle: ' + str(app.resolve()),
+                              guard.inspect(home, workspace, platform='linux', launch_plugins_off=True)['issues'])
+            (home / 'config.toml').write_text('[mcp_servers.x]\ncommand = "touch"\n')   # config MCP is not a bundle
+            result = guard.inspect(home, workspace, platform='linux', launch_plugins_off=True)
+            self.assertEqual(result['status'], 'FAIL')
+            self.assertIn('MCP servers configured in ' + str(home.resolve() / 'config.toml'), result['issues'])
+
     def test_mcp_servers_and_other_capabilities_still_fail_when_plugins_are_off(self):
         for extra in ('[mcp_servers.evil]\ncommand = "touch"\n', 'notify = ["touch"]\n'):
             result = self.inspect('[features]\nplugins = false\n' + extra)
@@ -65,6 +87,27 @@ class CodexDispatchTests(unittest.TestCase):
         digests = (co.author_flags_digest(), co.reviewer_flags_digest(), co.gate_flags_digest())
         with patch.object(rc, 'CODEX_PLUGINS_OFF', ()):
             self.assertTrue(all(old != new for old, new in zip(digests, (co.author_flags_digest(), co.reviewer_flags_digest(), co.gate_flags_digest()))))
+
+    def test_every_codex_role_argv_carries_the_launch_flag_so_the_guard_treats_bundles_as_inert(self):   # rel210-fixCG
+        co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
+        schema = Path(self.root) / 'schema.json'
+        for role in ('author', 'reviewer', 'shadow', 'probe', 'gate', 'gate-probe'):   # W roles dispatch as author or reviewer
+            command = co.command(role, schema, True)
+            self.assertIn(('-c', 'features.plugins=false'), list(zip(command, command[1:])), role)
+        bundle = self.test_home / '.codex/plugins/cache/chatgpt-global/documents-router/0.1.3/.app.json'
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text('{"apps":{}}')
+        result = co.codex_capabilities()
+        self.assertEqual((result['status'], list(result['plugin_bundles_inert'])), ('PASS', [str(bundle.resolve())]))
+        with patch.object(rc, 'CODEX_PLUGINS_OFF', ()):   # without the launch flag the bundle is live again
+            self.assertIn('plugin MCP or app bundle configured in ' + str(bundle), co.codex_capabilities()['issues'])
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        result = co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
+        turn = next(row for row in co.state['turns'] if row['sequence'] == result['sequence'])
+        self.assertEqual(turn['codex_plugin_bundles_inert'], {str(bundle.resolve()): hashlib.sha256(bundle.read_bytes()).hexdigest()})
+        with patch.object(co, '_codex_command', return_value=['codex', 'exec', '-']), \
+                self.assertRaisesRegex(RuntimeError, 'Codex argv lacks -c features.plugins=false'):   # fail closed at dispatch
+            co._invoke_once('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
 
     def test_a_missing_config_toml_is_an_empty_config_everywhere(self):
         config = self.test_home / '.codex/config.toml'

@@ -563,14 +563,16 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertEqual(co.codex_capabilities()['status'], 'PASS')
 
     def test_plugin_bundle_blocks_codex_probe_and_dispatch(self):
-        plugin = self.test_home / '.codex/plugins/cache/local/probe/1.0'
-        plugin.mkdir(parents=True)
-        (plugin / '.mcp.json').write_text('{"mcpServers":{"unsafe":{"command":"node"}}}')
-        co = self.coordinator('--author-vendor', 'codex')
-        self.assertEqual(co._author_permission_probe()['status'], 'FAIL')
-        with self.assertRaisesRegex(RuntimeError, 'plugin MCP'):
-            co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
-        self.assertEqual(co.state['sequence'], 0)
+        # rel210-fixCG: pins "without the launch flag a live bundle blocks probe and dispatch"; the default flag (bundles inert, recorded) is covered in test_cg_fixes.py: test_the_launch_flag_makes_cached_bundles_inert_and_they_stay_recorded, test_every_codex_role_argv_carries_the_launch_flag_so_the_guard_treats_bundles_as_inert
+        with patch.object(rc, 'CODEX_PLUGINS_OFF', ()):
+            plugin = self.test_home / '.codex/plugins/cache/local/probe/1.0'
+            plugin.mkdir(parents=True)
+            (plugin / '.mcp.json').write_text('{"mcpServers":{"unsafe":{"command":"node"}}}')
+            co = self.coordinator('--author-vendor', 'codex')
+            self.assertEqual(co._author_permission_probe()['status'], 'FAIL')
+            with self.assertRaisesRegex(RuntimeError, 'plugin MCP'):
+                co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+            self.assertEqual(co.state['sequence'], 0)
 
     def test_codex_direct_control_pass_cannot_override_model_escape_failure(self):
         co = self.coordinator()
