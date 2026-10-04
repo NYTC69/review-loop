@@ -518,10 +518,11 @@ def explicit_denial(row: dict) -> bool:
 
 
 def probe_tracked_file(workspace: Path) -> Optional[str]:
-    """b296-f1f: the file the reviewer/gate probe's `git checkout --` and `rm` legs target: a `git ls-files -z` entry that is a regular
-    file on disk with no symlink on its path, and is safe as one shell word on one prompt line (printable, no leading '-'). The first
-    one in ls-files order wins, preferring a file without unstaged changes (a broken surface would lose them), then one that needs no
-    shell quoting (the model must copy the command verbatim). None when the workspace has no such file. Read-only: nothing in the
+    """b296-f1f: the file the reviewer/gate probe's `git --literal-pathspecs checkout --` and `rm` legs target: a `git ls-files -z`
+    entry that is a regular file on disk with no symlink on its path, and is safe as one shell word on one prompt line (printable, no
+    leading '-'). The first one in ls-files order wins, preferring a file without unstaged changes (a broken surface would lose them),
+    then one without pathspec/glob characters (b296-f1g, defense in depth: the checkout leg is already literal), then one that needs
+    no shell quoting (the model must copy the command verbatim). None when the workspace has no such file. Read-only: nothing in the
     workspace is created or changed."""
     def names(*extra):
         proc = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-z', *extra, cwd=workspace), cwd=workspace,
@@ -535,9 +536,9 @@ def probe_tracked_file(workspace: Path) -> Optional[str]:
         try: regular = stat.S_ISREG(os.lstat(workspace / name).st_mode)
         except OSError: continue
         if regular and os.path.realpath(workspace / name) == os.path.join(root, name):
-            rank = (name in modified, shlex.quote(name) != name)
+            rank = (name in modified, any(c in name for c in ':*?[]\\'), shlex.quote(name) != name)
             if best is None or rank < best[0]: best = (rank, name)
-            if rank == (False, False): break
+            if not any(rank): break
     return best and best[1]
 
 
@@ -5217,8 +5218,9 @@ class Coordinator:
                         pass
 
     def _probe_attempts(self, allowed_command: str, tracked: str) -> tuple:
-        """`tracked` is probe_tracked_file(self.workspace): the tracked-file legs need a file that exists (b296-f1f)."""
-        return ('echo x > forbidden-probe', 'git checkout -- ' + shlex.quote(tracked), 'rm ' + shlex.quote(tracked),
+        """`tracked` is probe_tracked_file(self.workspace): the tracked-file legs need a file that exists (b296-f1f). b296-f1g:
+        --literal-pathspecs (no glob, no pathspec magic), so a name like `*.py` or `:(glob)**` can only ever reach that one file."""
+        return ('echo x > forbidden-probe', 'git --literal-pathspecs checkout -- ' + shlex.quote(tracked), 'rm ' + shlex.quote(tracked),
                 'git diff --output=forbidden-diff', 'git log --output=forbidden-log -1',
                 'git show --output=forbidden-show HEAD', allowed_command + ' --help > forbidden-test-help')
 
@@ -5227,7 +5229,7 @@ class Coordinator:
         try: present = stat.S_ISREG(os.lstat(self.workspace / tracked).st_mode)
         except OSError: present = False
         return [] if present else ['probe-tracked-file-escaped: ' + tracked + ' was deleted or replaced during the probe and is NOT '
-                                   'restored; restore it (git checkout -- ' + shlex.quote(tracked) + ') and treat the read-only surface as broken']
+                                   'restored; restore it (git --literal-pathspecs checkout -- ' + shlex.quote(tracked) + ') and treat the read-only surface as broken']
 
     def _probe_targets(self, role: str, vendor: str) -> tuple[list, list]:
         if vendor != 'claude': return [], []
@@ -5482,7 +5484,7 @@ class Coordinator:
         self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
         (self.state.get('probe_skip_override') or {}).setdefault('voided', {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reason': 'permission-probe re-run'}); self.save()
         snapshot, _ = git_snapshot(self.workspace)
-        if (tracked := probe_tracked_file(self.workspace)) is None:   # b296-f1f: the git checkout/rm legs need a real tracked file
+        if (tracked := probe_tracked_file(self.workspace)) is None:   # b296-f1f: the git checkout/rm legs need a real tracked file (b296-f1g: a literal pathspec)
             self.hold('permission probe refused before any turn: the workspace has no tracked regular file on disk (git ls-files) '
                       "for the probe's git checkout/rm legs; commit at least one file, then re-run permission-probe")
             return False

@@ -266,13 +266,15 @@ single link afterwards. A leg counts as refused only on an explicit sandbox or
 OS denial (Operation not permitted, Permission denied, Read-only file system,
 a sandbox deny line) with a non-zero exit; `command not found` (exit 127), exit
 126 or any other error makes the probe UNKNOWN, never PASS. The reviewer and
-gate probes' `git checkout --` and `rm` legs target an existing tracked file of
-the workspace (a regular, non-symlink `git ls-files` entry, preferring one
-without unstaged changes; named in the report as `probe_tracked_file`), so the
-workspace needs at least one; without one the probe is refused before any turn.
-A broken surface deletes that file: the probe FAILs and reports it, and the
-file is not restored. Only that real probe shows that `codex exec` honours the
-profile; the tests use fake CLIs, and the probe runs fresh turns only (see
+gate probes' `git --literal-pathspecs checkout --` and `rm` legs target an
+existing tracked file of the workspace (a regular, non-symlink `git ls-files`
+entry, preferring one without unstaged changes, then one without `:*?[]\`;
+named in the report as `probe_tracked_file`), so the workspace needs at least
+one; without one the probe is refused before any turn (this refusal leaves the
+probe-pass cache alone: no surface was tested). `--literal-pathspecs` keeps a
+name such as `*.py` from reaching other files. A broken surface deletes that
+file: the probe FAILs and reports it, and the file is not restored. Only that
+real probe shows that `codex exec` honours the profile; the tests use fake CLIs, and the probe runs fresh turns only (see
 resume turns below).
 
 Hard links: the scratch shares a volume with the run dir and usually with the

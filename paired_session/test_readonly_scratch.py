@@ -4,6 +4,7 @@ These tests use fake CLIs: they prove the coordinator's argv, environment, lifec
 permission profile. Only a real permission-probe shows that."""
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -314,14 +315,14 @@ class ExplicitDenialTests(unittest.TestCase):                                   
 
 
 class ProbeTrackedFileTests(unittest.TestCase):                                              # b296-f1f
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
+    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe', 'seed', 'entries', 'forget_report', 'reuse')})
 
     def git(self, *args):
-        subprocess.run(['git', *args], cwd=self.h.workspace, check=True, capture_output=True)
+        return subprocess.run(['git', *args], cwd=self.h.workspace, check=True, capture_output=True, text=True).stdout
 
     def legs(self, report, tracked):
-        return [command for command in report['write_attempts_denied'] if command.startswith(('git checkout -- ', 'rm '))], \
-               ['git checkout -- ' + tracked, 'rm ' + tracked]
+        return [command for command in report['write_attempts_denied'] if command.startswith(('git --literal-pathspecs checkout -- ', 'rm '))], \
+               ['git --literal-pathspecs checkout -- ' + tracked, 'rm ' + tracked]
 
     def test_a_workspace_without_tracked_txt_probes_an_existing_tracked_file_and_passes(self):   # the field shape (P1/P2, codex-cli 0.160.0)
         ws = self.h.workspace
@@ -346,6 +347,17 @@ class ProbeTrackedFileTests(unittest.TestCase):                                 
             report = self.probe(self.co(*CODEX_ROLES))
         self.assertNotEqual(report['status'], 'PASS')
         self.assertIn('denial-not-explicit: rm tracked.txt', report['failure_reasons'])
+        self.assertEqual(report['write_attempt_outcomes']['git --literal-pathspecs checkout -- tracked.txt'], 'denied')   # index.lock first, as in the field
+
+    def test_the_fake_denies_checkout_at_the_index_lock_and_rm_needs_the_file_on_disk(self):   # b296-f1g: a tracked file deleted from disk
+        (self.h.workspace / 'tracked.txt').unlink()                                          # (unsandboxed git would restore it from the index)
+        with patch.object(rc, 'probe_tracked_file', return_value='tracked.txt'):
+            report = self.probe(self.co(*CODEX_ROLES))
+        outcomes = report['write_attempt_outcomes']
+        self.assertEqual((outcomes['git --literal-pathspecs checkout -- tracked.txt'], outcomes['rm tracked.txt']), ('denied', 'unknown'))
+        row = next(row for row in report['observed_commands'] if row['command'] == 'git --literal-pathspecs checkout -- tracked.txt')
+        self.assertTrue(rc.explicit_denial(row), row)                                        # the literal checkout leg still yields an explicit denial
+        self.assertIn('index.lock', row['output'])
 
     def test_the_pick_skips_links_missing_and_unsafe_names_and_a_path_that_needs_quoting_is_quoted(self):
         ws = self.h.workspace
@@ -378,6 +390,45 @@ class ProbeTrackedFileTests(unittest.TestCase):                                 
         self.assertEqual((report['status'], report['probe_tracked_file']), ('PASS', quoted), report['failure_reasons'])
         self.assertEqual(*self.legs(report, "'e dir/it'\"'\"'s.txt'"))
         self.assertEqual((ws / quoted).read_text(), 'q\n')
+
+    def test_a_glob_like_name_is_checked_out_literally_and_a_sibling_keeps_its_unstaged_bytes(self):   # b296-f1g
+        ws = self.h.workspace
+        self.git('rm', '-q', 'tracked.txt', '.gitignore')
+        (ws / '*.txt').write_text('glob name\n')
+        (ws / 'a.txt').write_text('a base\n')
+        self.git('--literal-pathspecs', 'add', '--', '*.txt', 'a.txt')
+        self.git('commit', '-qm', 'glob-like name')
+        self.assertEqual(rc.probe_tracked_file(ws), 'a.txt')                                 # defense in depth: a plain name is preferred
+        (ws / 'a.txt').write_text('unstaged work\n')
+        self.assertEqual(rc.probe_tracked_file(ws), '*.txt')                                 # ... but never over unstaged changes, and never refused
+        self.assertIn('a.txt', self.git('ls-files', '--', '*.txt').split())                  # as a plain pathspec, '*.txt' would reach a.txt
+        report = self.probe(self.co(*CODEX_ROLES))
+        self.assertEqual((report['status'], report['probe_tracked_file']), ('PASS', '*.txt'), report['failure_reasons'])
+        self.assertEqual(*self.legs(report, "'*.txt'"))
+        self.h.run_dir = self.h.root / 'escape-literal'                                     # a broken surface: the checkout really runs
+        with patch.dict(os.environ, {'FAKE_CODEX_PROBE_ESCAPE': 'pathspecs checkout'}):
+            report = self.probe(self.co(*CODEX_ROLES))
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertEqual(report['write_attempt_outcomes']["git --literal-pathspecs checkout -- '*.txt'"], 'no-trace', report['failure_reasons'])   # it ran, exit 0
+        self.assertIn("no-explicit-denial: git --literal-pathspecs checkout -- '*.txt'", report['failure_reasons'])
+        self.assertEqual(((ws / 'a.txt').read_text(), (ws / '*.txt').read_text()), ('unstaged work\n', 'glob name\n'))
+        self.git('checkout', '--', '*.txt')                                                  # the sensitivity check: without --literal-pathspecs
+        self.assertEqual((ws / 'a.txt').read_text(), 'a base\n')                            # the same name resets the sibling
+
+    def test_a_refusal_leaves_the_shared_cache_entry_alone(self):                            # b296-f1g: no probe evidence, so no F4 void
+        co, entry = self.seed(*CODEX_ROLES)
+        before = entry.read_bytes()
+        self.git('rm', '-q', 'tracked.txt', '.gitignore')
+        self.git('commit', '-qm', 'no tracked file')
+        later = self.co(*CODEX_ROLES)                                                        # the same run dir: the same cache key
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
+            self.assertFalse(later.permission_probe())
+        self.assertEqual((self.entries(), entry.read_bytes()), ([entry], before))            # not voided, like an aborted probe turn
+        ok, why = self.reuse(later)
+        self.assertEqual((ok, why), (False, 'probe cache: the last permission-probe did not complete'))   # this run never revives it
+        shutil.rmtree(self.h.run_dir)                                                        # a new run with the same key reuses the flag-surface PASS
+        ok, why = self.reuse(self.co(*CODEX_ROLES))
+        self.assertEqual((ok, why), (True, ''))
 
     def test_a_workspace_with_no_tracked_regular_file_is_refused_before_any_turn(self):
         ws = self.h.workspace
