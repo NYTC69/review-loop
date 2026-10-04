@@ -62,13 +62,22 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then echo PY=/usr/bin/python3 >> "$GITHUB_ENV"; else echo PY=python3 >> "$GITHUB_ENV"; fi
           git config --global user.name ci; git config --global user.email ci@example.invalid
           git config --global init.defaultBranch main
+          # The dev Mac has real codex/claude on PATH; tests only hash them (a Popen guard blocks running them).
+          ci_bin="$RUNNER_TEMP/ci-bin"; mkdir -p "$ci_bin"
+          for n in codex claude; do
+            printf '#!/bin/sh\necho "CI stub: real %s CLI is not installed" >&2\nexit 127\n' "$n" > "$ci_bin/$n"
+            chmod 755 "$ci_bin/$n"
+          done
+          # Candidate test commands resolve bare python3; match the dev Mac (Xcode 3.9), not the image's Homebrew 3.14.
+          if [ "$RUNNER_OS" = macOS ]; then ln -sf /usr/bin/python3 "$ci_bin/python3"; fi
+          echo "$ci_bin" >> "$GITHUB_PATH"
       - name: Run ${{ matrix.part.module }} ${{ matrix.part.shard }}/${{ matrix.part.of }}
         env:
           MODULE: ${{ matrix.part.module }}
           SHARD: ${{ matrix.part.shard }}
           OF: ${{ matrix.part.of }}
         run: |
-          $PY --version
+          $PY --version; command -v python3 codex claude; python3 --version
           set -o pipefail
           $PY - <<'PY' 2>&1 | tee test.log
           import os, sys, unittest
@@ -80,6 +89,11 @@ jobs:
           ids = sorted(t.id() for t in walk(loader.loadTestsFromName('paired_session.' + os.environ['MODULE'])))
           shard, of = int(os.environ['SHARD']), int(os.environ['OF'])
           mine = [x for k, x in enumerate(ids) if k % of == shard]   # round-robin spreads the slow tests
+          if sys.platform != 'darwin':   # interim: the candidate-test sandbox is macOS-only by design
+              skip = {l.strip() for l in open('.github/paired-session-darwin-only.txt') if l.strip() and not l.startswith('#')}
+              dropped = [x for x in mine if x.rsplit('.', 1)[-1] in skip]
+              mine = [x for x in mine if x not in dropped]
+              print(f'skipped {len(dropped)} darwin-only tests', flush=True)
           print(f'shard {shard}/{of}: {len(mine)} of {len(ids)} tests', flush=True)
           result = unittest.TextTestRunner(verbosity=2, stream=sys.stdout).run(loader.loadTestsFromNames(mine))
           sys.exit(0 if result.wasSuccessful() else 1)
