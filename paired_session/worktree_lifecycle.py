@@ -22,11 +22,12 @@ PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polis
                 'auto_commit', 'external_delivery')
 
 
-def refuse_waivers(args):
-    """D-7: a lifecycle run needs a real probe PASS; the operator waivers stay real-EXEC only.
+def refuse_waivers(args, strict=True):
+    """D-7 (strict only, D-EFF): a strict lifecycle run needs a real probe PASS; the operator waivers stay real-EXEC only.
+    An efficient run needs no waiver and records none (main prints a NOTE).
     D-4/E-4: lifecycle keys come from the CLI or an operator profile, never an author-writable one."""
     used = [flag for dest, flag in WAIVERS if getattr(args, dest, False)]
-    if used:
+    if used and strict:
         raise ValueError('worktree lifecycle refuses ' + ' and '.join(used) + '; run permission-probe until it passes')
     if (keys := getattr(args, 'workspace_lifecycle_keys', None)) and getattr(args, 'action', 'run') in (
             'run', 'resume', 'permission-probe'):   # abort/status/note/accept/reject never read these keys
@@ -49,7 +50,8 @@ def refuse_saved(state, args):
         if 'on' in (state.get('config', {}).get('lifecycle_mode'), getattr(args, 'lifecycle_mode', None)):
             raise ValueError('saved lifecycle run cannot resume: it is not a worktree-lifecycle run')
         return
-    refuse_waivers(args)   # also on reject/accept/note, whose lifecycle_mode comes from the saved config
+    refuse_waivers(args, getattr(args, 'safety_mode', 'strict') != 'efficient')   # also on reject/accept/note, whose lifecycle_mode
+                                                                                  # and safety_mode come from the saved config
     if state.get('claude_author_override') or state.get('probe_skip_override'):
         raise ValueError('worktree lifecycle refuses a recorded author waiver or probe-skip acceptance')
 

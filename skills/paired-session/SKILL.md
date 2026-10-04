@@ -76,8 +76,8 @@ the first command that runs `bin/paired-session`):
    across separate calls. Set `TEST_COMMAND` from the loaded profile or
    verified project command, and pass it as one quoted argument. Write any
    launcher log under `${CLAUDE_PLUGIN_DATA}/logs/`, never under `runs/`.
-4. For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`,
-   identically; the CLI value overrides any profile value. Never pass
+4. For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to
+   `permission-probe`, identically; the CLI value overrides any profile value. Never pass
    `--skip-probe`, `--accept-unverified-codex-cli`,
    `--accept-unverified-claude-author`, `--accept-probe-skip` or
    `--override-rejection` on your own initiative.
@@ -85,8 +85,17 @@ the first command that runs `bin/paired-session`):
    and goes to `permission-probe` and `run` alike:
    both modes keep every sandbox; the default `efficient` mode does not require
    the probe PASS and its evidence guard only logs, while `--strict` restores
-   both (`paired_session/docs/efficient-mode.md`).
-   Start the permission probe as a separate Bash call with
+   both (`paired_session/docs/efficient-mode.md`). A strict lifecycle run also
+   refuses `--accept-unverified-claude-author` and `--accept-probe-skip` (D-7);
+   an efficient run needs no waiver. The run is strict when the user asked for
+   `--strict` or the operator profile sets `"safety_mode": "strict"`; read the
+   profile before choosing the flow.
+   Default (efficient): no permission probe; make one Bash call
+   (`run_in_background: true`) with the `run` block below. Once
+   `RUN_DIR/state.json` exists, print the start line (below) from its frozen
+   `config` and apply the lifecycle-mode backstop. If `run` ends before
+   `RUN_DIR/state.json` exists, report its output verbatim as a refusal.
+   Strict: first start the permission probe as a separate Bash call with
    `run_in_background: true`; wait for the background task completion
    notification and inspect its final result. Use a shell-output polling tool
    only if the host exposes one; do not assume a tool named `BashOutput` exists.
@@ -95,7 +104,7 @@ the first command that runs `bin/paired-session`):
    timeout; long model turns exceed tool limits and can orphan a child CLI. If
    background execution is unavailable, that is a failed stage A check.
 
-   First Bash call (`run_in_background: true`):
+   Strict only, first Bash call (`run_in_background: true`):
 
    ```sh
    WORKSPACE='/absolute/path/to/worktree'
@@ -107,7 +116,7 @@ the first command that runs `bin/paired-session`):
      --test-command "$TEST_COMMAND" --lifecycle-mode on
    ```
 
-   Exit 0 means PASS or PASS_RESIDUAL_RISK; any other result is a HOLD: report it
+   In strict mode, exit 0 means PASS or PASS_RESIDUAL_RISK; any other result is a HOLD: report it
    and stop. On exit 0, read `RUN_DIR/permission-probe.json` and tell the user if
    the status is PASS_RESIDUAL_RISK, then read the frozen `config` in
    `RUN_DIR/state.json` and
@@ -129,7 +138,7 @@ the first command that runs `bin/paired-session`):
      --test-command "$TEST_COMMAND" --lifecycle-mode on
    ```
 
-   Add the same `--config` and mapped one-run options to both calls. Add
+   Add the same `--config` and mapped one-run options to every call. Add
    `--stop-after-plan` only to `run` when requested. Pass arguments as an
    array; do not interpolate untrusted text into shell source. Wait for each
    background call to finish before starting the next; do not create a second
@@ -147,7 +156,11 @@ the first command that runs `bin/paired-session`):
    value and the run's original workspace, work item, run directory, profile
    and options, never the current default. Report DONE/HOLD and the run
    directory. On HOLD, inspect its state, findings, and receipts before
-   resuming. If `uncertain_active` is present, do not rerun the probe or resume
+   resuming. In both modes a reviewer, gate or shadow turn that changes the
+   workspace is void: the coordinator restores the workspace and re-dispatches
+   it once, and a second change or a failed restore is a HOLD; an author turn
+   that changes HEAD or the branch (a commit, reset or checkout) is a HOLD.
+   If `uncertain_active` is present, do not rerun the probe or resume
    automatically: check its pid and receipts; if the child is still alive, wait
    for it to stop. If its phase is `PROBE` or `AUTHOR_PERMISSION_PROBE`, ask
    before rerunning the disposable probe with `permission-probe

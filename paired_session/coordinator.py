@@ -1663,7 +1663,8 @@ class Coordinator:
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
             if _fake_lifecycle and not lifecycle_spine.fake_guard(args):
                 raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
-            if not _fake_lifecycle: worktree_lifecycle.refuse_waivers(args)   # W1a: the real path is the worktree lifecycle (ADR-11)
+            if not _fake_lifecycle:   # W1a: the real path is the worktree lifecycle (ADR-11); a saved run re-checks in refuse_saved
+                worktree_lifecycle.refuse_waivers(args, (getattr(args, 'safety_mode', None) or DEFAULT_SAFETY_MODE) != 'efficient')
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')

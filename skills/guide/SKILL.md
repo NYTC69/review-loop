@@ -62,7 +62,7 @@ session already exists. Two explicit entry commands sit beside it:
 
 | Command | What it does |
 |---|---|
-| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: probe, independent PLAN review, EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
+| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
 | `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice) |
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
@@ -80,6 +80,10 @@ started, a refusal or HOLD is reported, never turned into a legacy run.
 `entry: legacy` keeps the legacy workflow without a notice. Roles come from the
 operator profile you name or `~/.config/review-loop/paired-session.json`;
 without one, Codex is the author and gate and Claude the reviewer.
+Runs are `efficient` by default: every sandbox applies, but no permission-probe
+PASS is required; `--strict` or `"safety_mode": "strict"` in the operator
+profile adds the probe gate. In both modes a reviewer turn that changes the
+workspace is voided and restored, and an author commit is a HOLD.
 `/review-loop:plan`, `/review-loop:execute` and `/review-loop:review-pr` ignore
 `entry`. On Codex, ask "use paired-session for this task" or "use the legacy
 review-loop workflow". Details: `docs/paired-session-migration.md`.

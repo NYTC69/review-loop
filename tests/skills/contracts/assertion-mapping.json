@@ -2142,7 +2142,7 @@
     "paired_session_skill_lifecycle_mode_on": [
       {
         "path": "skills/paired-session/SKILL.md",
-        "needle": "For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`"
+        "needle": "For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
       },
       {
         "path": "skills/paired-session/SKILL.md",
@@ -2154,11 +2154,11 @@
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`"
+        "needle": "For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "bin/paired-session\" permission-probe \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+        "needle": "Strict: replace `run` in the first invocation with `permission-probe` (same arguments, without `--stop-after-plan`)"
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",

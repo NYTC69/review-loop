@@ -1,7 +1,10 @@
 """Batch W1a (ADR-11, docs/e2e-6): worktree lifecycle activation on the real path."""
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
+import sys
 import unittest
 from unittest import mock
 
@@ -56,6 +59,40 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertFalse((self.run_dir / 'state.json').exists())
         with self.assertRaisesRegex(ValueError, 'lifecycle refuses resume --polish'):
             rc.Coordinator(self.args('--polish', action='resume'))
+
+    def test_d7_refuses_waivers_only_in_strict_mode(self):   # D-EFF: an efficient run needs no waiver and records none
+        waivers = ('--accept-unverified-claude-author', '--accept-probe-skip', '--reason', 'owner opt-in')
+
+        def default_mode(*extra, action='run'):   # neither --strict nor a profile mode: the product default decides
+            args = self.args(*extra, action=action)
+            args.safety_mode = None
+            return args
+        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():
+            pin = mock.patch.object(module, 'DEFAULT_SAFETY_MODE', 'efficient')
+            pin.start()
+            self.addCleanup(pin.stop)
+        argv = [a for a in self.command('--lifecycle-mode', 'on', *waivers) if a != '--strict'][2:]
+        out = io.StringIO()
+        with mock.patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                mock.patch.object(rc.Coordinator, 'drive', return_value='DONE'), contextlib.redirect_stdout(out):
+            code = rc.main(argv)   # main() is where a strict run would record the waivers
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn('needs no probe waiver', out.getvalue())
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['config']['safety_mode'], state['config']['lifecycle_mode']), ('efficient', 'on'))
+        self.assertFalse({'claude_author_override', 'probe_skip_override'} & state.keys())
+        rc.Coordinator(default_mode(*waivers, action='resume'))   # the saved efficient run is not refused either
+        self.run_dir = self.root / 'strict-run'
+        rc.Coordinator(self.args())   # --strict from the harness command
+        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-unverified-claude-author'):
+            rc.Coordinator(default_mode(*waivers, action='resume'))   # a saved strict run keeps D-7 without --strict
+        self.run_dir = self.root / 'profile-strict-run'
+        profile = self.root / 'strict-profile.json'
+        profile.write_text(json.dumps({'safety_mode': 'strict'}))
+        argv = [a for a in self.command('--lifecycle-mode', 'on', '--config', str(profile), *waivers) if a != '--strict'][2:]
+        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-unverified-claude-author'):
+            rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))   # the operator profile selects strict
+        self.assertFalse((self.run_dir / 'state.json').exists())
 
     def test_operator_profile_enables_and_author_writable_profiles_stay_refused(self):
         operator = self.root / 'operator.json'

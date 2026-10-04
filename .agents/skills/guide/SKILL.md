@@ -21,6 +21,18 @@ That means a project can keep one shared config file and one shared session log
 history across both runtimes.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
+## Entry: paired-session default, legacy on request
+
+From v2.10.0 a fresh review-loop request with no `entry` key in
+`.review-loop/config.md` hands off to the Codex `paired-session` skill, which
+runs the coordinator through plan, implementation, review, finish, polish,
+docs and security up to DONE; it accepts only on your explicit acceptance.
+`entry: legacy`, an existing plan, code or session, or asking for "the legacy
+review-loop workflow" keeps the legacy workflow described above. Runs are `efficient` by
+default (every sandbox, no permission-probe PASS required); `--strict` or
+`"safety_mode": "strict"` in the operator profile adds the probe gate.
+Details: `docs/paired-session-migration.md`.
+
 ## Stage 1 Scope
 
 Stage 1 in Codex includes only:

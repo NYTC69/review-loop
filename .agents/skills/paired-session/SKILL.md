@@ -54,8 +54,8 @@ the first command that runs `bin/paired-session`):
    `executor_model` set to anything other than empty or `inherit` (models come
    from the operator profile, ADR-9). Never pass
    `--adversarial-gate off`.
-3. For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`,
-   identically; the CLI value overrides any profile value. Never pass
+3. For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to
+   `permission-probe`, identically; the CLI value overrides any profile value. Never pass
    `--skip-probe`, `--accept-unverified-codex-cli`,
    `--accept-unverified-claude-author`, `--accept-probe-skip` or
    `--override-rejection` on your own initiative.
@@ -63,7 +63,15 @@ the first command that runs `bin/paired-session`):
    and goes to `permission-probe` and `run` alike:
    both modes keep every sandbox; the default `efficient` mode does not require
    the probe PASS and its evidence guard only logs, while `--strict` restores
-   both (`paired_session/docs/efficient-mode.md`).
+   both (`paired_session/docs/efficient-mode.md`). A strict lifecycle run also
+   refuses `--accept-unverified-claude-author` and `--accept-probe-skip` (D-7);
+   an efficient run needs no waiver. The run is strict when the user asked for
+   `--strict` or the operator profile sets `"safety_mode": "strict"`; read the
+   profile before choosing the flow.
+   Default (efficient): no permission probe; the first invocation below starts
+   the run. Strict: replace `run` in the first invocation with
+   `permission-probe` (same arguments, without `--stop-after-plan`), then start
+   the run with the second invocation.
    The coordinator spawns provider CLIs and writes to `$CODEX_HOME` outside the
    product workspace; execute each invocation below with the host's full
    filesystem/network permission, outside the current Codex sandbox, and never
@@ -75,7 +83,7 @@ the first command that runs `bin/paired-session`):
    completes. Do not cancel it or launch a duplicate while it is active, except
    for the lifecycle-mode backstop below.
 
-   First invocation (setup and probe):
+   First invocation (setup, then `run`; strict: `permission-probe`):
 
    ```sh
    set -eu
@@ -99,24 +107,27 @@ the first command that runs `bin/paired-session`):
    PAIRED_SESSION_WORKITEM
    echo "RUN_DIR=$RUN_DIR"
    TEST_COMMAND='[verified project command, or the exact value from the profile]'
-   "$PLUGIN_ROOT/bin/paired-session" permission-probe \
+   "$PLUGIN_ROOT/bin/paired-session" run \
      --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
      --test-command "$TEST_COMMAND" --lifecycle-mode on
    ```
 
    Exit 3 (a line printed `stage A failure: …`) is a failed stage A check,
    including the plugin-version floor (P14); report it per the entry rules
-   above. Exit 0 from the probe means PASS or PASS_RESIDUAL_RISK; any other
-   result is a HOLD: report it and stop. On exit 0, read
-   `RUN_DIR/permission-probe.json` and tell the user if the status is
-   PASS_RESIDUAL_RISK, then read the frozen `config` in `RUN_DIR/state.json` and
+   above. Any other non-zero exit from the coordinator is a refusal or HOLD:
+   report its output verbatim (no fallback). Once `RUN_DIR/state.json` exists, read its frozen `config` and
    print one start line from it: author, reviewer and gate vendor and model;
    plan and exec rounds, invocations and timeout; docs file and
-   skip-quality-polish; and which values came from `.review-loop/config.md`. If
-   `config.lifecycle_mode` is not `on`, run `abort` with the run's saved options
-   and report a plugin version mismatch instead of starting the run.
+   skip-quality-polish; and which values came from `.review-loop/config.md`.
+   Default (efficient): if `config.lifecycle_mode` is not `on`, apply the
+   backstop below. Strict: exit 0 from the probe means PASS or
+   PASS_RESIDUAL_RISK; any other result is a HOLD: report it and stop. On
+   exit 0, tell the user if `RUN_DIR/permission-probe.json` says
+   PASS_RESIDUAL_RISK; if `config.lifecycle_mode` is not `on`, run `abort` with
+   the run's saved options and report a plugin version mismatch instead of
+   starting the run.
 
-   Second invocation (run), with the `RUN_DIR` printed by the first and the same
+   Second invocation (strict only: run), with the `RUN_DIR` printed by the first and the same
    resolved values:
 
    ```sh
@@ -138,7 +149,7 @@ the first command that runs `bin/paired-session`):
    Replace the placeholders before running. In the work item include only
    user-approved requirements; mark uncertainties as questions instead of
    inventing acceptance criteria. Add the same `--config` and mapped one-run
-   options to both calls; add `--stop-after-plan` only to `run` when requested.
+   options to every call; add `--stop-after-plan` only to `run` when requested.
    Keep the heredoc delimiter unique and quoted; never interpolate user text as
    shell code. Exit 4 from the second invocation means the installed plugin
    changed or became unresolvable after the probe: report it as a HOLD (no fallback); the run was not
@@ -156,15 +167,19 @@ the first command that runs `bin/paired-session`):
    value and the run's original workspace, work item, run directory, profile
    and options, never the current default; resolve `PLUGIN_ROOT` again inside
    each invocation. Report DONE/HOLD and the run directory. On HOLD, inspect its
-   state, findings, and receipts before resuming. If `uncertain_active` is
+   state, findings, and receipts before resuming. In both modes a reviewer, gate
+   or shadow turn that changes the workspace is void: the coordinator restores
+   the workspace and re-dispatches it once, and a second change or a failed
+   restore is a HOLD; an author turn that changes HEAD or the branch (a commit,
+   reset or checkout) is a HOLD. If `uncertain_active` is
    present, do not rerun the probe or resume automatically: check its pid and
    receipts; if the child is still alive, wait for it to stop. If its phase is
    `PROBE` or `AUTHOR_PERMISSION_PROBE`, ask before rerunning the disposable
    probe with `permission-probe --retry-uncertain`. For a product-work turn, ask
    before `resume --retry-uncertain` because this may replay a model turn. After
    recovering an interrupted probe, use `resume` on the existing run directory;
-   do not run a new work item. Re-run the permission probe first if it is
-   missing or no longer matches.
+   do not run a new work item. In strict mode, re-run the permission probe
+   first if it is missing or no longer matches.
 5. DONE. With the saved `config.lifecycle_mode` `on`, DONE means the security
    stage passed and acceptance is pending; with `off` (a run started before
    v2.10.0), DONE has no finish, quality-polish, docs or security stages, so say

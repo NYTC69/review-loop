@@ -44,7 +44,7 @@ then `## Initialize / route`); no UUID or lock exists yet. With
 `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or ask for "the legacy review-loop workflow"`
 and end this workflow (except where a row says otherwise).
 - Host, key absent only: `uname -s` is not `Darwin` → `review-loop: paired-session default entry needs a verified host (macOS); using legacy workflow`.
-  With the key set there is no host check; the permission probe decides.
+  With the key set there is no host check; in strict mode the permission probe decides, in efficient mode nothing does.
 - CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
   `codex` and `claude`). Missing → `review-loop: paired-session default entry needs <cli> for the <role> role; using legacy workflow`.
 - Outside-sandbox execution: the coordinator needs full host permission outside the Codex
