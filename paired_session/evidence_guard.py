@@ -33,10 +33,23 @@ INTERPRETERS = {'python': ('c', {'-W', '-X', '--check-hash-based-pycs'}), 'pypy'
                 'sh': ('c', {'-o', '-O', '+o', '+O', '--rcfile', '--init-file'}), 'bash': ('c', {'-o', '-O', '+o', '+O', '--rcfile', '--init-file'}),
                 'zsh': ('c', {'-o', '+o'}), 'dash': ('c', {'-o', '+o'}), 'ksh': ('c', {'-o', '+o'}), 'fish': ('c', {'-C', '--init-command'}),
                 'node': ('ep', {'-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--env-file', '--title'}),
-                'nodejs': ('ep', {'-r', '--require', '--import', '--loader', '-C', '--conditions'}), 'deno': ('e', set()), 'bun': ('e', {'-r', '--preload'}),
+                'deno': ('e', set()), 'bun': ('e', {'-r', '--preload'}),
                 'perl': ('eE', {'-I', '-M', '-m'}), 'ruby': ('e', {'-I', '-r', '-E'}), 'php': ('rRBE', {'-d', '-c', '-z'}), 'lua': ('e', {'-l'}),
-                'osascript': ('e', {'-l'}), 'Rscript': ('e', set())}
-NOT_A_PROGRAM = {'--version', '-V', '-v', '--help', '-h', '--test', '--run'}     # interpreter words that read no program from stdin
+                'osascript': ('e', {'-l'}), 'Rscript': ('e', set()), 'rbash': ('c', {'-o', '-O', '+o', '+O', '--rcfile', '--init-file'}),
+                **{shell: ('c', set()) for shell in ('csh', 'tcsh', 'ash', 'mksh', 'yash', 'posh')}}
+SHELLS = {'sh', 'bash', 'zsh', 'dash', 'ksh', 'rbash'}                          # a script file is fine; -c, -s, stdin and option values are opaque
+RARE_SHELLS = {'csh', 'tcsh', 'ash', 'mksh', 'yash', 'posh', 'fish'}            # not parsed: opaque unless they only print version or help
+PRINT_ONLY = {'python': ('--version', '-V', '--help', '-h'), 'pypy': ('--version', '-V', '--help', '-h'),
+              'node': ('--version', '-v', '--help', '-h'), 'nodejs': ('--version', '-v', '--help', '-h')}   # else --version/--help only
+SHELL_FLAGS, SHELL_LONG = set('euxvnfl'), {'--norc', '--noprofile', '--posix', '--login'}   # take no value in every POSIX shell here
+INTERPRETER_FLAGS = {'python': set('uBOqIEsSbd'), 'pypy': set('uBOqIEsSbd'), 'deno': set('Aq'), 'bun': set(), 'perl': set('wWX'),
+                     'ruby': set('wW')}   # short flags without values
+INTERPRETER_LONG = {'node': {'--test', '--run', '--experimental-vm-modules', '--enable-source-maps', '--no-warnings', '--trace-warnings',
+                             '--no-deprecation', '--expose-gc', '--trace-uncaught', '--version', '--help', '--inspect', '--inspect-brk',
+                             '--max-old-space-size', '--stack-size', '--unhandled-rejections', '--experimental-specifier-resolution'},
+                    'deno': {'--quiet', '--watch', '--no-check', '--unstable', '--version', '--help'},
+                    'bun': {'--watch', '--hot', '--version', '--help'}}             # long flags, alone or as --flag=VALUE (the value is an operand)
+INTERPRETER_LONG['nodejs'], INTERPRETERS['nodejs'] = INTERPRETER_LONG['node'], INTERPRETERS['node']
 SEARCH_VALUES = {'grep': {'-A', '-B', '-C', '-m', '-d', '-D', '--after-context', '--before-context', '--context', '--max-count', '--label'},
                  'rg': {'-A', '-B', '-C', '-m', '-g', '-t', '-T', '-j', '-M', '-E', '-r', '--glob', '--iglob', '--type', '--type-not', '--max-count',
                         '--context', '--after-context', '--before-context', '--max-depth', '--threads', '--max-columns', '--encoding', '--sort',
@@ -52,6 +65,9 @@ RECURSIVE_FLAGS = {'ls': 'R', 'cp': 'rRa', 'rm': 'rR', 'chmod': 'R', 'chown': 'R
 FOLLOW_FLAGS = {'grep': 'R', 'egrep': 'R', 'fgrep': 'R', 'find': 'L', 'rg': 'L', 'ag': 'f', 'tree': 'l', 'du': 'L', 'cp': 'L', 'rsync': 'Lk',
                 'fd': 'L', 'fdfind': 'L', 'ls': 'L'}                              # these follow symlinks while they recurse
 DEFAULT_SCOPE = {'rg', 'ag', 'ack', 'find', 'tree', 'du', 'fd', 'fdfind'}        # these search the cwd when given no path
+FILTER_OPTS = {'--exclude', '--include', '--exclude-dir', '--include-dir'}   # in these commands only, the value is a filter pattern
+FILTER_COMMANDS = {'rsync', 'tar', 'grep', 'egrep', 'fgrep', 'du', 'ag', 'ack'}   # (gcc --include, for one, reads the file)
+STDIN_PROGRAM = re.compile(r'-|/dev/stdin|/dev/fd/\d+|/proc/(?:self|\d+)/fd/\d+')
 DIR_OPTS = {'-C', '--directory', '--chdir', '--cwd', '--prefix', '--work-tree', '--git-dir', '--rootdir', '--package-path'}
 TEXT_TOOLS = {'StructuredOutput', 'TodoWrite', 'Agent', 'Task', 'ExitPlanMode', 'BashOutput', 'KillShell', 'KillBash'}
 PATH_TOOLS = {'Read': 'file_path', 'Write': 'file_path', 'Edit': 'file_path', 'MultiEdit': 'file_path', 'NotebookEdit': 'notebook_path',
@@ -64,6 +80,11 @@ class Unresolved(Exception):
     """Input whose direct scope the guard cannot establish: UNKNOWN, which the call site turns into HOLD."""
 
 
+class OpaqueProgram(Unresolved):
+    """Inline interpreter code or a program read from stdin: UNKNOWN, unless the whole command is one the operator configured (option (a):
+    admitted at configuration time, after its operands, cwd and redirections were checked like any other command's)."""
+
+
 @dataclass(frozen=True)
 class Context:
     evidence: Path                       # the protected roots: the run's evidence and rounds directories
@@ -71,6 +92,7 @@ class Context:
     cwd: Optional[Path]                  # this invocation's cwd (the Popen cwd); None = unknown
     env: Mapping[str, str] = field(default_factory=dict)   # the env the CLI child got: the only trusted values for $NAME and ~
     writable_roots: tuple = ()           # where a model can plant a symlink; searched for aliases into a protected root
+    configured: tuple = ()               # the exact configured test and reviewer commands (admitted at configuration time)
 
 
 def first_violation(calls: list, ctx: Context) -> Optional[tuple]:
@@ -103,6 +125,27 @@ def _canonical(path: Path) -> Path:
     except (OSError, ValueError) as exc: raise Unresolved(f'path {path!s}: {exc}') from exc
 
 
+def _braces(text: str, limit: int = 64) -> list:
+    """Bash brace expansion of a word with an unquoted `{` (word() calls it only then): the word for each alternative of its comma
+    groups. A word that mixes quoted and unquoted brace characters never gets here (_tokens). A sequence other than numbers is UNKNOWN."""
+    depth, start = 0, 0
+    for i, c in enumerate(text):
+        if c == '{': start, depth = (i if depth == 0 else start), depth + 1
+        elif c == '}' and depth:
+            depth -= 1
+            if depth: continue
+            inner, parts, level, last = text[start + 1:i], [], 0, 0
+            for j, d in enumerate(inner):
+                level += (d == '{') - (d == '}')
+                if d == ',' and level == 0: parts.append(inner[last:j]); last = j + 1
+            if parts:
+                out = [w for part in parts + [inner[last:]] for w in _braces(text[:start] + part + text[i + 1:], limit)]
+                if len(out) > limit: raise Unresolved('brace expansion too large')
+                return out
+            if '..' in inner and not re.fullmatch(r'-?\d+\.\.-?\d+(?:\.\.-?\d+)?', inner): raise Unresolved('brace sequence')
+    return [text]
+
+
 def _pieces(word: str) -> set:
     """The word and the paths it can embed: after `=`, after a leading `@`, and each `:` or `,` separated part."""
     pieces = {word, word.split('=', 1)[-1]}
@@ -114,14 +157,16 @@ class TurnGuard:
     """One turn's calls: a Claude Bash `cd` may persist, so cwd candidates (a union, never narrowed) and changed variables carry over."""
 
     def __init__(self, ctx: Context):
-        self.ctx, self.cwds, self.tainted, self._aliases = ctx, {ctx.cwd}, set(), None
+        self.ctx, self.cwds, self.tainted, self._aliases, self.opaque_ok, self.partial = ctx, {ctx.cwd}, set(), None, False, None
         self.roots = [(_canonical(ctx.evidence), 'evidence directory'), (_canonical(ctx.rounds), 'review output directory')]
         texts = {str(p).rstrip('/') for p, _ in self.roots} | {str(ctx.evidence).rstrip('/'), str(ctx.rounds).rstrip('/')}
         self.literal = re.compile('(?:' + '|'.join(map(re.escape, sorted(texts, key=len, reverse=True))) + r')(?![^/\s"\'`;:,=)|&<>])')
 
     def classify(self, call: dict) -> tuple:
+        self.partial = None
         try: return (PROTECTED, reason) if (reason := self._call(call)) else (ALLOW, None)
-        except Unresolved as exc:   # input the guard cannot parse still counts as protected when it names a protected root literally
+        except Unresolved as exc:   # a protected operand found before the unresolved part, or a literal root anywhere, still counts
+            if self.partial: return PROTECTED, self.partial
             if self.literal.search(json.dumps(call.get('input'), ensure_ascii=False)): return PROTECTED, 'evidence or review output path in unresolved input'
             return UNKNOWN, str(exc)
 
@@ -164,11 +209,17 @@ class TurnGuard:
         return None
 
     def word(self, text: str, cwds, recursive: bool, glob: bool = False, follow: bool = False) -> Optional[str]:
-        """A command word: every path it can embed, and a literal protected root anywhere in it."""
-        if match := self.literal.search(text): return self.protected(Path(match.group(0)), True) or 'evidence directory'
-        for piece in sorted(_pieces(text)):
-            if reason := self.operand(piece, cwds, recursive, glob, follow): return reason
-        return None
+        """A command word: every path it can embed, and a literal protected root anywhere in it. A whitespace-separated part (as in
+        --filter='merge FILE') is checked as a direct operand only, so code or prose text never matches as an ancestor."""
+        if glob and text.count('{') > 32: raise Unresolved('too many braces in one word')   # glob: an unquoted *?[ or { in the word
+        if match := self.literal.search(text): reason = self.protected(Path(match.group(0)), True) or 'evidence directory'
+        else:
+            pieces = {p for alternative in {text, *(_braces(text) if glob else ())} for p in _pieces(alternative)}
+            spaced = {q for p in pieces for q in p.split() if q not in pieces} if re.search(r'\s', text) else set()
+            checks = [(p, recursive, glob, follow) for p in sorted(pieces)] + [(q, False, False, False) for q in sorted(spaced)]
+            reason = next(filter(None, (self.operand(p, cwds, r, g, f) for p, r, g, f in checks)), None)
+        self.partial = self.partial or reason                                     # kept if a later part of the call is unresolved
+        return reason
 
     # --- tool adapters -----------------------------------------------------------------------------------------------------------------
     def _call(self, call: dict) -> Optional[str]:
@@ -204,19 +255,25 @@ class TurnGuard:
     def command(self, text, persistent: bool, workdir=None) -> Optional[str]:
         """A Claude Bash command keeps its cwd and variables across calls; a Codex command starts fresh in its workdir."""
         if not isinstance(text, str) or not text.strip(): raise Unresolved('missing command text')
+        self.opaque_ok = text.strip() in {c.strip() for c in self.ctx.configured}   # configured bytes, never a model-declared label
         cwds = set(self.cwds) if persistent else {self.ctx.cwd}
         if workdir is not None:
             if not isinstance(workdir, str) or not workdir: raise Unresolved('workdir is not a literal path')
             cwds = {Path(workdir)} if Path(workdir).is_absolute() else {None if c is None else c / workdir for c in cwds}
+        reason, cwds = self._run(text, cwds, {k: v for k, v in self.ctx.env.items() if k not in ('PWD', 'OLDPWD')})
+        if persistent: self.cwds |= cwds
+        return reason
+
+    def _run(self, text: str, cwds: set, env: dict):
+        """A command string in the given cwd candidates: (reason, cwd candidates afterwards)."""
         for _, words in _simple_commands(_tokens(text, {}, set(), expand=False)):   # pass 1: the variables this command may change
             self._taint(words)
-        env, reason = {k: v for k, v in self.ctx.env.items() if k not in ('PWD', 'OLDPWD')}, None
+        reason = None
         for redirects, words in _simple_commands(_tokens(text, env, self.tainted)):
             if None in cwds: raise Unresolved('command with an unknown cwd')
             for target, glob in redirects: reason = reason or self.word(target, cwds, False, glob)
             reason, cwds = self._simple(words, cwds, env, reason)
-        if persistent: self.cwds |= cwds
-        return reason
+        return reason, cwds
 
     def _taint(self, words: list) -> None:
         for word, _ in words:
@@ -246,8 +303,11 @@ class TurnGuard:
         name = os.path.basename(argv0)
         if name in KEYWORDS or argv0 in KEYWORDS: raise Unresolved(f'shell keyword {argv0}')
         if name in OPAQUE: raise Unresolved(f'{name} runs input the guard cannot see')
-        if '/' in argv0 or self.literal.search(argv0): reason = reason or self.word(argv0, cwds, False)   # the program itself
-        if name in MUTATING: return reason, cwds
+        if '/' in argv0 or self.literal.search(argv0): reason = reason or self.word(argv0, cwds, False, words[0][1])   # the program itself
+        if name in MUTATING:                                                      # export NAME=value: the value is an operand too
+            for word, glob in args:
+                if name in SCOPED_NAMES and re.match(r'[A-Za-z_]\w*\+?=.', word): reason = reason or self.word(word.split('=', 1)[1], cwds, True, glob)
+            return reason, cwds
         if name == 'cd': return reason, self._cd(args, cwds, env)
         if name in LAUNCHERS:
             rest = args[1:] if args and args[0][0] in LAUNCHERS[name] else args
@@ -264,7 +324,6 @@ class TurnGuard:
                 if word in ('-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix'): skip = True; continue
                 if not word.startswith('-'): break
         family = re.sub(r'[\d.]+$', '', name)
-        if family in INTERPRETERS: self._interpreter(name, family, args)
         if name == 'find':                                                        # -exec CMD ... ; runs a command of its own
             while (start := next((i for i, (w, _) in enumerate(args) if w in ('-exec', '-execdir', '-ok', '-okdir')), None)) is not None:
                 end = next((i for i in range(start + 1, len(args)) if args[i][0] in (';', '+')), len(args))
@@ -282,12 +341,15 @@ class TurnGuard:
         follow = recursive and (bool(set(short) & set(FOLLOW_FLAGS.get(name, ''))) or bool(longs & {'--follow', '--dereference-recursive', '--copy-links'}))
         texts = self._search_texts(name, args) if name in SEARCH_VALUES or name in ('egrep', 'fgrep') else set()
         operands, options_done = [], False
+        filters = FILTER_OPTS if name in FILTER_COMMANDS else set()
+        texts |= {i + 1 for i, (w, _) in enumerate(args) if w in filters}           # --exclude PATTERN: a filter pattern, never a path
         for i, (word, glob) in enumerate(args):
             if i in texts: continue                                               # a search pattern, or a value that is text
             if word == '--' and not options_done: options_done = True; continue
             if word.startswith('-') and word != '-' and not options_done:
-                values = [word.split('=', 1)[1]] if '=' in word else [] if word.startswith('--') else [word[k:] for k in range(2, len(word))]
-                for value in values: reason = reason or self.word(value, local, recursive, follow=follow)   # --opt=PATH, -xPATH, -xfPATH
+                values = [word.split('=', 1)[1]] if '=' in word and word.split('=', 1)[0] not in filters else [] if word.startswith('--') \
+                    else [word[k:] for k in range(2, len(word))]
+                for value in values: reason = reason or self.word(value, local, recursive, glob, follow)   # --opt=PATH, -xPATH, -xfPATH
                 if self.literal.search(word): reason = reason or 'evidence directory'
                 continue
             operands.append((word, glob))
@@ -298,6 +360,7 @@ class TurnGuard:
             local |= {c / link for c in cwds} | {(c / link).parent for c in cwds}
             recursive = follow = True
         for word, glob in operands: reason = reason or self.word(word, local, recursive, glob, follow)
+        if family in INTERPRETERS or family in RARE_SHELLS: self._interpreter(name, family, args)   # after the operands: a protected one wins
         return reason, cwds
 
     def _cd(self, args: list, cwds: set, env: dict) -> set:
@@ -310,7 +373,7 @@ class TurnGuard:
 
     def _env(self, words: list, cwds: set, env: dict, reason):
         while words and (words[0][0].startswith('-') or '=' in words[0][0]):
-            flag, words = words[0][0], words[1:]
+            (flag, glob), words = words[0], words[1:]
             if flag in ('-C', '--chdir') or flag.startswith('--chdir='): raise Unresolved('env changes the directory')
             if flag in ('-S', '--split-string') or flag.startswith('--split-string='):
                 inner = flag.split('=', 1)[1] if '=' in flag else (words.pop(0)[0] if words else '')
@@ -318,25 +381,62 @@ class TurnGuard:
                 if len(parts) != 1 or parts[0][0]: raise Unresolved('env -S string with shell syntax')
                 words = parts[0][1] + words
             elif flag in ('-u', '--unset'): words = words[1:]
-            elif not flag.startswith('-'): reason = reason or self.word(flag.split('=', 1)[1] or '.', cwds, True)
+            elif not flag.startswith('-'): reason = reason or self.word(flag.split('=', 1)[1] or '.', cwds, True, glob)
         return words, reason
 
     def _interpreter(self, name: str, family: str, args: list) -> None:
-        """Inline code is UNKNOWN, and so is a program read from stdin; options end at the script (or the python -m module)."""
-        code, valued = INTERPRETERS[family]
-        if family == 'deno' and any(w == 'eval' for w, _ in args): raise Unresolved('deno eval runs inline code')
-        skip = False
-        for word, _ in args:
+        """Inline code or a program read from stdin is an OpaqueProgram, allowed only inside a configured command. A POSIX shell is fine
+        only as `shell [plain flags | -o NAME | -O NAME] script.sh`: any other option before the script (-c, -s, --rcfile, ...), `-` or no
+        script is opaque; a rare shell is opaque unless it only prints its version or help. Other interpreters take bounded forms only:
+        known flags, known value options, then the script, `-m module`, `node --test`/`--run` or a deno/bun run/test/task."""
+        code, valued = INTERPRETERS.get(family, ('', set()))
+        def opaque(why: str) -> None:
+            if not self.opaque_ok: raise OpaqueProgram(f'{name} {why}')
+        prints_only = bool(args) and all(w in PRINT_ONLY.get(family, ('--version', '--help')) for w, _ in args)   # prints and exits
+        if family in RARE_SHELLS:
+            if not prints_only: opaque('is a shell the guard does not parse')
+            return
+        if family in SHELLS:                                                      # only plain flags it knows take no value, then a script
+            skip = False
+            for index, (word, _) in enumerate(args):
+                if skip: skip = False; continue
+                letters = word[1:] if word[:1] in '-+' and not word.startswith('--') else ''
+                if letters[-1:] in ('o', 'O') and set(letters[:-1]) <= SHELL_FLAGS and index + 1 < len(args) \
+                        and re.fullmatch(r'[a-z_]+', args[index + 1][0]): skip = True; continue   # -o pipefail, -eo pipefail, -O extglob
+                if word.startswith('--') and word not in SHELL_LONG and not prints_only or \
+                        letters and not set(letters) <= SHELL_FLAGS or word == '+' or STDIN_PROGRAM.fullmatch(word):
+                    return opaque('runs inline code, reads its program from stdin or takes an option value')
+                if not word.startswith(('-', '+')): return                         # the script; later words are its arguments
+            if not prints_only: opaque('reads its program from stdin')
+            return
+        if prints_only: return
+        skip, test_mode, subcommand = False, False, False                         # bounded forms: interp [known flags] (script | -m module)
+        for index, (word, _) in enumerate(args):
             if skip: skip = False; continue
-            if word in valued: skip = True; continue
-            if word in ('--eval', '--print') or (word[:1] in '-+' and not word.startswith('--') and set(word[1:]) & set(code)):
-                raise Unresolved(f'{name} runs inline code')
-            if family in ('sh', 'bash', 'zsh', 'dash', 'ksh') and word.startswith('-') and not word.startswith('--') and 's' in word[1:]:
-                raise Unresolved(f'{name} reads its program from stdin')
+            option, eq, value = word.partition('=')
+            if option in valued:                                                  # a known value option and its value
+                value = value if eq else (args[index + 1][0] if index + 1 < len(args) else '')
+                scheme = re.match(r'\s*([A-Za-z][A-Za-z0-9+.-]*):', value)          # a data: (or other) URL can carry the program itself
+                if option in ('--import', '--loader', '--experimental-loader') and scheme and scheme.group(1).lower() not in ('node', 'file'):
+                    return opaque('runs inline code')
+                skip = not eq; continue
+            if option in ('--eval', '--print', 'eval') or STDIN_PROGRAM.fullmatch(word) or \
+                    (word[:1] in '-+' and not word.startswith('--') and set(word[1:]) & set(code)):
+                return opaque('runs inline code or reads its program from stdin')
             if family in ('python', 'pypy') and word == '-m': return
-            if word in ('-', '/dev/stdin', '/dev/fd/0'): raise Unresolved(f'{name} reads its program from stdin')
-            if not word.startswith(('-', '+')): return                            # the script
-        if not any(w in NOT_A_PROGRAM for w, _ in args): raise Unresolved(f'{name} reads its program from stdin')
+            if word.startswith('--'):                                             # a known no-value flag, or a known option=value
+                if option in INTERPRETER_LONG.get(family, ()) or (family in ('deno', 'bun') and option.startswith('--allow-')):
+                    test_mode = test_mode or option in ('--test', '--run'); continue
+                return opaque(f'takes an option the guard does not know ({option})')
+            if word[:1] in '-+':
+                if set(word[1:]) <= INTERPRETER_FLAGS.get(family, set()): continue
+                return opaque(f'takes an option the guard does not know ({word})')
+            if family in ('deno', 'bun') and not subcommand:                     # run SCRIPT, test, task, or a script path; nothing else
+                if word == 'run': subcommand = True; continue
+                if word in ('test', 'task', 'fmt', 'lint', 'check', 'info'): return  # these run no inline program
+                if '/' not in word and not re.search(r'\.(?:[cm]?[jt]sx?)$', word): return opaque(f'subcommand {word} is not one the guard knows')
+            return                                                                # the script; later words are its arguments
+        if not test_mode: opaque('reads its program from stdin')                 # node --test/--run: test files or a package script
 
     def _search_texts(self, name: str, args: list) -> set:
         """Indexes of the words a grep/rg/ag/ack call reads as text: its pattern word and the values of its value options."""
@@ -377,10 +477,10 @@ def _dollar(text: str, i: int, env, tainted, expand: bool, quoted: bool) -> tupl
         name, i = (text[i + 2:end], end + 1) if end > 0 else ('', len(text))
         if not NAME.fullmatch(name): raise Unresolved('parameter expansion')
     elif match := NAME.match(text, i + 1): name, i = match.group(0), match.end()
-    elif text[i + 1:i + 2] in ('?', '#', '$', '!', '-', '0'): return '0', i + 2   # status, counts, pids, flags: never a path
+    elif text[i + 1:i + 2] in ('?', '#', '$', '!', '-'): return '0', i + 2       # status, counts, pids, flags: never a path
     elif text[i + 1:i + 2] and (text[i + 1].isdigit() or text[i + 1] in '@*'):
         if '*' in tainted: raise Unresolved('positional parameter after set')
-        return '', i + 2                                                          # no positional parameters in a tool call
+        return ('bash' if text[i + 1] == '0' else ''), i + 2                      # a tool call has no positional parameters
     elif i + 1 >= len(text) or text[i + 1] in ' \t\n' or (quoted and text[i + 1] == '"'): return '$', i + 1
     else: raise Unresolved('$-quoting')
     if not expand: return '', i
@@ -390,11 +490,12 @@ def _dollar(text: str, i: int, env, tainted, expand: bool, quoted: bool) -> tupl
 
 def _tokens(text: str, env, tainted, expand: bool = True) -> list:
     """Words ('w', text, has an unquoted wildcard) and operators ('op', text); anything beyond this grammar is Unresolved."""
-    tokens, word, glob, active, i, n, heredocs = [], [], False, False, 0, len(text), []
+    tokens, word, glob, active, i, n, heredocs, brace, quoted_brace = [], [], False, False, 0, len(text), [], False, False
     def flush():
-        nonlocal word, glob, active
+        nonlocal word, glob, active, brace, quoted_brace
+        if brace and quoted_brace: raise Unresolved('quoted or escaped brace characters in a brace expression')   # _braces sees no quotes
         if active: tokens.append(('w', ''.join(word), glob))
-        word, glob, active = [], False, False
+        word, glob, active, brace, quoted_brace = [], False, False, False, False
     while i < n:
         c = text[i]
         if c in ' \t': flush(); i += 1; continue
@@ -420,6 +521,7 @@ def _tokens(text: str, env, tainted, expand: bool = True) -> list:
             flush()
             op = next(o for o in OPS if text.startswith(o, i))
             tokens.append(('op', op)); i += len(op); continue
+        if c == '~' and active and brace and word[-1:] in (['{'], [',']): raise Unresolved('~ inside a brace expression')   # {~,x} is HOME
         if c == '~' and (not active or word[-1:] == ['=']):                    # a word-start or assignment tilde
             end = next((j for j in range(i + 1, n) if text[j] in '/ \t\n;|&<>()'), n)
             if end > i + 1: raise Unresolved('~user expansion')
@@ -427,11 +529,11 @@ def _tokens(text: str, env, tainted, expand: bool = True) -> list:
             word.append(env.get('HOME', '') if expand else ''); active = True; i += 1; continue
         active = True
         if c == '\\':
-            if i + 1 < n and text[i + 1] != '\n': word.append(text[i + 1])
+            if i + 1 < n and text[i + 1] != '\n': word.append(text[i + 1]); quoted_brace = quoted_brace or text[i + 1] in '{},'
             i += 2; continue
         if c == "'":
             if (j := text.find("'", i + 1)) < 0: raise Unresolved('unbalanced quote')
-            word.append(text[i + 1:j]); i = j + 1; continue
+            word.append(text[i + 1:j]); quoted_brace = quoted_brace or any(ch in '{},' for ch in text[i + 1:j]); i = j + 1; continue
         if c == '"':
             i += 1
             while True:
@@ -442,15 +544,16 @@ def _tokens(text: str, env, tainted, expand: bool = True) -> list:
                 if d == '\\' and i + 1 < n and text[i + 1] in '$`"\\\n':
                     if text[i + 1] != '\n': word.append(text[i + 1])
                     i += 2; continue
-                if d == '$': value, i = _dollar(text, i, env, tainted, expand, True); word.append(value); continue
-                word.append(d); i += 1
+                if d == '$': value, i = _dollar(text, i, env, tainted, expand, True); word.append(value)
+                else: word.append(d); i += 1
+                quoted_brace = quoted_brace or any(ch in '{},' for ch in word[-1])
             continue
         if c == '`': raise Unresolved('command substitution')
         if c == '$':
             value, i = _dollar(text, i, env, tainted, expand, False)
             if any(ch.isspace() or ch in '*?[{' for ch in value): raise Unresolved('unquoted expansion that the shell would split or glob')
-            word.append(value); continue
-        glob = glob or c in '*?[{'
+            word.append(value); quoted_brace = quoted_brace or any(ch in '},' for ch in value); continue   # an expanded } or , is no syntax
+        glob, brace = glob or c in '*?[{', brace or c == '{'
         word.append(c); i += 1
     flush()
     return tokens

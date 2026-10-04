@@ -3,6 +3,7 @@
 adapter cases its DESIGN.md section 6 asks for. Fixture: ROOT/{workspace, run/{evidence, rounds}, home}; workspace/alias-private is a
 symlink to run/evidence, workspace/alias-safe one to workspace/src. @X stands for a fixture root."""
 import dataclasses
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -123,8 +124,9 @@ class EvidenceGuardTests(unittest.TestCase):
         self.assertEqual(self.verdict([('Bash', {'command': 'export OTHER=1'}), ('Bash', {'command': 'cat "$WORKSPACE/src/a.py"'})]), A)
         self.assertEqual(self.verdict([('Bash', {'command': 'read X'}), ('Bash', {'command': 'cat "$WORKSPACE/src/a.py"'})]), U)
         self.assertEqual(self.verdict([('Bash', {'command': "cat '$RUN/evidence/a.txt'"})]), A)       # single quotes: literal text
-        ctx = dataclasses.replace(self.ctx(), env={'SPACED': 'src x', 'STAR': 'src/*'})
-        for command, desired in (('cat $SPACED', U), ('cat "$SPACED"', A), ('cat $STAR', U), ('cat "$STAR"', A)):   # the shell splits or globs
+        ctx = dataclasses.replace(self.ctx(), env={'SPACED': 'src x', 'STAR': 'src/*', 'CB': '}'})
+        for command, desired in (('cat $SPACED', U), ('cat "$SPACED"', A), ('cat $STAR', U), ('cat "$STAR"', A),   # the shell splits or globs
+                                 ('cat {$CB,../run/evidence}/a.txt', U)):                                       # an expanded } is no syntax
             with self.subTest(command=command):
                 self.assertEqual((eg.first_violation([{'tool': 'Bash', 'input': {'command': command}}], ctx) or (A,))[0], desired)
 
@@ -156,18 +158,51 @@ class EvidenceGuardTests(unittest.TestCase):
                 ('dd if=@E/a.txt', P), ('dd if=../run/evidence/a.txt', P), ('curl --data-binary @@E/a.txt x', P), ('curl -d@@E/a.txt x', P),
                 ('grep -f@E/a.txt src', P), ('sort -o@E/x y', P), ('tar -xf@E/x.tar', P), ('tar -xf../run/evidence/x.tar', P),
                 ('docker run -v @E:/d img cat /d/a.txt', P), ('PYTHONPATH=src:@E python3 a.py', P),
-                ('bash -o pipefail -c x', U), ('python3 -W ignore -c x', U), ('perl -I lib -e x', U), ('node -r x -e y', U), ('php -d a=1 -r x', U),
+                ('bash -o pipefail -c "cat ../run/evidence/a.txt"', P), ('bash -c "npm test && true"', U),   # sh -c is opaque (eg-b2)
+                ("sh -c 'cat $1' _ ../run/evidence/a.txt", P), ("bash -lc 'cd ../run; cat rounds/x.md'", U), ('bash -c', U),
+                ("bash -c 'cd ../run; cat \"$1\"' _ evidence/a.txt", U), ("sh -c 'cat \"$@\"' _ a b", U), ("bash -c 'echo $0' name", U),
+                ("find src -exec sh -c 'cd ../run && cat \"$1\"' _ evidence/a.txt \\;", U), ('cat ' + '{' * 40 + 'a,b' + '}' * 40, U),
+                ("bash -c 'cd ../run && cat \"$2\"' _ {x,evidence}/a.txt", U), ("find evidence -exec sh -c 'cd ../run && cat \"$1\"' _ {} \\;", U),
+                ("bash -c 'cat {$1,../run/evidence}/a.txt' _ '}'", U), ("bash -c -- '-n; cat ../run/evidence/a.txt' _", P),   # eg-b1 R2
+                ("bash -eo pipefail -c 'cat ../run/evidence/a.txt'", P), ("bash -euo pipefail -c 'cat ../run/evidence/a.txt'", P),
+                ("bash +eo pipefail -c 'cat ../run/evidence/a.txt'", P), ("rbash -O extglob -c 'cat ../run/evidence/a.txt'", P),
+                ("mksh -T tty -c 'cat x'", U), ("bash -c 'echo hi'", U), ("bash -c 'echo $1'", U),
+                ("zsh -O -c 'cat ../run/evidence/a.txt'", P), ("find evidence -exec sh -c 'cd ../run && cat \"$0\"' {} \\;", U),   # eg-b1 R3
+                ("printf x | tcsh -s x", U), ("fish --command 'cat x'", U), ('tcsh --version', A), ('bash script.sh', A), ('bash -e script.sh', A),
+                ('bash -o pipefail script.sh', A), ('cat x | python3', U), ('perl', U),
+                ("tcsh -v -c 'cat ../run/evidence/a.txt'", P), ("printf 'cat x' | bash -v", U), ("printf x | python3 -v", U),   # eg-b2 R2
+                ("printf x | zsh --emulate sh", U), ("printf x | ksh -R x", U), ('bash --version', A), ('printf x | bash /dev/stdin', U), ('printf x | sh /dev/fd/0', U), ('printf x | zsh /proc/self/fd/0', U),   # eg-b3 R2
+                ('printf x | python3 /dev/stdin', U), ('gcc -E --include ../run/evidence/a.txt x.c', P), ('gcc -E --include=../run/evidence/a.txt x.c', P),
+                ("grep -r --include=*.py x src", A), ("node --import 'DATA:text/javascript,x' app.js", U), ("node --import ' data:x' app.js", U),
+                ('node --import=https://example.invalid/x.mjs app.js', U), ('node --import file:./x.mjs app.js', A), ('deno fmt', A),
+                ('perl -w x.pl', A), ('ruby -w x.rb', A), ("bun exec 'cat ../run/evidence/a.txt'", P), ("deno repl --eval 'x'", U), ('printf x | deno repl', U), ('bun repl', U), ("bun exec 'cat x'", U),   # eg-b3 R1
+                ('deno run main.ts', A), ('bun ./x.js', A), ('bun test', A),
+                ("node --eval='require(\"fs\").readFileSync(\"../run/evidence/a.txt\")' x.js", U), ("node --print=1 x.js", U),
+                ("node --import 'data:text/javascript,x' app.js", U), ("node --import=data:text/javascript,x app.js", U), ('node --import ./hooks.mjs app.js', A),
+                ('node --inspect=9229 app.js', A), ('node --unknown-flag=1 app.js', U), ('bash -O extglob script.sh', A), ('bash -eo pipefail script.sh', A),
+                ('bash -o -c script.sh', U), ('rsync -a --exclude "*.log" src/ dst/', A), ('tar -cf o.tar --exclude ../run src', A), ("rsync -a --filter='merge ../run/evidence/r' src/ dst/", P),
+                ('git commit -m "use { ..Default::default() }"', A), ("printf '{...}'", A), ("curl -d '[{\"a\":1,\"b\":2},{\"a\":3}]' u", A), ("printf x | node --title --test", U), ("printf x | node -C --test", U), ("printf x | node --input-type module", U),   # eg-b2 R3
+                ('ruby -C . x', U), ('osascript -s h x', U), ('deno run -', U), ('bun run -', U), ('deno run --allow-read main.ts', A),
+                ('node --experimental-vm-modules node_modules/.bin/jest', A), ('node --test', A), ('node --test tests/', A),
+                ('python3 -u -m pytest -q', A), ('python3 -W ignore script.py', A), ('perl -I lib x.pl', A), ('node --inspect app.js', A), ('tcsh --version -f', U), ('bash --version -x', U), ('python3 -V', A), ('node -v', A),
+                ("find . -exec sh -c 'cd ../run && cat \"$@\"' _ {} +", U), ("bash -c 'cd ../run; cat \"$1\"' _ evid*/a.txt", U),
+                ("yash --rcfile F -c 'cat x'", U), ("find . -exec sh -c 'cat \"$1\"' {} {} \\;", U), ("zsh -c -O 'cat x' x", U),
+                ("printf x | zsh -O -s x", U), ("zsh --emulate sh -c 'cat x'", U), ('mksh -o pipefail /dev/stdin', U), ("yash --cmdline 'cat x'", U),
+                ('rsync -a --exclude=/* src/ dst/', A), ('cat {~,x}/notes/a.txt', U), ('bash ../run/evidence/x.sh', P),
+                ('python3 -W ignore -c x', U), ('perl -I lib -e x', U), ('node -r x -e y', U), ('php -d a=1 -r x', U),
                 ("printf 'x' | python3 -", U), ('bash -', U), ('sh -s -- a', U), ('deno eval x', U), ('builtin eval x', U), ("trap 'x' EXIT", U),
-                ("find src -exec sh -c 'x' \\;", U), ('stdbuf -oL sh -c x', U), ('uv run python -c x', U), ('busybox sh -c x', U),
+                ("find src -exec sh -c 'cat ../run/evidence/a.txt' \\;", P), ('stdbuf -oL sh -c "cat ../run/evidence/a.txt"', P),
+                ('uv run python -c x', U), ('busybox sh -c "cat ../run/evidence/a.txt"', P),
                 ("git -c alias.x='!cat y' x", U), ('git -C . -c core.pager=x log', U), ('git --config-env=core.pager=X log', U),
                 ('npx jest -c config.js', A), ('python3 script.py -c conf', A), ('node --test', A), ('find src -exec cat {} \\;', A),
                 ('grep -eneedle @E/a.txt', P), ('grep --regexp=x @E/a.txt', P), ('grep @E/a.txt -e x', P), ('grep -T needle @E/a.txt', P),
                 ('ag -t x @R', P), ('ag -g x @R', P), ('rg --files @R', P), ('rg --regexp=@E src', A), ('grep -ne @E src', A),
                 ('rm -rf @R', P), ('mv @R /tmp/x', P), ('cp -a @R /tmp/x', P), ('diff -r @R /tmp/e', P), ('git diff --no-index @R /tmp/e', P),
                 ('fd . @R', P), ('stdbuf -oL rg x @R', P), ('ls -lart @R', A), ('tr / _', A), ('echo /', A), ('cat /etc/hosts', A),
-                ('export HOME=@R; cd; cat evidence/a.txt', U), ('HOME=@R cd; cat evidence/a.txt', U),
+                ('export HOME=@R; cd; cat evidence/a.txt', P), ('export HOME=elsewhere; cd; cat evidence/a.txt', U),   # the value, then taint
+                ('HOME=@R cd; cat evidence/a.txt', P),
                 ('command export WORKSPACE=@R; cat "$WORKSPACE/evidence/a.txt"', U), ('printf -v WORKSPACE %s @R; cat "$WORKSPACE/evidence/a.txt"', U),
-                ('export CDPATH=@R; cd evidence; cat a.txt', U), ('cat @E/a.txt; echo $(date)', P), ('exec 3<@E/a.txt', P),
+                ('export CDPATH=@R; cd evidence; cat a.txt', P), ('export CDPATH=elsewhere; cd evidence; cat a.txt', U), ('cat @E/a.txt; echo $(date)', P), ('exec 3<@E/a.txt', P),
                 ('ln -s ../../run/evidence a/l', P), ("alias x='cat a'", U), ('cat -- -/../../run/evidence/a.txt', P),
                 ('set -euo pipefail; cat "$WORKSPACE/src/a.py"', A), ('npm test; echo "exit=$?"', A), ('npm test &>> log', A),
                 ('python3 -m unittest 2>&1; echo "EXIT_CODE: $?"', A), ('command -v node', A),
@@ -181,6 +216,66 @@ class EvidenceGuardTests(unittest.TestCase):
         calls = [('Bash', {'command': 'cat rounds/x.md'}), ('Bash', {'command': 'cd run'}), ('Bash', {'command': 'cd ..'})]   # cd .., cd run,
         self.assertEqual(self.verdict(calls, aliases=False), P)                                                              # cat: listed backwards
         self.assertIsNone(eg.code_mode_exec('const r = await tools.exec_command({"cmd":"npm test","shell":"/x"}); text(r);'))
+
+    def test_no_spelling_of_a_protected_operand_in_any_supported_form_is_allowed(self):   # eg-b: a generated false-ALLOW corpus
+        files = ['@E/a.txt', '../run/evidence/a.txt', '@W/../run/evidence/a.txt', 'src/../../run/evidence/a.txt', "'@E/a.txt'", '"@E/a.txt"',
+                 "'@E'/a.txt", '"../run"/evidence/a.txt', '..\\/run/evidence/a.txt', '"$RUN/evidence/a.txt"', '$RUN/evidence/a.txt',
+                 '{../run/evidence/a.txt,x}', '../run/{evidence,x}/a.txt', '{@E/a.txt,x}', '../run/evid*/a.txt', '../run/evidence/*',
+                 '../run/evidence', '@E', '@O/003-reviewer.md', '../run/rounds/x.md', 'alias-private/a.txt']
+        forms = ['cat {p}', 'cat < {p}', 'echo x > {p}', 'echo x >> {p}', 'cat 0<{p}', 'cat 2>{p}', 'cat &>{p}', 'cp {p} /tmp/x', 'head -n 1 {p}',
+                 'grep needle {p}', 'grep -r needle {p}', 'rg needle {p}', 'grep -e needle {p}', 'grep -f {p} src', 'sort -o {p} x',
+                 'sort -o{p} x', 'tool --out={p}', 'dd if={p}', 'curl -d@{p} u', 'X={p} cmd', 'env X={p} cmd', 'PYTHONPATH=src:{p} python3 a.py',
+                 'time cat {p}', 'nohup cat {p}', 'nice -n 5 cat {p}', 'timeout 5 cat {p}', 'stdbuf -oL cat {p}', 'command cat {p}',
+                 'npx cat {p}', 'uv run cat {p}', 'busybox cat {p}', 'find src -exec cat {p} \\;', 'true && cat {p}', 'true || cat {p}',
+                 'true; cat {p}', 'true\ncat {p}', 'true & cat {p}', 'true | cat {p}', 'cat {p} | true', 'cat <<EOF\nx\nEOF\ncat {p}',
+                 '/bin/cat {p}', 'python3 {p}', 'bash {p}', 'node {p}', '{p}', 'git diff --no-index {p} x', 'ls -R {p}', 'tar -cf out.tar {p}']
+        found = []
+        for p in files:
+            for form in forms:
+                command = form.replace('{p}', p)
+                for tool, given in (('Bash', {'command': command}), ('command_execution', {'command': command})):
+                    if self.verdict([(tool, given)], aliases=False) == A: found.append((tool, command))   # no fixture alias to mask a gap
+            for form in ("bash -c 'cat {p}'", "bash -c -o pipefail 'cat {p}'", "bash -oc pipefail 'cat {p}'", "sh -c 'cat \"$1\"' _ {p}",
+                         'cat {"x}",{p}}', 'cat {x\\},{p}}', 'export X={p}', 'tcsh -c "cat {p}"', "find src -exec sh -c 'cat {p}' \\;"):
+                if "'" in p and "'" in form: continue                              # no single quotes inside a single-quoted script
+                if self.verdict([('Bash', {'command': form.replace('{p}', p)})], aliases=False) == A: found.append(('Bash', form.replace('{p}', p)))
+        for d in ('../run/evidence', '@E', '"../run"/evidence', '../run/{evidence,x}', '../run/evid*', '@O'):   # into a protected directory
+            for form in ('cd {d} && cat a.txt', 'cd {d}; ls', 'ls {d}', 'git -C {d} status', 'make -C {d}', 'tar -C {d} -cf o.tar .', 'pushd {d}'):
+                if self.verdict([('Bash', {'command': form.replace('{d}', d)})], aliases=False) == A: found.append(('Bash', form.replace('{d}', d)))
+        for a in ('../run', '@R', '..', '"../run"', '../{run,x}', '../ru*', '/'):   # an ancestor, under a recursive or moving command
+            for form in ('rg x {a}', 'grep -r x {a}', 'grep -R x {a}', 'find {a}', 'du {a}', 'cp -r {a} /tmp/x', 'rm -rf {a}', 'mv {a} /tmp/x',
+                         'tar -cf o.tar {a}', 'zip -r o.zip {a}', 'rsync -a {a} /tmp/x', 'ls -R {a}', 'tree {a}', 'git diff --no-index {a} x',
+                         'diff -r {a} x', 'fd x {a}', 'chmod -R 700 {a}', 'cd {a} && rg x', 'cd {a} && grep -r x .'):
+                command = form.replace('{a}', a)
+                if self.verdict([('Bash', {'command': command})], aliases=False) == A: found.append(('Bash', command))
+            if '"' not in a and '{' not in a and '*' not in a:
+                for tool, given in (('Grep', {'pattern': 'x', 'path': a}), ('Glob', {'pattern': a + '/**/*'})):
+                    if self.verdict([(tool, given)], aliases=False) == A: found.append((tool, a))
+        for p in [f for f in files if not re.search(r'[\'"$\\{*]', f)]:   # structured fields are literal
+            for tool, given in (('Read', {'file_path': p}), ('Write', {'file_path': p}), ('MultiEdit', {'file_path': p, 'edits': []}),
+                                ('Grep', {'pattern': 'x', 'path': p}), ('Glob', {'pattern': p}), ('file_change', {'changes': [{'path': p}]})):
+                if self.verdict([(tool, given)]) == A: found.append((tool, p))
+        self.assertEqual(found, [])
+
+    def test_a_configured_command_admits_only_its_opaque_program_and_only_by_its_exact_bytes(self):   # option (a)
+        ctx = dataclasses.replace(self.ctx(aliases=False), configured=('python3 -c pass', "bash -c 'python3 -c \"print(1)\"'"))
+        def verdict(command, cwd=None):
+            found = eg.first_violation([{'tool': 'Bash', 'input': {'command': command}}], ctx if cwd is None else dataclasses.replace(ctx, cwd=cwd))
+            return found[0] if found else A
+        for command, desired in (('python3 -c pass', A), ('  python3 -c pass ', A), ("bash -c 'python3 -c \"print(1)\"'", A),
+                                 ('python3 -c pass2', U), ('python3 -c pass > ../run/evidence/x', P), ('python3 -c pass > @E/x', P),
+                                 ('cat ../run/evidence/a.txt; echo $(date)', U)):   # tokenizing fails first: UNKNOWN (still a HOLD)
+            with self.subTest(command=command):
+                self.assertEqual(verdict(self.at(command)), desired)
+        self.assertEqual(verdict('python3 -c pass', cwd=self.roots['E']), P)        # its cwd is still checked first
+        self.assertEqual((eg.first_violation([{'tool': 'command_execution', 'input': {'command': 'python3 -c pass'}}], ctx) or (A,))[0], A)
+
+    def test_an_eval_option_with_a_value_is_reported_as_inline_code(self):   # eg-b3 R1: matched by option name, not by the word
+        guard = eg.TurnGuard(self.ctx(aliases=False))
+        for command in ('node --eval=1 x.js', 'node --print=1 x.js', 'bun --eval=1'):
+            with self.subTest(command=command):
+                self.assertEqual(guard.classify({'tool': 'Bash', 'input': {'command': command}})[0], U)
+                self.assertIn('inline code', guard.classify({'tool': 'Bash', 'input': {'command': command}})[1])
 
     def test_an_alias_through_another_alias_is_followed(self):
         hop = self.roots['ROOT'] / 'hop'
