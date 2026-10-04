@@ -102,6 +102,9 @@ natural-language only. Full step-by-step + verification:
   remain the SSOT; a link alone is not an eager import. New agents and new or
   compacted contexts reload prerequisites. Runtime entry details live in each
   skill's `references/entry.md`. Loading does not change stage/gate semantics.
+  The two paired-session entry skills load their shared contract,
+  `docs/protocol/paired-session-entry.md`, the same way (stage
+  `entry-paired-session`) and keep only host rules in their `SKILL.md`.
 
 ## Design Philosophy
 

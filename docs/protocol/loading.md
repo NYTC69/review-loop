@@ -40,6 +40,7 @@ links are not instructions to preload every file.
 | Codex orchestrator's Claude-CLI reviewer fan-out N>1 | `parallel-review` in addition to current review stage; not applicable to the Claude orchestrator or local Codex reviewer |
 | Optional context-persist step becomes applicable | `context-persist` |
 | Dispute a finding or record/concur/revalidate triage state | `dispute` before invoking the state-writing triage command |
+| paired-session entry skills | `entry-paired-session` |
 
 On planning APPROVE, load `plan-exit` ONLY for the plan-only entry.
 The umbrella promotes the plan per the shared planning loop, keeps its lock
