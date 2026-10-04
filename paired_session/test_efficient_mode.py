@@ -90,6 +90,22 @@ class EfficientModeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'never by the workspace config'):
             rc.configure_parser(rc.parser(), base)
 
+    def test_an_author_writable_profile_cannot_set_the_mode(self):   # eff-e: workspace, run dir or author temp, explicit --config too
+        base = ['run', '--workspace', str(self.h.workspace), '--workitem', str(self.h.workitem), '--run-dir', str(self.h.run_dir)]
+        self.h.coordinator()                                              # an efficient run that has only probed so far
+        state = self.state()
+        state['turns'] = [{'sequence': 1, 'role': 'probe', 'phase': 'PROBE'}]
+        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
+        (self.h.run_dir / 'author-tmp').mkdir(exist_ok=True)
+        for where in (self.h.workspace / 'profile.json', self.h.run_dir / 'profile.json', self.h.run_dir / 'author-tmp' / 'profile.json'):
+            for value in ('efficient', 'strict'):                         # the selection, and the probe-only upgrade
+                with self.subTest(where=where, value=value):
+                    where.write_text(json.dumps({'safety_mode': value}))
+                    with self.assertRaisesRegex(ValueError, 'outside the workspace, run dir and author temp'):
+                        rc.configure_parser(rc.parser(), [*base, '--config', str(where)])
+        self.assertEqual(self.state()['config']['safety_mode'], 'efficient')   # never upgraded through such a profile
+        self.assertTrue(self.h.coordinator('--strict').strict)                # the CLI still may
+
     def test_a_run_saved_before_safety_mode_resumes_strict(self):
         self.h.coordinator()
         state = self.state()

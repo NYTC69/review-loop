@@ -9,8 +9,11 @@ the branch and the index) does not see a change of file mode alone. The undo tou
 the recorded tree and the tree now, and never deletes a path that was ignored when the turn began, whatever the turn did to the
 ignore rules."""
 import hashlib
+import os
 import shutil
+import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -57,12 +60,34 @@ def state(workspace: Path, keep: Path) -> dict:
     return {**marks(workspace), 'index_present': index.exists(), 'tree': _worktree_tree(workspace, index, keep / 'scratch-index')}
 
 
+IGNORED_LIMIT, IGNORED_SECONDS = 2000, 2.0   # eff-e: past either bound the ignored entries are not checked (noted in the receipt)
+
+
+def _lstat(path: Path):
+    """Type, size, mtime_ns, mode and symlink target of one entry, or None when it is gone."""
+    try:
+        info = os.lstat(path)
+        return [stat.S_IFMT(info.st_mode), info.st_size, info.st_mtime_ns, info.st_mode, os.readlink(path) if stat.S_ISLNK(info.st_mode) else '']
+    except OSError: return None
+
+
+def ignored_changes(workspace: Path, recorded: dict) -> list:
+    """The recorded ignored entries (as git lists them; a collapsed directory is one entry) that changed or are gone."""
+    return sorted(name for name, meta in (recorded.get('ignored_meta') or {}).items() if _lstat(workspace / name) != meta)
+
+
 def capture(workspace: Path, keep: Path) -> dict:
     keep.mkdir(parents=True, exist_ok=True)
     index = _index_path(workspace)
     if index.exists(): shutil.copy2(index, keep / 'index')
-    ignored = _git(workspace, 'ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z').split('\0')
-    return {**state(workspace, keep), 'ignored': [name.rstrip('/') for name in ignored if name]}
+    ignored = [name.rstrip('/') for name in _git(workspace, 'ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z').split('\0') if name]
+    meta, deadline = {}, time.monotonic() + IGNORED_SECONDS
+    for name in ignored[:IGNORED_LIMIT]:
+        if time.monotonic() > deadline: break
+        meta[name] = _lstat(workspace / name)
+    bounded = len(meta) == len(ignored)
+    return {**state(workspace, keep), 'ignored': ignored, 'ignored_meta': meta if bounded else None,
+            **({} if bounded else {'ignored_note': f'ignored set too large: not checked ({len(ignored)} entries)'})}
 
 
 def evidence(workspace: Path, recorded: dict, keep: Path, path: Path) -> dict:

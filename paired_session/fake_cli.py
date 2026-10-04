@@ -581,6 +581,11 @@ def main():
                 return 1
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_COMMIT'):   # D-EFF eff-c: HEAD moves, files stay the same
             subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'plan review commit'], check=True)   # the module import: a local one would shadow it in all of main()
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_TOUCH_IGNORED'):   # eff-e: edit an existing ignored file
+            with (Path.cwd() / os.environ['FAKE_PLAN_REVIEWER_TOUCH_IGNORED']).open('a') as handle:
+                handle.write('reviewer edit\n')
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_CORRUPT_INDEX'):   # eff-e: git ls-files fails afterwards
+            (Path.cwd() / '.git' / 'index').write_bytes(b'not an index\n')
 
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
     if snapshot_mode == 'wrong':

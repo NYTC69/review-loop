@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from paired_session import readonly_guard as rg
+from paired_session import timeout_scale as tsc
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -102,6 +103,24 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         self.assertEqual(checkout.kwargs['input'].count('\0'), 2000)   # the paths, never on the command line
         self.assertEqual({(self.ws / f'f{i:04d}.txt').read_text() for i in range(2000)}, {'base\n'})
 
+    def test_a_changed_or_missing_ignored_entry_is_reported_and_never_restored(self):   # eff-e
+        (self.ws / 'cache.log').write_text('kept\n')
+        recorded = rg.capture(self.ws, self.keep)
+        self.assertEqual(sorted(recorded['ignored_meta']), ['build.log', 'cache.log'])
+        self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
+        (self.ws / 'build.log').write_text('review edit\n')
+        (self.ws / 'cache.log').unlink()
+        self.assertEqual(rg.ignored_changes(self.ws, recorded), ['build.log', 'cache.log'])
+        self.assertIsNone(rg.restore(self.ws, recorded, self.keep))   # the undo of tracked content leaves ignored entries alone
+        self.assertEqual((self.ws / 'build.log').read_text(), 'review edit\n')
+        self.assertFalse((self.ws / 'cache.log').exists())
+        (self.ws / 'cache.log').write_text('again\n')                 # two ignored entries again
+        with patch.object(rg, 'IGNORED_LIMIT', 1):                    # bounded: too many entries are not checked, and say so
+            bounded = rg.capture(self.ws, self.keep)
+        self.assertIsNone(bounded['ignored_meta'])
+        self.assertIn('ignored set too large: not checked', bounded['ignored_note'])
+        self.assertEqual(rg.ignored_changes(self.ws, bounded), [])
+
     def test_reading_and_git_status_are_no_change(self):
         recorded = rg.capture(self.ws, self.keep)
         self.git('status')                                     # refreshes the index's stat cache
@@ -176,7 +195,7 @@ class ReadOnlyTurnTests(unittest.TestCase):
         self.assertEqual([t['voided']['restored'] for t in co.state['turns'] if t.get('role') == 'reviewer'], [True])   # no re-dispatch
 
     def test_a_failed_undo_leads_the_hold_and_blocks_resume_until_the_workspace_is_back(self):   # eff-c
-        co = self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+        co = self.h.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                                 '--test-command', 'python3 -m unittest')   # the same flags as h.command(), so resume restores it
         (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
         prompt = co._review_prompt('reviewer', 'snapshot')
@@ -201,7 +220,7 @@ class ReadOnlyTurnTests(unittest.TestCase):
         self.assertNotIn('unrestored_readonly_turn', json.loads((self.h.run_dir / 'state.json').read_text()))
 
     def failed_undo(self, **patches):   # a PLAN reviewer write whose undo fails; `patches` break the rest of the turn
-        co = self.h.coordinator('--timeout', '10', '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+        co = self.h.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                                 '--test-command', 'python3 -m unittest')   # the same flags as h.command()
         (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
         prompt = co._review_prompt('reviewer', 'snapshot')
@@ -260,6 +279,45 @@ class ReadOnlyTurnTests(unittest.TestCase):
                 co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
         self.assertIn('manual restore needed', co.unrestored_workspace_issue())
         subprocess.run(['git', 'reset', '-q', '--soft', head], cwd=self.h.workspace, check=True)
+        self.assertEqual(co.unrestored_workspace_issue(), '')
+
+    def plan_review(self, env, *flags):
+        co = self.h.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest', *flags)   # the same flags as h.command()
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        with patch.dict(os.environ, env), self.assertRaises(RuntimeError) as raised:
+            co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
+        return co, str(raised.exception)
+
+    def test_a_review_that_edits_an_ignored_file_is_void_and_holds(self):   # eff-e
+        with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle:
+            handle.write('.env\n')
+        for vendor in ('claude', 'codex'):   # a Codex reviewer also gets a scratch TMPDIR and its run-dir link check
+            with self.subTest(vendor=vendor):
+                self.h.run_dir = self.h.root / f'run-ignored-{vendor}'
+                (self.h.workspace / '.env').write_text('SECRET=1\n')
+                co, message = self.plan_review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.env'}, '--reviewer-vendor', vendor)
+                self.assertIn('reviewer changed ignored files in the workspace', message)
+                self.assertIn('.env', message)
+                [turn] = [t for t in co.state['turns'] if t.get('role') == 'reviewer']   # no re-dispatch
+                self.assertEqual(turn['voided']['ignored_changed'], ['.env'])
+                self.assertNotIn('answer', turn)                                          # the verdict is void
+                self.assertEqual((self.h.workspace / '.env').read_text(), 'SECRET=1\nreviewer edit\n')   # untouched by the coordinator
+
+    def test_a_review_that_breaks_the_index_is_unverifiable_and_blocks_resume(self):   # eff-e
+        co, message = self.plan_review({'FAKE_PLAN_REVIEWER_CORRUPT_INDEX': '1'})
+        self.assertTrue(message.startswith('read-only turn changed the workspace and it could not be restored; manual restore needed'), message)
+        self.assertIn('post-turn workspace snapshot failed', message)
+        self.assertIn('post-turn workspace snapshot failed', self.saved_record()['reason'])
+        self.assertIsNone(co.state.get('active'))                                 # recorded, not left uncertain
+        command = self.h.command('--retry-uncertain')
+        command[2] = 'resume'
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(rc.main(command[2:]), 2)
+        self.assertIn('manual restore needed', out.getvalue())
+        (self.h.workspace / '.git' / 'index').unlink()                            # the operator rebuilds the index from HEAD
+        subprocess.run(['git', 'reset', '-q'], cwd=self.h.workspace, check=True)
         self.assertEqual(co.unrestored_workspace_issue(), '')
 
     def test_an_unreadable_index_counts_as_a_change(self):
