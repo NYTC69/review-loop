@@ -185,10 +185,12 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   no index; the Chinese delivery report is `delivery-report.md` in the run directory. W3b-2, `auto_commit`
   true (D-1: `accept --expect` authorizes it): W04 refusals first (work staged before the run, a
   content-transforming `filter`/`text`/`eol`/`working-tree-encoding` attribute, any true `core.autocrlf`,
-  submodules and skip-worktree entries, whose rows would read as deletions); then the accepted manifest's raw bytes (no filters; symlinks as link text; executable bits) go
+  submodules and skip-worktree entries, whose rows would read as deletions, and `core.fileMode` false); then the accepted manifest's raw bytes (no filters; symlinks as link text; the manifest's executable bits, which every stage binding includes) go
   through a private index into one tree, `commit-tree --no-gpg-sign` on the run's parent, a journal
-  (`evidence/delivery-commit.json`), `update-ref HEAD <commit> <parent>` (compare-and-swap) and an index
-  sync (`read-tree`, refresh). Every git call disables hooks (`core.hooksPath=/dev/null`). A HEAD that is
+  (`evidence/delivery-commit.json`, with the branch HEAD named in the accept intent and the index digests before the
+  delivery and of its commit), `update-ref <branch> <commit> <parent>` (compare-and-swap on the bound branch;
+  `--no-deref HEAD` when detached) and an index sync (`read-tree`, refresh). rel210-fixA: HEAD on another branch
+  (or detached vs a branch) and an index that is neither of the two journaled states HOLD before anything moves. Every git call disables hooks (`core.hooksPath=/dev/null`). A HEAD that is
   neither the parent nor the commit HOLDs (`auto_commit: ...; accept --expect <digest>`, recorded as
   `delivery_pending`, which refuses resume); a replay with that `--expect` (W3c: only on a DONE or HOLD run
   whose receipts still equal the journaled intent's, without a scope-change intent,

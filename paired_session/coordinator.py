@@ -1059,7 +1059,8 @@ def git_head_state(workspace: Path) -> list:
 
 
 def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
-    """Digest tracked + untracked non-ignored files; symlinks hash their target."""
+    """Digest tracked + untracked non-ignored files; symlinks hash their target. rel210-fixA: an executable file (git mode
+    100755, the owner execute bit as git reads it) is 'exec:<sha256>', so every stage binding and the read-only check see a mode change."""
     proc = candidate_tree.run_bounded(
         candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=workspace), cwd=workspace,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -1074,6 +1075,7 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
             value = 'link:' + os.readlink(path)
         elif path.is_file():
             value = hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.stat().st_mode & stat.S_IXUSR: value = 'exec:' + value
         else:
             value = 'missing'
         manifest.append([name, value])
@@ -3141,6 +3143,22 @@ class Coordinator:
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return proc.stdout.strip() if proc.returncode == 0 else None
 
+    def _head_ref(self) -> Optional[str]:   # the branch HEAD names, None when detached
+        return self._git(['symbolic-ref', '-q', 'HEAD'], ok=(0, 1)).strip() or None
+
+    def _index_digest(self, tree: Optional[str] = None) -> str:
+        """The index entries (`ls-files -s`; a stat refresh changes nothing), or those `read-tree <tree>` would give."""
+        index = self.internal / f'index-digest-{uuid.uuid4().hex[:8]}'
+        env = {**candidate_tree.git_env(), **({'GIT_INDEX_FILE': str(index)} if tree else {})}
+        try:
+            if tree: subprocess.run(candidate_tree.git_command('read-tree', tree, cwd=self.workspace), cwd=self.workspace,
+                                    env=env, check=True, capture_output=True, timeout=600)
+            return hashlib.sha256(subprocess.run(candidate_tree.git_command('ls-files', '-s', '-z', cwd=self.workspace),
+                                                 cwd=self.workspace, env=env, check=True, capture_output=True,
+                                                 timeout=600).stdout).hexdigest()
+        finally:
+            index.unlink(missing_ok=True)
+
     def _git(self, args: list[str], ok=(0,)) -> str:
         proc = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, errors='replace')
@@ -3848,6 +3866,8 @@ class Coordinator:
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
         if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
             raise ValueError('auto_commit refuses core.autocrlf; unset it or accept with auto_commit false')
+        if self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
+            raise ValueError('auto_commit refuses core.fileMode false; accept with auto_commit false')
         if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
             raise ValueError('auto_commit refuses a repository with submodules; accept with auto_commit false')
         if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
@@ -3878,8 +3898,8 @@ class Coordinator:
                     candidate_tree.git_command('hash-object', '-w', '--stdin', cwd=self.workspace), cwd=self.workspace,
                     input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
                     timeout=600).stdout.strip()
-        rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if os.lstat(self.workspace / path).st_mode & 0o111 else '100644'}"
-                       f' {oids[path]}\t{path}\0' for path, value in files)
+        rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if value.startswith('exec:') else '100644'}"
+                       f' {oids[path]}\t{path}\0' for path, value in files)   # rel210-fixA: the accepted mode, not a live lstat
         index = self.internal / f'delivery-index-{uuid.uuid4().hex[:8]}'
         env = {**candidate_tree.git_env(), 'GIT_INDEX_FILE': str(index)}
         try:
@@ -3904,17 +3924,29 @@ class Coordinator:
             message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
                        f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n")
             commit = self._git(['commit-tree', '--no-gpg-sign', tree, '-p', parent, '-m', message]).strip()
-            journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit}
+            journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit, 'ref': intent.get('head_ref'),
+                       'index_before': self._index_digest(), 'index_target': self._index_digest(commit)}
             atomic_json(self.evidence / 'delivery-commit.json', journal)
-        if (head := self._head_commit()) == journal['parent']:
-            try:   # compare-and-swap: only from the parent the commit was built on
-                self._git(['update-ref', '-m', 'paired-session accept ' + self.run_dir.name, 'HEAD', journal['commit'], journal['parent']])
-            except RuntimeError as exc:
-                raise WorktreeDeliveryHold(f'auto_commit: HEAD could not move from {journal["parent"][:12]} ({exc}); '
-                                           'restore HEAD to it, or abort') from exc
-        elif head != journal['commit']:
+        if 'index_before' not in journal:
+            raise WorktreeDeliveryHold('auto_commit: the journal predates the index and branch binding; abort')
+        if (now := self._head_ref()) != journal['ref']:   # rel210-fixA: never another branch
+            raise WorktreeDeliveryHold(f"auto_commit: HEAD is {now or 'detached'}, not {journal['ref'] or 'detached'} as at "
+                                       'the journaled accept; switch back to it, or abort')
+        target = journal['ref'] or 'HEAD'
+        if (head := self._git(['rev-parse', '--verify', '-q', target], ok=(0, 1)).strip() or None) not in (
+                journal['parent'], journal['commit']):
             raise WorktreeDeliveryHold(f"auto_commit: HEAD is {str(head)[:12]}, neither the parent {journal['parent'][:12]} "
                                        f"nor the commit {journal['commit'][:12]}; restore it, or abort")
+        if self._index_digest() not in (journal['index_before'], journal['index_target']):   # rel210-fixA: only this delivery's index
+            raise WorktreeDeliveryHold('auto_commit: the index holds staged changes that are neither the state before this '
+                                       'delivery nor its commit; unstage them (git reset -q), or abort')
+        if head == journal['parent']:
+            try:   # compare-and-swap on the bound ref: only from the parent the commit was built on
+                self._git(['update-ref', '-m', 'paired-session accept ' + self.run_dir.name,
+                           *([] if journal['ref'] else ['--no-deref']), target, journal['commit'], journal['parent']])
+            except RuntimeError as exc:
+                raise WorktreeDeliveryHold(f'auto_commit: {target} could not move from {journal["parent"][:12]} ({exc}); '
+                                           'restore it, or abort') from exc
         self._git(['read-tree', journal['commit']])   # the index follows the new HEAD
         self._git(['update-index', '-q', '--refresh'], ok=(0, 1))
         return {'auto_commit': True, 'commit': journal['commit'], 'head': journal['parent'], 'tree': journal['tree'],
@@ -3950,6 +3982,7 @@ class Coordinator:
                 'payload_sha256': hashlib.sha256(payload).hexdigest()}
         if worktree_lifecycle.is_worktree(self.state):   # W3b: the intent names the stage receipts it accepts
             data['receipts_sha256'] = hashlib.sha256(json.dumps(self.state['lifecycle']['receipts'], sort_keys=True).encode()).hexdigest()
+            data['head_ref'] = self._head_ref()   # rel210-fixA: the branch an auto_commit moves (None: detached HEAD)
         data['digest'] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         override = self.args.override_rejection
         if override and (action != 'accept' or not (self.args.reason or '').strip() or

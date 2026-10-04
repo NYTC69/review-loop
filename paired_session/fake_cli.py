@@ -161,6 +161,8 @@ def mutate(mode):
         (root / 'tracked.txt').write_text('checkout mutation\n')
     elif mode == 'commit':   # D-EFF: HEAD moves, the files stay the same
         subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'reviewer commit'], check=True)
+    elif mode == 'chmod':   # rel210-fixA: a mode change alone, content, HEAD and index unchanged
+        os.chmod(root / 'tracked.txt', 0o755)
     elif mode == 'rm':
         target = root / 'tracked.txt'
         if target.exists():

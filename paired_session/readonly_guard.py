@@ -4,8 +4,9 @@ capture() runs before the turn and records HEAD, the branch, the index (a `git l
 and the worktree as a tree object (the index copied to a temporary file, `git add -A`, `git write-tree`). After a turn that changed the
 workspace, evidence() writes the diff from that tree to the worktree's tree now, and restore() puts back only what capture() recorded
 and then verifies that HEAD, the branch, the index and the worktree tree all equal the recorded values. Ignored files, submodule
-contents and refs other than HEAD and its branch are not recorded, and the detection (the coordinator's content snapshot plus HEAD,
-the branch and the index) does not see a change of file mode alone. The undo touches only the paths whose content differs between
+contents and refs other than HEAD and its branch are not recorded. The detection is the coordinator's snapshot (content and, since
+rel210-fixA, the executable bit) plus HEAD, the branch and the index; the recorded tree carries git file modes, so the undo restores
+a mode change too. The undo touches only the paths whose content or mode differs between
 the recorded tree and the tree now, and never deletes a path that was ignored when the turn began, whatever the turn did to the
 ignore rules."""
 import hashlib

@@ -1259,6 +1259,94 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         record = json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())
         self.assertEqual(record['delivery']['commit'], commit)
 
+    # --- rel210-fixA: the delivery binds the index, the branch and the file modes ---------------------------------------------
+    def test_a_replay_holds_on_staged_changes_that_are_not_this_delivery_and_leaves_them(self):
+        intent, parent, commit = self.journaled_commit()
+        self.git('reset', '-q', parent)   # a crash after the journal write, before the ref moved
+        partial = rc.subprocess.run(['git', 'hash-object', '-w', '--stdin'], cwd=self.workspace, input='a partial edit\n',
+                                    check=True, capture_output=True, text=True).stdout.strip()
+        self.git('update-index', '--cacheinfo', f'100644,{partial},tracked.txt')   # the user stages a different change
+        staged = self.git('ls-files', '-s', 'tracked.txt')
+        held = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(held.accept(), 'HOLD')
+        self.assertIn('auto_commit: the index holds staged changes that are neither', held.state['hold_reason'])
+        self.assertEqual((self.git('ls-files', '-s', 'tracked.txt'), self.git('rev-parse', 'HEAD')), (staged, parent))
+        self.git('reset', '-q')   # the operator unstages; the replay finishes the journaled commit
+        replay = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual((replay.accept(), self.git('rev-parse', 'HEAD')), ('ACCEPTED', commit))
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_a_replay_after_a_branch_switch_holds_and_moves_no_branch(self):
+        intent, parent, commit = self.journaled_commit()
+        branch = self.git('symbolic-ref', 'HEAD')
+        self.assertEqual(intent['head_ref'], branch)
+        self.git('update-ref', branch, parent)   # a crash before the ref moved
+        self.git('branch', 'other', parent)
+        self.git('symbolic-ref', 'HEAD', 'refs/heads/other')   # the user switches to another branch on the same parent
+        held = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(held.accept(), 'HOLD')
+        self.assertIn(f'auto_commit: HEAD is refs/heads/other, not {branch} as at the journaled accept', held.state['hold_reason'])
+        self.assertEqual((self.git('rev-parse', 'refs/heads/other'), self.git('rev-parse', branch)), (parent, parent))
+        self.git('symbolic-ref', 'HEAD', branch)
+        replay = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(replay.accept(), 'ACCEPTED')
+        self.assertEqual((self.git('rev-parse', branch), self.git('rev-parse', 'refs/heads/other')), (commit, parent))
+
+    def test_a_detached_replay_moves_only_head_and_a_replay_after_the_ref_moved_finishes_the_index(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--auto-commit', 'true').stdout)
+        branch, parent = self.git('symbolic-ref', 'HEAD'), self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '--detach')   # the operator accepts on a detached HEAD
+        co = rc.Coordinator(self.args('--auto-commit', 'true', action='accept'))
+        self.git('config', 'core.fileMode', 'false')   # no reliable mode bits: no commit
+        with self.assertRaisesRegex(ValueError, 'auto_commit refuses core.fileMode false'):
+            co._commit_refusals(['tracked.txt'])
+        self.git('config', 'core.fileMode', 'true')
+        intent = co.operator_intent('accept', None, None)
+        self.assertIsNone(intent['head_ref'])
+        commit = co._worktree_commit(intent, None)['commit']
+        self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('rev-parse', branch)), (commit, parent))   # the branch stays
+        self.git('read-tree', parent)   # a crash after the ref moved, before the index sync: the index is the state before
+        replay = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        self.assertEqual(replay.accept(), 'ACCEPTED')
+        self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('status', '--porcelain')), (commit, ''))
+        journal = co.evidence / 'delivery-commit.json'
+        old = json.loads(journal.read_text())
+        rc.atomic_json(journal, {key: value for key, value in old.items() if key not in ('index_before', 'index_target')})
+        with self.assertRaisesRegex(rc.WorktreeDeliveryHold, 'the journal predates the index and branch binding'):
+            co._worktree_commit(intent, json.loads(journal.read_text()))
+        self.git('symbolic-ref', 'HEAD', branch)   # a detached journal never moves a branch
+        with self.assertRaisesRegex(rc.WorktreeDeliveryHold, f'auto_commit: HEAD is {branch}, not detached'):
+            co._worktree_commit(intent, old)
+        self.assertEqual(self.git('rev-parse', branch), parent)
+
+    def test_a_mode_only_change_after_security_invalidates_the_accept_and_the_commit_takes_the_accepted_mode(self):
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--auto-commit', 'true').stdout)
+        co = rc.Coordinator(self.args('--auto-commit', 'true', action='accept'))
+        intent = co.operator_intent('accept', None, None)
+        (self.workspace / 'sum_ints.py').chmod(0o755)   # content unchanged
+        self.assertEqual(dict(rc.git_snapshot(self.workspace)[1])['sum_ints.py'][:5], 'exec:')
+        self.assertNotEqual(rc.git_snapshot(self.workspace)[0], intent['tree_sha256'])
+        with self.assertRaisesRegex(ValueError, 'stale: 0 tracked, 1 untracked drift'):   # sum_ints.py is the author's new file
+            co.operator_intent('accept', None, None)
+        stale = rc.Coordinator(self.args('--auto-commit', 'true', '--expect', intent['digest'], action='accept'))
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            stale.accept()
+        self.assertEqual(self.git('rev-parse', 'HEAD'), intent['head'])   # nothing committed
+        tree = co._manifest_tree(intent['tree_snapshot'])   # the accepted manifest's mode, not the live one
+        self.assertTrue(self.git('ls-tree', tree, 'sum_ints.py').startswith('100644 '))
+
+    def test_a_read_only_turn_that_only_changes_a_mode_is_voided_and_restored(self):
+        marker = self.root / 'chmod-once'
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={
+            'FAKE_MUTATION': 'chmod', 'FAKE_MUTATION_ROLE': 'Role: security reviewer,', 'FAKE_MUTATION_ONCE': str(marker)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('re-dispatching the reviewer turn once', result.stdout)
+        self.assertTrue(marker.exists())
+        self.assertFalse((self.workspace / 'tracked.txt').stat().st_mode & 0o111)   # the mode is back
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [void] = [row for row in state['turns'] if row['phase'] == 'SECURITY' and 'voided' in row]
+        self.assertTrue(void['voided']['restored'])
+
     def test_a_successor_inherits_the_baseline_and_scopes_delivery_to_the_original_tree(self):
         self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60').stdout)
         parent_dir = self.run_dir
