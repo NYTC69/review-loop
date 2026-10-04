@@ -118,6 +118,10 @@ class RealCoordinatorTests(unittest.TestCase):
         self.addCleanup(self._fake_codex_env.stop)
         self.original_home = os.environ.get('HOME')
         os.environ['HOME'] = str(self.test_home)
+        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():   # D-EFF: these tests pin strict
+            pin = patch.object(module, 'DEFAULT_SAFETY_MODE', 'strict')
+            pin.start()
+            self.addCleanup(pin.stop)
         self._unpatched_popen = subprocess.Popen
         self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')   # the stubs and any real CLI behind them
                                      for search in (os.environ['PATH'], os.environ['PATH'].split(os.pathsep, 1)[-1])
@@ -1052,7 +1056,7 @@ sys.exit(result.returncode)
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                 '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', tsc.scaled_arg(10),
                 '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
-                '--test-command', 'python3 -m unittest',
+                '--test-command', 'python3 -m unittest', '--strict',   # D-EFF: the subprocess and main() paths pin strict too
                 *extra]
 
     def run_coordinator(self, *extra, env=None, skip_probe=True):

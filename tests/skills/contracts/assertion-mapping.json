@@ -1980,11 +1980,11 @@
     "entry_implicit_legacy_notice": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow"
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly"
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow"
       }
     ],
     "entry_invalid_value_warning": [
@@ -2018,15 +2018,15 @@
     "entry_experimental_routing_notice": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+        "needle": "review-loop: paired-session entry (entry set in .review-loop/config.md)"
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+        "needle": "review-loop: paired-session entry (entry set in .review-loop/config.md)"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)"
+        "needle": "review-loop: paired-session entry (entry set in .review-loop/config.md)"
       }
     ],
     "entry_non_fresh_state_warning": [
@@ -2074,7 +2074,7 @@
     "entry_codex_implicit_legacy_notice": [
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: legacy workflow via implicit entry; set \"entry: paired-session\" in .review-loop/config.md to opt in, or ask for \"the legacy review-loop workflow\" explicitly"
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or ask for \"the legacy review-loop workflow\""
       },
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
@@ -2118,11 +2118,97 @@
     "paired_session_skill_bare_request_prohibition_cases": [
       {
         "path": "skills/paired-session/SKILL.md",
-        "needle": "(key absent, invalid, legacy, or"
+        "needle": "(key invalid, `legacy`, or"
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "(key absent, invalid, legacy, or"
+        "needle": "(key invalid, `legacy`, or"
+      }
+    ],
+    "entry_default_notice": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      }
+    ],
+    "paired_session_skill_lifecycle_mode_on": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`"
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "bin/paired-session\" permission-probe \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "bin/paired-session\" run \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "For a new run, pass `--lifecycle-mode on` to both `permission-probe` and `run`"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "bin/paired-session\" permission-probe \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "bin/paired-session\" run \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      }
+    ],
+    "paired_session_skill_saved_lifecycle_mode": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "pass the saved `state.json` `config.lifecycle_mode` value"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "pass the saved `state.json` `config.lifecycle_mode` value"
+      }
+    ],
+    "paired_session_skill_no_operator_waivers": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "Never pass `--skip-probe`, `--accept-unverified-codex-cli`, `--accept-unverified-claude-author`, `--accept-probe-skip` or `--override-rejection` on your own initiative."
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "Never pass `--skip-probe`, `--accept-unverified-codex-cli`, `--accept-unverified-claude-author`, `--accept-probe-skip` or `--override-rejection` on your own initiative."
+      }
+    ],
+    "guide_entry_key_and_commands": [
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "| `entry` | absent (paired-session) | `legacy` \\| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "| `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "with no `entry` key in `.review-loop/config.md` hands off to the paired-session coordinator"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "`legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning)"
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "\"legacy\" | \"paired-session\" (exact values only; anything else falls back to legacy with a warning)"
       }
     ]
   }

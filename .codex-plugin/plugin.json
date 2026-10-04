@@ -22,8 +22,8 @@
   "skills": "./.agents/skills/",
   "interface": {
     "displayName": "review-loop",
-    "shortDescription": "Plan-Execute-Review workflows, including explicit paired-session opt-in",
-    "longDescription": "review-loop supports the legacy plan → execute → review → delivery workflow and an explicit paired-session coordinator skill for work items in other repositories. The paired-session entry remains opt-in during staged migration. Codex marketplace install exposes the five Stage 1 native skills (guide, plan, execute, review-loop, paired-session) under `.agents/skills/`, paired with the reviewer + executor agents at `.codex/agents/*.toml`.",
+    "shortDescription": "Plan-Execute-Review workflows, with paired-session as the default entry",
+    "longDescription": "review-loop supports the legacy plan → execute → review → delivery workflow and an explicit paired-session coordinator skill for work items in other repositories. From v2.10.0 the review-loop entry hands fresh work to paired-session by default; `entry: legacy` keeps the legacy workflow. Codex marketplace install exposes the five Stage 1 native skills (guide, plan, execute, review-loop, paired-session) under `.agents/skills/`, paired with the reviewer + executor agents at `.codex/agents/*.toml`.",
     "developerName": "NYTC69",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Read", "Write"],

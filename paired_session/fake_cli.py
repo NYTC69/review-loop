@@ -60,6 +60,17 @@ def emit_codex(answer, session, command_events=None):
                 'status': 'completed' if event['exit_code'] == 0 else 'failed',
                 'aggregated_output': event.get('output', 'fake permission result'),
             }}))
+    if command_events and os.environ.get('FAKE_CODEX_ROLLOUT_CWD'):   # v297-eg-cwd: Codex's own record of where each command ran
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        rows = [{'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'fake-turn-' + session}},
+                {'timestamp': now, 'type': 'turn_context', 'payload': {'cwd': str(Path.cwd().resolve())}}]
+        rows += [{'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'item_completed', 'turn_id': 'fake-turn-' + session, 'item': {
+            'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', event['command']], 'cwd': Path.cwd().resolve().as_uri()}}}
+                 for event in command_events]
+        rollout = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'sessions' / ('rollout-' + session + '.jsonl')
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        with rollout.open('a') as handle:
+            handle.write(''.join(json.dumps(row) + '\n' for row in rows))
     if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'codex':
         print('{malformed model metadata')
     print(json.dumps({'type': 'item.completed', 'item': {'id': 'fake', 'type': 'agent_message',
@@ -149,6 +160,8 @@ def mutate(mode):
         (root / 'forbidden.txt').write_text('x\n')
     elif mode == 'checkout':
         (root / 'tracked.txt').write_text('checkout mutation\n')
+    elif mode == 'commit':   # D-EFF: HEAD moves, the files stay the same
+        subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'reviewer commit'], check=True)
     elif mode == 'rm':
         target = root / 'tracked.txt'
         if target.exists():
@@ -249,6 +262,15 @@ def main():
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
+        if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
+            subprocess.run(['git', 'add', '-A'], check=True)
+            subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'fake author commit'], check=True)
+        if os.environ.get('FAKE_GLOBAL_CONFIG_WRITE') and 'Phase: EXEC' in prompt:   # D-EFF: a turn that changes the global Codex config
+            with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
+                handle.write('\nmodel_verbosity = "high"\n')
+        if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
+            print('fake author failed after writing', file=sys.stderr)
+            return 1
     elif 'Role: finisher' in prompt or 'Role: docs writer' in prompt:   # worktree-lifecycle fresh writers (ADR-11)
         module = Path.cwd() / 'sum_ints.py'
         if ('Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_WRITE') and
@@ -486,7 +508,9 @@ def main():
         if prior is not None:
             answer['prior_findings'] = prior
         mode = os.environ.get('FAKE_MUTATION')
-        if mode and 'Role: reviewer,' in prompt:
+        once = os.environ.get('FAKE_MUTATION_ONCE')   # D-EFF: a marker file; only the first reviewer turn mutates
+        if mode and 'Role: reviewer,' in prompt and not (once and Path(once).exists()):
+            if once: Path(once).write_text('mutated\n')
             mutate(mode)
         command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]
                           if vendor == 'codex' and role == 'reviewer' and phase == 'EXEC'

@@ -5,7 +5,7 @@
   "runtime": "claude",
   "requires": ["codex", "claude"],
   "setup": {
-    "temp_config": "",
+    "temp_config": "entry: legacy\n",
     "timeout_seconds": 120
   },
   "execution_policy": "best_effort",

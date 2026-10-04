@@ -10,7 +10,8 @@ Reviewer backend availability check (`which codex` for
 `reviewer: codex`; suggest `reviewer: subagent` fallback if absent).
 
 Resolve `entry` (exact values `legacy` and `paired-session` only):
-- Absent: legacy. Print once: `review-loop: legacy workflow via implicit entry; set "entry: paired-session" in .review-loop/config.md to opt in, or use /review-loop:legacy explicitly`
+- Absent: paired-session, the default entry; route it exactly as `paired-session` below.
+- `legacy`: legacy, with no entry notice.
 - Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
 - Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
 - `paired-session`: apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock.
@@ -65,16 +66,44 @@ which only prints a suggestion, the umbrella dispatches internally:
   resume (equivalent to `execute --session <uuid>`).
 - **No prior state**: start from the planning phase as normal.
 
-**Entry routing (only when `entry` resolved to `paired-session`).** Only
-"No prior state" hands off: print `review-loop: paired-session entry is experimental (entry set in .review-loop/config.md)`,
+**Entry routing (only when `entry` resolved to `paired-session`, set or by default).** Only
+"No prior state" hands off: print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,
+or `review-loop: paired-session is the default entry; set "entry: legacy" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow` when it is absent,
 invoke the `paired-session` skill with the work item, and end this workflow
-(no legacy session file, lock or stage). This routing is decided once, before
+(no legacy session file, lock or stage), unless the paired-session skill reports a failed
+stage A check before its first `bin/paired-session` command (see below). Print the notice
+and hand off only after this entry's own stage A checks (host, CLIs, background commands,
+Codex home) pass; the question checks run in the paired-session skill after the handoff
+(Questions row below). This routing is decided once, before
 Step 0.5; once a legacy session file or lock exists, a re-detection or user
 override never hands off. A paired-session probe/run HOLD is
 reported to the user and never falls back to legacy. Plan-exists, code-exists
 (including a dirty tree detected as implemented code) and an existing session
 (explicit resume) always stay legacy; print
 `review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`.
+
+**Stage A checks (before the first `bin/paired-session` command).** Read-only. The host,
+CLI, background-command and Codex-home rows run here before the handoff; the Questions row
+runs in the paired-session skill. With the key absent, a failed check falls back to legacy: print its notice and
+continue with Step 0.5. With `entry: paired-session`, a failed check refuses: print
+`review-loop: paired-session entry refused (<reason>); set "entry: legacy" or use /review-loop:legacy`
+and end this workflow (except where a row says otherwise).
+- Host, key absent only: `uname -s` is not `Darwin` → `review-loop: paired-session default entry needs a verified host (macOS); using legacy workflow`.
+  With the key set there is no host check; the permission probe decides.
+- CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
+  `codex` and `claude`). Missing → `review-loop: paired-session default entry needs <cli> for the <role> role; using legacy workflow`.
+- Background commands: this host cannot run long background commands (or Codex cannot run
+  outside its sandbox) → `review-loop: paired-session default entry unavailable (<reason>); using legacy workflow`;
+  with the key set, report HOLD with the reason, as the paired-session skill does today.
+- Codex home: a role is Codex and `${CODEX_HOME:-$HOME/.codex}` is not an existing directory
+  → the same unavailable notice with the coordinator's CODEX_HOME reason.
+- Questions: the paired-session skill asks its own stage A questions (dedicated worktree,
+  test command and its shape). A declined or unanswered question is a failed check and the
+  skill reports it before its first `bin/paired-session` command; with the key absent this
+  workflow then prints the unavailable notice with that reason and continues with Step 0.5.
+  Under `--handsfree` or `handsfree: true` nobody answers, so such a question is a failed
+  check: `review-loop: paired-session default entry needs an answer (<question>) that handsfree cannot give; using legacy workflow`.
+From the first `bin/paired-session` command on, every refusal or HOLD is reported verbatim and never falls back to legacy.
 
 Current Codex Stage 1 uses the orchestrator's current workspace only.
 Executor-created hidden worktrees are forbidden in Codex Stage 1.

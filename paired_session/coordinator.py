@@ -41,6 +41,8 @@ try:
     from paired_session import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
+    from paired_session import evidence_guard
+    from paired_session import readonly_guard
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session import operator_verification as opv
@@ -59,6 +61,8 @@ except ModuleNotFoundError:
     import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     import codex_capability_guard
     import docs_policy
+    import evidence_guard
+    import readonly_guard
     import finish_dispatch
     import lifecycle_spine
     import operator_verification as opv
@@ -116,6 +120,7 @@ def claude_cli_version(binary: str) -> str:
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
+DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 
 
@@ -130,6 +135,25 @@ ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', '
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
+# FIELD-12: the CLI's own Bash timeout heads the tool result ("Exit code 143\nCommand timed out after 10m 0s").
+TOOL_TIMEOUT_RE = re.compile(r'\A(?:Exit code -?\d+\n)?Command timed out after ((?:\d+(?:\.\d+)?(?:ms|[hms])(?![a-z]) ?)+)')
+
+
+def tool_timeout_seconds(rows: list) -> Optional[int]:
+    """Seconds of the CLI tool timeout that ended one of these observed command rows, else None."""
+    for row in rows:
+        if match := TOOL_TIMEOUT_RE.match(str(row.get('output') or '')):
+            units = {'h': 3600, 'm': 60, 's': 1, 'ms': 0.001}
+            return -int(-sum(float(n) * units[u] for n, u in re.findall(r'([0-9.]+)(ms|[hms])', match.group(1))) // 1)   # whole seconds, rounded up
+    return None
+LEDGER_ID_RE = re.compile(r'\bF\d{3,}\b')
+# Ledger ids are upper-case F###; the scan is case-insensitive elsewhere, so scope that
+# alternative to upper case or an identifier such as `f720` (a 720p frame) trips it.
+FRESH_HISTORY_RE = re.compile(
+    r'\b(?-i:F\d{3,})\b|\bprior_findings\b|Open finding ledger|Delivered (?:plan )?review:'
+    r'|response[ -]to[ -](?:reviewer|review|F\d+)'
+    r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
+    r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
 
 
@@ -844,6 +868,128 @@ def workspace_lease(workspace: Path, run_dir: Path):
         os.close(fd)
 
 
+class ProbeLockBusy(ValueError):
+    """FIELD-13: the parent lock stayed busy past its wait bound; main prints REFUSED before any state or report (and before the run dir,
+    unless the parent was missing: then the fresh, empty run dir stays)."""
+
+
+PROBE_LOCK_POLL_SECONDS, PROBE_LOCK_WAIT_FACTOR = 1.0, 3
+
+
+def probe_lock_dir() -> Path:   # FIELD-13: fixed and uid-keyed, so runs with any HOME, CODEX_HOME or workspace share it
+    return Path('/tmp') / f'paired-session-probe-locks-{os.getuid()}'
+
+
+def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
+    """FIELD-13: an existing run's saved author vendor and timeout (args keep the CLI/profile defaults until Coordinator restores the
+    saved roles); an unreadable state counts as a Claude author, which only costs a wait."""
+    vendor, timeout, path = args.author_vendor, args.timeout, Path(args.run_dir) / 'state.json'
+    if path.exists():
+        try: config = json.loads(path.read_text())['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError): vendor = 'claude'
+    if type(timeout) not in (int, float) or not 0 < timeout < float('inf'): timeout = args.timeout
+    return (vendor if vendor in ('codex', 'claude') else 'claude'), float(timeout)
+
+
+class ProbeParentLock:
+    """FIELD-13 (docs/field13-concurrent-probes.md): one POSIX lock per run-dir parent, taken in main before run_lease. A Claude author
+    permission-probe holds it for the whole command; any action on a fresh run dir holds it only until run_lease has made the dir. It only
+    schedules: no listing difference is excused because of it. POSIX locks belong to the process, so this process opens the file only here."""
+
+    def __init__(self, args: argparse.Namespace, workspace: Path, run_dir: Path):
+        self.run_dir, self.workspace = Path(run_dir).expanduser().resolve(), Path(workspace).expanduser().resolve()
+        vendor, timeout = _frozen_probe_config(args)
+        self.whole, self.fresh = args.action == 'permission-probe' and vendor == 'claude', not self.run_dir.exists()
+        self.estimate = 3 * timeout + 300   # at most three probe turns (reviewer, author, gate), plus settle and cleanup
+        self.payload = {'pid': os.getpid(), 'run_dir': str(self.run_dir), 'action': args.action, 'wait_bound_s': self.estimate if self.whole else 60}
+        self.fd = self.path = self.key_dir = None
+        self.start = time.monotonic()   # one wait cap for the whole command, across key moves
+
+    def _key_dir(self) -> Path:
+        key_dir = self.run_dir.parent
+        while not key_dir.is_dir() and key_dir.parent != key_dir: key_dir = key_dir.parent   # a missing parent: its first new entry lands here
+        return key_dir
+
+    def __enter__(self):
+        while self.whole or self.fresh:
+            self._acquire(key_dir := self._key_dir())
+            if self._key_dir() == key_dir: break
+            self.release()   # a deeper ancestor appeared while this waited: its mkdir now lands there
+            if time.monotonic() - self.start > PROBE_LOCK_WAIT_FACTOR * self.estimate:
+                raise ProbeLockBusy(f'the nearest existing parent of {self.run_dir} kept changing while waiting for its probe lock')
+            time.sleep(PROBE_LOCK_POLL_SECONDS)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+    def after_mkdir(self) -> None:
+        """Inside run_lease, once the run dir exists: a mkdir-only hold ends; a probe keyed on an ancestor moves to the parent."""
+        if not self.whole: self.release()
+        elif self.key_dir != self.run_dir.parent: self.release(); self._acquire(self.run_dir.parent)
+
+    def intact(self) -> bool:
+        """The lock path is still the regular file this process holds locked."""
+        if self.fd is None: return False
+        try: now, held = os.lstat(self.path), os.fstat(self.fd)
+        except OSError: return False
+        return stat.S_ISREG(now.st_mode) and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino)
+
+    def release(self) -> None:
+        if self.fd is None: return
+        try:
+            if self.intact(): os.unlink(self.path)   # unlinked while still locked: a waiter that then locks this inode sees it gone and reopens
+        except OSError: pass
+        finally: os.close(self.fd); self.fd = None
+
+    def _acquire(self, key_dir: Path) -> None:
+        lock_dir = probe_lock_dir()
+        if lock_dir.resolve() == self.workspace or self.workspace in lock_dir.resolve().parents:
+            raise RunLeaseError('the probe lock directory lies inside the workspace')
+        try: lock_dir.mkdir(mode=0o700)
+        except FileExistsError: pass
+        info = lock_dir.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise RunLeaseError('probe lock directory is not a private directory owned by this user')
+        ident = key_dir.stat()
+        self.key_dir, self.path = key_dir, lock_dir / (hashlib.sha256(f'{ident.st_dev}:{ident.st_ino}'.encode()).hexdigest() + '.lock')
+        start, holder_since, holder, noted = self.start, time.monotonic(), None, None
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        while True:
+            fd = os.open(self.path, flags, 0o600)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    raise RunLeaseError('probe lock path is not a private regular file owned by this user')
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raw = os.pread(fd, 4096, 0) if exc.errno in (errno.EAGAIN, errno.EACCES) else None
+                os.close(fd)   # this process holds no lock on the file while it waits
+                if raw is None: raise
+            except BaseException:
+                os.close(fd); raise
+            else:
+                self.fd = fd
+                if self.intact(): break
+                self.fd, raw = None, b''; os.close(fd)   # unlinked or replaced between open and lock: wait, then lock the current file
+            now = time.monotonic()
+            try: seen = json.loads(raw)
+            except ValueError: seen = {}
+            seen = seen if isinstance(seen, dict) else {}
+            if raw != holder: holder, holder_since = raw, now   # a new holder restarts its own bound
+            claimed = seen.get('wait_bound_s')
+            bound = max(self.estimate, claimed if type(claimed) in (int, float) and 0 < claimed < float('inf') else 0)   # a claim only lengthens
+            who = f"unverified holder pid {seen.get('pid', 'unknown')}, run_dir {seen.get('run_dir', 'unknown')}, action {seen.get('action', 'unknown')}"
+            if now - holder_since > bound or now - start > PROBE_LOCK_WAIT_FACTOR * self.estimate:
+                raise ProbeLockBusy(f'another command holds the probe lock of {key_dir} ({who}; lsof {self.path} shows the real holder); '
+                                    f'waited {int(now - start)} s')
+            if noted is None or now - noted >= 60:
+                print(f'waiting for the probe lock of {key_dir} ({who}; lsof {self.path} shows the real holder)', file=sys.stderr, flush=True); noted = now
+            time.sleep(PROBE_LOCK_POLL_SECONDS)
+        os.ftruncate(self.fd, 0)
+        os.pwrite(self.fd, json.dumps({**self.payload, 'started_at': datetime.now().astimezone().isoformat()}).encode(), 0)
+
+
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
@@ -905,6 +1051,13 @@ def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
         except Exception as exc: digest['effective-config' + scope] = 'UNAVAILABLE: ' + str(exc); continue   # a changed config that git cannot be called under still HOLDs
         digest['effective-config' + scope] = hashlib.sha256(proc.stdout + bytes([proc.returncode])).hexdigest()
     return dirs, digest
+def git_head_state(workspace: Path) -> list:
+    """D-EFF git guard: the commit HEAD names and the branch it is on (empty when detached or unborn)."""
+    return [candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True).stdout.strip()
+            for args in (('rev-parse', '--verify', '-q', 'HEAD'), ('symbolic-ref', '-q', 'HEAD'))]
+
+
 def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     """Digest tracked + untracked non-ignored files; symlinks hash their target."""
     proc = candidate_tree.run_bounded(
@@ -1029,7 +1182,8 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
                         command = outer[2]
                 except ValueError:
                     pass
-                call = {'tool': 'command_execution', 'input': {'command': command},
+                workdir = next((item[k] for k in ('workdir', 'cwd') if isinstance(item.get(k), str)), None)   # v297-eg-wire: kept, not dropped
+                call = {'tool': 'command_execution', 'input': {'command': command, **({'workdir': workdir} if workdir else {})},
                         'error': type(exit_code) is int and exit_code != 0}
                 calls.append(call)
                 commands.append({'command': command, 'raw_command': raw_command,
@@ -1076,8 +1230,55 @@ def observed_test_succeeded(row: dict, configured: str) -> bool:
     return failure is None
 
 
-def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path) -> Optional[str]:
-    """Reject attempts to read hidden reviewer/evidence transport from a model thread."""
+SECRET_ENV_NAME = re.compile(r'(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|(?:^|_)(?:KEY|PASS|PWD)(?:_|$))', re.I)
+
+
+def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path, cwd: Optional[Path] = None, env: Optional[dict] = None,
+                     writable_roots: tuple = (), configured: tuple = (), fallbacks: Optional[list] = None) -> Optional[str]:
+    """v297-eg-wire, the hybrid (owner 2026-10-04): the typed-operation evidence guard (evidence_guard.py) decides every call it can
+    resolve: PROTECTED holds, ALLOW passes even where the old substring match would have held. A call it cannot resolve falls back to
+    the pre-v2.9.7 substring guard, exactly as before, and its reason (cut to 300 characters) is appended to `fallbacks` (the receipt
+    counts them). Secret-named variables never expand, so no secret value reaches a reason; other values may, as in the stdout evidence.
+    Known limit: the guard runs after the turn, so a symlink made and removed inside the turn is not seen."""
+    ctx = evidence_guard.Context(evidence, rounds, cwd, {k: v for k, v in (env or {}).items() if not SECRET_ENV_NAME.search(k)},
+                                 tuple(writable_roots), tuple(c for c in configured if isinstance(c, str)))
+    try: verdicts = evidence_guard.turn_verdicts(calls, ctx)
+    except Exception as exc:   # a guard failure (RecursionError, ...) falls back to the substring guard for every call
+        verdicts = [(evidence_guard.UNKNOWN, f'evidence guard error: {type(exc).__name__}')] * len(calls)
+    if found := next((reason for verdict, reason in verdicts if verdict == evidence_guard.PROTECTED), None): return found
+    for call, (verdict, reason) in zip(calls, verdicts):
+        if verdict == evidence_guard.UNKNOWN:
+            if fallbacks is not None: fallbacks.append(reason[:300])
+            if legacy := _legacy_sensitive_access([call], role, evidence, rounds): return legacy
+    return None
+
+
+def configured_command_issue(workspace: Path, run_dir: Path, commands: list) -> Optional[str]:
+    """v297-eg-wire admission (hybrid): only a configured test or reviewer command that names a protected path is refused, before any
+    model turn; a form the guard cannot resolve is not refused (its runs fall back to the substring guard)."""
+    for command in commands:
+        ctx = evidence_guard.Context(run_dir / 'evidence', run_dir / 'rounds', Path(workspace).resolve(),
+                                     {k: v for k, v in cli_env().items() if not SECRET_ENV_NAME.search(k)}, configured=(command,))
+        found = evidence_guard.first_violation([{'tool': 'Bash', 'input': {'command': command}}], ctx)
+        if found and found[0] == evidence_guard.PROTECTED:
+            return (f'configured command {command!r} names a protected path ({found[1]}); keep its operands and output paths '
+                    'outside the run directory')
+    return None
+
+
+def _saved_configured_commands(run_dir: Path) -> list:
+    """A restored run's saved test, reviewer and work-item reviewer commands, for admission (args keep the CLI defaults until the
+    Coordinator restores the saved config); an unreadable state adds none, and the Coordinator reports it itself."""
+    try: config = json.loads((run_dir / 'state.json').read_text())['config']
+    except (OSError, ValueError, KeyError, TypeError): return []
+    if not isinstance(config, dict): return []
+    found = [config.get('test_command'), *[c for key in ('reviewer_command', 'workitem_reviewer_commands')
+                                           for c in (config.get(key) if isinstance(config.get(key), list) else [])]]
+    return [command for command in found if isinstance(command, str)]
+
+
+def _legacy_sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path) -> Optional[str]:
+    """The pre-v2.9.7 substring guard, unchanged: the hybrid's fallback for calls the typed guard cannot resolve."""
     evidence_text = str(evidence)
     rounds_text = str(rounds)
     for call in calls:
@@ -1316,6 +1517,73 @@ def codex_rollout_attempts(session: Optional[str], start: float, end: float) -> 
     return commands, calls
 
 
+def codex_rollout_cwds(session: Optional[str], start: float, end: float, writable: tuple = ()) -> Optional[dict]:
+    """v297-eg-cwd: the cwd Codex itself recorded for each command of this CLI interval: the same rollout and window as the usage and
+    attempt readers, CommandExecution items of the one turn started in the window only, and that turn's own cwd (its turn_context rows).
+    None when the rollout cannot be read, when the window holds no or several turns, or when a role could write the sessions dir."""
+    from urllib.parse import unquote, urlparse
+    def path_of(value) -> Optional[str]:
+        url = urlparse(value) if isinstance(value, str) else None
+        path = unquote(url.path) if url and url.scheme == 'file' and url.netloc in ('', 'localhost') else value if url and not url.scheme else None
+        return path if isinstance(path, str) and os.path.isabs(path) else None
+    sessions = codex_sessions_dir().resolve()
+    if not session or any(sessions == r or r in sessions.parents for r in (Path(w).resolve() for w in writable if w)):
+        return None
+    paths = list(sessions.rglob('*' + session + '*.jsonl'))
+    if len(paths) != 1:
+        return None
+    rows = []
+    try:
+        with paths[0].open(errors='replace') as source:
+            for line in source:
+                try:
+                    row = json.loads(line)
+                    stamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if start - 1 <= stamp <= end + 1 and isinstance(row.get('payload'), dict):
+                    rows.append((row.get('type'), row['payload']))
+    except OSError:
+        return None
+    turns = {p.get('turn_id') for kind, p in rows if kind == 'event_msg' and p.get('type') == 'task_started' and p.get('turn_id')}
+    if len(turns) != 1:                                                       # one CLI call is one turn; a neighbour's rows never count
+        return None
+    contexts = {path_of(p.get('cwd')) for kind, p in rows if kind == 'turn_context'}
+    commands = [(p['item'].get('command'), path_of(p['item'].get('cwd'))) for kind, p in rows
+                if kind == 'event_msg' and p.get('type') == 'item_completed' and p.get('turn_id') in turns
+                and isinstance(p.get('item'), dict) and p['item'].get('type') == 'CommandExecution']
+    return {'cwd': next(iter(contexts)) if len(contexts) == 1 else None, 'commands': commands}
+
+
+def codex_guard_calls(calls: list[dict], proof: Optional[dict]) -> tuple[list[dict], Optional[Path], int]:
+    """v297-eg-cwd: Codex command events carry no workdir. A command_execution call gets the cwd Codex recorded for that command when
+    every recorded run of it in the turn has the same cwd and there are at least as many records as events; otherwise it keeps no cwd
+    (unknown: the substring guard decides, as before). Code-mode cells get the turn's own cwd only when every command event is proven.
+    Returns (calls for the guard, the guard's cwd or None, proven events); the receipt keeps the calls as observed."""
+    if not proof:
+        return calls, None, 0
+    records: dict = {}
+    for argv, cwd in proof['commands']:
+        if isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv):   # unwrapped as observed_events does
+            text = argv[2] if len(argv) == 3 and argv[0].endswith(('sh', 'bash', 'zsh')) and argv[1] in ('-c', '-lc') else shlex.join(argv)
+            records.setdefault(text, []).append(cwd)
+    events = [c['input'].get('command') for c in calls if c.get('tool') == 'command_execution' and isinstance(c.get('input'), dict)]
+    changes = [c['input'].get('changes') if isinstance(c.get('input'), dict) else None for c in calls if c.get('tool') == 'file_change']
+    relative = any(not isinstance(listed, list) or not all(isinstance(change, dict) and isinstance(change.get('path'), str)
+                                                           and os.path.isabs(change['path']) for change in listed)
+                   for listed in changes)   # a relative patch path may have been applied in another workdir
+    guarded, proven, total = [], 0, 0
+    for call in calls:
+        given = call.get('input')
+        if call.get('tool') == 'command_execution' and isinstance(given, dict) and 'workdir' not in given:
+            total += 1
+            found = records.get(given.get('command'), [])
+            if len(set(found)) == 1 and found[0] is not None and len(found) >= events.count(given.get('command')):
+                call, proven = {**call, 'input': {**given, 'workdir': found[0]}}, proven + 1
+        guarded.append(call)
+    return guarded, Path(proof['cwd']) if proven == total and proof['cwd'] and not relative else None, proven
+
+
 def compact_command(command: dict, evidence_file: str) -> dict:
     """Keep round files useful while the complete command event stays in evidence."""
     output = str(command.get('output', ''))
@@ -1379,6 +1647,13 @@ def progress_line(row: dict) -> str:
     return f'[{when}] ' + ' · '.join(str(x) for x in [label, kind, *f.values()] if x not in (None, '', False))
 
 
+class ReadOnlyTurnVoided(ValueError):
+    """D-EFF category A: a reviewer, gate or shadow turn changed the workspace; its verdict is never used."""
+    def __init__(self, message: str, restored: bool):
+        super().__init__(message)
+        self.restored = restored
+
+
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -1405,11 +1680,28 @@ class Coordinator:
         self.global_codex_home = Path(codex_home_text).expanduser().resolve()
         self.author_temp_dir = self.run_dir / 'author-tmp'
         self._probe_sandbox_commands = None
+        self._probe_env_names = None   # FIELD-10: set only while probe_passed() compares with the probe's own env-derived names
         self.rounds = self.run_dir / 'rounds'
         self.evidence = self.run_dir / 'evidence'
         self.context = self.run_dir / 'context'
         self.internal = self.run_dir / 'internal'
         self.state_path = self.run_dir / 'state.json'
+        requested = getattr(args, 'safety_mode', None)                   # --strict or the operator profile; None when neither names it
+        args.safety_mode = requested or DEFAULT_SAFETY_MODE
+        if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
+            saved_state = json.loads(self.state_path.read_text())
+            args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
+            if requested and requested != args.safety_mode:
+                probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
+                probe_only = (all(t.get('phase') in probe for t in saved_state.get('turns', []))
+                              and all((saved_state.get(key) or {}).get('phase', 'PROBE') in probe for key in ('active', 'uncertain_active')))
+                fixed = (f'safety_mode is fixed for this run: it was created {args.safety_mode} by its first command; '
+                         f'start a new run directory to use {requested}, or drop safety_mode from the --config profile')
+                if args.action not in ('run', 'resume', 'reject', 'permission-probe'): print(f'NOTE: {fixed}')   # dispatches no turn
+                elif not (requested == 'strict' and probe_only): raise ValueError(fixed)
+                else:
+                    saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
+                    atomic_json(self.state_path, saved_state)
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
@@ -1634,9 +1926,39 @@ class Coordinator:
             setattr(self.args, key, saved[key])
         return saved
 
+    @staticmethod
+    def _readonly_changed(workspace, recorded, before, after) -> bool:   # content (the coordinator's snapshot), HEAD, branch or index
+        if before != after: return True
+        if not recorded or 'error' in recorded: return False
+        try: return readonly_guard.moved(workspace, recorded)
+        except (OSError, RuntimeError, subprocess.SubprocessError): return True   # unknown: void it; the undo then verifies or holds
+
+    def _void_readonly_turn(self, role, receipt, workspace, recorded, keep, prefix, before) -> ReadOnlyTurnVoided:
+        """D-EFF category A (docs/efficient-mode.md §4a): save the change as evidence and undo it from the pre-turn record, only when
+        the undo verifies (HEAD, branch, index, worktree tree, and the coordinator's own snapshot); otherwise the run must hold."""
+        if not recorded or 'error' in recorded:
+            receipt['voided'] = {'restored': False, 'reason': (recorded or {}).get('error', 'no pre-turn record')}
+            return ReadOnlyTurnVoided(f'{role} mutated workspace; there is no verified pre-turn record to restore it from '
+                                      f'({receipt["voided"]["reason"]}); restore the workspace by hand', restored=False)
+        diff = prefix.with_suffix('.workspace-change.diff')
+        try:
+            readonly_guard.evidence(workspace, recorded, keep, diff)
+            why = readonly_guard.restore(workspace, recorded, keep)
+            if why is None and git_snapshot(workspace)[0] != before: why = 'the workspace snapshot still differs after the restore'
+        except Exception as exc: why = f'{type(exc).__name__}: {exc}'
+        receipt['voided'] = {'evidence': str(diff), 'restored': why is None, **({'restore_failure': why} if why else {})}
+        if why: return ReadOnlyTurnVoided(f'{role} mutated workspace and the coordinator could not restore it ({why}); '
+                                          f'restore it by hand, see {diff}', restored=False)
+        return ReadOnlyTurnVoided(f'{role} mutated workspace; the turn is void and the workspace was restored (evidence: {diff})', restored=True)
+
+    @property
+    def strict(self) -> bool:   # D-EFF: category C (probe gate, a holding evidence guard) as before; anything but 'efficient' is strict
+        return getattr(self.args, 'safety_mode', 'strict') != 'efficient'
+
     def _saved_config(self) -> dict:
         """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
-        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived', **self.state['config']}
+        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived',
+                'safety_mode': 'strict', **self.state['config']}   # D-EFF: a run saved before safety_mode is strict
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
@@ -1645,7 +1967,8 @@ class Coordinator:
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery')
+                'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
+                'safety_mode')
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         gate_prompt = Path(self.args.gate_prompt).expanduser()
@@ -1761,7 +2084,8 @@ class Coordinator:
             self.state['operator_programs'] = current
             self.save()
         elif frozen is not None and frozen != current:
-            issue = 'configured operator program or PATH changed since permission probe'
+            issue = ('configured operator program or PATH changed since permission probe (changed: '
+                     + ', '.join(sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))) + ')')   # FIELD-10: name it
         if issue and hold and self.state.get('status') != 'DONE': self.hold(issue)
         return current, issue
     def reviewer_flags(self) -> dict:
@@ -1887,11 +2211,41 @@ class Coordinator:
                        'or pass --accept-unverified-codex-cli --reason TEXT')
 
     def _claude_optin_current(self) -> bool:   # a recorded operator opt-in bound to the current author flags; a flags change voids it for good
+        if self._probe_env_names is not None:   # FIELD-10: inside probe_passed's env-name comparison, judge the opt-in in the current environment
+            saved, self._probe_env_names = self._probe_env_names, None
+            try: return self._claude_optin_current()
+            finally: self._probe_env_names = saved
         digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
         if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
-            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest}
+            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest,
+                               **self._void_cause(optin, {'author_flags_digest': self.author_flags_digest})}   # ENV-NAME: say why
             self.save()
         return optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided')
+
+    def _env_names_now(self) -> list[str]:   # ENV-NAME: the secret env-var names the Claude sandbox denies in this environment
+        return sorted(entry['name'] for entry in self._claude_sandbox_settings('author')['sandbox']['credentials']['envVars'])
+
+    def _under_env_names(self, names, compute):   # FIELD-10's comparison: evaluate with another env-name set, then restore
+        saved, self._probe_env_names = self._probe_env_names, set(names)
+        try: return compute()
+        finally: self._probe_env_names = saved
+
+    def _void_cause(self, record: dict, digests: dict) -> dict:
+        """ENV-NAME (docs/env-name-effects.md): why an operator acceptance stopped matching. Only the secret env-var names changed when
+        its recorded digests come back under the names recorded with it; the void itself is unchanged (owner decision D-ENV-1)."""
+        names = record.get('secret_env_names')
+        if not (isinstance(names, list) and all(isinstance(n, str) for n in names)): return {'cause': 'flags changed'}
+        if any(self._under_env_names(names, compute) != record.get(key) for key, compute in digests.items()): return {'cause': 'flags changed'}
+        now = set(self._env_names_now())
+        return {'cause': 'secret env-var names changed', 'names_added': sorted(now - set(names)), 'names_removed': sorted(set(names) - now)}
+
+    @staticmethod
+    def _void_text(record: dict) -> str:
+        voided = record.get('voided') if isinstance(record.get('voided'), dict) else {}
+        if 'cause' not in voided and isinstance(voided.get('reason'), str): return voided['reason']   # e.g. permission-probe re-run
+        if voided.get('cause') != 'secret env-var names changed': return 'flags changed'
+        return ('only the secret env-var names changed: added ' + (', '.join(voided.get('names_added') or []) or 'none')
+                + '; removed ' + (', '.join(voided.get('names_removed') or []) or 'none'))
 
     def _author_probe_waived(self, report: dict) -> bool:
         """HL-FIX: the opt-in waives only the Claude author probe: the report is UNKNOWN solely for the author's model-escape-unknown / refused
@@ -1916,11 +2270,12 @@ class Coordinator:
                 'author_permission_probe', {}).get('claude_author_status') == 'PASS'
         except (OSError, ValueError, AttributeError):
             probed = False
-        if probed and self.probe_passed()[0]: return True, ''
-        voided = '; the earlier operator opt-in is void (author flags changed)' if optin.get('voided') else ''
+        if probed and (passed := self.probe_passed())[0]: return True, ''
+        voided = f'; the earlier operator opt-in is void ({self._void_text(optin)})' if optin.get('voided') else ''
+        detail = ('; the recorded probe does not pass: ' + passed[1]) if probed else '; no Claude author probe PASS is recorded in permission-probe.json'   # FIELD-10
         return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
                        'author permission-probe passes (P0-3b) or the operator opts in with `run '
-                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided)
+                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided + detail)
 
     def _codex_sandbox_profile_args(self) -> list[str]:
         if not (verified := self.codex_contract_verified())[0]:
@@ -1963,10 +2318,9 @@ class Coordinator:
 
     def _claude_sandbox_settings(self, role: str) -> dict:
         """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
-        secret_names = {
+        secret_names = set(self._probe_env_names) if self._probe_env_names is not None else {
             name for name in os.environ
-            if re.search(r'(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|'
-                         r'(?:^|_)(?:KEY|PASS|PWD)(?:_|$))', name, re.I)
+            if SECRET_ENV_NAME.search(name)
         }
         secret_names.update({
             'ANTHROPIC_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
@@ -2009,6 +2363,27 @@ class Coordinator:
         return hashlib.sha256(raw).hexdigest()
 
     def probe_passed(self) -> tuple[bool, str]:
+        """FIELD-10: the credential env-name deny list follows each command's environment (every secret-looking name present is
+        denied), so it alone never voids a PASS: a flags/rules mismatch is re-checked once with the probe's own names; every other
+        input stays bound, and the real dispatch keeps the current names."""
+        ok, reason = self._probe_passed_once()
+        if ok or not (reason.endswith('flags do not match this run') or reason.endswith('Claude author rules do not match this run')):
+            return ok, reason
+        if (names := self._probe_report_env_names()) is None: return ok, reason
+        self._probe_env_names = names
+        try: again = self._probe_passed_once()
+        finally: self._probe_env_names = None
+        return (True, '') if again[0] else again   # the check that still fails once the env names are set aside
+
+    def _probe_report_env_names(self) -> Optional[set]:
+        try: report = json.loads((self.run_dir / 'permission-probe.json').read_bytes())
+        except (OSError, ValueError): return None
+        for key in ('reviewer_flags', 'author_flags', 'gate_flags'):
+            try: return {entry['name'] for entry in report[key]['claude_bash_sandbox']['sandbox']['credentials']['envVars']}
+            except (KeyError, TypeError): continue
+        return None
+
+    def _probe_passed_once(self) -> tuple[bool, str]:
         if (issue := self._program_state()[1]): return False, issue
         path = self.run_dir / 'permission-probe.json'
         if not path.exists():
@@ -2057,7 +2432,8 @@ class Coordinator:
         if not self._gate_probe_covered(): return False   # RF-1: also for an acceptance saved earlier
         acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest()}
         if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
-            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen}; self.save()
+            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen, **self._void_cause(acc, {   # ENV-NAME: say why
+                'reviewer_flags_digest': self.reviewer_flags_digest, 'author_flags_digest': self.author_flags_digest, 'gate_flags_digest': self.gate_flags_digest})}; self.save()
         return acc.get('actor') == 'operator' and not acc.get('voided') and all(acc.get(k) == v for k, v in seen.items())
 
     def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
@@ -2129,9 +2505,10 @@ class Coordinator:
     def _probe_negative_status(self) -> str:   # P0-4b H1: status of this run's current, bound report when it is not a PASS, else ''
         try:
             raw = (self.run_dir / 'permission-probe.json').read_bytes(); report = json.loads(raw)
+            same = lambda: (report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
+                            and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
             current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
-                       and report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
-                       and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
+                       and (same() or ((names := self._probe_report_env_names()) is not None and self._under_env_names(names, same))))   # ENV-NAME: FIELD-10's comparison
             return str(report.get('status')) if current and report.get('status') != 'PASS' and not self._author_probe_waived(report) else ''   # HL-FIX: the opted-in author part is not negative evidence
         except (OSError, ValueError, AttributeError): return ''
 
@@ -2139,6 +2516,8 @@ class Coordinator:
         passed, reason = self.probe_passed()
         if passed: return True, ''
         if self._probe_skip_accepted(): print('probe skipped by operator acceptance (--accept-probe-skip)'); return True, ''
+        if (acc := self.state.get('probe_skip_override') or {}).get('voided'):   # ENV-NAME: a voided acceptance is reported, not silent
+            reason += f'; the earlier --accept-probe-skip is void ({self._void_text(acc)}; pass --accept-probe-skip --reason TEXT again or run permission-probe)'
         if lifecycle_spine.fake_dispatch_guard(self.args): return False, reason       # the fake harness never touches the real cache
         reused, note = self._probe_cache_reuse()
         return (True, '') if reused else (False, reason + '; ' + note)
@@ -2948,6 +3327,8 @@ class Coordinator:
     def _progress_phase(self, role: str, phase: str) -> None:
         rounds = self.state.get(f'{phase.lower()}_rounds', 0) + (role == 'author')
         label = 'gate' if role == 'gate' else 'polish' if phase == 'POLISH' else f'{phase} r{rounds}'
+        if phase == 'PLAN' and role == 'author' and (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':
+            label = 'PLAN rewrite'   # FIELD-11b: the extra turn is no PLAN round
         if label != self._progress_label:
             self._progress_label = label
             self.progress('phase')
@@ -3144,6 +3525,7 @@ class Coordinator:
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
         if self.state.get('active'):
+            self._void_opv_unknown_turn(self.state['active'])
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
@@ -3859,6 +4241,10 @@ class Coordinator:
                     else 'Revise the plan to address the reviewer findings below. Return the complete replacement plan as body.')
             if self.args.exercise_revisions and first:
                 task += ' Exercise rule: omit a Verification section on this first draft only.'
+            if (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':   # FIELD-11b
+                task = ('Rewrite-only turn: return the approved plan as body with all review history removed (finding ids, '
+                        'references to earlier reviews, response-to-reviewer narrative). Do not change the scope, the steps, or '
+                        'the verification. This turn does not count as a PLAN round.')
             prior = self.state.get('delivered_review', '')
             return '\n'.join([
                 f'Role: persistent {self.args.author_vendor} plan author. Phase: PLAN.',
@@ -3971,6 +4357,14 @@ class Coordinator:
             exercise = 'Exercise rule: on this APPROVE include one non-blocking MINOR finding for polish.'
         if base_phase == 'PLAN':
             inline = ''
+            rewrite = self.state.get('plan_history_rewrite') or {}
+            if rewrite.get('status') == 'written':   # FIELD-11b: the reviewer decides whether the rewrite changed anything in substance
+                approved = self.run_dir / f"plan-{rewrite['approved_plan_round']:02d}.md"
+                exercise = (exercise + '\n' if exercise else '') + (
+                    'Rewrite-only re-review: you approved the previous plan; this version is meant to differ only by the removal of '
+                    'review history (finding ids, references to earlier reviews). APPROVE only if it is the same plan in substance; '
+                    'return REVISE if the scope, steps, or verification changed.\n## Previously approved plan\n'
+                    + (approved.read_text() if approved.is_file() else '(unavailable)'))
             if self._role_vendor(role) == 'codex':
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
                           '## Work item content\n' + (self.context / 'workitem.md').read_text() +
@@ -4045,6 +4439,16 @@ class Coordinator:
         spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
+    def _plan_history_issue(self) -> Optional[str]:
+        """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval."""
+        for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
+            text = path.read_text() if path.is_file() else ''
+            if ids := sorted(set(LEDGER_ID_RE.findall(text))):
+                return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
+            if match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):   # as the gate scan
+                return f'{label}: review-history wording {match.group(0)!r}'
+        return None
+
     def assert_fresh_prompt(self, role: str, prompt: str) -> None:
         if role not in ('shadow', 'gate'):
             return
@@ -4070,13 +4474,7 @@ class Coordinator:
                         for p in sorted(self.context.iterdir()) if p.is_file()})
         if role == 'gate':
             sources['gate-template'] = Path(self.args.gate_prompt).read_text()
-        # Ledger ids are upper-case F###; the scan is case-insensitive elsewhere, so scope that
-        # alternative to upper case or an identifier such as `f720` (a 720p frame) trips it.
-        history = re.compile(
-            r'\b(?-i:F\d{3,})\b|\bprior_findings\b|Open finding ledger|Delivered (?:plan )?review:'
-            r'|response[ -]to[ -](?:reviewer|review|F\d+)'
-            r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
-            r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
+        history = FRESH_HISTORY_RE
         checked = {}
         for name, content in sources.items():
             # Role/rubric instructions in prompts/templates are not prior verdicts.
@@ -4372,29 +4770,68 @@ class Coordinator:
         except (OSError, ValueError, NotImplementedError) as exc:   # R1 LOW-3: a platform without a no-follow primitive also fails closed
             raise RuntimeError(f'cannot remove the read-only role scratch {root}: {exc}; remove it by hand, then resume') from exc
 
+    def _void_opv_unknown_turn(self, turn: dict) -> None:
+        """v2.9.7 OPV: an author turn in this workspace that became uncertain (cut off with the coordinator, e.g. a hard kill,
+        found by resume, run, permission-probe, abort or any hold) left an unknown tree."""
+        if turn.get('role') == 'author' and turn.get('workspace') == str(self.workspace):
+            opv.void_stale(self, None, atomic_json)
+
+    def _void_opv_observed(self, seq0: int, failed: bool = False) -> None:
+        """OPV (v2.9.7): void on every tree the coordinator observed in the author turns after seq0 (start and end snapshot of
+        each recorded turn; a missing end snapshot is an unknown tree), and on an unknown tree when a failed turn's child ran
+        but left no recorded turn (an interrupted or uncertain dispatch)."""
+        if not self.state.get('operator_verifications'): return
+        turns = [t for t in self.state.get('turns', []) if t.get('sequence', 0) > seq0 and t.get('role') == 'author']
+        for turn in turns:
+            opv.void_stale(self, turn.get('snapshot_before'), atomic_json)
+            opv.void_stale(self, turn.get('snapshot_after'), atomic_json)
+        if failed and not turns and (self.state.get('active') or self.state.get('uncertain_active')):
+            opv.void_stale(self, None, atomic_json)
+
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
+        redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
-            scratch = self._scratch_root(role)
-            overrides = {**(env_overrides or {}), **{key: str(scratch) for key in ('TMPDIR', 'TMP', 'TEMP')}} if scratch else env_overrides
+            seq0 = self.state['sequence']
             try:
-                result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
-                    role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, overrides))
-            except BaseException:
-                if scratch:   # also after a failed turn, without hiding its error (a leftover is retried at the next dispatch)
+                while True:   # a void read-only turn whose change was undone is re-dispatched once, told why
+                    scratch = self._scratch_root(role)   # b295-f1: a fresh scratch root for each dispatch, re-dispatch included
+                    overrides = ({**(env_overrides or {}), **{key: str(scratch) for key in ('TMPDIR', 'TMP', 'TEMP')}}
+                                 if scratch else env_overrides)
                     try:
-                        self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
+                        result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
+                            role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, overrides))
+                    except BaseException as exc:
+                        if scratch:   # also after a failed turn, without hiding its error (a leftover is retried at the next dispatch)
+                            try:
+                                self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
+                                self._drop_scratch(scratch)
+                            except RuntimeError: pass
+                        if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
+                                and exc.__cause__.restored): raise
+                        if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
+                                                            f'restored ({exc})') from exc
+                        redispatched = True
+                        turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
+                                        'answer was discarded and the workspace was restored. Review the current tree again without '
+                                        'creating, editing, staging, committing or deleting anything.')
+                        print(f'NOTE: {exc}; re-dispatching the {role} turn once')
+                        continue
+                    if scratch:   # an uncertain turn's root is dropped on archive or at the next dispatch
+                        self._stop_turn_group(result['sequence'])
                         self._drop_scratch(scratch)
-                    except RuntimeError: pass
+                    break
+            except BaseException:
+                if role == 'author' and workspace_override is None:   # v2.9.7: a failed author turn may have changed the tree
+                    try: self._void_opv_observed(seq0, failed=True)
+                    except Exception: pass   # the turn's failure is the error to report; void_stale marks the row before it writes, so only a failed evidence write can leave it current on disk until the next save
                 raise
-            if scratch:   # an uncertain turn's root is dropped on archive or at the next dispatch
-                self._stop_turn_group(result['sequence'])
-                self._drop_scratch(scratch)
             if role not in ('reviewer', 'shadow', 'gate'):
                 if role == 'author' and workspace_override is None:   # a probe or candidate turn in another tree leaves the workspace alone
+                    self._void_opv_observed(seq0)
                     opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
                 return result
             answer = result['answer']
@@ -4480,6 +4917,11 @@ class Coordinator:
         control_dirs, control_before = git_control_state(snapshot_workspace) if role == 'author' else ([], {})
         if bad := control_before.get('!unreadable') or next((v for v in control_before.values() if v.startswith('UNAVAILABLE')), None): raise RuntimeError('git control state unreadable: ' + bad)   # no further git call in a workspace whose config cannot be read
         before, manifest = git_snapshot(snapshot_workspace)
+        recorded, keep = None, self.internal / 'readonly' / f'{seq:03d}-{role}'   # D-EFF category A, both modes
+        if role in ('reviewer', 'gate', 'shadow') and not allow_mutation_report:
+            try: recorded = readonly_guard.capture(snapshot_workspace, keep)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc: recorded = {'error': f'{type(exc).__name__}: {exc}'}
+        head_before = git_head_state(snapshot_workspace) if role == 'author' else None   # D-EFF git guard (category B), both modes
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh, active_workspace)
@@ -4626,6 +5068,11 @@ class Coordinator:
             atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
         try:
             if control_problem: raise ValueError(control_problem)
+            if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
+                raise ValueError('author changed HEAD or the branch: a commit, reset or checkout is not allowed in a paired-session run')
+            voided = None   # D-EFF category A: undo first, so a failed or rejected read-only turn is undone too; raised after the other checks
+            if role != 'author' and not allow_mutation_report and self._readonly_changed(snapshot_workspace, recorded, before, after):
+                voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
             if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR'):   # b295-f1: listed in the receipt before it is removed
                 receipt['scratch_entries'], linked = scratch_listing(Path(env_overrides['TMPDIR']))
                 if linked:   # a hard link there could write through to a run-dir file on the same volume
@@ -4680,15 +5127,25 @@ class Coordinator:
             receipt['observed_tool_calls'] = tool_calls
             receipt['observed_commands'] = observed_commands
             answer['observed_commands'] = observed_commands
-            forbidden = sensitive_access(tool_calls, role, self.evidence, self.rounds)
-            if forbidden:
+            fallbacks, guard_calls, guard_cwd, proven = [], tool_calls, active_workspace, None
+            if receipt['vendor'] == 'codex':   # its events carry no workdir: only the rollout's own record proves one (v297-eg-cwd)
+                guard_calls, guard_cwd, proven = codex_guard_calls(tool_calls, codex_rollout_cwds(
+                    session, receipt['start'], receipt['end'], (self.workspace, active_workspace, self.author_temp_dir)))
+            forbidden = sensitive_access(guard_calls, role, self.evidence, self.rounds, guard_cwd,   # configured bytes: CLI commands only
+                                         env, (self.workspace, active_workspace, self.author_temp_dir),
+                                         (self.args.test_command, *self.args.reviewer_command), fallbacks)
+            receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20],   # v297-eg-wire: substring-guard calls
+                                         **({'codex_cwd_proven': proven} if proven is not None else {})}
+            if forbidden and self.strict:
                 raise ValueError(f'{role} accessed isolated {forbidden}')
+            if forbidden: receipt['evidence_guard']['would_hold'] = f'{role} accessed isolated {forbidden}'   # D-EFF efficient: log-only
             if context_before != context_after:
                 raise ValueError(f'{role} mutated coordinator context outside workspace')
             if role == 'author' and phase == 'PLAN' and before != after:
                 raise ValueError('author mutated workspace during PLAN')
-            if role != 'author' and before != after and not allow_mutation_report:
-                raise ValueError(f'{role} mutated workspace')
+            if voided is not None:
+                raise voided
+            if recorded is not None: shutil.rmtree(keep, ignore_errors=True)   # a clean read-only turn needs no undo record
             if role != 'author':
                 answer['reviewed_snapshot'] = before
             if receipt['model_identity'] == 'MISMATCH':
@@ -4760,6 +5217,10 @@ class Coordinator:
                   self.invoke('author', phase, self._author_prompt(), author_schema()))
         self.render(result, 'implementer', phase)
         answer = result['answer']
+        rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
+        rewriting = bool(rewrite) and rewrite.get('status') == 'requested'   # FIELD-11b: the extra turn is no PLAN round
+        if rewriting and result['sequence'] not in rewrite.setdefault('attempt_sequences', []):
+            rewrite['attempt_sequences'].append(result['sequence'])           # every try is audited; the chance itself stays one
         if answer['status'] == 'HOLD':
             self.hold('implementer: ' + answer['body'])
             return
@@ -4773,11 +5234,17 @@ class Coordinator:
             atomic_json(Path(rejection['evidence']), rejection)
             self.state.pop('pending_rejection_id', None)
         key = f'{phase.lower()}_rounds'
-        self.state[key] += 1
+        if not rewriting: self.state[key] += 1
         if phase == 'PLAN':
             atomic_text(self.run_dir / 'plan.md', answer['body'].rstrip() + '\n')
-            atomic_text(self.run_dir / f"plan-{self.state[key]:02d}.md", answer['body'].rstrip() + '\n')
+            atomic_text(self.run_dir / ('plan-rewrite.md' if rewriting else f"plan-{self.state[key]:02d}.md"), answer['body'].rstrip() + '\n')
             atomic_text(self.context / 'plan.md', answer['body'].rstrip() + '\n')
+        if rewriting:
+            rewrite.update(status='written', author_sequence=result['sequence'],
+                           plan_sha256=hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest())
+            for receipt in self.state['turns']:
+                if receipt.get('sequence') == result['sequence']: receipt['plan_rewrite'] = True   # the audit trail names the extra turn
+            self.progress('plan_rewrite', status='written', sequence=result['sequence'])
         self.state['delivered_review'] = ''
         self.state['next'] = 'reviewer'
         self.state.pop('pending_author_result_sequence', None)
@@ -4812,9 +5279,13 @@ class Coordinator:
                          if turn.get('role') == 'author' and turn.get('phase') == phase and not turn.get('error')
                          and not turn.get('discarded')
                          and turn.get('sequence', 0) > base['sequence'] and isinstance(turn.get('answer'), dict)), None)
-        result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
-                   'role': 'author'} if recorded else
-                  self.invoke('author', phase, prompt(), author_schema(), fresh=True))
+        try:
+            result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
+                       'role': 'author'} if recorded else
+                      self.invoke('author', phase, prompt(), author_schema(), fresh=True))
+        except RuntimeError:   # INT-2b: D-EFF's author HEAD guard (or any failure) first: the W writer guard still names a git change
+            check_git()        # and discards the turn; otherwise the original error stands
+            raise
         check_git()
         return result
 
@@ -5371,6 +5842,9 @@ class Coordinator:
             self.polish_reviewer_turn()
             return
         phase = self.state['phase']
+        failed = (self.state.get('plan_history_rewrite') or {}) if phase == 'PLAN' else {}
+        if failed.get('status') == 'failed':   # FIELD-11b: a resume does not draw a new reviewer to get past a failed rewrite
+            return self.hold(failed['hold_reason'])
         result = self._recorded_reviewer_result(phase)
         if result is None:
             self.materialize_review_context()
@@ -5465,8 +5939,16 @@ class Coordinator:
             self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
             for receipt in self.state.get('turns', []):
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
-        effective_verdict = 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
-        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal))
+        plan_history = (self._plan_history_issue() if phase == 'PLAN' and answer['status'] == 'APPROVE'
+                        and ('on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject'))
+                        else None)   # only when a fresh role (shadow, gate, or a gate forced by an operator note) will scan
+        if plan_history:   # FIELD-11: the fresh shadow/gate would refuse this plan after EXEC; refuse the approval now, recorded like RF-5
+            refusal = 'PLAN APPROVE rejected: ' + plan_history
+            self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
+            for receipt in self.state.get('turns', []):
+                if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
+        effective_verdict = 'REVISE' if plan_history else 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
+        self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal) and not plan_history)
         new_blocking = [row for row in new_rows if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
         structural = (self._structural_block_hold('reviewer', result['sequence'], new_blocking)   # FIELD-5: only NEW blockers form a BLOCK
                       if phase == 'EXEC' and answer['status'] == 'REVISE' and new_blocking else None)
@@ -5496,6 +5978,15 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
             return
+        rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
+        if rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status']):
+            # FIELD-11b: the reviewer's own REVISE counts, even if advisory_exit or out-of-phase findings turned it into APPROVE
+            reason = ('the rewrite-only PLAN turn was not approved by the PLAN reviewer (the plan changed in substance or has '
+                      'findings); abort and start a new run')
+            rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history='PLAN reviewer REVISE', hold_reason=reason)
+            self.state['pending_reviewer_result_sequence'] = None
+            self.hold(reason)
+            return
         if answer['status'] == 'REVISE':
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
@@ -5519,7 +6010,42 @@ class Coordinator:
                 self.state['pending_reviewer_result_sequence'] = None
                 self._structural_hold(structural)
                 return
+        elif plan_history:
+            # FIELD-11: the fresh shadow and gate refuse review history in their inputs (assert_fresh_prompt, unchanged);
+            # ask for the restatement now instead of failing at the gate after EXEC.
+            rewrite = self.state.get('plan_history_rewrite')
+            last_round = self.state['plan_rounds'] >= limit
+            replay = bool(rewrite) and rewrite.get('requested_sequence') == result['sequence']   # this approval, seen again after a crash
+            if plan_history.startswith('work item') or (last_round and rewrite and not replay):
+                reason = (f'approved plan input carries review history ({plan_history}); the independent shadow and gate '
+                          'refuse it' + ('' if plan_history.startswith('work item') else
+                                         ', and the one rewrite-only PLAN turn did not remove it' if rewrite else
+                                         ', and no PLAN round is left to restate it') + '; abort and start a new run')
+                if rewrite and not replay: rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history=plan_history, hold_reason=reason)
+                self.state['pending_reviewer_result_sequence'] = None
+                self.hold(reason)
+                return
+            if last_round:   # FIELD-11b (owner 2026-10-04): one extra rewrite-only author turn, outside the PLAN round cap
+                self.state['plan_history_rewrite'] = {
+                    'status': 'requested', 'requested_sequence': result['sequence'], 'history': plan_history,
+                    'approved_plan_round': self.state['plan_rounds'], 'approved_plan_sha256': hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest()}
+                self.progress('plan_rewrite', status='requested', history=plan_history[:120])
+                self.state['delivered_review'] = (
+                    f'Rewrite-only turn. The reviewer approved the plan in the last PLAN round, but it carries review history '
+                    f'({plan_history}), which the independent shadow and gate refuse. Return the same plan with every finding id '
+                    'and every reference to earlier reviews removed. Do not change the scope, the steps, or the verification; '
+                    'change nothing else. This turn does not count as a PLAN round. The plan is reviewed again; if it still '
+                    'carries review history or differs in substance, the run holds.')
+            else:
+                self.state['delivered_review'] = (
+                    f'The reviewer approved the plan, but it carries review history ({plan_history}). The independent shadow '
+                    'and gate refuse a plan that carries review history. Return the same plan with every finding id and every '
+                    'reference to earlier reviews removed; change nothing else.')
+            self.state['next'] = 'author'
         elif phase == 'PLAN':
+            if rewrite and rewrite.get('status') == 'written':
+                rewrite.update(status='passed', passed_sequence=result['sequence'])
+                self.progress('plan_rewrite', status='passed')
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')
@@ -5825,7 +6351,7 @@ class Coordinator:
         real_context, base, tmp, dirs, gone = self.context, None, None, [], lambda p: not (p.exists() or p.is_symlink())
         try:
             # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
-            base = Path(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir.parent)).resolve()
+            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.run_dir.parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
             for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
             (ws / 'tracked.txt').write_text('probe baseline\n')
@@ -5875,6 +6401,8 @@ class Coordinator:
             allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')} | cap.cli_created_dirs(ws, first, second)      # the positive control and the prescribed link creations; the CLI's own empty .claude/.cc-writes (CG-6)
             escaped += [k for k in baseline.keys() | first.keys() | second.keys()
                         if k not in allowed and not baseline.get(k) == first.get(k) == second.get(k)] + ([] if unchanged else [str(sentinel)])
+            if (lock := getattr(self.args, '_probe_lock', None)) is not None and not lock.intact():   # FIELD-13: no role may write the lock dir
+                escaped.append(str(lock.path)); reason = reason or 'probe-lock-tampered'
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
@@ -6216,7 +6744,9 @@ class Coordinator:
         if not any(row.get('command', '').strip() == allowed_command for row in evidence):
             failures.append('not-attempted: ' + allowed_command)
         elif not allowed:
-            failures.append('allowed-command-failed: ' + allowed_command)
+            timeout = tool_timeout_seconds(allowed_matches)   # FIELD-12: a CLI tool timeout is not an ordinary failure
+            failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}' if timeout is not None
+                            else 'allowed-command-failed: ' + allowed_command)
         for command in attempts:
             matches = [row for row in evidence if row.get('command', '').strip() == command]
             if not matches:
@@ -6539,10 +7069,10 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
-        if self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.claude_author_verified())[0]:
             raise ValueError(ok[1])
         return self._drive_loop()
@@ -7378,6 +7908,7 @@ class Coordinator:
         if self.state.get('active'):
             self.state['uncertain_active'] = self.state['active']
             self.state['active'] = None
+            self._void_opv_unknown_turn(self.state['uncertain_active'])
             if not retry_uncertain:
                 return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
             self.save()
@@ -7594,6 +8125,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
+    p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
+                   help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
@@ -7671,6 +8204,7 @@ CONFIGURABLE_DESTS = {
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
+    'safety_mode',
 }
 
 
@@ -7802,6 +8336,8 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     unknown = (set(values) - CONFIGURABLE_DESTS) | {k for k in values if k in OPERATOR_ONLY_DESTS or k.startswith('accept_')}
     if unknown:
         raise ValueError('unsupported paired-session config keys: ' + ', '.join(sorted(unknown)))
+    if 'safety_mode' in values and (not known.config or values['safety_mode'] not in ('efficient', 'strict')):   # D-EFF
+        raise ValueError('safety_mode is set only by --strict or an operator --config profile (efficient or strict), never by the workspace config')
     explicit = set()
     for action in p._actions:
         if action.dest in CONFIGURABLE_DESTS and any(
@@ -7883,15 +8419,17 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
-    if (args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state
+    if (co.strict and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
             co.state['claude_author_override'] = {
                 'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
-                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
             co.save()
         if not (claude_ok := co.claude_author_verified())[0]:
             return co.refused(claude_ok[1])
+    if not co.strict and (args.accept_probe_skip or args.accept_unverified_codex_cli or args.accept_unverified_claude_author):
+        print('NOTE: an efficient-mode run needs no probe waiver; the --accept-* flag is not recorded')   # D-EFF
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -7918,7 +8456,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+    if (co.strict and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
@@ -7927,14 +8465,14 @@ def _execute_locked(args: argparse.Namespace) -> int:
             co.save()
         if not (verified := co.codex_contract_verified())[0]:
             return co.refused(verified[1])
-    if args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):
+    if co.strict and args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):   # D-EFF: a probe waiver matters in strict only
         if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
             return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
         if not co._gate_probe_covered():
             return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
-        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}; co.save()
+        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}; co.save()
     if args.action == 'reject':
-        if not args.skip_probe:
+        if co.strict and not args.skip_probe:   # D-EFF efficient: no permission probe is required
             passed, reason = co.probe_gate()
             if not passed:
                 return co.refused(reason + '; run permission-probe before continuing')
@@ -7951,11 +8489,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
                      and before_config and (co.run_dir / 'permission-probe.json').exists()
                      and global_config_snapshot(co.global_config_home, co.global_codex_home).get(
                          'codex_config', {}).get('sha256') != before_config)
-    if args.action in ('run', 'resume') and not args.skip_probe:
+    if co.strict and args.action in ('run', 'resume') and not args.skip_probe:
         passed, reason = co.probe_gate()
         if not passed and not changed_codex:
             return co.refused(reason + '; run permission-probe before continuing')
-    co._probe_gate_required = not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
+    co._probe_gate_required = co.strict and not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
         if co.state.get('status') in ('ACCEPTED', 'CLOSED'):
             print(co.state['status'])
@@ -8015,10 +8553,10 @@ def main(argv=None) -> int:
         return 2
     if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
             and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
-            and not restores_run(args):
+            and not restores_run(args) and (args.safety_mode or DEFAULT_SAFETY_MODE) == 'strict':   # D-EFF: a new run's probe gate (C)
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
-              '--reason TEXT` (permission-probe does not take the flag)')
+              '--reason TEXT` (permission-probe does not take the flag); no run state exists yet, so run permission-probe first')   # FIELD-10
         return 2
     if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
             and (hint := dontask_command_hint([args.test_command, *args.reviewer_command]))):
@@ -8051,10 +8589,18 @@ def main(argv=None) -> int:
         except ValueError as exc:
             print('REFUSED: ' + str(exc))
             return 2
+        try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text())
+        except (OSError, ValueError): workitem_commands = []                    # the coordinator reports an unreadable work item itself
+        saved = _saved_configured_commands(run_dir) if args.action in ('run', 'resume') and restores_run(args) else []   # they dispatch turns
+        if issue := configured_command_issue(workspace, run_dir, [args.test_command, *args.reviewer_command, *workitem_commands, *saved]):
+            print('REFUSED: ' + issue)                                           # v297-eg-wire: before any model turn
+            return 2
     if args.action == 'status' and args.brief is not None:
         return status_brief(run_dir, args.brief)
     try:
-        with run_lease(Path(args.run_dir)):
+        with ProbeParentLock(args, workspace, run_dir) as probe_lock, run_lease(Path(args.run_dir)):   # FIELD-13: the parent lock first
+            probe_lock.after_mkdir()
+            args._probe_lock = probe_lock if probe_lock.whole else None
             if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)

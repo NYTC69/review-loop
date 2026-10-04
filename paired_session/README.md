@@ -1,9 +1,10 @@
 # Paired-session coordinator
 
 This is the tracked implementation of the paired-session workflow. Its stable
-repository-local entry point is `bin/paired-session`. The current rollout is
-still staged: the legacy `/review-loop` entry remains the default until the
-paired-session command, recovery path, and migration guide have been reviewed.
+repository-local entry point is `bin/paired-session`. From v2.10.0, a fresh
+`/review-loop` request without an `entry` key hands off to this coordinator through
+the paired-session skill (the default entry, `docs/v2.10-entry-switch.md`);
+`entry: legacy` or `/review-loop:legacy` keeps the legacy workflow.
 
 The coordinator runs one author and reviewer through PLAN/EXEC, then applies
 fresh shadow/adversarial checks and a delivery sequence. It owns isolated run
@@ -57,6 +58,19 @@ Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
 
+The fresh shadow and gate must not see review history: before launch they refuse
+any input that carries reviewer ledger ids (`F` plus three or more digits) or
+review narratives (for example "previous review" or "response to reviewer"),
+including `context/plan.md` and `context/workitem.md`. When a shadow or gate is
+on, a plan that the reviewer approves while it still carries ledger ids or such
+wording is sent back to the author for a restatement without them, so the gate
+does not refuse it after EXEC. With no PLAN round left, the author gets one extra
+rewrite-only turn that does not count as a PLAN round; the PLAN reviewer then
+reviews the rewrite against the plan it approved, and the run holds at PLAN if
+the history is still there or the plan changed in substance. Vendor names and other gate-scan triggers in the plan are still found
+only at the shadow or gate. The work item is never rewritten: a work item with
+`F001`-style identifiers or review narratives holds at PLAN, so keep them out.
+
 ## Local marketplace installs
 
 Installing a plugin from a local directory marketplace copies the whole directory,
@@ -78,7 +92,13 @@ A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
 one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
 `;`, `&&`, redirection or loops can be refused before it runs; `run` and a new
 `permission-probe` print a warning for such a command. Put it in a script and
-configure `/bin/bash /absolute/path/to/script.sh`.
+configure `/bin/bash /absolute/path/to/script.sh`. When the probe's run of the
+test command hits the Claude CLI's own Bash timeout (set per call, at most 10
+minutes by default), the probe fails with `allowed-command-timeout (<N> s)`
+instead of `allowed-command-failed` (a Codex reviewer's command timeout is still
+reported as `allowed-command-failed`);
+re-run the probe on a less loaded host, or configure a faster test command (the
+same one for probe and run).
 Write launcher logs (for example `permission-probe ... > probe.log`) outside the
 run dir's parent: the Claude author probe watches the entries beside the run dir,
 and a log that grows there during the probe fails it as a file changed outside
@@ -92,12 +112,21 @@ workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
 so a worktree-lifecycle run keeps its `CHANGELOG.md` default. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
-settings, but program/role/test-command keys there cause HOLD when that profile
-is selected. `--config` replaces the workspace profile; copy any desired limits
+settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
+when that profile is selected, before any run state is created; `permission-probe`
+reports them in its result instead, and an existing run that later finds such keys
+holds. `--config` replaces the workspace profile; copy any desired limits
 into the external profile because the two files are not layered. The CLI loads the selected profile for run, probe,
 and resume; explicit CLI options override it. On resume, effective settings
 must still match the saved run configuration. A changed binary or PATH requires
-a fresh permission probe before the run can continue.
+a fresh permission probe before the run can continue; the refusal names what
+changed (for example `changed: path_env`), so run `reject`, `resume` and `accept`
+from the same shell setup as the probe. The names of secret-looking environment
+variables (for example a `*_TOKEN` set by an agent session) do not void a recorded
+permission-probe PASS: the Claude credential deny list always follows the current
+environment. They still bind an operator opt-in, an accepted probe skip, the
+probe-pass cache key and a lifecycle-on role manifest. A Claude-author refusal
+also names the failing probe check.
 Role models are operator-set (ADR-9): a role without `--author-model`,
 `--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
 (Claude: `claude-opus-5-5`; Codex: `gpt-6.1-sol`). Before run state is created,
@@ -553,8 +582,12 @@ EXEC and POLISH reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
 operator-verified evidence for this exact tree. It is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the
-log copy changes; the snapshot covers tracked and untracked non-ignored files,
-so a change to an ignored file does not void it. The persistent reviewer, whose
+log copy changes. Every tree the coordinator observes in an author turn counts,
+also when the turn fails: its start and end snapshots, and an unknown tree when
+the CLI ran but no end snapshot exists (also after the coordinator itself was
+killed during an author turn: the next command that finds the interrupted turn
+voids it). The snapshot covers tracked
+and untracked non-ignored files, so a change to an ignored file does not void it. The persistent reviewer, whose
 thread saw a record, is told in its next prompt that it was withdrawn (id and
 reason only). `accept` lists the records still current for the accepted tree in
 `acceptance.json` and on stdout. Attaching is refused while a turn is active, on
@@ -593,7 +626,7 @@ Each run directory belongs to one task and must not be shared between tasks.
 
 The workflow still needs the remaining productization and protocol batches
 listed in the repository backlog. The legacy implementation remains available
-as a comparison path during staged migration.
+through `entry: legacy` and `/review-loop:legacy`.
 
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
 protocol transitions and permissions-command construction; the runtime

@@ -69,10 +69,11 @@ surface as `Unrecognized command` in Codex. Use natural language:
 | Resume an approved plan | "resume review-loop session `<uuid>`" |
 | Review-only pass on the working tree | "review the pending changes" |
 | Show review-loop's command surface | "show review-loop guide" |
-| Paired-session work item (explicit opt-in during migration) | "use paired-session for this task" |
+| Paired-session work item (the default review-loop entry from v2.10.0; explicit request) | "use paired-session for this task" |
+| Legacy review-loop workflow | "use the legacy review-loop workflow" |
 
 Stage 1 exposes five skills under `.agents/skills/`:
-`review-loop` (legacy umbrella), `plan`, `execute`, `guide`, and
+`review-loop` (umbrella; hands fresh work to paired-session by default from v2.10.0), `plan`, `execute`, `guide`, and
 `paired-session`. Both `plan` and
 `execute` share `.review-loop/config.md` and `.review-loop/sessions/`
 with the Claude Code path, so a session started under one runtime can be
@@ -81,8 +82,10 @@ resumed under the other.
 Paired-session reads non-program defaults from the optional workspace
 `.review-loop/paired-session.json`. Keep role, vendor, program and test-command
 settings in an operator-owned profile outside the workspace and run directory,
-and pass it with `--config` to both probe and run. This replaces the workspace
-profile, so copy any desired non-program limits into it. Coordinator state stays
+and pass it with `--config` to both probe and run. The skill uses
+`~/.config/review-loop/paired-session.json` when it exists and no other profile
+is named. This replaces the workspace profile, so copy any desired non-program
+limits into it. Coordinator state stays
 outside the workspace under `$CODEX_HOME/state/paired-session/`.
 
 ## Verification
@@ -117,8 +120,9 @@ session state but install through different package managers.
 The top-level `skills/` tree (with `review-pr`, `code-quality-loop`,
 `reorganize`, …) dispatches via Claude's Agent tool and is intentionally
 **not** exposed to Codex. The five `.agents/skills/` entries are the
-Stage 1 Codex surface. Paired-session is an explicit path in both runtimes;
-the familiar legacy `/review-loop` routing remains unchanged in this batch.
+Stage 1 Codex surface. From v2.10.0, paired-session is the default
+review-loop entry in both runtimes; `entry: legacy` or an explicit legacy request
+keeps the legacy workflow.
 
 There is also a fallback wrapper at `~/.codex/skills/review-loop/SKILL.md`
 that some users symlink for the legacy "skills only, no marketplace"

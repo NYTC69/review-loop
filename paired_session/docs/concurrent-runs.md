@@ -89,6 +89,53 @@ Source anchors: `Coordinator.__init__`, `probe_passed`, `_probe_cache_key`,
 `_invoke_once` in `../coordinator.py`, and `inspect` in
 `../codex_capability_guard.py`.
 
+## Concurrent permission probes (FIELD-13)
+
+The Claude author probe (`_claude_author_probe` in `../coordinator.py`) creates its
+probe tree `paired-session-claude-probe-tree-*` beside the run dir, in the run dir's
+parent. It judges writes outside its own tree by comparing listings (`listing` in
+`../claude_author_probe.py`) of every entry in that parent except its own tree and
+its own run dir, plus every `/tmp/paired-session-author-probe-*` name. Entries in the
+parent are listed without descending into them and with directory mtimes ignored,
+so writes inside another run dir are not seen; an entry that is created, removed,
+replaced or (for a file) modified there is.
+
+Since v2.9.7 concurrent commands do not fail each other through this listing as
+long as all of them run v2.9.7 or later (design: `field13-concurrent-probes.md`):
+- The tree name is outside the `/tmp` probe glob, so a run dir directly in `/tmp`
+  no longer exposes its tree to every probe on the host.
+- `main` takes one lock per run-dir parent (`ProbeParentLock`, under
+  `/tmp/paired-session-probe-locks-<uid>/`) before the run lease. A `permission-probe`
+  whose saved or given author vendor is Claude holds it for the whole command; any
+  command on a run dir that does not exist yet holds it until the run dir is made
+  (when the parent is missing too, on the nearest existing ancestor). Another such
+  command in the same parent waits, printing `waiting for the probe lock ...` on
+  stderr, and after its bound ends with `REFUSED: another command holds the probe
+  lock ...` before it writes state or supersedes a report (and before it creates
+  its run dir, unless the parent was missing too: then an empty run dir stays).
+- The lock never excuses a listing difference. A probe whose lock file is unlinked
+  or replaced during its window fails with `probe-lock-tampered`.
+
+Still not covered, so still a FAIL beside the run dir: an operator file in the
+parent that changes during the window (for example a launcher log), a command on an
+existing run dir that writes beside it (only fresh run dirs and Claude-author
+permission probes take the lock; the fake-lifecycle test harness makes
+`paired-session-tree-*` and `paired-session-git-*` scratch there), a coordinator
+older than v2.9.7, and a run dir whose parent is `/tmp`, the home directory or the
+temporary directory: a Codex author probe makes scratch directories there
+(`ps-escape-*` in `/tmp`, `.paired-session-escape-*` in the home directory,
+`paired-session-external-*` in the temporary directory), and any other activity
+there counts too. On macOS any process of this user that can read the lock file
+can delay probes in that parent by holding an `flock` on it (availability only).
+Keep launcher logs and other operator files out of the run dir's parent.
+
+Two other names are not concurrency noise. A `.paired-session-os-probe-*` entry in
+the parent is a Claude reviewer or gate OS-denial target (`_claude_os_probe_path`),
+and a `/tmp/paired-session-author-probe-*.txt` file is an author probe's `/tmp`
+escape target (Claude or Codex); both exist only when that write got past the
+sandbox. If either appears in a report, treat it as a possible escape by the other
+run and check both runs' probe reports.
+
 ## Validation boundary
 
 Offline fixtures can show that a combined A+B trust append is rejected when only

@@ -20,6 +20,12 @@
 
 **Rule**: do not trim or restructure README.md without first updating both the `guide` skill and the lint contract to point their needles at the new SSOT (e.g. the migrated blocks in CLAUDE.md). The `## Migrated —` blocks are intentional duplication, not a cleanup target.
 
+### This repository pins `entry: legacy`
+
+`.review-loop/config.md` sets `entry: legacy`. Owner rule (2026-10-03): review-loop itself is not developed through paired-session; a paired-session run on this repository uses only a pinned copy (`~/paired-runs/review-loop-v<version>`) with an external `--config` and a separate clone. v2.10.0 is planned to route a fresh `/review-loop` (Claude) or review-loop request (Codex) with no `entry` key to paired-session (`paired_session/docs/v2.10-entry-switch.md`, E-10), so the key keeps this repository on legacy.
+
+**Rule**: do not remove the key or set it to `paired-session` in this repository.
+
 ### Plugin cache & version bump
 
 - `plugin.json` and `marketplace.json` version **must** be bumped with **every single push** that changes any file. Without a version bump, `plugin update` thinks cache is current and won't pull new files. This includes "just documentation" or "just guide" changes — ANY change requires a bump.
