@@ -5,16 +5,19 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 from datetime import datetime, timezone
 import uuid
 
 
 def readonly_profile(args):
-    """b295-f1: the filesystem table of the `-P <name>` read-only profile in a Codex argv ({} when absent)."""
-    if '-P' not in args:
+    """b295-f1: the filesystem table of the profile that `default_permissions` selects in a Codex argv ({} when absent; the last
+    --config wins, as in Codex)."""
+    selected = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('-c', '--config') and args[i + 1].startswith('default_permissions=')]
+    if not selected:
         return {}
-    key = 'permissions.' + args[args.index('-P') + 1] + '.filesystem='
+    key = 'permissions.' + selected[-1].split('=', 1)[1].strip('"') + '.filesystem='
     raw = next((arg[len(key):] for arg in args if arg.startswith(key)), '')
     try: return json.loads(raw.replace('"=', '":'))
     except ValueError: return {}
@@ -94,7 +97,7 @@ def emit_claude(answer, session, extra_commands=None):
             command = evidence['command']
             if os.environ.get('FAKE_REVIEW_NO_TEST_EVENT') and command == 'python3 -m unittest':
                 continue
-            forbidden = command.startswith(('echo ', 'git checkout', 'rm ', 'git diff --output=',
+            forbidden = command.startswith(('echo ', 'git checkout', 'git --literal-pathspecs checkout', 'rm ', 'git diff --output=',
                                              'git log --output=', 'git show --output=')) or ' > ' in command
             test_failure = bool(evidence.get('force_failure') or
                                 (os.environ.get('FAKE_REVIEW_TEST_FAILURE') and command == 'python3 -m unittest'))
@@ -161,6 +164,11 @@ def main():
             target.write('\n```reviewer-commands\n' + append_commands + '\n```\n')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
+    rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
+    if vendor == 'codex' and rejected:   # b296-f1e: like codex-cli 0.160.0, `codex exec` has no -P/--permission-profile
+        flag = '-P' if rejected.startswith('-P') else '--permission-profile'
+        print(f"error: unexpected argument '{flag}' found", file=sys.stderr)
+        return 2
     if vendor == 'claude':
         allowed = [args[index + 1] for index, value in enumerate(args[:-1])
                    if value == '--allowedTools']
@@ -279,6 +287,12 @@ def main():
             command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
                                'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
                               for command in [allowed, *attacks]]
+            for row in command_events:   # b296-f1f/g: as in the field (codex-cli 0.160.0, P1/P2): rm of a file missing on disk is "No such
+                if row['command'].startswith('rm '):   # file", not a denial; checkout takes index.lock before it checks the pathspec, so a working
+                    name = shlex.split(row['command'])[-1]   # sandbox denies it whether or not the name is tracked or on disk
+                    if not os.path.lexists(name): row.update(output=f'rm: {name}: No such file or directory\n')
+                elif row['command'].startswith('git --literal-pathspecs checkout -- '):
+                    row.update(exit_code=128, output=f"fatal: Unable to create '{Path.cwd() / '.git' / 'index.lock'}': Operation not permitted\n")
             for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
                 if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
                     command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
@@ -295,6 +309,8 @@ def main():
                     continue
                 words = shlex.split(command.replace('$TMPDIR', os.environ.get('TMPDIR', '')))
                 if words[0] == 'ln': os.link(words[1], words[2])
+                elif words[0] == 'rm': Path(words[1]).unlink()   # b296-f1f: the tracked-file delete lands
+                elif words[0] == 'git': subprocess.run(words, check=True, capture_output=True)   # b296-f1g: the real checkout runs
                 elif command.startswith('printf probe > '): Path(words[-1]).write_text('probe')
                 command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] == command else row for row in command_events]
             if fs.get(':workspace_roots', {}).get('.') == 'write':   # a profile that grants the workspace: the attacks land
