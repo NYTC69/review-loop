@@ -1,7 +1,8 @@
 name: paired-session tests
 
 # Trial (owner 2026-10-04): move full paired_session suites off the CPU-bound dev Mac.
-# One job per test module, on Linux and macOS, both on Python 3.9 (the dev Mac runs Xcode's 3.9).
+# One job per test module (large modules split into shards by test id), on Linux and macOS, both on Python 3.9
+# (the dev Mac runs Xcode's 3.9). Shard counts: SHARDS below; tune from the job timings.
 on:
   push:
     branches: ['ci/**']
@@ -22,8 +23,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: list
+        env:
+          SHARDS: '{"test_real_coordinator": 16, "test_operator_roles": 3}'
         run: |
-          echo "list=$(ls paired_session/test_*.py | xargs -n1 basename | sed 's/\.py$//' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, json, os
+          shards = json.loads(os.environ['SHARDS'])
+          out = []
+          for path in sorted(glob.glob('paired_session/test_*.py')):
+              m = os.path.basename(path)[:-3]
+              n = shards.get(m, 1)
+              out += [{'module': m, 'shard': i, 'of': n} for i in range(n)]
+          print('list=' + json.dumps(out))
+          PY
 
   test:
     needs: modules
@@ -31,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        module: ${{ fromJson(needs.modules.outputs.list) }}
+        part: ${{ fromJson(needs.modules.outputs.list) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -50,15 +62,32 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then echo PY=/usr/bin/python3 >> "$GITHUB_ENV"; else echo PY=python3 >> "$GITHUB_ENV"; fi
           git config --global user.name ci; git config --global user.email ci@example.invalid
           git config --global init.defaultBranch main
-      - name: Run ${{ matrix.module }}
+      - name: Run ${{ matrix.part.module }} ${{ matrix.part.shard }}/${{ matrix.part.of }}
+        env:
+          MODULE: ${{ matrix.part.module }}
+          SHARD: ${{ matrix.part.shard }}
+          OF: ${{ matrix.part.of }}
         run: |
           $PY --version
           set -o pipefail
-          $PY -m unittest -v paired_session.${{ matrix.module }} 2>&1 | tee test.log
+          $PY - <<'PY' 2>&1 | tee test.log
+          import os, sys, unittest
+          def walk(suite):
+              for t in suite:
+                  if isinstance(t, unittest.TestSuite): yield from walk(t)
+                  else: yield t
+          loader = unittest.TestLoader()
+          ids = sorted(t.id() for t in walk(loader.loadTestsFromName('paired_session.' + os.environ['MODULE'])))
+          shard, of = int(os.environ['SHARD']), int(os.environ['OF'])
+          mine = [x for k, x in enumerate(ids) if k % of == shard]   # round-robin spreads the slow tests
+          print(f'shard {shard}/{of}: {len(mine)} of {len(ids)} tests', flush=True)
+          result = unittest.TextTestRunner(verbosity=2, stream=sys.stdout).run(loader.loadTestsFromNames(mine))
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: log-${{ matrix.os }}-${{ matrix.module }}
+          name: log-${{ matrix.os }}-${{ matrix.part.module }}-${{ matrix.part.shard }}
           path: test.log
           retention-days: 14
 
