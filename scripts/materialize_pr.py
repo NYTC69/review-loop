@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from urllib.parse import urlsplit
 
@@ -41,7 +42,17 @@ ALLOWED_PROTOCOLS = ("https", "ssh", "file")
 MARKER = "materialize-pr"   # in the clone's .git: the run's UUID, so --remove deletes only a directory it created
 
 
-def command(argv: list[str], cwd: Path, *, network: bool = False, timeout: int = 60) -> str:
+def command(argv: list[str], cwd: Path | None, *, network: bool = False, timeout: int = 60) -> str:
+    """cwd=None runs the command in an empty temporary directory that git may not search above (gate HIGH): a git
+    call addressed by URL must read no repository's config, where `remote.<URL>.uploadpack` or `.url` would apply."""
+    if cwd is None:
+        with tempfile.TemporaryDirectory(prefix="materialize-pr-") as outside:
+            outside = os.path.realpath(outside)
+            return _run(argv, Path(outside), network, timeout, {"GIT_CEILING_DIRECTORIES": outside})
+    return _run(argv, cwd, network, timeout, {})
+
+
+def _run(argv: list[str], cwd: Path, network: bool, timeout: int, extra: dict) -> str:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     for key in ("SSH_ASKPASS", "GH_REPO", "GH_HOST"):
         env.pop(key, None)
@@ -49,7 +60,7 @@ def command(argv: list[str], cwd: Path, *, network: bool = False, timeout: int =
         env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
                    GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1",
                    GIT_SSH_COMMAND="ssh -o BatchMode=yes", GIT_OPTIONAL_LOCKS="0",
-                   GIT_ALLOW_PROTOCOL=":".join(ALLOWED_PROTOCOLS))
+                   GIT_ALLOW_PROTOCOL=":".join(ALLOWED_PROTOCOLS), **extra)
         argv = ["git", *GIT_NO_EXEC, "-c", "core.askPass=", *argv[1:]]
         if network:
             offset = 1 + len(GIT_NO_EXEC)
@@ -115,7 +126,7 @@ def remote_pin(repo: Path, remote: str, branch: str | None = None) -> dict:
         url = str((repo / url).resolve())
     pattern = "refs/heads/" + branch if branch else "HEAD"
     rows = command(["git", "ls-remote", "--symref", "--", url, pattern],
-                   repo, network=True).splitlines()
+                   None, network=True).splitlines()   # outside the operator repository (gate HIGH)
     if branch is None:
         names = [r.split()[1] for r in rows if r.startswith("ref: ")
                  and r.split()[-1] == "HEAD"]
@@ -130,8 +141,12 @@ def remote_pin(repo: Path, remote: str, branch: str | None = None) -> dict:
 
 
 def ref_pin(repo: Path, ref: str, remotes: list[str]) -> dict:
+    # Local, read-only calls in the operator repository (get-url, for-each-ref, rev-parse) start no transport; every
+    # URL-addressed call runs outside it (command(cwd=None)).
     if not ref or ref.startswith("-"):
         raise ResolutionError("invalid ref")
+    if ref.startswith(":/"):   # gate LOW: searches every ref, stale tracking refs included
+        raise ResolutionError("unanchored message search; use <ref>^{/message}")
     if ref.startswith(("refs/remotes/", "remotes/")):
         raise ResolutionError("use remote/branch instead of a tracking ref")
     anchor = re.split(r"@\{|[~^:]", ref, maxsplit=1)[0] or "HEAD"
@@ -161,7 +176,7 @@ def ref_pin(repo: Path, ref: str, remotes: list[str]) -> dict:
     if name.startswith("refs/remotes/"):
         raise ResolutionError("use remote/branch instead of a tracking ref")
     oid = command(["git", "rev-parse", "--verify", "--end-of-options",
-                   ref if ref.startswith(":/") else ref + "^{commit}"], repo)
+                   ref + "^{commit}"], repo)
     return pin(oid, str(repo), name if name.startswith("refs/") and (anchor == ref or ref == "@") else None)
 
 
@@ -241,7 +256,7 @@ def resolve(repo: str | Path, value: str, base: str | None = None,
             "target_url": base_pin["source"], "head": head, "base": base_pin}
 
 
-def git_step(what: str, argv: list[str], cwd: Path, **kwargs) -> str:
+def git_step(what: str, argv: list[str], cwd: Path | None, **kwargs) -> str:
     try:
         return command(argv, cwd, **kwargs)
     except ResolutionError as exc:
@@ -282,7 +297,7 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
         else:   # the operator's objects only speed the clone up; --dissociate leaves no alternates behind
             clone = ["git", "clone", "--quiet", "--no-checkout", "--reference-if-able", str(operator), "--dissociate",
                      "--", target, str(dest)]
-        git_step("clone", clone, parent, network=True, timeout=1800)
+        git_step("clone", clone, None, network=True, timeout=1800)   # outside any repository
         (dest / ".git" / MARKER).write_text(run_id + "\n")
         for side, pin_ in pins.items():
             what = pin_["fetch_ref"] or pin_["oid"]
@@ -298,6 +313,9 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
             bases = []
         if len(bases) != 1:
             raise MaterializeError("no merge base" if not bases else "more than one merge base (criss-cross history)")
+        # gate LOW: a PR symlink (to ~/.aws/credentials, say) is checked out as a plain file holding its target, so a
+        # role reading the workspace cannot follow it; set in the clone's config so `git status` stays clean
+        git_step("checkout", ["git", "config", "core.symlinks", "false"], dest)
         git_step("checkout", ["git", "checkout", "--quiet", "--detach", "refs/review/head"], dest)
     except BaseException:   # also a clone killed by its timeout before the marker was written
         if dest.is_dir() and not dest.is_symlink():
@@ -351,7 +369,7 @@ def main() -> int:
             result = resolve_and_materialize(args.repo, args.input, args.base, args.repository, args.root)
         else:
             result = resolve(args.repo, args.input, args.base, args.repository)
-    except ResolutionError as exc:
+    except (ResolutionError, OSError) as exc:   # an OSError (a path replaced mid-run) refuses the same way
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))

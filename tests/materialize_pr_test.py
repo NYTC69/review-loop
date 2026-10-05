@@ -545,8 +545,10 @@ def test_pseudoref_and_tag_collision_refuses_without_warnings(setup):
         mp.resolve(setup[0], 'ORIG_HEAD', 'main')
 
 
-def test_history_search_expression_pins_oid_without_named_ref(setup):
-    result = mp.resolve(setup[0], ':/base', 'main')
+def test_unanchored_message_search_refuses_but_an_anchored_one_pins(setup):   # gate LOW: :/ searches every ref
+    with pytest.raises(mp.ResolutionError, match='unanchored'):
+        mp.resolve(setup[0], ':/base', 'main')
+    result = mp.resolve(setup[0], 'topic^{/base}', 'main')
     assert result['head'] == {'oid': setup[2], 'source': str(setup[0]), 'fetch_ref': None}
 
 
@@ -598,6 +600,22 @@ def test_transport_config_cannot_run_a_command(setup, tmp_path, path):
     # the up-front check aside, the environment alone keeps git from running it
     with pytest.raises(mp.ResolutionError):
         mp.command(['git', 'ls-remote', '--', url], repo, network=True)
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize('scheme', ['https', 'file'])
+def test_url_named_remote_config_of_the_operator_repo_is_never_read(setup, tmp_path, scheme):   # gate HIGH
+    repo, target, base, *_ = setup
+    sentinel = tmp_path / 'uploadpack-ran'
+    url = 'https://offline.invalid/o/r.git' if scheme == 'https' else 'file://' + str(target)
+    git(repo, 'remote', 'set-url', 'origin', url)
+    git(repo, 'config', f'remote.{url}.url', str(target))   # would forge the pin from a local path
+    git(repo, 'config', f'remote.{url}.uploadpack', f'touch {sentinel}; git-upload-pack')
+    if scheme == 'https':   # the real URL is asked (and is unreachable), not the local rewrite
+        with pytest.raises(mp.ResolutionError):
+            mp.resolve(repo, 'origin/main')
+    else:
+        assert mp.resolve(repo, 'origin/main')['head'] == {'oid': base, 'source': url, 'fetch_ref': 'refs/heads/main'}
     assert not sentinel.exists()
 
 
@@ -774,6 +792,16 @@ def test_d2_home_hooks_and_smudge_filters_do_not_run(setup, tmp_path, monkeypatc
     assert_materialized(out, tmp_path / 'runs', head, base)
 
 
+def test_d2_a_pr_symlink_is_checked_out_as_a_plain_file(setup, tmp_path):   # gate LOW
+    repo, _, base, *_ = setup
+    (repo / 'creds').symlink_to(Path.home() / '.aws' / 'credentials')
+    git(repo, 'add', 'creds')
+    git(repo, 'commit', '-qm', 'a symlink out of the tree')
+    head = git(repo, 'rev-parse', 'HEAD')
+    ws = assert_materialized(mp.materialize(mp.resolve(repo, 'topic'), tmp_path / 'runs'), tmp_path / 'runs', head, base)
+    assert not (ws / 'creds').is_symlink() and (ws / 'creds').read_text() == str(Path.home() / '.aws' / 'credentials')
+
+
 def test_d2_remove_needs_the_marker(setup, tmp_path):
     out = mp.materialize(mp.resolve(setup[0], 'topic'), tmp_path / 'runs')
     ws = Path(out['workspace'])
@@ -925,3 +953,7 @@ def test_d2_cli_materializes_and_removes(setup, tmp_path):
     refused = run('--remove', str(tmp_path))
     assert refused.returncode == 2 and 'REFUSED:' in refused.stderr and tmp_path.exists()
     assert run('topic', '--remove', ws).returncode == 2   # an input and --remove together
+    blocker = tmp_path / 'not-a-directory'
+    blocker.write_text('')
+    failed = run('topic', '--repo', str(setup[0]), '--root', str(blocker))   # an OSError refuses too (gate NIT)
+    assert failed.returncode == 2 and 'REFUSED:' in failed.stderr and 'Traceback' not in failed.stderr
