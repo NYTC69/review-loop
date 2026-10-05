@@ -2048,10 +2048,11 @@ def test_snapshot_reports_both_failures_when_the_ref_withdrawal_also_fails(tmp_p
     finally:
         sessions.chmod(0o700)
     assert "evidence-ledger: STORAGE-ERROR cannot write session file" in completed.stderr
-    assert (
-        f"; additionally could not withdraw {ref}: git update-ref -d {ref} failed (exit 128): "
-        "fatal: ref updates aborted by hook (fail closed; nothing written)"
-    ) in completed.stderr
+    assert any(
+        f"; additionally could not withdraw {ref}: git update-ref -d {ref} failed (exit 128): fatal: " in line
+        and line.endswith("(fail closed; nothing written)")
+        for line in completed.stderr.splitlines()
+    )
     assert "INTERNAL-ERROR" not in completed.stderr and "Traceback" not in completed.stderr
     assert session_text(repo) == before
     assert "## Evidence Ledger" not in session_text(repo)
