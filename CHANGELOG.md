@@ -1,5 +1,27 @@
 # Changelog
 
+### v2.11.0：paired-session 支持"只审已有代码"（`run --review-only`），默认入口的审查请求不再落回 legacy；可选的 `--detach`/`stop`；限流 HOLD 带类型
+
+- **新功能（D-LG1：只审已有代码的入口）**：
+  - `bin/paired-session run --review-only [--base REF]` 审查工作区里已有的改动，不经过 PLAN，第一步就是 EXEC review。已有改动算作 EXEC 第 1 轮，所以 `--max-exec-rounds N` 恰好是 N 次审查。base 默认为 `HEAD`，也就是审查未提交的改动；审查分支时传 `--base main` 或某个 merge-base。
+  - 创建时直接拒绝的情况：base 不是 HEAD 的祖先、没有改动、index 有冲突或部分暂存、unborn HEAD、`--stop-after-plan`。第一次 review 之前树或范围变了，就 HOLD。
+  - 各角色的提示词改用 review scope，不再出现"已批准的计划"；author 只修复审查提出的问题。
+  - 交付：baseline 取 review base 的树，被审改动记为本次交付；完全暂存的改动属于被审范围；被审改动已经改过的 docs 文件算它自带的（pre-owned）；提交信息带 `Review base: <oid>`。完整 lifecycle（FINISH、POLISH-Q、DOCS、SECURITY、accept/auto_commit）照常可用。
+  - **默认入口**：没有 `entry` 键时，"审查我的改动"这类请求（code-exists）也交给 paired-session 的 `run --review-only`，不再落回 legacy。只有与任务相关的改动才这样路由；工作区里还有无关改动时先问用户。已有计划、已有 session 仍走 legacy。legacy 的 `execute --review-only` 在退役前保持不变。
+  - Q1–Q9 的选择（`run --review-only`、base 默认 HEAD、经 skill 走完整 lifecycle、base 不是祖先就拒绝、已有改动算第 1 轮等）由 supervisor 按设计文档的建议临时采用，等 owner 确认。每项都集中在一个常量里，改起来只动一处。
+- **新功能（detach，FIELD-17 后续）**：`run|resume|reject|permission-probe --detach` 让命令脱离宿主会话运行（setsid 加两次 fork），日志写到按用户隔离的临时目录，调用方立刻拿到 pid 和日志路径。用 `stop` 结束：先作废当前回合并回收它的进程组，然后按中断处理（`resume --retry-uncertain` 或 `abort`）。默认行为不变。Claude 宿主规则写明，无交互会话里优先用 `--detach`。实测宿主怎么结束命令：Claude Code 的 `claude -p` 交卷时给后台命令的进程组发 SIGTERM，Codex 直接 SIGKILL 命令所在的会话；脱离后的进程都不受影响。
+- **改进（ratelimit）**：任何角色、任何阶段被 provider 限流，都会停在一个带类型的 HOLD（`hold_kind: rate_limited`，附角色、阶段和 reset 提示）。被限流的调用不计入调用次数，也不占 DOCS、SECURITY 和重派预算；`resume` 后不重复、也不跳过回合。
+- **fix（F7）**：`resume --retry-uncertain` / `permission-probe --retry-uncertain` 恢复期间如果全局配置变了，会在下一次派发的 baseline 处 HOLD，比较和恢复之间不再留有窗口。
+- **测试（igncache）**：允许的测试命令在已存在的被忽略缓存目录（`__pycache__`、`.pytest_cache`）里写东西，不会让只读回合作废。新测试证明了这一点，产品代码没改。
+- **审查**：每个单元都由 Codex gpt-6.1-sol 审查（D-REV-CODEX）：
+  - LG1 共 6 个单元（a1、a2、b、c、d、e），各 1 到 3 轮，最后都是 APPROVE 或 APPROVE_WITH_FINDINGS（只剩 LOW）；
+  - detach 3 轮，ratelimit 2 轮，f7 3 轮，igncache 2 轮。
+- **已知限制**：
+  - review-only：base 里非 UTF-8 的文件名、DOCS 的删除和重命名、writer 的暂存拒绝，只写进了文档或测试，没有完整覆盖。
+  - detach 没有真实宿主上的端到端自动测试；记录目录不会自动清理；用 SIGKILL 结束脱离的命令会留下回合的进程组，请用 `stop`。
+  - F6：一家厂商的回合期间另一家的全局配置变了，仍然只记录、不 HOLD。现有测试固定了这个设计；宿主 Claude Code 自己就会写 `~/.claude`。这是接受的残余风险，"只在有证据表明是本回合造成时才 HOLD"作为提议留给 owner。
+  - `tests/protocol_loading_graph_test.py` 的 40% 启动削减测试（claude 一文件交付）在 v2.9.7 起就低于门槛（39.84，现在 39.68），之前没进 CI 所以没被发现。修复已排期，门槛和测试都不改。
+
 ### v2.10.1：耗时长的测试命令等跑完再判定（FIELD-20）；run 开始时提醒 .gitignore 覆盖不全（FIELD-19）；只读回合改动权限位可检测（READONLY-PERM）
 
 - **fix（FIELD-20，poker-news-bot 现场报告）**：配置的测试命令超过约 10 秒时，Codex 会让命令转入后台。原来 permission-probe 的提示词规定每条命令只调用一次 `exec_command`，模型就不会回头轮询；回合结束时命令被杀，记录里只有开始、没有退出码，结果被报成 `allowed-command-failed`。用真实 codex-cli 0.160.0 已复现：一条 120 s 的命令在回合结束时被杀。
