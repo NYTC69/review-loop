@@ -29,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from typing import Optional
 try:
@@ -238,6 +239,11 @@ class RateLimitError(ValueError):
     pass
 
 
+class RateLimitedTurn(RuntimeError):
+    """ratelimit: a turn the provider rejected for a rate limit, as raised by invoke(). Only this exact type makes a typed
+    rate-limit hold; an error that wraps it (a W writer's git guard) is a different hold and needs its own repair."""
+
+
 def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
     clock = time.monotonic if clock is None else clock
     sleep = time.sleep if sleep is None else sleep
@@ -445,8 +451,8 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
     return []
 
 
-def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path) -> bool:
-    raw = path.read_bytes()
+def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path, raw: Optional[bytes] = None) -> bool:
+    raw = path.read_bytes() if raw is None else raw   # F7: the caller passes the bytes it hashed, so check and hash agree
     entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode() for root in _codex_trust_paths(workspace)}
     present = [root for root, entry in entries.items() if raw.count(entry) == 1]
     for count in range(1, len(present) + 1):   # RF-7: the expected set, each path at most once, in any order
@@ -758,6 +764,150 @@ def resolve_test_executable(workspace: Path, command: str) -> str:
     if not resolved:
         raise ValueError('configured test executable is missing or not on PATH: ' + executable)
     return resolved
+
+
+DETACH_ACTIONS = ('run', 'resume', 'reject', 'permission-probe')
+DETACH_TURN = {'group': None, 'spawning': False}   # detach: the CLI turn in flight, for the SIGTERM handler
+
+
+class DetachStop(BaseException):
+    """detach: SIGTERM to a detached coordinator; a BaseException, so a dispatch kills its turn's process group as on Ctrl-C."""
+
+
+def detach_paths(run_dir) -> tuple[Path, Path]:
+    """detach: the per-user 0700 record and lock of a run dir's detached command (outside the run dir and its parent, which the
+    Claude author probe watches); keyed by the resolved run dir, so relative and symlinked spellings share them."""
+    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{os.getuid()}'
+    try: root.mkdir(mode=0o700)
+    except FileExistsError: pass
+    info = os.lstat(root)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError(f'detach directory {root} must be a directory owned by this user with mode 0700')
+    key = hashlib.sha256(str(Path(run_dir).expanduser().resolve()).encode()).hexdigest()[:16]
+    return root / (key + '.json'), root / (key + '.lock')
+
+
+def detach_holder(run_dir):
+    """None when no detached command holds this run dir's lock; 'starting' while the holder has not published its own record
+    (the caller marks the record `starting` under the lock, so an older run's record is never read as the holder's); else the
+    holder's record. Only the lock holder writes the record."""
+    record, lock = detach_paths(run_dir)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try: data = json.loads(record.read_text())
+        except (OSError, ValueError): return 'starting'
+        ok = data.get('status') == 'running' and type(data.get('pid')) is int and type(data.get('sid')) is int
+        return data if ok else 'starting'
+    finally:
+        os.close(fd)
+    return None
+
+
+def stop_turn_group(_signum=None, _frame=None):
+    """detach: SIGTERM handler. Kill the turn in flight first (a stop between Popen and the dispatch's cleanup guard must not
+    leave it running), then unwind like Ctrl-C: the dispatch keeps the turn active and reaps it. While a turn is being spawned
+    the stop is only noted; the dispatch acts on it as soon as the group is known."""
+    if DETACH_TURN['spawning']:
+        DETACH_TURN['stop'] = True
+        return
+    if (group := DETACH_TURN['group']) is not None:
+        try: os.killpg(group, signal.SIGKILL)
+        except OSError: pass
+    raise DetachStop()
+
+
+def detach(raw_argv: list, run_dir: str) -> int:
+    """FIELD-17 follow-up (docs/detach.md): a host that ends its turn signals the process group it started (Claude Code: SIGTERM)
+    or kills the command (Codex: SIGKILL). setsid() and a second fork leave that tree; the grandchild runs the same command and
+    records its exit code. Nothing else changes: lease, active/uncertain turns, cleanup and every check are those of a plain run."""
+    record, lock = detach_paths(run_dir)
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # inherited by the grandchild, which keeps it until it exits
+    except BlockingIOError:
+        os.close(lock_fd)
+        held = detach_holder(run_dir)
+        print(f"REFUSED: a detached command for this run dir is still running (pid {held.get('pid') if isinstance(held, dict) else held}); "
+              'poll `status --brief` or use `stop`')
+        return 2
+    try:   # under the lock: an older run's record must never be read as this command's
+        atomic_json(record, {'status': 'starting', 'since': time.time()})
+    except OSError as exc:
+        os.close(lock_fd)
+        print('REFUSED: cannot write the detach record: ' + str(exc))
+        return 2
+    log = record.with_name(record.stem + time.strftime('-%Y%m%dT%H%M%S.log'))
+    argv = [arg for arg in raw_argv if arg != '--detach']
+    sys.stdout.flush(); sys.stderr.flush()
+    ready, ready_w = os.pipe()
+    if (child := os.fork()):
+        os.close(ready_w); os.close(lock_fd)
+        answer = b''
+        while (chunk := os.read(ready, 4096)): answer += chunk
+        os.close(ready)
+        os.waitpid(child, 0)
+        if not answer.startswith(b'ok '):
+            print('REFUSED: the detached command did not start: ' + (answer.decode(errors='replace') or 'no answer'))
+            return 2
+        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; poll `status --brief` (or RUN_DIR/state.json) until DONE or '
+              'HOLD; stop with `stop`')
+        return 0
+    os.close(ready)
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(os.open(os.devnull, os.O_RDONLY), 0); os.dup2(out, 1); os.dup2(out, 2)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, stop_turn_group)
+        atomic_json(record, {'pid': os.getpid(), 'sid': os.getsid(0), 'run_dir': str(Path(run_dir).expanduser().resolve()),
+                             'argv': argv, 'log': str(log), 'status': 'running', 'started': time.time()})
+    except BaseException as exc:   # the caller reports it; nothing has run
+        os.write(ready_w, f'{type(exc).__name__}: {exc}'.encode()); os._exit(2)
+    os.write(ready_w, f'ok {os.getpid()}'.encode()); os.close(ready_w)
+    code = 1
+    try:
+        code = main(argv)
+    except DetachStop:
+        print('STOPPED: `stop` ended this detached command; a turn it interrupted stays active: check its process group, then '
+              'resume --retry-uncertain or abort')
+        code = 130
+    except BaseException:
+        traceback.print_exc()
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the stop has been taken; finish the record
+        sys.stdout.flush(); sys.stderr.flush()
+        try: atomic_json(record, {**json.loads(record.read_text()), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
+        finally: os._exit(code)
+
+
+def stop_detached(run_dir: str, wait: float = 60) -> int:
+    """detach: SIGTERM to this run dir's detached coordinator, then wait until it has exited (it kills its turn's group first)."""
+    record, _ = detach_paths(run_dir)
+    held = detach_holder(run_dir)
+    if held is None:
+        print('NOTE: no detached command is running for this run dir')
+        return 0
+    if held == 'starting':
+        print('HOLD: a detached command for this run dir is starting; retry stop in a moment')
+        return 2
+    pid = held['pid']
+    try:   # the recorded session id guards against a pid reused after the holder exited between the read and the signal
+        if os.getsid(pid) != held['sid']: raise ProcessLookupError(pid)
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass   # it exited on its own (a reused pid is never signalled); wait for its lock below
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and detach_holder(run_dir) is not None:
+        time.sleep(0.2)
+    if detach_holder(run_dir) is not None:
+        print(f'HOLD: the detached command (pid {pid}) has not exited after {wait:.0f} s; check it before acting on this run')
+        return 2
+    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text()).get('exit_code')})")
+    return 0
 
 
 @contextmanager
@@ -3631,7 +3781,7 @@ class Coordinator:
         if self.state.get('publication_hold') or (journal_path.exists() and not complete):
             raise ValueError('publication incomplete; use locked publication recovery before operator commands')
 
-    def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
+    def hold(self, reason: str, terminal_kind: Optional[str] = None, rate_limited: bool = False) -> str:
         self._publication_guard()
         if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED'):
             return self.state['status']
@@ -3655,6 +3805,12 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
+        last = next((row for row in reversed(self.state.get('turns', [])) if row.get('error_kind') == 'rate_limited'), {})
+        if rate_limited and last:   # ratelimit: the drive passes it for a RateLimitedTurn only
+            self.state['hold_kind'] = 'rate_limited'
+            self.state['rate_limit'] = {key: last.get(key) for key in ('role', 'phase', 'sequence', 'reset_hint')}
+        else:
+            self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
         if terminal_kind:
             self.state['terminal_hold_kind'] = terminal_kind
         elif not keep_rejection_limit:
@@ -4134,7 +4290,21 @@ class Coordinator:
         self.write_comparison()
         return 'ACTIVE'
 
-    def archive_abandoned_turn(self, receipt: dict) -> None:
+    def _recovery_config_issue(self, snapshot: dict, consume=True) -> Optional[str]:
+        """F7: the first dispatch baseline after an uncertain-turn recovery must still show the global-config hashes the
+        recovery validated. The hashes stay pending until a dispatch baseline matches them (consume) or a change is
+        reported once (the operator inspects, then resumes on a fresh baseline); an earlier check only peeks."""
+        pending = self.state.get('recovery_config_hashes') or {}
+        changed = sorted(key for key, value in pending.items() if snapshot.get(key, {}).get('sha256') != value)
+        if changed or consume:
+            self.state.pop('recovery_config_hashes', None)
+        return ('global config changed during uncertain-turn recovery (' + ', '.join(changed) + '); inspect, then resume'
+                if changed else None)
+
+    def archive_abandoned_turn(self, receipt: dict) -> dict:
+        """Archive a stopped uncertain turn; returns the global-config hashes it validated (F7: resume re-checks them right
+        before any dispatch, so a change after this check is not silently taken into the next turn's baseline)."""
+        verified = {}
         scratch = (receipt.get('environment_overrides') or {}).get('TMPDIR')
         if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.run_dir / 'role-tmp':
             self._drop_scratch(Path(scratch))   # b295-f1: the uncertain turn's child is stopped before it is archived
@@ -4147,20 +4317,25 @@ class Coordinator:
                 if self.args.action == 'resume' and self.state.get('claude_uncertain_config_change') == pending:
                     receipt['global_claude_ack'] = {'operator_uid': os.getuid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
                 else: self.state['claude_uncertain_config_change'] = pending; self.hold('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain'); raise RuntimeError('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain')
+            verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_claude_before']})
         if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
+            verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_codex_before']})
             if (receipt.get('global_codex_home') != str(self.global_codex_home) or receipt.get('global_config_home') != str(self.global_config_home) or any(current.get(key, {}).get('sha256') != value for key, value in receipt['global_codex_before'].items())):
+                try: raw = (self.global_codex_home / 'config.toml').read_bytes()   # F7: one read for the hash and the trust check
+                except OSError: raw = None
                 allowed = (self.args.action == 'resume' and self.args.acknowledge_codex_trust == self.run_dir.name
+                           and raw is not None and hashlib.sha256(raw).hexdigest() == current['codex_config']['sha256']
                            and current['codex_config']['sha256'] != receipt['global_codex_before']['codex_config']
                            and all(current.get(key, {}).get('sha256') == value for key, value in receipt['global_codex_before'].items() if key != 'codex_config')
                            and receipt.get('global_codex_home') == str(self.global_codex_home)
-                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace'])))
+                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw))
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
                 self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
-            return
+            return verified
         usage = receipt.get('usage_requests', [])
         provider_usage = 'reported' if usage else 'unknown'
         row = {**receipt, 'recovered_at': time.time(), 'group_gone': True,
@@ -4176,6 +4351,7 @@ class Coordinator:
             path = self.evidence / f'{sequence:03d}-abandoned.receipt.json'
             if not path.exists():
                 atomic_json(path, row)
+        return verified
 
     def done(self, expected: Optional[str] = None, lifecycle_stage: Optional[str] = None) -> str:
         blocking = self.blocking_open_findings()
@@ -5245,6 +5421,8 @@ class Coordinator:
             env = {key: value for key, value in env.items() if not key.startswith('GIT_')}
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
+            raise RuntimeError(issue)
         vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
@@ -5262,8 +5440,15 @@ class Coordinator:
                     rejection.update(status='dispatched', dispatched_sequence=seq)
                 self.state['active'] = receipt
                 self.save()
-                process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
-                                           stdout=out, stderr=err, start_new_session=True)
+                DETACH_TURN['spawning'] = True   # detach: a stop in this span waits until the group is known (no signal mask:
+                try:                              # a child would inherit it and could not be terminated)
+                    process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
+                                               stdout=out, stderr=err, start_new_session=True)
+                    DETACH_TURN['group'] = process.pid
+                finally:
+                    DETACH_TURN['spawning'] = False
+                    if DETACH_TURN.pop('stop', False):   # a stop noted while spawning: kill the new group, unwind below
+                        stop_turn_group()
                 receipt['pid'] = process.pid
                 self.state['active'] = receipt
                 self.save()
@@ -5284,6 +5469,7 @@ class Coordinator:
                     process.wait()
                 except BaseException:
                     pass
+                DETACH_TURN['group'] = None
                 raise
             if not isinstance(exc, (OSError, ValueError, subprocess.SubprocessError)):
                 raise
@@ -5339,6 +5525,7 @@ class Coordinator:
                 pass
             raise
         finally:
+            DETACH_TURN['group'] = None   # reaped (or being re-raised after its group was killed)
             usage_stop.set()
             usage_monitor.join()
         receipt['end'] = time.time()
@@ -5491,7 +5678,8 @@ class Coordinator:
             self.state['last_end'][role] = receipt['end']
             self.state['active'] = None
             self.save()
-            raise RuntimeError(receipt['error']) from exc
+            raise (RateLimitedTurn if receipt.get('error_kind') == 'rate_limited' and voided is None else RuntimeError)(
+                receipt['error']) from exc
         receipt['answer'] = answer
         atomic_json(prefix.with_suffix('.receipt.json'), receipt)
         self.state['turns'].append(receipt)
@@ -5737,12 +5925,18 @@ class Coordinator:
         caller's next check refuses and max_invocations bounds the run."""
         if phase not in ('POLISH-Q', 'DOCS', 'SECURITY') or not worktree_lifecycle.is_worktree(self.state): return
         rows = [row for row in [*self.state['turns'], *self.state.get('spawn_failures', [])] if row.get('phase') == phase]
-        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else len(rows)
+        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else self._stage_calls(phase)
         if used + 1 > self._worktree_run_cap(phase):
             raise RuntimeError(f'{phase} budget has no room to re-dispatch the void turn ({voided}); abort') from voided
 
+    def _stage_calls(self, phase: str) -> int:
+        """DOCS/SECURITY calls against the stage cap: every row of the phase except a provider rate-limit rejection, which is
+        refunded like the invocation budget (ratelimit), so a limited call never uses up the stage."""
+        return sum(row.get('phase') == phase and row.get('error_kind') != 'rate_limited'
+                   for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+
     def _docs_budget(self) -> None:
-        used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+        used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
 
@@ -5873,7 +6067,7 @@ class Coordinator:
                               'in full_review; any finding stops delivery.\n' + worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
-                used = sum(row.get('phase') == 'SECURITY' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+                used = self._stage_calls('SECURITY')
                 if used + 1 > self._worktree_run_cap('SECURITY'):
                     raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
                 result = self.invoke('reviewer', 'SECURITY', prompt, review_schema(), fresh=True)
@@ -7254,7 +7448,8 @@ class Coordinator:
                 self.state['uncertain_active'] = uncertain
                 self.hold('uncertain permission-probe process group is still alive; refusing concurrent retry')
                 return False
-            self.archive_abandoned_turn(uncertain)
+            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against this probe's own baseline below
+                self.state['recovery_config_hashes'] = verified
             self.state['active'] = None
             self.state['uncertain_active'] = None
             if self.state.get('hold_reason', '').startswith(
@@ -7276,6 +7471,9 @@ class Coordinator:
                       "for the probe's git checkout/rm legs; commit at least one file, then re-run permission-probe")
             return False
         global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if issue := self._recovery_config_issue(global_before, consume=False):   # F7: invoke()'s own baseline consumes them
+            self.hold(issue)
+            return False
         allowed_command = self.args.test_command.strip()
         attempts = self._probe_attempts(allowed_command, tracked)
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
@@ -8238,7 +8436,7 @@ class Coordinator:
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
-                return self.hold(str(exc))
+                return self.hold(str(exc), rate_limited=type(exc) is RateLimitedTurn)
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
@@ -8299,7 +8497,8 @@ class Coordinator:
             else:
                 return self.hold('uncertain CLI process group is still alive; refusing concurrent replay')
         if uncertain:
-            self.archive_abandoned_turn(uncertain)
+            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against the next turn's own baseline
+                self.state['recovery_config_hashes'] = verified
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
@@ -8308,6 +8507,7 @@ class Coordinator:
             return self.hold(past_deadline)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
+        self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
@@ -8470,7 +8670,10 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note', 'status', 'attach-verification'])
+                                      'accept', 'reject', 'note', 'status', 'attach-verification', 'stop'])
+    p.add_argument('--detach', action='store_true',
+                   help='run, resume, reject or permission-probe in a new session, outside the host\'s process tree, and return '
+                        'at once with its pid and log; poll `status --brief`; `stop` ends it (docs/detach.md)')
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -8893,6 +9096,12 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
+        try: return stop_detached(args.run_dir)
+        except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
+    if args.detach and args.action not in DETACH_ACTIONS:
+        print('REFUSED: --detach is only for ' + ', '.join(DETACH_ACTIONS))
+        return 2
     if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
         args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
     args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
@@ -8937,6 +9146,9 @@ def main(argv=None) -> int:
         return 2
     if args.polish and args.action != 'resume':
         parser().error('--polish is only valid with resume')
+    if args.detach:   # after the synchronous refusals above, so a bad command line still fails in the caller's shell
+        try: return detach(raw_argv, args.run_dir)
+        except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
     if args.action == 'snapshot':
         print(git_snapshot(Path(args.workspace))[0])
         return 0
