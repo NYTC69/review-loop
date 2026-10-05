@@ -26,3 +26,7 @@ Follow that skill and every stage bundle it names exactly as if the user had
 invoked `/review-loop`, with two differences: ignore the `entry` key in
 `.review-loop/config.md` (never route to paired-session), and do not read or
 validate `entry`, and print none of its notices. All other config keys apply as usual.
+
+Print only the one-line deprecation notice, once, before the session file is created:
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
+It changes nothing else: routing and the workflow stay as described above.

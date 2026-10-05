@@ -3547,6 +3547,11 @@
       "mapping_id": "entry_implicit_legacy_notice"
     },
     {
+      "id": "legacy_deprecation_notice_on_both_hosts",
+      "kind": "consistent_with",
+      "mapping_id": "legacy_deprecation_notice"
+    },
+    {
       "id": "entry_invalid_value_warning_consistent",
       "kind": "consistent_with",
       "mapping_id": "entry_invalid_value_warning"

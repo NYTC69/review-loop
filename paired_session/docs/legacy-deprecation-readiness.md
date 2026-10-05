@@ -2,7 +2,19 @@
 
 ## 给 owner 的摘要
 
-按 ADR-6，只有四条替换标准全部满足，才能退役 legacy。目前的状态：
+**owner 已裁定 ready（D-READY，2026-10-05）。** 原话："我觉得已经跑了很多了，bob和tools两个repo这两天一直在跑，也在ship 工作，而且一周前还遇到过额度用完 hold，reset了继续的情况，所以我觉得已经算ready了"。
+
+supervisor 的解读（作为解读记录）：
+- ADR-6 的替换标准按现场证据视为**满足**：poker-news-bot 和 poker-tools 这几天一直在用 paired-session 跑真实工作并交付；约一周前发生过一次真实的额度用完 HOLD，reset 后成功 resume（owner 证实，supervisor 没有找到对应的 run id）。
+- M7 不再卡退役，改为可选的成本/质量研究。
+- legacy 从 v2.12.0 起宣布 deprecated：显式选择 legacy 时打印一行提示，路由和行为都不变。
+- 代码删除要等三件事，确保不丢失只有 legacy 能做的事：
+  1. review-pr 移植（D-LG2；lg2-design 停放，等你的第 4 轮复审）；
+  2. code-quality-loop（Q6 memo，等你决定）；
+  3. legacy 映射表里 18 个 owner 行。
+- 记录在 `DECISIONS.md` ADR-6 的 Amendments（D-READY）；§2 的状态列已据此更新，§4 只列删除前提。
+
+**裁定之前的证据状态**（保留作记录；按当时的 ADR-6 逐条评估）：
 - **第 (3) 条已满足：** 一流的用户验收阶段已经实现，accept/reject 都要先出 intent 再按 expect 执行。
 - **第 (2) 条部分满足，连续计数已归零：**
   - ws7–ws10 曾是 4 次连续零 coordinator 缺陷的真实 run（都经默认入口并 ACCEPTED，其中一次是 review-only）。
@@ -14,10 +26,10 @@
     - 因此有一个问题请你决定：review-only 的 EXEC 上限 4 轮是否太低。
   - 这些 run 都是小型 toy 任务，由 supervisor 的 headless driver 驱动，每次 run 后还要手工清理 Codex trust 条目。
   - overseer 成本现已测量（§3.2a）：每个 run 的 overseer 花费 $0.91–1.04（标价），占 Claude 侧花费的 48–52%，占输入 token 的 52–69%（绝大部分是缓存读）。
-- **第 (4) 条部分满足：** 已覆盖 poker-tools 以外的仓库（poker-news-bot）；"大任务"还没有定义；真实的订阅限额 HOLD 加 resume 至今没有发生过，只有离线证据，而按现行 ADR-6 离线证据不算满足。
+- **第 (4) 条部分满足：** 已覆盖 poker-tools 以外的仓库（poker-news-bot）；"大任务"还没有定义；本文档没有找到真实订阅限额 HOLD 加 resume 的记录，只有离线证据（owner 后来证实约一周前发生过一次，见上）。
 - **第 (1) 条尚未满足：** M7 已有 24 个冻结案例和评分工具，但工具还差一处修复，D-b1 scanner 停在 review 上限，计分 run 还没开始。
 
-所以现在**还不能退役 legacy**；四条全部满足后，还要做一次带证据的最终复核才能退役。最长的那条路（M7）已经从"没有语料"走到了"可以开跑"。legacy 的功能映射：49 项中 covered 27、planned 4、owner 18。Q6（code-quality-loop）和 LG2（review-pr）分别等你决定和复审。下面 §4 把剩下的事按顺序列出，并把你的决定和工程工作分开。
+裁定之前的结论是"还不能退役"；D-READY 之后，退役不再等这些标准，只等 §4 的删除前提。legacy 的功能映射：49 项中 covered 27、planned 4、owner 18。
 
 ## 1. The rule
 
@@ -45,20 +57,25 @@ entry could switch earlier, after an owner go for 1D and a parity decision on po
 - D-EFF (2026-10-04, `paired_session/docs/efficient-mode.md`): efficient is the default. Strict-only (category C)
   conditions are not release conditions.
 
-None of the amendments changes the four retirement criteria.
+None of the amendments above changes the four retirement criteria. The owner ruling D-READY (2026-10-05, ADR-6
+"Amendments" in `DECISIONS.md`) does: it treats the gate as met on field evidence (summary above), makes M7 optional,
+and leaves code removal to the preconditions in §4.
 
 ## 2. Status per criterion
+
+"MET by owner ruling" means met under D-READY on field evidence. The status this memo had assessed before the ruling
+is kept in the Evidence column.
 
 | Criterion | Status | Evidence |
 |---|---|---|
 | Default-entry switch: 1D go and the parity decision | **MET** | ADR-11 + E-12 (D12 + D-2 + W2a are the parity decision); v2.10.0 `c8336e7` (tag) made paired-session the default entry |
 | Default-entry switch: revised E-1 evidence and the E-12 residual | **E-1 MET; residual OWNER** | Revised E-1 is met. Gate run `6cd57da7` was ACCEPTED. CI run 37252072913 on the release commit rc4 = `c8336e7` concluded success, macOS jobs 64/64 and 0 non-success jobs (supervisor `gh run view`, 2026-10-05). The normal-shell residual (§1) is open; the gate runs were started by a headless driver. |
-| (1) Seeded regressions, new no worse than old | **NOT MET** | M7 (`m7-seeded-defect-comparison.md`, `m7-execution-plan.md`): corpus ready, no scored run (§3.4). One anecdote: gate run `a90a9e54` found and fixed a seeded bug, with no legacy control. |
-| (2) Three consecutive zero-defect real runs, limited overseer, overseer cost measured | **PARTIAL** | The series was 4 (ws7–ws10), but ws11 on the released v2.11.1 hit a coordinator defect (FIELD-22, §3.2b). The count after the FIELD-22 fix is 0. (Counting FIELD-21 in consumer use had already cut the series to 2 runs, with only ws10 on the fix.) The cost clause is MET: the overseer's tokens and cost are measured and added to per-item cost (§3.2a). The overseer limit is not met (§3.2). |
+| (1) Seeded regressions, new no worse than old | **No longer a gate (D-READY)** | Before the ruling: NOT MET. M7 is now an optional cost and quality study. M7 (`m7-seeded-defect-comparison.md`, `m7-execution-plan.md`): corpus ready, no scored run (§3.4). One anecdote: gate run `a90a9e54` found and fixed a seeded bug, with no legacy control. |
+| (2) Three consecutive zero-defect real runs, limited overseer, overseer cost measured | **MET by owner ruling** | Field evidence: poker-news-bot and poker-tools ran and shipped real work on paired-session over the preceding days. Before the ruling: PARTIAL. The series was 4 (ws7–ws10), but ws11 on the released v2.11.1 hit a coordinator defect (FIELD-22, §3.2b). The count after the FIELD-22 fix is 0. (Counting FIELD-21 in consumer use had already cut the series to 2 runs, with only ws10 on the fix.) The cost clause is MET: the overseer's tokens and cost are measured and added to per-item cost (§3.2a). The overseer limit is not met (§3.2). |
 | (3) First-class user-acceptance feedback phase | **MET** | `accept` / `reject` with `--intent-only` digest then `--expect`; `note` and `--scope-change`; DONE = acceptance pending (`docs/protocol/paired-session-entry.md` "DONE and acceptance"). Accept exercised in the 4 gate runs and in consumer runs. Reject reopens EXEC; it is covered by tests, and no gate run used it. |
 | (4a) A repo other than poker-tools | **MET** | poker-news-bot ab_pipeline: many paired-session runs since 2026-09-24, including v2.10.0+ runs `runs210/WI-101`, `WI-102` and `runs211/WI-103` (DONE; direct CLI, lifecycle off) |
-| (4b) One large task | **OWNER** | Not defined in ADR-6. A definition is proposed in §3.6. No gate run would qualify; the largest consumer work items are near the proposed size but ran with lifecycle off. |
-| (4c) Real subscription-limit HOLD followed by a successful resume | **NOT MET** | Typed rate-limit HOLD in every role and stage, which never spends a budget: `c70591d` (v2.11.0). Offline tests only; no real limit event has happened yet. |
+| (4b) One large task | **MET by owner ruling** | The ruling counts the field work in both repositories. Before the ruling: OWNER. Not defined in ADR-6. A definition is proposed in §3.6. No gate run would qualify; the largest consumer work items are near the proposed size but ran with lifecycle off. |
+| (4c) Real subscription-limit HOLD followed by a successful resume | **MET by owner ruling** | Owner-attested: a real limit HOLD about a week before 2026-10-05, resumed after the reset; the supervisor did not locate the run id. Before the ruling: NOT MET (no recorded event). Typed rate-limit HOLD in every role and stage, which never spends a budget: `c70591d` (v2.11.0). Recorded evidence is offline tests only; the real event is owner-attested, with no run id located. |
 
 ## 3. Evidence available today (2026-10-05)
 
@@ -287,44 +304,25 @@ next poker-news-bot or poker-tools item that meets the floor and has it run thro
 with lifecycle off), so under the proposal they do not count. Whether such an item may count is part of the owner's
 answer.
 
-## 4. What remains, in order
+## 4. What remains: removal preconditions (after D-READY)
 
-**Owner decisions** (each unblocks the engineering item named):
-1. Authorize the M7 scored runs and a quota window (criterion 1). Decide R4 for the m7-s3 scanner.
-2. Read criterion (2):
-   - Do supervisor-driven toy runs with the Codex trust cleanup count?
-   - Does FIELD-21 in consumer use reset the count? (Moot for now: FIELD-22 in ws11 reset it on the gate series.)
-   - Is the measured driver-session overseer cost (§3.2a) acceptable as the measurement, given its caveats?
-3. Define "one large task" for (4b): accept the §3.6 proposal (6+ files, 400+ changed lines, default entry, lifecycle
-   on, ACCEPTED), choose an alternative, or name a work item.
-4. Criterion (4c): ADR-6 requires a real subscription-limit HOLD followed by a successful resume. The offline
-   evidence does not satisfy it. Accepting anything less needs an explicit ADR-6 amendment; otherwise wait for a real
-   event.
-5. The E-12 normal-shell residual (§1): run it, or record it as superseded.
-6. Q6 (code-quality-loop A/B/C plus its 6 capabilities).
-7. The 18 owner rows of the legacy map (legacy-gap §5).
-8. LG2 R4 and Q-R1..Q-R10.
-9. Review-only EXEC cap (§3.2b): keep `max_exec_rounds` 4, raise the review-only default, or count POLISH-Q fixes
-   separately.
+Legacy is deprecated from v2.12.0. Choosing it prints a one-line notice; routing and behavior do not change. Its code
+is removed only after all three preconditions hold, so that nothing only legacy can do is lost. The table with the
+legacy-map rows is in `docs/paired-session-migration.md` ("Deprecation status").
 
-**Engineering work** (no owner input needed beyond the item above it):
-1. Lane B: `m7_corpus.py` `fresh_commit` uses `add -A --force`; re-freeze the 24 cases; dry grade.
-2. Close the default-entry evidence: if the owner keeps the normal-shell residual (owner 5), run and record that
-   evidence-complete run. The rc4 CI result is recorded (success, 64/64 macOS jobs).
-3. Criterion (2) streak:
-   - Lane B fixes FIELD-22: a concurrent run's own trust append to a shared Codex config must not HOLD another run,
-     or must be recoverable.
-   - Release it.
-   - Then run 3 new consecutive zero-defect real runs on a release that includes the fix:
-     - ideally at least one with a lane-independent `CODEX_HOME` and one with the default `~/.codex`;
-     - no two runs overlapping, unless concurrency is tested on purpose and recorded as such.
-4. M7: the unscored real pilot (m7-s4), then the D-b1 scanner after R4, then the scored runs and grading (after owner 1).
-5. Run the large task as defined by the owner through the default entry (after owner 3). Measure its overseer cost
-   with `overseer_cost.py`, adapting the run list, so (2)'s cost figure also exists for a real-size item.
-6. When a real subscription limit is hit in any paired run, record the HOLD and the successful resume as criterion
-   (4c) evidence.
-7. Implement the owner answers for the legacy-map rows, Q6 and LG2. The pinned legacy copy must stay runnable until
-   M7 is scored.
-8. Final readiness review: check all four criteria and the default-entry evidence (normal-shell residual)
-   against their evidence, including any ADR-6 amendment. Only then
-   remove the legacy entry and its last users (`entry: legacy`, `/review-loop:legacy`), with the owner's go.
+1. **review-pr ported** (D-LG2). The design (lg2-design) is parked for the owner's round 4 and Q-R1..Q-R10.
+2. **code-quality-loop decided** (Q6 memo, owner): ported onto the review-only entry, or retired.
+3. **The 18 owner rows of the legacy map** decided (`docs/paired-session-migration.md`, owner list (1)–(15)).
+
+Then a final check: each legacy capability is covered or explicitly dropped. Only then are the legacy entry and its
+last users (`entry: legacy`, `/review-loop:legacy`, `plan`, `execute`) removed, with the owner's go.
+
+**Open, but no longer gating removal:**
+- FIELD-22 (lane B): a concurrent run's trust append to a shared Codex config HOLDs another run (§3.2b). It is a
+  coordinator defect to fix in its own right; the three-run streak is no longer required.
+- The review-only EXEC cap (§3.2b): keep `max_exec_rounds` 4, raise the review-only default, or count POLISH-Q fixes
+  separately.
+- M7 (optional): if the owner authorizes it, it measures cost and quality against a pinned legacy copy. Lane B's
+  `fresh_commit` fix and the D-b1 scanner R4 still apply.
+- The large-task definition (§3.6) and the E-12 normal-shell residual (§1): no longer needed for retirement; record
+  them as superseded or keep them as quality checks.

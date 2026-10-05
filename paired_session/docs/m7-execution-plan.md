@@ -1,5 +1,7 @@
 # M7 execution plan: seeded-defect comparison and 2G cost on v2.10.0
 
+Role change (ADR-6 amendment D-READY, 2026-10-05): M7 no longer gates legacy retirement; it is an optional cost and quality study, run only if the owner authorizes it.
+
 Status: plan only (lane B, 2026-10-05); nothing here has been run. Design and pass criteria:
 [m7-seeded-defect-comparison.md](m7-seeded-defect-comparison.md) (the "design"); this file says how, in what
 order and at what cost. Authority: owner decisions D-POST210 (after v2.10.0, M7 + 2G first) and D-LG1 (a

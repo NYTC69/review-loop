@@ -5,6 +5,10 @@ Read selected sections through `scripts/read_protocol.py`; shared protocol rules
 ## Step 0 — Load config and parse flags
 
 
+When this skill is invoked directly (not reached from the review-loop or legacy entry, which print their own), first
+print the one-line deprecation notice once; it changes nothing else:
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
+
 1. Read `.review-loop/config.md` if present; otherwise fall back to the
    defaults documented in `docs/protocol/runtime-claude.md` §Configuration.
 2. Detect `--handsfree` in the invocation message. If present (or

@@ -149,6 +149,11 @@
       "mapping_id": "guide_entry_key_and_commands"
     },
     {
+      "id": "guide_and_readme_mark_legacy_deprecated",
+      "kind": "consistent_with",
+      "mapping_id": "legacy_deprecated_docs"
+    },
+    {
       "id": "subagent_types_used_in_skills_match_whitelist"
     }
   ]

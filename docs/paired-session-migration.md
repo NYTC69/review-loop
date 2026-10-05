@@ -10,6 +10,21 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 - Nothing is removed: the legacy workflow stays available through `entry: legacy`, `/review-loop:legacy`, or (Codex) "use the legacy review-loop workflow".
 - New runs are `efficient` by default and need no permission probe (see Safety modes). In strict mode the probe PASS is bound to the plugin version: after upgrading, a strict run directory needs a new `permission-probe`. Finish a run with the version that started it. If a v2.9.x run is nevertheless continued under v2.10.0, it resumes strict, needs a new probe, keeps `lifecycle_mode=off` and ends at DONE.
 
+## Deprecation status (v2.12.0)
+The legacy workflow is deprecated since v2.12.0: the owner ruled the ADR-6 replacement gate met on field evidence (ADR-6 amendment D-READY, 2026-10-05, in `DECISIONS.md`). Nothing is removed and no routing changes. When you explicitly choose legacy (`entry: legacy`, `/review-loop:legacy`, the Codex "legacy review-loop workflow" request, or `/review-loop:plan` / `execute` invoked on their own), the entry prints one line:
+
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
+
+The legacy code is removed only after every precondition below holds, so that nothing only legacy can do is lost:
+
+| Removal precondition | Status (2026-10-05) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
+|---|---|---|
+| `review-pr` ported to paired-session (D-LG2) | design parked for the owner's round 4 | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
+| `code-quality-loop` decided and ported or retired (Q6) | owner decision on the Q6 memo | `/review-loop:code-quality-loop` |
+| Every row with status "owner decision" | 18 rows, owner list (1)–(15) | all "owner decision" rows |
+
+M7, the seeded-defect comparison, no longer gates removal; it stays an optional cost and quality study.
+
 ## Status in v2.9.x (for reference)
 In v2.9.x the legacy workflow was the default and `entry: paired-session` was an experimental opt-in; without the key `/review-loop` printed a one-line implicit-entry notice.
 
@@ -31,7 +46,7 @@ entry: legacy
 | Situation | Result |
 |---|---|
 | Fresh work item, `entry` absent or `paired-session` | paired-session |
-| `entry: legacy`, an invalid value, or an unreadable config | legacy (the invalid and unreadable cases print a warning) |
+| `entry: legacy`, an invalid value, or an unreadable config | legacy (the invalid and unreadable cases print a warning; `entry: legacy` prints the deprecation notice) |
 | Plan already exists | legacy |
 | Code already implemented (task-relevant changes; unrelated dirty work does not count) | paired-session `run --review-only` |
 | Existing legacy session / explicit resume | legacy |
@@ -47,6 +62,7 @@ Printed by the `/review-loop` skill text (Claude wording; Codex names "the legac
 - A plan or a session already exists: `review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`
 - A failed check before the coordinator starts, key absent: `review-loop: paired-session default entry ...; using legacy workflow` (the reason names the host, the missing CLI, the unanswered question or the unavailable execution)
 - A failed check before the coordinator starts, `entry: paired-session`: `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or use /review-loop:legacy`
+- An explicit legacy choice (v2.12.0): the deprecation notice above (Deprecation status)
 
 ## Author and reviewer roles are inverted
 Legacy: Claude executes, Codex reviews. paired-session defaults to the reverse: Codex is the author and Claude is the reviewer. Roles come from an operator-owned profile outside the workspace: the one you name, otherwise `~/.config/review-loop/paired-session.json` when it exists (it then replaces `.review-loop/paired-session.json`); not from `reviewer` or `executor_model`; without one the defaults above apply. `.review-loop/paired-session.json` may hold non-program limits only (role/vendor/program keys there are refused), and `--config` replaces it rather than layering. Models are operator-set (ADR-9); a role without one gets its vendor's default (Claude `claude-opus-5-5`, Codex `gpt-6.1-sol`, ADR-12), and the Step 3.4 gate defaults to the author's vendor (ADR-10), so the default gate is Codex.
@@ -150,7 +166,7 @@ Status values:
 
 Push and PR delivery stays an owner decision (D8).
 
-**Must stay runnable for M7:** until M7 is scored, the legacy arm needs these from a pinned copy, even if the live plugin drops them:
+**Must stay runnable for M7:** M7 is optional since the ADR-6 amendment D-READY (2026-10-05); if it is run, its legacy arm needs these from a pinned copy, even if the live plugin drops them:
 - `execute --review-only` with `--stop-after exec-round` or `before-polish`;
 - `reviewer: subagent`;
 - `adversarial_gate_skip_paths`;
