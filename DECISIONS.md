@@ -269,3 +269,25 @@ entry; never edit history.
     4 still finds problems, stop and report; there is no round 5.
   - M7 stays optional (D-READY); D04–D06 order its preparation if it runs.
   - Removal preconditions: `docs/paired-session-migration.md` "Deprecation status".
+- **Addendum (2026-10-05, owner answers in chat after the decision sheet)**:
+  - (a) **Post-gate repair round = A.** The rule as the supervisor put it to the owner (the owner answered "A"),
+    verbatim: "终审打回后，修复再过一轮审查，不占 3 轮上限，每次终审只给这一轮；这一轮还不过，就停下来问你".
+    - After a failed final gate, the fixes get exactly one more review round by the per-round reviewer.
+    - That round is outside the 3-round cap and outside an owner-authorized round 4.
+    - There is one such round per final gate. If it does not approve, the unit stops and the owner is asked; there are
+      no further rounds.
+    - It is therefore separate from the "no round 5" rule under Consequences above: that rule limits ordinary rounds,
+      while the post-gate round follows a failed final gate. Its review-ledger row is numbered after the last round.
+    - Tooling: `review_round.py --post-gate-repair '<authorization>' --gate-ref <gate output>` records the
+      authorization and the gate output's sha256, and refuses a second post-gate round for the same gate.
+  - (b) **D12 = A:** the review-only `max_exec_rounds` stays 4; there is no code change. It answers the question from
+    the ws12 run (`paired_session/docs/legacy-deprecation-readiness.md` §3.2b).
+  - (c) **Review chain ABA/BAB, as in ADR-10.** The owner, verbatim:
+    "如果 A 写, B review, 最后就 A 加自己做对抗性审查, 全新独立的 session, 不带作者上下文, 反之, 就是 BAB."
+    - The other vendor reviews the rounds.
+    - After its approval, the author's vendor runs a fresh, independent adversarial final review, with no author or
+      review history.
+    - Fixes from the final review go back to the round reviewer under (a).
+    - This applies to lane units as well as to paired-session runs.
+  - (d) The D11 rows stay provisional and are re-confirmed with the owner per work item, as recorded under Consequences
+    above (cross-reference only; nothing changes).
