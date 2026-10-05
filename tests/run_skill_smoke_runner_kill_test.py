@@ -168,16 +168,18 @@ class RunnerKillTest(unittest.TestCase):
             shutil.rmtree(self.artifact_dir)
         if self.pgid_file.exists() and group_alive(int(self.pgid_file.read_text())):
             os.killpg(int(self.pgid_file.read_text()), signal.SIGKILL)
-        if self.original is None:
-            CONFIG.unlink(missing_ok=True)
-        else:
-            CONFIG.write_bytes(self.original)
-        try:   # only while no runner holds the lock: never delete a live runner's SIGKILL safety net
-            fd = lib.acquire_runner_lock(ROOT)
+        try:   # the shared config and marker only under the lock: never touch a live runner's temp_config or safety net
+            fd = lib.acquire_runner_lock(ROOT)   # (this test's own runner is already stopped: its cleanup runs first)
         except RuntimeError:
             return
-        MARKER.unlink(missing_ok=True)
-        os.close(fd)
+        try:
+            if self.original is None:
+                CONFIG.unlink(missing_ok=True)
+            else:
+                CONFIG.write_bytes(self.original)
+            MARKER.unlink(missing_ok=True)
+        finally:
+            os.close(fd)
 
     def run_runner(self, *args):
         return subprocess.run(["bash", "scripts/run-skill-smoke", *args], cwd=ROOT, capture_output=True, text=True,
