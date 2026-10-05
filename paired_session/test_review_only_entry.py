@@ -10,6 +10,7 @@ from unittest import mock
 
 from paired_session import test_real_coordinator as trc
 from paired_session import worktree_lifecycle as wl
+from paired_session.test_worktree_lifecycle import COVERING_GITIGNORE, DONE
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli',
@@ -42,7 +43,6 @@ class ReviewOnlyEntryTests(unittest.TestCase):
                  (('--base', 'no-such-ref'), '--base no-such-ref does not name a commit'),
                  (('--base', foreign), 'is not an ancestor of HEAD'),
                  (('--stop-after-plan',), 'has no PLAN phase'),
-                 (('--lifecycle-mode', 'on'), 'runs with --lifecycle-mode off until'),
                  (('--supersedes', str(self.root / 'parent')), "a scope-change successor keeps its parent's entry")]
         for extra, message in cases:
             with self.subTest(extra=extra):
@@ -284,6 +284,90 @@ class ReviewOnlyEntryTests(unittest.TestCase):
                 self.assertFalse((self.workspace / 'forbidden.txt').exists())
                 self.assertEqual((self.workspace / 'sum_ints.py').read_text(), SUM_INTS)   # the change under review stays
                 self.assertEqual(state['config']['safety_mode'], 'strict' if strict else 'efficient')
+
+    # --- LG1-c, tests 6 and 9: the W lifecycle and delivery -------------------------------------------------------------------
+    def w_ready(self):   # SECURITY needs the legacy sensitive patterns, as in test_worktree_lifecycle
+        (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)
+        self.git('commit', '-qam', 'ignore sensitive files')
+        (self.workspace / 'committed.py').write_text('VALUE = 1\n')
+        self.git('add', 'committed.py')
+        self.git('commit', '-qm', 'committed part of the change')
+
+    W = ('--review-only', '--lifecycle-mode', 'on', '--auto-commit', 'true', '--max-invocations', '60')
+
+    def test_a_review_only_w_run_delivers_the_accepted_tree_on_head_at_start(self):
+        self.w_ready()
+        self.change()
+        base, head = self.git('rev-parse', 'HEAD~1'), self.git('rev-parse', 'HEAD')
+        done = self.run_coordinator(*self.W, '--base', 'HEAD~1')
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        state = self.state()
+        self.assertEqual([row['stage'] for row in state['lifecycle']['receipts']], ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
+        self.assertEqual(state['turns'][0]['role'], 'reviewer')
+        baseline = json.loads(Path(state['lifecycle']['security_baseline']['path']).read_text())
+        self.assertEqual((baseline['state']['head'], baseline['state']['untracked']), (base, []))   # the base tree
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual(security['preflight']['status'], 'clean')
+        accepted = self.run_operator_action('accept', *self.W)
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        self.assertEqual((self.git('rev-parse', 'HEAD~1'), self.git('rev-parse', 'HEAD~2')), (head, base))   # on HEAD
+        manifest = sorted(path for path, value in self.state()['approved_manifest'] if value != 'missing')
+        self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'HEAD').splitlines(), manifest)   # exactly the accepted tree
+        self.assertEqual(self.git('show', 'HEAD:sum_ints.py') + '\n', SUM_INTS)
+        self.assertEqual(self.git('show', 'HEAD:tracked.txt'), 'base\nedited')
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertIn(f'Review base: {base}', self.git('log', '-1', '--format=%B'))
+        report = (self.run_dir / 'delivery-report.md').read_text()
+        self.assertIn(f'review base `{base}`', report)
+        self.assertIn(f'审查的已有提交：{head}', report)   # base..head_at_start: the committed part of the change
+
+    def test_a_blocked_review_only_change_is_fixed_and_the_fix_delivered(self):   # test 6: BLOCK -> fix -> approve -> gate
+        self.w_ready()
+        self.change()
+        done = self.run_coordinator(*self.W, '--exercise-revisions')   # the first EXEC review blocks
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        exec_turns = [row['role'] for row in self.state()['turns'] if row['phase'] == 'EXEC' and row['role'] != 'shadow']
+        self.assertEqual(exec_turns[:3], ['reviewer', 'author', 'reviewer'])
+        self.assertIn('gate', exec_turns)
+        accepted = self.run_operator_action('accept', *self.W, '--exercise-revisions')
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        manifest = sorted(path for path, value in self.state()['approved_manifest'] if value != 'missing')
+        self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'HEAD').splitlines(), manifest)
+        self.assertIn('raise TypeError', self.git('show', 'HEAD:sum_ints.py'))   # the author's fix is delivered
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_docs_the_change_already_edits_are_pre_owned_not_a_hold(self):   # test 8, Q8
+        self.w_ready()
+        self.change()
+        (self.workspace / 'CHANGELOG.md').write_text('# Changelog\n\n- sum_ints added\n')   # in the change under review
+        done = self.run_coordinator(*self.W)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        state = self.state()
+        self.assertEqual(state['lifecycle']['docs_pre_owned'], ['CHANGELOG.md'])
+        [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
+        self.assertEqual((docs['status'], docs['route'], docs['review']['status']), ('READY', 'SECURITY', 'APPROVE'))
+        co = rc.Coordinator(self.args(*self.W[1:], action='resume'))
+        note = co._docs_reserved_note()
+        self.assertIn('CHANGELOG.md', note)
+        self.assertNotIn('Reserved for the DOCS stage; do not edit: CHANGELOG.md', note)
+
+    def test_a_fully_staged_change_is_accepted_and_a_changed_index_is_refused(self):
+        self.w_ready()
+        self.change()
+        self.git('add', 'sum_ints.py', 'tracked.txt')   # fully staged at the start: part of the reviewed tree
+        done = self.run_coordinator(*self.W)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        blob = subprocess.run(['git', 'hash-object', '-w', '--stdin'], cwd=self.workspace, input='other\n', text=True,
+                              check=True, capture_output=True).stdout.strip()
+        index = self.workspace / '.git' / 'index'
+        saved = index.read_bytes()
+        self.git('update-index', '--cacheinfo', f'100644,{blob},tracked.txt')   # the index changes, the tree does not
+        refused = self.run_operator_action('accept', *self.W)
+        self.assertIn('auto_commit refuses an index changed since the review-only run started', refused.stdout + refused.stderr)
+        index.write_bytes(saved)
+        accepted = self.run_operator_action('accept', *self.W)
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        self.assertEqual(self.git('show', 'HEAD:sum_ints.py') + '\n', SUM_INTS)
 
 
 if __name__ == '__main__':

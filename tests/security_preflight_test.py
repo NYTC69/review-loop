@@ -256,3 +256,25 @@ def test_start_coverage_cli_reports_what_a_scan_of_the_unchanged_repo_credits(re
     assert "environment-and-config" in narrow["uncovered"]
     (repo / ".gitignore").write_text(".review-loop/\n.env\n")   # dirty at start: not credited, as a scan would not
     assert sp.start_coverage(str(repo))["uncovered"] == narrow["uncovered"]
+
+
+
+def test_a_reviewed_gitignore_edit_counts_only_with_the_base_tree_baseline(repo, tmp_path):
+    """LG1-c: a review-only change already in the tree when the run starts; a live baseline makes its .gitignore edit
+    ambiguous (review-required), the base-tree baseline credits it; a secret in the change is found either way."""
+    original = (repo / ".gitignore").read_text()
+    (repo / ".gitignore").write_text(".review-loop/\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-qm", "narrow ignore rules")
+    base = git(repo, "rev-parse", "HEAD").decode().strip()
+    (repo / ".gitignore").write_text(original)   # the change under review restores the coverage
+    info = ds.repository(str(repo))
+    for state, status in ((ds.capture_state(info), "review-required"), (ds.commit_state(info, base), "clean")):
+        manifest = tmp_path / (status + ".json")
+        manifest.write_text(json.dumps(ds.build_manifest(ds.build_baseline(info, ["."], state), ds.capture_state(info))))
+        assert sp.scan(str(repo), str(manifest))["status"] == status
+    (repo / "app.py").write_text("KEY = 'AKIA" + "ABCDEFGHIJKLMNOP'\n")   # a secret in the reviewed change: flagged
+    manifest = tmp_path / "secret.json"
+    manifest.write_text(json.dumps(ds.build_manifest(ds.build_baseline(info, ["."], ds.commit_state(info, base)),
+                                                     ds.capture_state(info))))
+    assert sp.scan(str(repo), str(manifest))["status"] == "blocked"

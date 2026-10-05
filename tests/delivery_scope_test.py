@@ -314,3 +314,30 @@ def test_untracked_session_directory_is_excluded_but_tracked_config_is_not(repo)
     second = sessions / "candidate-2.json"
     run(repo, "manifest", "--baseline", out, "--output", second)
     assert paths(json.loads(second.read_text())["outside_scope_delta"]) == {".review-loop/config.md"}
+
+
+
+def test_from_commit_baseline_is_a_clean_checkout_of_the_base(repo):
+    """LG1-c (review-only-entry.md §4): the base tree, not the live tree that already holds the change under review."""
+    base = git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+    write(repo, "task.txt", "committed change\n")
+    os.symlink("task.txt", repo / "link")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "committed part of the change")
+    write(repo, "unrelated.txt", "uncommitted change\n")
+    write(repo, "new.txt", "untracked part\n")
+    info = SCOPE.repository(str(repo))
+    state = SCOPE.commit_state(info, base)
+    SCOPE.validate_state(state, info)
+    assert (state["head"], state["untracked"], state["index_file_sha256"]) == (base, [], None)
+    assert set(state["worktree"]) == {"task.txt", "unrelated.txt", "delete.txt", ".gitignore"}
+    assert state["worktree"]["task.txt"]["sha256"] == hashlib.sha256(b"base\n").hexdigest()
+    assert state["worktree"]["task.txt"]["size"] == len(b"base\n")
+    assert state["index"]["task.txt"] == [dict(state["head_paths"]["task.txt"], stage=0)]
+    document = run(repo, "capture", "--scope", ".", "--from-commit", base)
+    path = repo.parent / "from-commit.json"
+    path.write_text(json.dumps(document))
+    manifest = SCOPE.build_manifest(SCOPE.load_document(str(path), "delivery-baseline"), SCOPE.capture_state(info))
+    owned = dict((row["path"], row["ownership"]) for row in manifest["task_delta"])
+    assert owned == dict.fromkeys(("task.txt", "link", "unrelated.txt", "new.txt"), "declared-post-baseline")
+    assert run(repo, "capture", "--scope", ".", "--from-commit", "no-such-ref", expect=2)["kind"] == "usage"

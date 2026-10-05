@@ -88,7 +88,8 @@ CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex di
 REVIEW_ONLY_DEFAULT_BASE = 'HEAD'            # Q2: the uncommitted work, as legacy --review-only
 REVIEW_ONLY_BASE_MUST_BE_ANCESTOR = True     # Q5: refuse a base that is not an ancestor of HEAD
 REVIEW_ONLY_EXISTING_CHANGE_ROUNDS = 1       # Q9: the pre-existing change is EXEC round 1 (the author's round is skipped)
-REVIEW_ONLY_LIFECYCLE_READY = False          # LG1-a1 interim: lifecycle on waits for the base-tree delivery baseline (LG1-c)
+REVIEW_ONLY_LIFECYCLE_READY = True           # LG1-c: the delivery baseline is the base tree, so lifecycle on is supported
+REVIEW_ONLY_DOCS_PRE_OWNED = True            # Q8: docs files the change already edits are DOCS's to extend and review, not a HOLD
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
     try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
@@ -3861,6 +3862,9 @@ class Coordinator:
         except WorktreeDeliveryHold as exc:   # resume is refused; only accept with the journaled digest finishes it
             self.state['delivery_pending'] = intent['digest']
             return self.hold(f"{exc}; accept --expect {intent['digest']}")
+        if record := self.state.get('review_only'):   # LG1-c: the commits since the base that were reviewed with the change
+            span = self.state['config']['review_base'] + '..' + record['head_at_start']
+            delivery['reviewed_commits'] = self._git(['rev-list', '--reverse', span]).split()
         record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(), 'intent': intent,
                   'accepted_state': 'DONE', 'acceptance_state': 'ACCEPTED', 'reason': self.args.reason,
                   'override_rejection': False, 'delivery': delivery}
@@ -3886,7 +3890,10 @@ class Coordinator:
     def _commit_refusals(self, paths: list[str]) -> None:
         """W04 parity before an auto_commit: no work staged before the run, no content-transforming attribute or
         filter, no core.autocrlf, so the commit holds exactly the accepted bytes and checks out as them."""
-        if staged := self._git(['diff-index', '--cached', '--name-only', 'HEAD']).split():
+        if record := self.state.get('review_only'):   # LG1-c: the index may hold the reviewed change, fully staged at start
+            if hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest() != record['index_at_start']:
+                raise ValueError('auto_commit refuses an index changed since the review-only run started; restore it or abort')
+        elif staged := self._git(['diff-index', '--cached', '--name-only', 'HEAD']).split():
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
         if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
             raise ValueError('auto_commit refuses core.autocrlf; unset it or accept with auto_commit false')
@@ -3946,7 +3953,8 @@ class Coordinator:
             title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
                          'paired-session work item')
             message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
-                       f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n")
+                       f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n"
+                       + (f"Review base: {self.state['config']['review_base']}\n" if self.state.get('review_only') else ''))
             commit = self._git(['commit-tree', '--no-gpg-sign', tree, '-p', parent, '-m', message]).strip()
             journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit, 'ref': intent.get('head_ref'),
                        'index_before': self._index_digest(), 'index_target': self._index_digest(commit)}
@@ -4374,12 +4382,19 @@ class Coordinator:
     def _docs_allowlist(self) -> list[str]:
         return sorted(Path(path).relative_to(self.workspace).as_posix() for path in self.state['config']['docs_allowlist'])
 
+    def _docs_owned(self) -> dict:   # DOCS's own writes plus (review-only, Q8) the docs the reviewed change already edits
+        life = self.state['lifecycle']
+        return {**dict.fromkeys(life.get('docs_pre_owned', []), 'pre-owned'), **life.get('docs_owned', {})}
+
     def _docs_reserved_note(self) -> str:
-        owned = self.state['lifecycle'].get('docs_owned', {})
-        reserved = [path for path in self._docs_allowlist() if path not in owned]
+        pre = set(self.state['lifecycle'].get('docs_pre_owned', [])) - set(self.state['lifecycle'].get('docs_owned', {}))
+        owned = {path for path in self._docs_owned() if path not in pre}
+        reserved = [path for path in self._docs_allowlist() if path not in owned | pre]
         return ' '.join([*(['Reserved for the DOCS stage; do not edit: ' + ', '.join(reserved) + '.'] if reserved else []),
                          *(['Written by the DOCS stage; edit only to fix a delivered docs finding: ' +
-                            ', '.join(sorted(owned)) + '.'] if owned else [])])
+                            ', '.join(sorted(owned)) + '.'] if owned else []),
+                         *(['Part of the change under review; edit only to fix a delivered finding: ' +
+                            ', '.join(sorted(pre)) + '.'] if pre else [])])
 
     def author_control_contract(self) -> str:
         if self.state['phase'] == 'PLAN':
@@ -4651,6 +4666,8 @@ class Coordinator:
                               **({'parent_review_scope_sha256': scope['parent_scope_sha256']} if scope['parent_scope_sha256'] else {})})
         if 'lifecycle' in self.state:   # LG1-a2: the W parent (HEAD-moved checks, auto_commit CAS) is HEAD, never the base
             self.state['lifecycle']['parent'] = scope['head']
+            if REVIEW_ONLY_DOCS_PRE_OWNED and (pre := sorted(set(self._changed_paths(deleted=True)) & set(self._docs_allowlist()))):
+                self.state['lifecycle']['docs_pre_owned'] = pre   # LG1-c, Q8
 
     def _review_only_start_issue(self) -> Optional[str]:
         """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""
@@ -5566,7 +5583,7 @@ class Coordinator:
             tree, manifest = git_snapshot(workspace)
             if tree != life['candidate_oid']:
                 raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
-            owned = life.get('docs_owned', {})   # DOCS's own entries: the EXEC author may fix docs findings in them,
+            owned = self._docs_owned()   # DOCS's own entries: the EXEC author may fix docs findings in them,
             if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews them again
                 raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
                                    '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
@@ -5597,7 +5614,7 @@ class Coordinator:
         reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
                             *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
                               if denied else [])]) or None
-        owned = self.state['lifecycle'].get('docs_owned', {})
+        owned = self._docs_owned()
         replay = bool(outside)
         if not reason and not replay and (changed or owned):   # every DOCS-written doc gets a fresh docs review
             review = self._docs_review_turn(tree, sorted({*changed, *owned}))
@@ -5610,7 +5627,7 @@ class Coordinator:
             self.state['lifecycle'], {**receipt, 'status': 'HOLD' if reason else 'READY'})
         self.state['lifecycle'].pop('writer_git', None)
         if not reason:   # reviewed (SECURITY) or about to be (EXEC replay): DOCS owns what it wrote (values: audit only)
-            self.state['lifecycle']['docs_owned'] = {**owned, **receipt['docs_written']}
+            self.state['lifecycle']['docs_owned'] = {**self.state['lifecycle'].get('docs_owned', {}), **receipt['docs_written']}
         if reason:
             self.hold(reason)
         elif replay:   # a code or comment write, or a docs review REVISE: new EXEC convergence, reviewer then gate
@@ -5681,7 +5698,9 @@ class Coordinator:
         before any probe or turn; a failure refuses the run instead of surfacing at SECURITY."""
         path = self.evidence / f'delivery-baseline-{uuid.uuid4().hex[:8]}.json'
         try:
-            proc = self._security_script('delivery_scope.py', 'capture', '--scope', '.', '--output', str(path))
+            base = self.state['config'].get('review_base')   # LG1-c: a review-only run's baseline is its base, not the live tree
+            proc = self._security_script('delivery_scope.py', 'capture', '--scope', '.', '--output', str(path),
+                                         *(['--from-commit', base] if base else []))
         except RuntimeError as exc:
             raise ValueError(f'worktree lifecycle cannot capture its delivery baseline: {exc}') from exc
         try:
