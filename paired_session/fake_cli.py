@@ -23,6 +23,15 @@ def readonly_profile(args):
     except ValueError: return {}
 
 
+def long_command(events, command):
+    """FIELD-20: FAKE_CODEX_LONG=yield|started-only|killed makes `command` outlive exec_command's first yield; it then completes
+    with exit 0 (the model polled), never completes (killed at the turn end), or completes with -1 (killed)."""
+    state = os.environ.get('FAKE_CODEX_LONG')
+    changes = {'yield': {'started': True}, 'started-only': {'started': True, 'complete': False},
+               'killed': {'started': True, 'exit_code': -1, 'output': '........ [ 70%]'}}.get(state, {})
+    return [{**event, **changes} if event['command'] == command else event for event in events]
+
+
 def emit_codex(answer, session, command_events=None):
     model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6.1-sol')
     print(json.dumps({'type': 'thread.started', 'thread_id': session, 'model': model}))
@@ -54,6 +63,12 @@ def emit_codex(answer, session, command_events=None):
         time.sleep(30)
     if command_events and not os.environ.get('FAKE_MISSING_OBSERVED'):
         for index, event in enumerate(command_events):
+            if event.get('started'):   # FIELD-20: as codex-cli 0.160.0 reports a command that outlives exec_command's first yield
+                print(json.dumps({'type': 'item.started', 'item': {
+                    'id': 'fake-command-' + str(index), 'type': 'command_execution', 'command': event['command'],
+                    'exit_code': None, 'status': 'in_progress', 'aggregated_output': ''}}))
+            if event.get('complete') is False:   # killed when the turn ended: no completion event at all
+                continue
             print(json.dumps({'type': 'item.completed', 'item': {
                 'id': 'fake-command-' + str(index), 'type': 'command_execution',
                 'command': event['command'], 'exit_code': event['exit_code'],
@@ -346,6 +361,7 @@ def main():
             for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
                 if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
                     command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
+            command_events = long_command(command_events, allowed)
             fs = readonly_profile(args)   # b295-f1: the read-only profile in this argv decides the scratch and workspace writes
             if 'Scratch write expected to succeed:\n' in prompt:
                 scratch = prompt.split('Scratch write expected to succeed:\n', 1)[1].splitlines()[0]
@@ -518,6 +534,9 @@ def main():
         command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]
                           if vendor == 'codex' and role == 'reviewer' and phase == 'EXEC'
                           and configured_test and os.environ.get('FAKE_REVIEW_TEST_FAILURE') else None)
+        if (command_events is None and vendor == 'codex' and role == 'reviewer' and phase == 'EXEC' and configured_test
+                and os.environ.get('FAKE_CODEX_LONG')):   # FIELD-20: the configured test outlives the first yield
+            command_events = long_command([{'command': configured_test, 'exit_code': 0, 'output': 'OK'}], configured_test)
     if prompt.startswith('Role: author workspace-write permission probe'):
         encoded = prompt.split('PROBE_COMMANDS_JSON: ', 1)[1].splitlines()[0]
         commands = json.loads(encoded)

@@ -76,6 +76,8 @@ PATH_TOOLS = {'Read': 'file_path', 'Write': 'file_path', 'Edit': 'file_path', 'M
               'NotebookRead': 'notebook_path', 'LS': 'path'}
 CODE_MODE = re.compile(r'\s*const\s+(\w+)\s*=\s*await\s+tools\.exec_command\(')
 CODE_MODE_KEYS = {'cmd', 'workdir', 'yield_time_ms', 'max_output_tokens', 'justification', 'timeout_ms'}
+CODE_MODE_POLL = re.compile(r'\s*const\s+(\w+)\s*=\s*await\s+tools\.write_stdin\(')   # FIELD-20: waiting on a still-running command
+CODE_MODE_POLL_KEYS = {'session_id', 'chars', 'yield_time_ms', 'max_output_tokens'}
 
 
 class Unresolved(Exception):
@@ -125,6 +127,20 @@ def code_mode_exec(code) -> Optional[dict]:
     tail = r'\s*\);\s*text\((?:' + var + r'(?:\.output)?|JSON\.stringify\(' + var + r'\))\);\s*'
     ok = re.fullmatch(tail, rest[length:]) and isinstance(args, dict) and set(args) <= CODE_MODE_KEYS and isinstance(args.get('cmd'), str)
     return args if ok else None
+
+
+def code_mode_poll(code) -> bool:
+    """FIELD-20: `const r = await tools.write_stdin({"session_id":<int>,"chars":""[, ...]}); text(...);` only reads a running
+    command's output; any input (non-empty chars) could drive it and stays unresolved."""
+    match = CODE_MODE_POLL.match(code) if isinstance(code, str) else None
+    if not match: return False
+    rest = code[match.end():].lstrip()
+    try: args, length = json.JSONDecoder().raw_decode(rest)
+    except ValueError: return False
+    var = re.escape(match.group(1))
+    tail = r'\s*\);\s*text\((?:' + var + r'(?:\.output)?|JSON\.stringify\(' + var + r'\))\);\s*'
+    return bool(re.fullmatch(tail, rest[length:]) and isinstance(args, dict) and set(args) <= CODE_MODE_POLL_KEYS
+                and type(args.get('session_id')) is int and args.get('chars') == '')
 
 
 def _canonical(path: Path) -> Path:
@@ -252,6 +268,7 @@ class TurnGuard:
         if tool == 'Bash': return self.command(given.get('command'), persistent=True)
         if tool == 'command_execution': return self.command(given.get('command'), persistent=False, workdir=given.get('workdir'))
         if tool == 'code_mode':
+            if code_mode_poll(given.get('code')): return None   # FIELD-20: reads the output of a command classified when it started
             if (cell := code_mode_exec(given.get('code'))) is None: raise Unresolved('code-mode cell is not one literal exec_command')
             return self.command(cell['cmd'], persistent=False, workdir=cell.get('workdir'))
         if tool == 'file_change':

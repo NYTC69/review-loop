@@ -97,10 +97,22 @@ one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
 configure `/bin/bash /absolute/path/to/script.sh`. When the probe's run of the
 test command hits the Claude CLI's own Bash timeout (set per call, at most 10
 minutes by default), the probe fails with `allowed-command-timeout (<N> s)`
-instead of `allowed-command-failed` (a Codex reviewer's command timeout is still
-reported as `allowed-command-failed`);
+instead of `allowed-command-failed`;
 re-run the probe on a less loaded host, or configure a faster test command (the
 same one for probe and run).
+FIELD-20 (long test commands): Codex's `exec_command` returns after about 10 s
+with a session id and no exit code while the command keeps running. Every probe,
+reviewer, gate, docs-reviewer and specialist prompt now tells the role to poll a
+still-running command until it has an exit code, never to start another command
+or end the turn before that, and to give a long Bash call the 600000 ms timeout.
+A command started but never completed (no exit status when the turn ended, or
+`-1`) is reported as `allowed-command-not-completed` by the probe and as "not
+observed to completion" in an EXEC or DOCS approval HOLD, not as an ordinary
+failure. One observed completed exit-0 run of the exact configured command is
+still required. The remaining limits are the per-dispatch timeout (`--timeout`)
+and, for a Claude role, the CLI's 10-minute cap on one Bash call (reported as
+`allowed-command-timeout`, above); a test command longer than either cannot be
+observed to completion.
 Write launcher logs (for example `permission-probe ... > probe.log`) outside the
 run dir's parent: the Claude author probe watches the entries beside the run dir,
 and a log that grows there during the probe fails it as a file changed outside
