@@ -196,6 +196,50 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def finish_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'FINISH']
 
+    # --- FIELD-19: .gitignore coverage is known at start; the SECURITY HOLD names a recovery that works ------------------------
+    def test_an_uncovered_gitignore_warns_at_start_and_an_in_run_edit_recovers_the_security_hold(self):
+        (self.workspace / '.gitignore').write_text('__pycache__/\n*.cache\n.review-loop/\n')
+        rc.subprocess.run(['git', 'commit', '-qam', 'narrow ignore rules'], cwd=self.workspace, check=True)
+        held = self.run_coordinator('--lifecycle-mode', 'on')   # the run proceeds: a warning, not a gate
+        missing = ['environment-and-config', 'keys-and-certificates', 'ssh-private-keys']
+        self.assertIn('WARNING: the tracked .gitignore does not cover environment-and-config, keys-and-certificates, '
+                      'ssh-private-keys', held.stdout, held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        start = state['lifecycle']['ignore_coverage_at_start']
+        self.assertTrue(start['checked'])
+        self.assertTrue(set(missing) <= set(start['uncovered']))
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual((state['status'], security['preflight']['status']), ('HOLD', 'review-required'))
+        self.assertEqual(security['preflight']['uncovered_ignore'], start['uncovered'])   # one computation, one answer
+        self.assertIn('To recover, add the patterns to the tracked .gitignore in the worktree, neither committed nor staged',
+                      state['hold_reason'])
+        (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)   # the operator's in-run edit, not committed
+        resumed = self.run_operator_action('resume', '--lifecycle-mode', 'on')
+        self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        security = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY'][-1]
+        self.assertEqual((security['preflight']['status'], security['preflight']['uncovered_ignore']), ('clean', []))
+        self.assertEqual(rc.subprocess.run(['git', 'status', '--porcelain', '.gitignore'], cwd=self.workspace, check=True,
+                                           capture_output=True, text=True).stdout.strip(), 'M .gitignore')   # ships with the work
+
+    def test_a_covering_gitignore_gives_no_start_warning(self):
+        out = io.StringIO()
+        with mock.patch('sys.stdout', out):
+            co = rc.Coordinator(self.args())
+        self.assertEqual(co.state['lifecycle']['ignore_coverage_at_start'], {'checked': True, 'uncovered': []})
+        self.assertNotIn('.gitignore', out.getvalue())
+        script = rc.Coordinator._security_script   # a failed check only notes it; the run is created
+
+        def failing(me, name, *args):
+            if name == 'security_preflight.py':
+                raise RuntimeError('security_preflight.py could not run: no interpreter')
+            return script(me, name, *args)
+        out, self.run_dir = io.StringIO(), self.root / 'unchecked'
+        with mock.patch.object(rc.Coordinator, '_security_script', autospec=True, side_effect=failing), mock.patch('sys.stdout', out):
+            co = rc.Coordinator(self.args())
+        self.assertEqual(co.state['lifecycle']['ignore_coverage_at_start'], {'checked': False})
+        self.assertIn('NOTE: .gitignore coverage could not be checked at start', out.getvalue())
+
     def test_a_no_op_worktree_run_goes_through_every_stage_and_reaches_done_only_after_security(self):
         result = self.run_coordinator('--lifecycle-mode', 'on')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

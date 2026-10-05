@@ -155,6 +155,16 @@ recovering an interrupted probe, use `resume` on the existing run directory;
 do not use `run` again or start a new work item. In strict mode, re-run the
 permission probe first if it is missing or no longer matches.
 
+A run start that prints `WARNING: the tracked .gitignore does not cover ...`
+will HOLD at SECURITY (`security preflight review-required`). Tell the user
+then: committing a covering `.gitignore` before the run avoids it. At that
+HOLD, the user adds the patterns to `.gitignore` in the worktree, neither
+committed nor staged, and resumes (EXEC review and gate replay; the edit ships
+with the delivery). A commit moves HEAD and HOLDs: restore HEAD to the run's
+parent keeping the edit. A `.gitignore` already modified at the start does not
+count as the run's own coverage: restore it to HEAD if HEAD's version covers
+the categories, otherwise abort and start a new run after committing it.
+
 ## DONE and acceptance
 
 With the saved `config.lifecycle_mode` `on`, DONE means the security stage

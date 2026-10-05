@@ -1868,6 +1868,7 @@ class Coordinator:
                 self.state['lifecycle']['security_baseline'] = (
                     self._inherited_security_baseline(Path(args.supersedes).resolve()) if args.supersedes else
                     self._capture_security_baseline())
+                self.state['lifecycle']['ignore_coverage_at_start'] = self._start_ignore_coverage()
             self.save()
 
     def _migrate_invocation_budget(self) -> int:
@@ -5553,6 +5554,24 @@ class Coordinator:
         except (OSError, subprocess.SubprocessError) as exc:   # a timeout or a missing interpreter HOLDs
             raise RuntimeError(f'{script} could not run: {exc}') from exc
 
+    def _start_ignore_coverage(self) -> dict:
+        """FIELD-19: when the W state is created, the .gitignore coverage SECURITY will credit (security_preflight.py
+        start_coverage, the same ignore_coverage rules), so a gap is known before the run's cost. A warning only, in
+        both modes (D-EFF adds no start gate); a failed check stays silent apart from a NOTE."""
+        try:
+            proc = self._security_script('security_preflight.py', '--ignore-coverage')
+            missing = json.loads(proc.stdout)['uncovered'] if proc.returncode == 0 else None
+        except (RuntimeError, ValueError, KeyError, TypeError):
+            missing = None
+        if not isinstance(missing, list):
+            print('NOTE: .gitignore coverage could not be checked at start; SECURITY checks it at the end')
+            return {'checked': False}
+        if missing:
+            print('WARNING: the tracked .gitignore does not cover ' + ', '.join(missing) + '; SECURITY will stop for '
+                  'review at the end of this run. Commit a .gitignore covering them before starting (abort and start '
+                  'again), or after that HOLD edit .gitignore without committing and resume (EXEC review replays)')
+        return {'checked': True, 'uncovered': missing}
+
     def worktree_security_turn(self) -> None:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
         (legacy Step 3.7) run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
@@ -5722,7 +5741,12 @@ class Coordinator:
         result['reason'] = None if clean else (
             f"security preflight {result['status']} (exit {proc.returncode})" +
             ''.join(f'; {row["rule"]} in {row["path"]}' for row in result['findings'][:10]) +
-            ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) if result['uncovered_ignore'] else '') +
+            ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) + '. To recover, add the patterns to '
+             'the tracked .gitignore in the worktree, neither committed nor staged (an edit made during the run counts and '
+             'ships with the delivery; undo a commit by restoring HEAD to the run\'s parent, keeping the edit) and resume: '
+             'EXEC review and gate replay, then FINISH..SECURITY, within the EXEC round limit. An edit already present when '
+             'the run started does not count as the run\'s own: restore the file to HEAD, or abort, commit it, start a new '
+             'run' if result['uncovered_ignore'] else '') +
             (f'; {proc.stderr.strip()[-300:]}' if proc.returncode not in (0, 1) and proc.stderr.strip() else ''))
         return result
 

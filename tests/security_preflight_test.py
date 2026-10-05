@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -239,3 +240,19 @@ def test_undeclared_gitignore_edit_does_not_count_as_coverage(repo, tmp_path):
     manifest.write_text(json.dumps(ds.build_manifest(baseline, ds.capture_state(info))))
     result = sp.scan(str(repo), str(manifest))
     assert result["ignore_coverage_complete"] is False
+
+
+def test_start_coverage_cli_reports_what_a_scan_of_the_unchanged_repo_credits(repo, tmp_path):
+    """FIELD-19: --ignore-coverage is the same ignore_coverage() a scan uses, with no task-owned .gitignore."""
+    script = Path(sp.__file__)
+    full = json.loads(subprocess.check_output([sys.executable, str(script), "--repo", str(repo), "--ignore-coverage"]))
+    assert full["uncovered"] == [] and full["ignore_coverage"] == sp.ignore_coverage(str(repo))
+    (repo / ".gitignore").write_text(".review-loop/\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-qm", "remove sensitive ignore coverage")
+    narrow = json.loads(subprocess.check_output([sys.executable, str(script), "--repo", str(repo), "--ignore-coverage"]))
+    result = sp.scan(str(repo), str(candidate(repo, tmp_path)))
+    assert narrow["uncovered"] == [row["category"] for row in result["ignore_coverage"] if not row["covered"]]
+    assert "environment-and-config" in narrow["uncovered"]
+    (repo / ".gitignore").write_text(".review-loop/\n.env\n")   # dirty at start: not credited, as a scan would not
+    assert sp.start_coverage(str(repo))["uncovered"] == narrow["uncovered"]

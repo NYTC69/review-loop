@@ -343,12 +343,30 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
                    ignore_coverage_complete=ignore_ok, current_fingerprint=ds.fingerprint(after))
 
 
+def start_coverage(repo_path: str) -> dict:
+    """FIELD-19: the ignore coverage a later scan credits for an unchanged repository, i.e. ignore_coverage() with no
+    task-owned `.gitignore` (only a tracked `.gitignore` equal to HEAD counts); for a warning before a run starts."""
+    rows = ignore_coverage(ds.repository(repo_path)["worktree"])
+    return {"rules_version": RULES_VERSION, "ignore_coverage": rows,
+            "uncovered": [row["category"] for row in rows if not row["covered"]]}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".")
-    parser.add_argument("--manifest", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--manifest")
+    mode.add_argument("--ignore-coverage", action="store_true",
+                      help="print only the start-time .gitignore coverage (start_coverage) as JSON; exit 0")
     parser.add_argument("--output", help="optional immutable JSON report path")
     args = parser.parse_args(argv)
+    if args.ignore_coverage:
+        try:
+            sys.stdout.write(json.dumps(start_coverage(args.repo), ensure_ascii=True) + "\n")
+            return 0
+        except (ds.UsageError, ds.CaptureError, OSError, ScanError) as exc:
+            sys.stderr.write(json.dumps({"error": str(exc), "kind": "scan"}, ensure_ascii=True) + "\n")
+            return 3
     try:
         repo = ds.repository(args.repo)
         ds.validate_output(repo, args.output)

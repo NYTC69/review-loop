@@ -117,9 +117,22 @@ manifest and runs `security_preflight.py` as a subprocess (`sys.executable`); an
 `clean`, coverage-complete report HOLDs, and the HOLD reason names rules and paths, never matched values.
 The `sensitive_policy` scan covers tracked plus non-ignored untracked paths. A repository without the legacy
 sensitive `.gitignore` patterns gets `review-required` (exit 1) and HOLDs at every SECURITY, as legacy does.
-Operator recovery: change the tree outside the run (add the patterns, remove the file) and resume, which
-replays EXEC review and gate (then FINISH, POLISH-Q, DOCS, SECURITY) under the round limit; or abort. A tree
-change during SECURITY HOLDs, and resume replays the same way.
+FIELD-19: the preflight credits a `.gitignore` only when it is tracked and unchanged from HEAD, or when the
+run itself changed it after the baseline (`declared-post-baseline` in the manifest's task delta). So the gap
+is known at start: creating a W state runs `security_preflight.py --ignore-coverage` (the same
+`ignore_coverage` rules), records `lifecycle.ignore_coverage_at_start` and prints a WARNING naming the
+missing categories; the run proceeds (a warning, not a gate, in both modes). Operator recovery from the HOLD
+(verified on the fake): add the patterns to the tracked `.gitignore` in the worktree, **neither committed
+nor staged**, and resume. The tree change replays EXEC review and gate (one EXEC round), then FINISH,
+POLISH-Q, DOCS, SECURITY, within the EXEC round limit and the invocation budget, and the edit ships with the
+delivery. A committed fix moves HEAD and HOLDs: restore HEAD to the run's lifecycle parent keeping the edit
+(`git reset -q <parent>`, i.e. `HEAD~1` when that commit is the only one added). A staged fix passes
+SECURITY, but an `auto_commit` accept refuses staged work: unstage it, keeping the worktree content. A
+`.gitignore` already modified when the run started is `ambiguous-baseline-overlap`, so it never counts as the
+run's own coverage; it still counts once restored to HEAD (worktree and index), which helps only when HEAD's
+version covers the categories. Otherwise abort, commit a covering `.gitignore`, and start a new run. Other sensitive-path
+HOLDs recover the same way (change the tree outside the run, resume); a tree change during SECURITY HOLDs,
+and resume replays the same way.
 
 **`docs_file` entry.** Legacy Step 4 appends the post-delivery summary (status, rounds, polish summary,
 findings, cross-vendor line, files) after the gate. W writes the entry during DOCS so that it is reviewed
