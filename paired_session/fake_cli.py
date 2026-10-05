@@ -612,6 +612,8 @@ def main():
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_TOUCH_IGNORED'):   # eff-e: edit an existing ignored file
             with (Path.cwd() / os.environ['FAKE_PLAN_REVIEWER_TOUCH_IGNORED']).open('a') as handle:
                 handle.write('reviewer edit\n')
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_RUN_TEST'):   # igncache: the allowed test command, run for real
+            subprocess.run(shlex.split(os.environ['FAKE_PLAN_REVIEWER_RUN_TEST']), cwd=Path.cwd(), capture_output=True, check=False)
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_CORRUPT_INDEX'):   # eff-e: git ls-files fails afterwards
             (Path.cwd() / '.git' / 'index').write_bytes(b'not an index\n')
 
