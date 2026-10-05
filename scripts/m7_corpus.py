@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M7 corpus freeze: build history-free case dirs, verify diff hashes, exclude leaks.
+"""M7 corpus freeze: single clean commit plus staged candidate under case/repo/.
 
 Usage: m7_corpus.py MANIFEST.json   (design: paired_session/docs/m7-seeded-defect-comparison.md D-b2)
 Manifest: {"repo": PATH, "out_root": OPTIONAL, "pins": [{"dir": P, "expected_sha256"} | {"repo": P, "commit": 40-hex}],
@@ -7,7 +7,7 @@ Manifest: {"repo": PATH, "out_root": OPTIONAL, "pins": [{"dir": P, "expected_sha
 key_path holds the answer-key fix text, one unit per line (whitespace-normalized, >= 20 chars, D-b2).
 Fail closed: any error removes the case dir and exits 1; key files are only read, never copied.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tempfile
+import fnmatch, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 norm = lambda text: " ".join(text.split())
@@ -64,6 +64,63 @@ def pin_texts(pins):
     return corpus, recs
 
 
+CLEAN_DIRS = (".agents", ".codex", ".claude")
+CLEAN_FILES = ("CLAUDE.md", "CHANGELOG.md")
+
+
+def cleaned_path(path):
+    return (path in CLEAN_FILES or any(path == d or path.startswith(d + "/") for d in CLEAN_DIRS)
+            or fnmatch.fnmatchcase(path, "tasks/*-plan*"))
+
+
+def clean_context(root):
+    removed = []
+    for path in sorted(root.rglob("*"), key=lambda p: (len(p.parts), str(p))):
+        rel = path.relative_to(root).as_posix()
+        if cleaned_path(rel) and (path.exists() or path.is_symlink()):
+            removed.append(rel)
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    return removed
+
+
+def case_git(root, *args, data=None, **env):
+    """Every git call on a case repo: no inherited GIT_* variables, no system or global config (init.templateDir,
+    apply.whitespace, diff.noprefix, filters or hooks there could plant files or change the frozen bytes), no hooks."""
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(["git", "-c", "core.hooksPath=" + os.devnull, *args], cwd=root, input=data, check=True,
+                          capture_output=True, env={**clean, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, **env}).stdout
+
+
+def worktree_sha256(root, index_listing):
+    """m7-s1: the raw bytes and on-disk mode of every indexed path, no git filters (an eol or clean attribute cannot hide
+    a change). m7_grade.worktree_sha256 must stay identical."""
+    rows = []
+    for row in sorted(r for r in index_listing.decode("utf-8", "surrogateescape").split("\0") if r):
+        meta, path = row.split("\t", 1)
+        disk = root / path
+        if meta.split()[0] == "160000":
+            rows.append([path, "gitlink", None])
+        elif disk.is_symlink():
+            rows.append([path, "120000", sha(os.fsencode(os.readlink(disk)))])
+        elif disk.is_file():
+            rows.append([path, "100755" if disk.stat().st_mode & 0o100 else "100644", sha(disk.read_bytes())])
+        else:
+            rows.append([path, "missing", None])
+    return sha(json.dumps(rows, ensure_ascii=False).encode("utf-8", "surrogateescape"))
+
+
+def fresh_commit(root, timestamp):
+    # Local disposable repository only; no templates, global config or inherited hooks.
+    case_git(root, "init", "-q", "--template=", ".")
+    case_git(root, "add", "-A")
+    case_git(root, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Candidate baseline",
+             GIT_AUTHOR_NAME="M7", GIT_COMMITTER_NAME="M7", GIT_AUTHOR_EMAIL="m7@example.invalid",
+             GIT_COMMITTER_EMAIL="m7@example.invalid", GIT_AUTHOR_DATE=timestamp, GIT_COMMITTER_DATE=timestamp)
+
+
 def freeze_case(case, repo_top, out, pin_corpus):
     cid, case_dir, key = case["id"], out / case["id"], Path(case["key_path"]).resolve()
     if not re.fullmatch(r"c\d{2}", cid) or case_dir.exists():
@@ -76,26 +133,51 @@ def freeze_case(case, repo_top, out, pin_corpus):
     units = sorted({u for u in map(norm, key.read_text().splitlines()) if len(u) >= 20})
     if sha(diff) != case["diff_sha256"] or not units:
         raise SystemExit(f"{cid}: diff SHA-256 mismatch, or key has no scannable unit (>= 20 chars)")
+    root = case_dir / "repo"
     try:
-        git("clone", "--quiet", "--no-checkout", str(repo_top), str(case_dir))
-        git("checkout", "--quiet", "--detach", case["base"], cwd=case_dir)
-        git("apply", "-", cwd=case_dir, data=diff)  # the exact bytes that were hashed
-        base_tree = git("rev-parse", "HEAD^{tree}", cwd=case_dir).decode().strip()
-        shutil.rmtree(case_dir / ".git")
-        if any(case_dir.rglob(".git")):
+        root.mkdir(parents=True)
+        source_tree = git("rev-parse", case["base"] + "^{tree}", cwd=repo_top).decode().strip()
+        timestamp = git("show", "-s", "--format=%aI", case["base"], cwd=repo_top).decode().strip()
+        archive = git("archive", case["base"], cwd=repo_top)
+        subprocess.run(["tar", "-x", "-C", str(root)], input=archive, check=True)
+        if any(root.rglob(".git")):
             raise SystemExit(f"{cid}: nested .git left in case dir")
-        case_texts = tree_texts(case_dir, False)[0]
+        removed = clean_context(root)
+        fresh_commit(root, timestamp)
+        base_tree = case_git(root, "rev-parse", "HEAD^{tree}").decode().strip()
+        case_git(root, "apply", "--index", "-", data=diff)
+        paths = case_git(root, "diff", "--cached", "--name-only", "--no-renames", "-z").decode().split("\0")
+        if any(cleaned_path(path) for path in paths if path):
+            raise SystemExit(f"{cid}: diff touches cleaned path; replace before freeze")
+        staged = case_git(root, "diff", "--cached", "HEAD", "--binary")
+        if sha(staged) != sha(diff):
+            raise SystemExit(f"{cid}: staged diff hash differs; canonicalize and re-freeze before running")
+        tree = case_git(root, "write-tree").decode().strip()
+        disk = worktree_sha256(root, case_git(root, "ls-files", "-s", "-z"))
+        # Scan the actual candidate files, excluding only fresh Git metadata.
+        case_texts = []
+        for path in sorted(root.rglob("*")):
+            if ".git" not in path.relative_to(root).parts and path.is_file() and not path.is_symlink():
+                case_texts.append(norm(path.read_text(errors="replace")))
+        (case_dir / "run").mkdir()
     except BaseException:
         shutil.rmtree(case_dir, ignore_errors=True)
         raise
-    rec = {"id": cid, "base": case["base"], "base_tree": base_tree, "diff_sha256": sha(diff),
-           "key_sha256": sha(key.read_bytes()), "status": "ok"}
+    rec = {"id": cid, "base": case["base"], "source_base_tree": source_tree,
+           "base_tree": base_tree, "tree": tree, "worktree_sha256": disk, "diff_sha256": sha(diff),
+           "key_sha256": sha(key.read_bytes()), "status": "ok", "scan_sha256": None, "removed_context": removed}
     for where, texts, why in (("pinned source", pin_corpus, "answer-key text in pinned sources"),
                               ("frozen case", case_texts, "key text in frozen case")):
-        hits = sum(any(u in t for t in texts) for u in units)  # only the count is recorded, never the text
+        hits = sum(any(u in t for t in texts) for u in units)
         if hits:
-            shutil.rmtree(case_dir)  # excluded cases keep no directory
-            return {**rec, "status": "excluded", "reason": why, "matched_count": hits, "location": where}
+            shutil.rmtree(case_dir)
+            # An exclusion is bound to the exact scan inputs. Matching unit hashes
+            # are safe to expose; answer-key text itself remains sealed.
+            scan = {"kind": "D-b2", "case": cid, "base": case["base"], "diff_sha256": sha(diff),
+                    "location": where, "matched_count": hits,
+                    "matched_unit_sha256": [sha(u.encode()) for u in units if any(u in t for t in texts)]}
+            return {**rec, "status": "excluded", "reason": why, "matched_count": hits,
+                    "location": where, "scan": scan, "scan_sha256": sha(json.dumps(scan, sort_keys=True).encode())}
     return rec
 
 
@@ -111,7 +193,15 @@ def main(argv):
     if not pin_corpus:
         raise SystemExit("pins hold no files; nothing to scan against")
     cases = [freeze_case(c, repo_top, out, pin_corpus) for c in manifest["cases"]]
-    result = {"manifest_sha256": sha(manifest_path.read_bytes()), "pins": pin_recs, "cases": cases}
+    # Complete the immutable manifest before any reviewer run. The input manifest
+    # remains separately hashed; no post-run modification is permitted.
+    bindings = {c["id"]: c for c in cases}
+    frozen = {**manifest, "cases": [{**c, **{k: bindings[c["id"]][k] for k in
+              ("source_base_tree", "base_tree", "tree", "worktree_sha256", "key_sha256", "status", "scan_sha256")}} for c in manifest["cases"]]}
+    frozen_bytes = (json.dumps(frozen, indent=2, sort_keys=True) + "\n").encode()
+    (out / "frozen-manifest.json").write_bytes(frozen_bytes)
+    result = {"manifest_sha256": sha(frozen_bytes), "input_manifest_sha256": sha(manifest_path.read_bytes()),
+              "pins": pin_recs, "cases": cases}
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({c["id"]: c["status"] for c in cases}))
 
