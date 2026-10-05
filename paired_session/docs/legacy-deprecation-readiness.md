@@ -14,6 +14,13 @@ supervisor 的解读（作为解读记录）：
   3. legacy 映射表里 18 个 owner 行。
 - 记录在 `DECISIONS.md` ADR-6 的 Amendments（D-READY）；§2 的状态列已据此更新，§4 只列删除前提。
 
+**owner 的后续决定（D-OWNER-1005，2026-10-05）：** owner 回答了决策表的全部 59 题，记录在 `DECISIONS.md` ADR-13。
+- legacy map 的 18 行：13 行 keep、5 行 retire，**全部是暂定**，每行在对应工作项开始时再和 owner 确认。
+- Q6 选 A：code-quality-loop 退役到 `run --review-only` + POLISH-Q。
+- review-pr 设计的第 4 轮 review 已授权。
+- D10 的回答已照录；D-READY 之后它们不再影响退役。
+- 删除前提的最新表格在 `docs/paired-session-migration.md`（"Deprecation status"）。
+
 **裁定之前的证据状态**（保留作记录；按当时的 ADR-6 逐条评估）：
 - **第 (3) 条已满足：** 一流的用户验收阶段已经实现，accept/reject 都要先出 intent 再按 expect 执行。
 - **第 (2) 条部分满足，连续计数已归零：**
@@ -310,9 +317,14 @@ Legacy is deprecated from v2.12.0. Choosing it prints a one-line notice; routing
 is removed only after all three preconditions hold, so that nothing only legacy can do is lost. The table with the
 legacy-map rows is in `docs/paired-session-migration.md` ("Deprecation status").
 
-1. **review-pr ported** (D-LG2). The design (lg2-design) is parked for the owner's round 4 and Q-R1..Q-R10.
-2. **code-quality-loop decided** (Q6 memo, owner): ported onto the review-only entry, or retired.
-3. **The 18 owner rows of the legacy map** decided (`docs/paired-session-migration.md`, owner list (1)–(15)).
+1. **review-pr ported** (D-LG2). The owner authorized design round 4 and answered Q-R1..Q-R10 (D-OWNER-1005 D03); the
+   design review and the port are still to be done.
+2. **code-quality-loop retired** onto `run --review-only` + POLISH-Q. Decided by D09 = A (D-OWNER-1005); the
+   retirement and the writer port (capability 1, provisional with L117) are still to be done.
+3. **The 18 owner rows of the legacy map**. They were answered on 2026-10-05: D-OWNER-1005, `DECISIONS.md` ADR-13; 13
+   keep and 5 retire, all provisional. Each "keep" row needs a paired-session equivalent, or the owner re-confirms
+   it as retire; each "retire" row needs a re-confirmation. Every row is confirmed with the owner again before its work
+   item is implemented. The work items are listed in `docs/paired-session-migration.md` ("Deprecation status").
 
 Then a final check: each legacy capability is covered or explicitly dropped. Only then are the legacy entry and its
 last users (`entry: legacy`, `/review-loop:legacy`, `plan`, `execute`) removed, with the owner's go.
