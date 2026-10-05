@@ -1,5 +1,20 @@
 # Changelog
 
+### v2.10.1：耗时长的测试命令等跑完再判定（FIELD-20）；run 开始时提醒 .gitignore 覆盖不全（FIELD-19）；只读回合改动权限位可检测（READONLY-PERM）
+
+- **fix（FIELD-20，poker-news-bot 现场报告）**：配置的测试命令超过约 10 秒时，Codex 会让命令转入后台。原来 permission-probe 的提示词规定每条命令只调用一次 `exec_command`，模型就不会回头轮询；回合结束时命令被杀，记录里只有开始、没有退出码，结果被报成 `allowed-command-failed`。用真实 codex-cli 0.160.0 已复现：一条 120 s 的命令在回合结束时被杀。
+  - reviewer、gate、docs reviewer、specialist 和 probe 的提示词都加了轮询规则：用 `write_stdin` 发空输入、`yield_time_ms` 30000 轮询，拿到退出码之前不得结束回合，轮询不算额外命令。Claude 侧要求长命令的 Bash 调用把 timeout 设为 600000。真实 CLI 实测 120 s 和 150 s 的命令都等到了 exit 0。
+  - 只有 item.started、没有 item.completed 的 Codex 命令，现在记为"已开始、回合结束时没有退出码"。probe 报 `allowed-command-not-completed (no exit status: still running or killed when the turn ended)`；EXEC 审批 HOLD 和 DOCS reviewer 的报错会注明"the configured test was not observed to completion"，不再报成测试失败。
+  - evidence guard 只放行字面的、不带输入的轮询 cell。A/B 类要求不变：仍要观察到配置命令完整跑完一次且退出码为 0。
+- **改进（FIELD-19，发版前真实 run 发现）**：
+  - run 开始时（efficient 下是 `run`，strict 下是 `permission-probe`）就按 SECURITY 预检的同一套规则检查已提交的 `.gitignore`。有缺失类别时打印 WARNING 并写入 `lifecycle.ignore_coverage_at_start`，提醒先提交覆盖这些类别的 `.gitignore` 再开跑。只警告，不阻止。
+  - SECURITY 因覆盖不全 HOLD 后，可行的恢复办法是：在工作树里改 `.gitignore`，既不提交也不暂存，然后 resume。这会重放 EXEC 审查，修改随交付一起提交。已提交的话 HEAD 会移动而 HOLD，把 HEAD 恢复到 run 的 parent 并保留修改即可；已暂存的话 accept 时会拒绝，需要先取消暂存。HOLD 原因和文档都写明了这些。
+- **fix（READONLY-PERM，Codex 跨厂商复审 B2）**：只读回合把 tracked 或未被忽略的 untracked 普通文件的权限位改了（例如 0644 改成 0600），现在能检测到，处理方式和执行位改动相同：作废该回合、恢复、校验、重派一次。evidence 里会有 `mode: <path> 0644 -> 0600`。交付时的 mode 仍取自 manifest。
+- **审查**：每项都由 Codex gpt-6.1-sol 审查（D-REV-CODEX：审查改由 Codex 做，Claude 只写代码和协调）。FIELD-19：R1 APPROVE_WITH_FINDINGS，R2 APPROVE。READONLY-PERM：R1 REQUEST_CHANGES（2 个 MEDIUM），R2、R3 APPROVE。FIELD-20：R1 APPROVE_WITH_FINDINGS，R2 APPROVE。
+- **已知限制**：
+  - 轮询规则只写在提示词里，模型仍可能不遵守；不遵守时会如实报"没跑完"。上限是每次派发的 `--timeout`，以及 Claude 单次 Bash 调用最长 10 分钟。
+  - 权限位检查不覆盖被忽略文件、symlink、目录、ACL、xattr 和 file flags。
+
 ### v2.10.0：paired-session 成为默认入口（完整 lifecycle，默认 efficient 安全模式）；`entry: legacy` 可退回旧流程
 
 - **升级须知**：
