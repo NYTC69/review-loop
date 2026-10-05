@@ -5,7 +5,7 @@
 **owner 已裁定 ready（D-READY，2026-10-05）。** 原话："我觉得已经跑了很多了，bob和tools两个repo这两天一直在跑，也在ship 工作，而且一周前还遇到过额度用完 hold，reset了继续的情况，所以我觉得已经算ready了"。
 
 supervisor 的解读（作为解读记录）：
-- ADR-6 的替换标准按现场证据视为**满足**：poker-news-bot 和 poker-tools 这几天一直在用 paired-session 跑真实工作并交付；约一周前发生过一次真实的额度用完 HOLD，reset 后成功 resume（owner 证实，supervisor 没有找到对应的 run id）。
+- ADR-6 的替换标准按现场证据视为**满足**：poker-news-bot 和 poker-tools 这几天一直在用 paired-session 跑真实工作并交付；owner 记得的那次额度用完事后查到了（`~/3Cats/poker-news-bot/.compass/results/2026-09-24_ab_pipeline/workitems/ADR_EVIDENCE_quota_resume_20261005.md`）：是 Codex 额度，不是 Claude；新流程从中断中恢复并跑完的证据是 WI-86（第一次因 Claude OAuth 过期 HOLD，第二次因 14400 秒超时及 claude_plugins 相关中断 HOLD；两次恢复，最终 DONE）；Codex 额度那次 run 在 reset 后续上了，但失败重试耗光了调用上限，这两个教训 v2.11.0 都已修。owner 看过证据后维持裁定（“我的结论不变, ready to ship”）。
 - M7 不再卡退役，改为可选的成本/质量研究。
 - legacy 从 v2.12.0 起宣布 deprecated：显式选择 legacy 时打印一行提示，路由和行为都不变。
 - 代码删除要等三件事，确保不丢失只有 legacy 能做的事：
@@ -75,7 +75,7 @@ is kept in the Evidence column.
 | (3) First-class user-acceptance feedback phase | **MET** | `accept` / `reject` with `--intent-only` digest then `--expect`; `note` and `--scope-change`; DONE = acceptance pending (`docs/protocol/paired-session-entry.md` "DONE and acceptance"). Accept exercised in the 4 gate runs and in consumer runs. Reject reopens EXEC; it is covered by tests, and no gate run used it. |
 | (4a) A repo other than poker-tools | **MET** | poker-news-bot ab_pipeline: many paired-session runs since 2026-09-24, including v2.10.0+ runs `runs210/WI-101`, `WI-102` and `runs211/WI-103` (DONE; direct CLI, lifecycle off) |
 | (4b) One large task | **MET by owner ruling** | The ruling counts the field work in both repositories. Before the ruling: OWNER. Not defined in ADR-6. A definition is proposed in §3.6. No gate run would qualify; the largest consumer work items are near the proposed size but ran with lifecycle off. |
-| (4c) Real subscription-limit HOLD followed by a successful resume | **MET by owner ruling** | Owner-attested: a real limit HOLD about a week before 2026-10-05, resumed after the reset; the supervisor did not locate the run id. Before the ruling: NOT MET (no recorded event). Typed rate-limit HOLD in every role and stage, which never spends a budget: `c70591d` (v2.11.0). Recorded evidence is offline tests only; the real event is owner-attested, with no run id located. |
+| (4c) Real subscription-limit HOLD followed by a successful resume | **MET by owner ruling** | Located after the ruling (`~/3Cats/poker-news-bot/.compass/results/2026-09-24_ab_pipeline/workitems/ADR_EVIDENCE_quota_resume_20261005.md`): no Claude limit stop exists 2026-09-20..10-05; the recalled event was a Codex limit. Resume to DONE after a real interruption: WI-86 (v2.9.4; Claude OAuth expiry, not a limit). Real Codex limit stop on the pre-release spike coordinator (09-22): it resumed after the banked reset, but failed retries had spent the call cap and the run was halted. Both lessons are fixed in v2.11.0 (`c70591d`): it immediately HOLDs a provider rate-limit rejection with `hold_kind: rate_limited` in every role and stage, unless another guard wraps the error; rate-limited calls consume neither the invocation cap nor stage budgets (offline tests only; no paired-session limit HOLD on v2.11.0+ yet). The owner kept the ruling on this evidence. |
 
 ## 3. Evidence available today (2026-10-05)
 

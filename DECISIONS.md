@@ -103,7 +103,11 @@ entry; never edit history.
 - **Amendments**: (2026-10-05, D-READY, owner) The owner, verbatim: "我觉得已经跑了很多了，bob和tools两个repo这两天一直在跑，也在ship 工作，而且一周前还遇到过额度用完 hold，reset了继续的情况，所以我觉得已经算ready了".
   - Supervisor reading, recorded as such: the replacement gate is treated as MET by field evidence.
     - poker-news-bot ("bob") and poker-tools ("tools") ran and shipped real work on paired-session over the preceding days.
-    - About a week earlier a real subscription-limit HOLD was followed by the reset and a successful resume. This is owner-attested; the supervisor did not locate the run id.
+    - The limit event the owner recalled was located after the ruling (`~/3Cats/poker-news-bot/.compass/results/2026-09-24_ab_pipeline/workitems/ADR_EVIDENCE_quota_resume_20261005.md`, searched 2026-09-20..10-05). It was a Codex usage limit; no Claude limit stop exists in that window.
+      - paired-session recovered from interruptions and finished: WI-86 (v2.9.4, poker-news-bot) held on a Claude OAuth expiry at 10-03 21:32 JST, resumed 22:46, held again at 10-04 02:46 (14400 s timeout + claude_plugins), resumed 02:57 and was DONE at 05:05.
+      - A real Codex limit stop on the pre-release spike coordinator (09-22 17:40) resumed at 09-23 10:37 JST after the owner's banked reset at 10:35 JST, and its exec rounds were approved, but 21 failed retries had spent the 30-call cap and the run was halted. v2.11.0 (`c70591d`) covers both lessons: it immediately HOLDs a provider rate-limit rejection with `hold_kind: rate_limited`, unless another guard wraps the error; rate-limited calls consume neither the invocation cap nor stage budgets.
+      - A legacy run completed stop, reset and APPROVE (09-22/23). It is a control only, not evidence for paired-session.
+    - The owner kept the ruling on this evidence (2026-10-05: "我的结论不变, ready to ship").
   - Criterion (1) (M7) no longer gates retirement; M7 stays an optional cost and quality study.
   - The evidence collected before the ruling is in `paired_session/docs/legacy-deprecation-readiness.md`: (3) and (4a) met; (2) and (4b) partial or open; (1) and the recorded part of (4c) not met.
   - Legacy is deprecated from v2.12.0: choosing it prints a one-line notice, and routing and behavior are unchanged.
