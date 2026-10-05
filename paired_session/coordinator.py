@@ -2521,7 +2521,8 @@ class Coordinator:
         if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
         versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
         if 'UNAVAILABLE' in versions: return None
-        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions}
+        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions,
+                  **({'review_report': True} if self.state['config'].get('review_report') else {})}   # LG2-a2: report and ordinary entries never share a key
         return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
 
     def _probe_cache_put(self, keyed: Optional[tuple[str, dict]], body: dict) -> None:   # the one private-dir + symlink-checked write path of an entry or a tombstone
@@ -4656,6 +4657,11 @@ class Coordinator:
             raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
         if self.args.polish:
             raise ValueError('report mode refuses resume --polish')
+
+    def dispatched_vendors(self) -> tuple:
+        """The vendors a run can dispatch; a report run never dispatches the author (LG2-a2)."""
+        roles = (self.args.reviewer_vendor, self.args.gate_vendor)
+        return roles if self.state['config'].get('review_report') else (self.args.author_vendor, *roles)
 
     def _refuse_report_feedback(self) -> None:
         if self.state['config'].get('review_report'):
@@ -7434,7 +7440,7 @@ class Coordinator:
                 report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
                 report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'
         global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-        if 'codex' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) and (after_guard := self.codex_capabilities())['status'] != 'PASS':   # CG-3: a Codex probe turn can add capabilities, so a PASS must predict the pre-dispatch guard
+        if 'codex' in self.dispatched_vendors() and (after_guard := self.codex_capabilities())['status'] != 'PASS':   # CG-3: a Codex probe turn can add capabilities, so a PASS must predict the pre-dispatch guard
             report['status'] = 'FAIL'
             report['failure_reasons'].append('codex-capability-guard-after-probe: ' + '; '.join(after_guard['issues']))
         expected_trust_paths = [self.workspace]
@@ -8254,6 +8260,10 @@ class Coordinator:
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         while self.state['status'] == 'ACTIVE':
             if self.state['config'].get('review_report'):
+                record = self.state.get('review_only') or {}   # no writer: the frozen tree holds before EVERY dispatch
+                if git_snapshot(self.workspace)[0] != record.get('candidate_tree_sha256'):
+                    return self.hold('the report tree changed since the run was created; restore it from '
+                                     + str(record.get('mirror')) + ' and resume, or abort')
                 if self.state['next'] == 'security':
                     return self.hold('report sequence stopped after POLISH-Q; SECURITY pending (LG2-a3)')
                 if self.state['next'] not in ('reviewer', 'gate', 'polish-q') or self.state['phase'] != 'EXEC':
@@ -8840,7 +8850,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return co.refused(issue)
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
-            and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
+            and 'codex' in co.dispatched_vendors()):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4

@@ -162,6 +162,64 @@ class ReviewReportTransitionTests(unittest.TestCase):
         self.assertNotEqual(co.state['next'], 'polish-fix')
         self.assertNotIn('fix_base', co.state['lifecycle'])
 
+    def test_a_tree_changed_during_a_hold_holds_before_any_later_dispatch(self):
+        for next_role in ('reviewer', 'gate', 'polish-q'):
+            with self.subTest(next=next_role):
+                self.run_dir = self.root / f'drift-{next_role}'
+                self.change()
+                co = rc.Coordinator(self.args())
+                co.state.update(reviews_completed=1, next=next_role)   # past the first review
+                co.hold('reviewer HOLD')
+                (self.workspace / 'debug-output.txt').write_text('left by the operator\n')
+                resumed = rc.Coordinator(self.args(action='resume'))
+                with mock.patch.object(resumed, 'invoke', side_effect=AssertionError('dispatched on a drifted tree')):
+                    self.assertEqual(resumed.resume(), 'HOLD')
+                self.assertIn('the report tree changed since the run was created; restore it from',
+                              resumed.state['hold_reason'])
+                self.assertIn('or abort', resumed.state['hold_reason'])
+                (self.workspace / 'debug-output.txt').unlink()
+
+    def test_strict_author_guards_skip_report_runs_only(self):
+        import contextlib, io
+
+        def main(*flags, env=None):
+            out = io.StringIO()
+            with mock.patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                    mock.patch.object(rc.Coordinator, 'claude_author_verified', return_value=(False, 'CLAUDE-AUTHOR-CHECK')), \
+                    mock.patch.object(rc.Coordinator, 'codex_contract_verified', return_value=(False, 'CODEX-CONTRACT-CHECK')), \
+                    mock.patch.object(rc.Coordinator, 'probe_gate', return_value=(True, '')), \
+                    mock.patch.object(rc.Coordinator, '_drive_loop', return_value='HOLD'), \
+                    mock.patch.dict(os.environ, env or {}), contextlib.redirect_stdout(out):
+                rc.main(self.command(*flags)[2:])
+            return out.getvalue()
+        author_refusals = ('CLAUDE-AUTHOR-CHECK', 'CODEX-CONTRACT-CHECK', 'a Claude author is limited')
+        for vendor in ('claude', 'codex'):
+            with self.subTest(author=vendor):
+                self.change()
+                self.run_dir = self.root / f'strict-report-{vendor}'
+                out = main(*FLAGS, '--author-vendor', vendor)
+                self.assertFalse(any(text in out for text in author_refusals), out)
+                self.run_dir = self.root / f'strict-ordinary-{vendor}'   # control: the guard still applies without report mode
+                out = main('--lifecycle-mode', 'on', '--author-vendor', vendor)
+                self.assertTrue(any(text in out for text in author_refusals), out)
+        missing = {'CODEX_HOME': str(self.root / 'no-codex-home')}   # finding 4: a never-dispatched Codex author needs no Codex home
+        claude_roles = ('--author-vendor', 'codex', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude')
+        self.run_dir = self.root / 'report-codex-author-claude-roles'
+        self.assertNotIn('is not an existing directory', main(*FLAGS, *claude_roles, env=missing))
+        self.run_dir = self.root / 'ordinary-codex-author-claude-roles'
+        self.assertIn('is not an existing directory', main('--lifecycle-mode', 'on', *claude_roles, env=missing))
+
+    def test_probe_cache_keys_differ_between_report_and_ordinary_runs(self):
+        self.change()
+        report = rc.Coordinator(self.args())
+        self.run_dir = self.root / 'ordinary'
+        ordinary = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:]))
+        keys = (report._probe_cache_key(), ordinary._probe_cache_key())
+        self.assertTrue(all(keys), keys)
+        self.assertNotEqual(keys[0][0], keys[1][0])
+        self.assertTrue(keys[0][1]['review_report'])
+        self.assertNotIn('review_report', keys[1][1])
+
     def test_writer_routes_and_direct_author_dispatch_are_refused(self):
         self.change()
         co = rc.Coordinator(self.args())
