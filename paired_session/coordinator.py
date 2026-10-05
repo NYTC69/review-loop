@@ -2483,8 +2483,10 @@ class Coordinator:
         if report.get('author_flags_digest') != self.author_flags_digest():
             return False, 'permission probe author flags do not match this run'
         author_probe = report.get('author_permission_probe', {})
-        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'PASS'
-        if self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
+        report_mode = self.state['config'].get('review_report')
+        expected_author_status = ('NOT-APPLICABLE' if report_mode else
+                                  report['status'] if self.args.author_vendor == 'codex' else 'PASS')
+        if not report_mode and self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
             return False, 'permission probe Claude author rules do not match this run'
         if (not waived and author_probe.get('status') != expected_author_status) or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
             return False, 'permission probe author permission status is not current'
@@ -4650,6 +4652,8 @@ class Coordinator:
             raise ValueError('--review-report refuses --auto-commit true')
         if self.args.stop_after_plan:
             raise ValueError('--review-report refuses --stop-after-plan')
+        if (saved or {}).get('adversarial_gate', self.args.adversarial_gate) == 'off':
+            raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
         if self.args.polish:
             raise ValueError('report mode refuses resume --polish')
 
@@ -5094,6 +5098,8 @@ class Coordinator:
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
+        if role == 'author' and self.state['config'].get('review_report'):
+            raise RuntimeError('report mode refuses every author dispatch')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
@@ -6055,7 +6061,8 @@ class Coordinator:
             raise RuntimeError('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
         last = next((row for row in reversed(life['receipts']) if row['stage'] == 'POLISH-Q'), {})
         blockers = [row['id'] for row in self.blocking_open_findings() if row.get('owner_role', '').startswith('specialist:')]
-        if blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
+        report_mode = self.state['config'].get('review_report')
+        if not report_mode and blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
             raise RuntimeError('POLISH-Q blockers need a fix on a new tree, not a re-review: ' + ', '.join(blockers))
         request = worktree_lifecycle.stage_request(life, 'specialists')
         if life['pending'] != request:   # a new attempt; a replay keeps the specialists it already completed
@@ -6076,12 +6083,19 @@ class Coordinator:
                 self.save()
         blocking = self.blocking_open_findings()
         tree = git_snapshot(self.workspace)[0]
-        receipt = {**request, 'status': 'HOLD' if blocking or tree != request['candidate_oid'] else 'READY',
+        receipt = {**request, 'status': 'HOLD' if (blocking and not report_mode) or tree != request['candidate_oid'] else 'READY',
                    'output_oid': tree, 'specialists': list(names), 'specialist_turns': [done[name] for name in names],
                    'skipped': not names}   # skip_quality_polish: a no-op receipt
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
         self.state['lifecycle'].pop('specialist_done', None)
-        if blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
+        if report_mode:   # LG2-a2: specialists only report; no fix leg, no blocker gate
+            if tree != request['candidate_oid']:
+                self.hold('POLISH-Q tree differs from the reviewed report tree; inspect, then abort')
+            else:   # TEMPORARY until LG2-a3 lands SECURITY and REPORTED
+                self.state['lifecycle']['stage'] = 'SECURITY'
+                self.state['next'] = 'security'
+                self.hold('report sequence stopped after POLISH-Q; SECURITY pending (LG2-a3)')
+        elif blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
             self.state['lifecycle']['fix_base'] = tree
             self.state.update(phase='EXEC', next='polish-fix',
                               delivered_review=worktree_lifecycle.delivered_findings('polish-q', blocking))
@@ -6289,6 +6303,10 @@ class Coordinator:
                 if answer['status'] == 'APPROVE':
                     answer['status'] = 'REVISE'
             self.render(shadow, 'shadow', phase)
+            if self.state['config'].get('review_report') and shadow['answer']['status'] == 'HOLD':
+                self.state['pending_reviewer_result_sequence'] = None
+                self.hold('shadow HOLD')
+                return
         limit = self.args.max_plan_rounds if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
         advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
@@ -6361,6 +6379,11 @@ class Coordinator:
             rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history='PLAN reviewer REVISE', hold_reason=reason)
             self.state['pending_reviewer_result_sequence'] = None
             self.hold(reason)
+            return
+        if phase == 'EXEC' and self.state['config'].get('review_report'):
+            self.state['pending_reviewer_result_sequence'] = None
+            self.state['next'] = 'gate'
+            self.save()
             return
         if answer['status'] == 'REVISE':
             rounds = self.state[f'{phase.lower()}_rounds']
@@ -6589,6 +6612,12 @@ class Coordinator:
         if self.state['exec_comparisons']:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
+        if self.state['config'].get('review_report'):
+            self.state['next'] = 'polish-q'
+            if worktree_lifecycle.is_worktree(self.state):
+                self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
+            self.save()
+            return
         structural = self._structural_block_hold('gate', result['sequence'], valid)
         if valid:
             if self.state['config'].get('lifecycle_mode') == 'on':
@@ -7300,7 +7329,7 @@ class Coordinator:
                        'author_flags': self.author_flags(),
                        'author_flags_digest': self.author_flags_digest(),
                        'author_permission_probe': {
-                           'status': 'NOT-APPLICABLE' if self.args.author_vendor != 'codex' else 'NOT-ATTEMPTED'},
+                           'status': 'NOT-APPLICABLE' if self.state['config'].get('review_report') or self.args.author_vendor != 'codex' else 'NOT-ATTEMPTED'},
                        'claude_flag_semantics': 'UNVERIFIED until this probe runs with the real CLI'}
         probe_sequence = self.state['sequence'] + 1
         try:
@@ -7370,7 +7399,8 @@ class Coordinator:
         failures += (escapes := self._codex_escape_failures(codex, result) + (tracked_escape := self._tracked_file_escape(tracked)))
         miss = miss or ', '.join(escapes)
         try:
-            author_probe = self._author_permission_probe()
+            author_probe = ({'status': 'NOT-APPLICABLE', 'reason': 'report mode has no author sandbox'}
+                            if self.state['config'].get('review_report') else self._author_permission_probe())
         except Exception as exc:
             author_probe = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc)}
         report = {**base_report, 'status': probe_turn_status(allowed, outcomes, unchanged, miss),
@@ -7444,10 +7474,10 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.strict and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
-        if self.strict and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.claude_author_verified())[0]:
             raise ValueError(ok[1])
         return self._drive_loop()
@@ -8222,9 +8252,14 @@ class Coordinator:
         if self.state['active']:
             self.state['uncertain_active'] = self.state['active']
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
-        if self.state['config'].get('review_report'):   # LG2-a1: fail closed until the report sequence lands in a2
-            return self.hold('report sequence not implemented yet (LG2-a2); no role dispatched')
         while self.state['status'] == 'ACTIVE':
+            if self.state['config'].get('review_report'):
+                if self.state['next'] == 'security':
+                    return self.hold('report sequence stopped after POLISH-Q; SECURITY pending (LG2-a3)')
+                if self.state['next'] not in ('reviewer', 'gate', 'polish-q') or self.state['phase'] != 'EXEC':
+                    return self.hold('report mode refuses a writer or unsupported phase')
+                if self.state['next'] == 'polish-q' and not worktree_lifecycle.is_worktree(self.state):
+                    return self.hold('report POLISH-Q requires --lifecycle-mode on; start a new run')
             if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
             if (self.state['next'] == 'reviewer' and worktree_lifecycle.is_worktree(self.state) and
                     self.state['lifecycle']['stage'] == 'POLISH-Q'):   # the fix author saved before polish-recheck
@@ -8809,7 +8844,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
-    if (co.strict and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
+    if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
             co.state['claude_author_override'] = {
@@ -8846,7 +8881,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (co.strict and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
@@ -8943,6 +8978,7 @@ def main(argv=None) -> int:
         return 2
     if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
             and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
+            and not args.review_report \
             and not restores_run(args) and (args.safety_mode or DEFAULT_SAFETY_MODE) == 'strict':   # D-EFF: a new run's probe gate (C)
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '

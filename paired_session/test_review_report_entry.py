@@ -181,27 +181,10 @@ class ReviewReportEntryTests(unittest.TestCase):
                     self.assertIn('REFUSED: ' + message, result.stdout)
                     self.assertEqual(self.state_bytes(), before)
 
-    def test_report_dispatch_holds_without_any_role_until_a2(self):
+    def test_report_mode_refuses_resume_polish(self):   # the a1 dispatch guard is gone: LG2-a2 transition tests
         co = self.create()
-        with mock.patch.object(co, 'author_turn') as author, mock.patch.object(co, 'reviewer_turn') as reviewer:
-            self.assertEqual(co.drive(), 'HOLD')
-            author.assert_not_called()
-            reviewer.assert_not_called()
-        self.assertIn('report sequence not implemented yet (LG2-a2)', co.state['hold_reason'])
-        result = self.run_operator_action('resume')
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        state = json.loads(self.state_bytes())
-        self.assertTrue(state['config']['review_report'])
-        self.assertEqual((state['turns'], state['invocations_used']), ([], 0))
         with self.assertRaisesRegex(ValueError, 'report mode refuses resume --polish'):
             co.resume_polish()
-        self.run_dir = self.root / 'cli-report'
-        result = self.run_coordinator('--review-only', '--review-report', '--lifecycle-mode', 'on')
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('report sequence not implemented yet (LG2-a2)', result.stdout)
-        state = json.loads(self.state_bytes())
-        self.assertTrue(state['config']['review_report'])
-        self.assertEqual((state['turns'], state['invocations_used']), ([], 0))
 
     def test_status_and_brief_work_without_workspace_or_workitem(self):
         co = self.create()
