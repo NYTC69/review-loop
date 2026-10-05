@@ -526,15 +526,61 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
 
 
 TRUST_HEADER_RE = re.compile(r'^\[projects\.("(?:[^"\\\n]|\\.)*")\]\s*$', re.M)
-FOREIGN_TRUST_MAX_PATHS = 256   # bounds the work (each path is one linear strip); a larger change stays a finding
+FOREIGN_TRUST_MAX_PATHS = 256   # bounds the work; a larger change stays a finding
+FOREIGN_TRUST_MAX_BYTES = 1 << 20   # a default config over 1 MiB is not inspected; its change stays a finding
 
 
-def _top_level_trust_headers(raw: str) -> Optional[set]:
-    """The paths of real top-level `[projects."<path>"]` headers. A match inside a multi-line string is skipped
-    (_toml_top_level_at); a top-level header whose quoted path does not decode returns None (stay conservative)."""
+def _toml_top_level_line_starts(text: str) -> Optional[set]:
+    """One pass: the offsets that start a line at TOML top level (outside strings, comments and brackets), the
+    _toml_top_level_at rule for every line at once. Anything ambiguous (an unterminated string, four or five closing
+    quotes, an unbalanced bracket) returns None, so the caller stays conservative."""
+    starts, i, depth, n, line_start = set(), 0, 0, len(text), True
+    while i < n:
+        if line_start and depth == 0:
+            starts.add(i)
+        line_start = False
+        c = text[i]
+        if c == '\n':
+            line_start, i = True, i + 1
+            continue
+        if c == '#':
+            i = text.find('\n', i)
+            if i < 0:
+                break
+            continue
+        if c in '"\'':
+            triple = text.startswith(c * 3, i)
+            j = i + (3 if triple else 1)
+            while True:
+                if j >= n or (not triple and text[j] == '\n'):
+                    return None
+                if c == '"' and text[j] == '\\':
+                    j += 2
+                    continue
+                if text.startswith(c * 3, j) if triple else text[j] == c:
+                    j += 3 if triple else 1
+                    break
+                j += 1
+            if triple and text[j:j + 1] == c:
+                return None
+            i = j
+            continue
+        if c in '[{':
+            depth += 1
+        elif c in ']}':
+            depth -= 1
+            if depth < 0:
+                return None
+        i += 1
+    return starts
+
+
+def _top_level_trust_headers(raw: str, starts: set) -> Optional[set]:
+    """The paths of real top-level `[projects."<path>"]` headers (a match inside a multi-line string is not at a
+    top-level line start); a top-level header whose quoted path does not decode returns None (stay conservative)."""
     paths = set()
     for match in TRUST_HEADER_RE.finditer(raw):
-        if not _toml_top_level_at(raw, match.start()):
+        if match.start() not in starts:
             continue
         try:
             path = json.loads(match.group(1))
@@ -546,27 +592,36 @@ def _top_level_trust_headers(raw: str) -> Optional[set]:
     return paths
 
 
-def _strip_trust_entries(raw: str, paths) -> Optional[str]:
-    """Remove one exact `[projects."<path>"]` + `trust_level = "trusted"` entry per path. Each entry must start a
-    TOML top-level line and be followed by another table header or the end, so it cannot adopt keys. Returns the rest,
-    or None when an entry is missing or not at such a boundary. Linear in the number of paths."""
+def _strip_trust_entries(raw: str, starts: set, paths) -> Optional[str]:
+    """Remove one exact `[projects."<path>"]` + `trust_level = "trusted"` entry per path, each at a top-level line start
+    and followed by another table header or the end (so it cannot adopt keys). Positions come from the one-pass scan of
+    this same text; returns the rest, or None when an entry is missing or not at such a boundary."""
+    cuts = []
     for path in paths:
         entry = '[projects.' + json.dumps(path) + ']\ntrust_level = "trusted"\n'
-        pos = next((at for at in _find_all(raw, entry) if _toml_top_level_at(raw, at)), -1)
-        if pos < 0:
+        at = raw.find(entry)
+        while at >= 0 and at not in starts:
+            at = raw.find(entry, at + 1)
+        if at < 0:
             return None
-        tail = next((line.strip() for line in raw[pos + len(entry):].splitlines() if line.strip()), '[')
+        tail = next((line.strip() for line in raw[at + len(entry):].splitlines() if line.strip()), '[')
         if not tail.startswith('['):
             return None
-        raw = raw[:pos] + raw[pos + len(entry):]
-    return raw
+        cuts.append((at, at + len(entry)))
+    rest, last = [], 0
+    for begin, finish in sorted(cuts):
+        if begin < last:
+            return None
+        rest.append(raw[last:begin])
+        last = finish
+    return ''.join(rest) + raw[last:]
 
 
-def _find_all(text: str, needle: str):
-    at = text.find(needle)
-    while at >= 0:
-        yield at
-        at = text.find(needle, at + 1)
+def _trust_path_key(path: str) -> str:
+    """Compare paths as the file system would: resolved, no trailing slash, case-folded on macOS (case-insensitive by
+    default). A path that cannot be resolved (a NUL byte, for example) raises ValueError."""
+    key = os.path.realpath(path.rstrip('/') or '/')
+    return key.casefold() if sys.platform == 'darwin' else key
 
 
 def _blank_runs_normalized(text: str) -> str:
@@ -585,16 +640,26 @@ def default_home_foreign_trust_only(before: dict, after: dict, workspaces) -> Op
     Accepted residual of the comparison: only blank-line runs are normalized, so a change that adds or removes blank
     lines alone inside a multi-line string would also pass (it sets nothing the run uses)."""
     old, new = before.get('raw'), after.get('raw')
-    if old is None or new is None:
+    if old is None or new is None or '\ufffd' in old or '\ufffd' in new:   # an undecodable file fails closed
         return None
-    old_heads, new_heads = _top_level_trust_headers(old), _top_level_trust_headers(new)
+    if max(len(old.encode('utf-8')), len(new.encode('utf-8'))) > FOREIGN_TRUST_MAX_BYTES:
+        return None
+    old_starts, new_starts = _toml_top_level_line_starts(old), _toml_top_level_line_starts(new)
+    if old_starts is None or new_starts is None:
+        return None
+    old_heads, new_heads = _top_level_trust_headers(old, old_starts), _top_level_trust_headers(new, new_starts)
     if old_heads is None or new_heads is None:
         return None
     added, removed = sorted(new_heads - old_heads), sorted(old_heads - new_heads)
-    own = {path for workspace in workspaces for path in _codex_trust_paths(workspace)}
-    if (not added and not removed) or len(added) + len(removed) > FOREIGN_TRUST_MAX_PATHS or own & {*added, *removed}:
+    if (not added and not removed) or len(added) + len(removed) > FOREIGN_TRUST_MAX_PATHS:
         return None
-    new_rest, old_rest = _strip_trust_entries(new, added), _strip_trust_entries(old, removed)
+    try:
+        own = {_trust_path_key(path) for workspace in workspaces for path in _codex_trust_paths(workspace)}
+        if own & {_trust_path_key(path) for path in (*added, *removed)}:
+            return None
+    except ValueError:
+        return None
+    new_rest, old_rest = _strip_trust_entries(new, new_starts, added), _strip_trust_entries(old, old_starts, removed)
     if new_rest is None or old_rest is None or _blank_runs_normalized(new_rest) != _blank_runs_normalized(old_rest):
         return None
     return {'added': added, 'removed': removed}
@@ -7631,8 +7696,8 @@ class Coordinator:
         expected_trust_paths = [self.workspace]
         if author_probe.get('workspace'):
             expected_trust_paths.append(Path(author_probe['workspace']))
-        report['global_config_changes'] = attribute_global_config_changes(
-            global_before, global_after, expected_trust_paths)
+        report['global_config_changes'] = reclassify_default_home_trust(attribute_global_config_changes(   # P0
+            global_before, global_after, expected_trust_paths), global_before, global_after, expected_trust_paths)
         if report['global_config_changes']['status'] != 'PASS':
             report['status'] = 'FAIL'
             report['failure_reasons'].append('unexpected-global-config-change')
