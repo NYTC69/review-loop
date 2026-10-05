@@ -84,6 +84,11 @@ CLASS_LABEL_REUSE = ' Reuse the exact label of an earlier finding of the same cl
 PROBE_SURFACE_VERSION = 9
 CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
+# D-LG1 review-only entry (docs/review-only-entry.md); the owner's provisional choices, one place each:
+REVIEW_ONLY_DEFAULT_BASE = 'HEAD'            # Q2: the uncommitted work, as legacy --review-only
+REVIEW_ONLY_BASE_MUST_BE_ANCESTOR = True     # Q5: refuse a base that is not an ancestor of HEAD
+REVIEW_ONLY_EXISTING_CHANGE_ROUNDS = 1       # Q9: the pre-existing change is EXEC round 1 (the author's round is skipped)
+REVIEW_ONLY_LIFECYCLE_READY = False          # LG1-a1 interim: lifecycle on waits for the base-tree delivery baseline (LG1-c)
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
     try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
@@ -1743,6 +1748,7 @@ class Coordinator:
             if 'reason' in self.state and 'hold_reason' not in self.state:
                 self.state['hold_reason'] = self.state.pop('reason')
                 self.save()
+            self._review_only_args(self.state['config'])
             if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
@@ -1796,6 +1802,8 @@ class Coordinator:
             _, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin,
                                         self.args.claude_bin, self.args.gate_prompt, self.args.config)
             if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
+            self._review_only_args(None)
+            scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -1832,6 +1840,8 @@ class Coordinator:
             elif args.lifecycle_mode == 'on':
                 self.state['lifecycle'] = worktree_lifecycle.initial(self.state['item_uuid'], self.state['base_commit'])
             self._freeze_role_dispatch()
+            if scope is not None:
+                self._start_review_only(scope)
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
                 old = json.loads((parent / 'state.json').read_text())
@@ -2020,6 +2030,7 @@ class Coordinator:
                 'safety_mode')
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
+        if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -4520,14 +4531,104 @@ class Coordinator:
         spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
-    def _plan_history_issue(self) -> Optional[str]:
-        """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval."""
+    def _plan_history_issue(self, texts: Optional[dict] = None) -> Optional[str]:
+        """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval (or, for a
+        review-only run, which has no PLAN approval, on the texts it is about to write)."""
         for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
-            text = path.read_text() if path.is_file() else ''
+            text = texts[label] if texts else path.read_text() if path.is_file() else ''
             if ids := sorted(set(LEDGER_ID_RE.findall(text))):
                 return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
             if match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):   # as the gate scan
                 return f'{label}: review-history wording {match.group(0)!r}'
+        return None
+
+    # --- D-LG1 review-only entry (docs/review-only-entry.md §1-§2), LG1-a1 ------------------------------------------------------
+    def _commit_oid(self, ref: str) -> str:
+        oid = None if ref.startswith('-') else self._git(['rev-parse', '--verify', '-q', ref + '^{commit}'], ok=(0, 1)).strip()
+        if not oid:
+            raise ValueError(f'--base {ref} does not name a commit')
+        return oid
+
+    def _review_only_args(self, saved: Optional[dict]) -> None:
+        """--review-only/--base: a new run resolves the base once; a later command keeps the frozen values unless it names
+        them, and a different value is refused like any other configuration change."""
+        args = self.args
+        args.review_only, args.review_base_ref = getattr(args, 'review_only', None), getattr(args, 'review_base_ref', None)
+        if saved is not None:
+            if args.review_only is not None and bool(args.review_only) != bool(saved.get('review_only')):
+                raise ValueError('resume configuration differs: review_only (fixed when the run was created)')
+            if args.review_base_ref is not None and (not saved.get('review_only') or
+                                                     self._commit_oid(args.review_base_ref) != saved['review_base']):
+                raise ValueError('resume configuration differs: review_base (fixed when the run was created)')
+            args.review_only, args.review_base = bool(saved.get('review_only')), saved.get('review_base')
+        elif args.review_only:
+            args.review_base = self._commit_oid(args.review_base_ref or REVIEW_ONLY_DEFAULT_BASE)
+        elif args.review_base_ref is not None:
+            raise ValueError('--base needs --review-only')
+        else:
+            args.review_only, args.review_base = False, None
+
+    def _refuse_review_only_start(self) -> dict:
+        """The refusals of a review-only run, before any state; returns the review scope to freeze."""
+        args, base = self.args, self.args.review_base
+        if args.stop_after_plan:
+            raise ValueError('--review-only has no PLAN phase; --stop-after-plan does not apply')
+        if args.lifecycle_mode == 'on' and not REVIEW_ONLY_LIFECYCLE_READY:
+            raise ValueError('--review-only runs with --lifecycle-mode off until its base-tree delivery baseline lands (LG1-c)')
+        if args.supersedes:
+            raise ValueError('--review-only cannot start a scope-change successor yet (LG1-a2)')
+        head = self._head_commit()
+        if head is None:
+            raise ValueError('--review-only needs a commit to review against')
+        if REVIEW_ONLY_BASE_MUST_BE_ANCESTOR and candidate_tree.run_bounded(
+                candidate_tree.git_command('merge-base', '--is-ancestor', base, head, cwd=self.workspace), cwd=self.workspace).returncode:
+            raise ValueError(f'--base {args.review_base_ref} is not an ancestor of HEAD; review-only reviews a change on top of its base')
+        if self._git(['ls-files', '-u']).strip():
+            raise ValueError('--review-only refuses an index with unmerged entries; finish or abort the merge first')
+        staged = set(filter(None, self._git(['diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD']).split('\0')))
+        if partial := sorted(staged & set(filter(None, self._git(['diff', '--name-only', '--no-renames', '-z']).split('\0')))):
+            raise ValueError('--review-only refuses partially staged paths (an auto_commit would drop their staged version): ' +
+                             ', '.join(partial[:10]) + '; stage them fully or unstage them')
+        untracked = sorted(filter(None, self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')))
+        fields = self._git(['diff', '--name-status', '--no-renames', '-z', base, '--']).split('\0')   # Q7: every full path
+        changed = ''.join(f'{status}\t{path}\n' for status, path in zip(fields[0::2], fields[1::2]) if status)
+        if not changed and not untracked:
+            raise ValueError(f'nothing to review: the workspace tree equals the review base {base[:12]}')
+        workitem = self.workitem.read_text()
+        scope = ('# Review scope (review-only entry)\n\nNo plan was drafted or approved; review the change itself: the '
+                 'workspace tree against the review base.\n\n'
+                 f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command}\n\n'
+                 f'## Goal (the work item, verbatim)\n\n{workitem.rstrip()}\n\n'
+                 '## Initial change (as the run was created; later fixes make it stale)\n\n'
+                 + changed + ''.join(f'untracked: {name}\n' for name in untracked))
+        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}):   # FIELD-11: no PLAN approval runs it later
+            raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
+        return {'text': scope, 'head': head}
+
+    def _start_review_only(self, scope: dict) -> None:
+        """Freeze the review-only start: the scope (as plan.md), the tree and index under review, a mirror of the tree, EXEC
+        round 1 counted as the existing change, and the EXEC reviewer as the first dispatch."""
+        atomic_text(self.context / 'plan.md', scope['text'])
+        self._mirror_workspace(mirror := self.internal / 'review-start')
+        index = hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest()
+        self.state.update(phase='EXEC', next='reviewer', exec_rounds=REVIEW_ONLY_EXISTING_CHANGE_ROUNDS,
+                          base_commit=self.args.review_base, review_only={
+                              'plan_skipped': True, 'round1': 'the existing change; no author turn',
+                              'head_at_start': scope['head'], 'candidate_tree_sha256': git_snapshot(self.workspace)[0],
+                              'index_at_start': index, 'mirror': str(mirror),
+                              'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest()})
+
+    def _review_only_start_issue(self) -> Optional[str]:
+        """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""
+        record = self.state.get('review_only')
+        if not record or self.state.get('reviews_completed', 0):
+            return None
+        plan = self.context / 'plan.md'
+        if not plan.is_file() or hashlib.sha256(plan.read_bytes()).hexdigest() != record['review_scope_sha256']:
+            return 'the review scope (context/plan.md) changed before the first review; abort and start a new run'
+        if git_snapshot(self.workspace)[0] != record['candidate_tree_sha256']:
+            return (f'the tree changed before the first review; restore it from {record["mirror"]} (the tree as the run was '
+                    'created) and resume, or abort')
         return None
 
     def assert_fresh_prompt(self, role: str, prompt: str) -> None:
@@ -5988,6 +6089,8 @@ class Coordinator:
             return self.hold(failed['hold_reason'])
         result = self._recorded_reviewer_result(phase)
         if result is None:
+            if issue := self._review_only_start_issue():   # D-LG1: the first review sees exactly the frozen change
+                return self.hold(issue)
             self.materialize_review_context()
             snapshot, _ = git_snapshot(self.workspace)
             result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), review_schema())
@@ -8298,6 +8401,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--exercise-revisions', action='store_true')
     p.add_argument('--stop-after-plan', action='store_true',
                    help='HOLD once right after PLAN approval; a later resume enters EXEC')
+    p.add_argument('--review-only', action='store_true', default=None,
+                   help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
+    p.add_argument('--base', dest='review_base_ref', metavar='REF',
+                   help=f'the review base of --review-only, an ancestor of HEAD (default {REVIEW_ONLY_DEFAULT_BASE})')
     p.add_argument('--author-subagents', choices=['on', 'off'], default='on',
                    help='let a Claude author spawn subagents (read-only roles never can)')
     p.add_argument('--retry-uncertain', action='store_true',
