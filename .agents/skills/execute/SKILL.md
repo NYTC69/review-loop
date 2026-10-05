@@ -11,25 +11,17 @@ Read `docs/protocol/loading.md`, then run:
 python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-execute --output .review-loop/tmp/protocol-entry-execute.md
 ```
 
-Resolve <support-root> to this plugin/repository, not the task workspace.
-Keep cwd in the user's workspace. After exit 0, read the complete output file
-in bounded chunks before acting; stdout contains only a compact hash/size receipt,
-not the instruction body. A missing, unreadable, or incompletely read file blocks the action.
-Run every loader call as its own Bash command, never chained (rule in `docs/protocol/loading.md`).
+Resolve <support-root> to this plugin/repository, not the task workspace. Cwd,
+complete reads of the output file and one Bash command per loader call follow `loading.md`;
+a missing, unreadable, or incompletely read file blocks the action.
 `docs/protocol/loading.json` is the action/prerequisite map for both runtimes.
 
 Validate the three mutually-exclusive entry modes before locking. Run session-init for a fresh plan/review-only target, or resume for an existing session; then execution → execution-review → gate → polish → docs → security → delivery. Honor every --stop-after boundary.
 
 Before initialization load `session-init` AND `execute-init`; before a resume
-load `resume` AND `execute-init`. Before any work-agent dispatch load the
-matching `planning` or `execution` bundle; before review load
-`planning-review` or `execution-review`. On planning approval, only the plan-only entry loads `plan-exit`.
-The umbrella retains its session/lock and continues directly into execution.
-Before a stage transition, retry,
-stop or error exit, load its applicable bundle per `loading.md`.
-Use `parallel-review` only in the Codex orchestrator for N>1 Claude-CLI
-reviewer jobs (never in Claude Code or for local Codex Reviewer agents); load
-`context-persist` only when that optional substep is applicable.
+load `resume` AND `execute-init`. Every other action (work-agent dispatch, review,
+plan approval, stage transition, retry, stop or error exit, and the optional
+`parallel-review`/`context-persist`) loads its bundle per the `loading.md` table.
 
 Single default Claude-CLI reviewer job:
 `python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model} --stage execution --role reviewer --timeout-seconds 570`
@@ -46,8 +38,4 @@ Full session schema: `docs/protocol/session-file.md`; active loops:
 `docs/protocol/executor-output.md` and `docs/protocol/reviewer-output.md`.
 These are scoped references, not an eager import list. Detailed native entry
 steps live in `references/entry.md` and are selected by the loading map.
-
-Reuse a rule unit only while its exact text remains in this live context,
-using the fingerprint emitted by the loader. Fresh agents, compaction and
-new invocations must load their own prerequisites. Do not use persisted session
-state as proof that instructions are still available.
+Unit reuse within one live context follows `loading.md`.
