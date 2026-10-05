@@ -63,7 +63,28 @@ status, which may still be HOLD after later checks.
 The fresh shadow and gate must not see review history: before launch they refuse
 any input that carries reviewer ledger ids (`F` plus three or more digits) or
 review narratives (for example "previous review" or "response to reviewer"),
-including `context/plan.md` and `context/workitem.md`. When a shadow or gate is
+including `context/plan.md` and `context/workitem.md`. FIELD-23 prevents ACCIDENTAL carry-over of review history into a fresh context;
+it does not defend against an author who deliberately evades the check.
+Deliberate evasion is a known residual. Review independence otherwise rests on
+the fresh session and the gate templates, which stay unexempted, as do prompts.
+With a run's `base_commit`, both delta patches scan only added (`+`) lines,
+excluding `+++` headers; context and removed lines are never scanned. A match is
+exempt if the same matched text, case-insensitively, occurs anywhere in that
+file at the base commit (post-image path; for renames, also pre-image path).
+New files and binaries get no exemption. A base marker reused anywhere in the
+same file therefore passes, including copies: this is a documented residual.
+The exempt text is the whole match ("Claude approved", not "Claude") and must
+occur at the base as a whole word ("APPROVE" is not in "approved"). Another
+known residual, on the strict side: a file moved without `git mv` (`mv`, or `rm`
+plus a new file) appears as a new untracked file and gets no exemption, so a
+base marker in it holds; use `git mv`.
+In `delta.stat` and `status.txt`, matches inside paths that exist at the base
+commit are exempt. In `plan.md` and `workitem.md`, a match is exempt only inside
+backticks or a fenced code block and only if its matched text occurs in a file
+at the base commit. Unquoted narrative is scanned as before. Without a
+`base_commit`, the old scan applies. The same helper applies to fresh shadow,
+gate, PLAN approval and review-only creation inputs.
+When a shadow or gate is
 on, a plan that the reviewer approves while it still carries ledger ids or such
 wording is sent back to the author for a restatement without them, so the gate
 does not refuse it after EXEC. With no PLAN round left, the author gets one extra
