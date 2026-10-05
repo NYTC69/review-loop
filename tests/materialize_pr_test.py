@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -562,3 +563,365 @@ def test_symbolic_local_ref_to_tracking_ref_refuses(setup):
     git(setup[0], 'symbolic-ref', 'refs/heads/alias', 'refs/remotes/origin/main')
     with pytest.raises(mp.ResolutionError, match='tracking ref'):
         mp.resolve(setup[0], 'alias', 'main')
+
+
+def test_root_pseudoref_of_any_name_counts_for_ambiguity(setup):   # N2
+    repo = setup[0]
+    (repo / '.git' / 'FOO_HEAD').write_text(setup[3] + '\n')
+    git(repo, 'tag', 'FOO_HEAD', setup[2])
+    with pytest.raises(mp.ResolutionError, match='ambiguous ref'):
+        mp.resolve(repo, 'FOO_HEAD', 'main')
+
+
+# --- N1: repository config cannot make git run a command through a transport ---------------------------------------
+@pytest.mark.parametrize('path', ['ext', 'insteadOf', 'gitProxy'])
+def test_transport_config_cannot_run_a_command(setup, tmp_path, path):
+    repo = setup[0]
+    sentinel = tmp_path / 'transport-ran'
+    script = tmp_path / 'proxy.sh'
+    script.write_text(f'#!/bin/sh\ntouch {sentinel}\n')
+    script.chmod(0o755)
+    ext = f'ext::sh -c touch% {sentinel}'
+    if path == 'ext':
+        git(repo, 'config', 'protocol.ext.allow', 'always')
+        url = ext
+    elif path == 'insteadOf':
+        git(repo, 'config', 'protocol.ext.allow', 'always')
+        git(repo, 'config', f'url.{ext} #.insteadOf', 'https://offline.invalid/')
+        url = 'https://offline.invalid/o/r.git'
+    else:
+        git(repo, 'config', 'core.gitProxy', str(script))
+        url = 'git://offline.invalid/o/r.git'
+    git(repo, 'remote', 'set-url', 'origin', url)
+    with pytest.raises(mp.ResolutionError):
+        mp.resolve(repo, 'origin/main')
+    # the up-front check aside, the environment alone keeps git from running it
+    with pytest.raises(mp.ResolutionError):
+        mp.command(['git', 'ls-remote', '--', url], repo, network=True)
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize('url', ['ext::sh -c true', 'fd::17', 'git://offline.invalid/r', 'http://offline.invalid/r'])
+def test_transport_outside_the_allowlist_is_refused_up_front(url):
+    with pytest.raises(mp.ResolutionError):
+        mp.check_transport(url)
+    assert mp.check_transport('git@offline.invalid:o/r.git') and mp.check_transport('/abs/repo.git')
+
+
+# --- LG2-d2: materialization, all local (no network) ----------------------------------------------------------------
+GITHUB = 'https://github.com/owner/target'
+
+
+def localize(result, target):
+    """The fake gh pins GitHub URLs; point them at the local bare target, as the real target would serve them."""
+    for pin in (result['head'], result['base']):
+        if pin['source'] == GITHUB:
+            pin['source'] = str(target)
+    if result['target_url'] == GITHUB:
+        result['target_url'] = str(target)
+    return result
+
+
+def commit(repo, name, text, message):
+    (repo / name).write_text(text)
+    git(repo, 'add', name)
+    git(repo, 'commit', '-qm', message)
+    return git(repo, 'rev-parse', 'HEAD')
+
+
+def pr(setup, number, oid, cross=False):
+    setup[4]['pr'].update(number=number, url=f'{GITHUB}/pull/{number}', headRefOid=oid, isCrossRepository=cross)
+    update(setup)
+    return localize(mp.resolve(setup[0], str(number)), setup[1])
+
+
+def operator_state(repo):
+    files = {str(p.relative_to(repo / '.git')): p.read_bytes() for p in (repo / '.git').rglob('*')
+             if p.is_file() and p.name != 'index'}
+    return (git(repo, 'for-each-ref'), git(repo, 'worktree', 'list', '--porcelain'),
+            git(repo, 'status', '--porcelain'), files)
+
+
+def assert_materialized(out, root, head, base):
+    ws = Path(out['workspace'])
+    assert ws.parent == (Path(root) / 'pr').resolve() and re.fullmatch(r'[0-9a-f]{32}', ws.name)
+    assert git(ws, 'rev-parse', 'HEAD') == head
+    assert subprocess.run(['git', '-C', str(ws), 'symbolic-ref', '-q', 'HEAD']).returncode != 0   # detached
+    assert git(ws, 'rev-parse', 'refs/review/head') == head and git(ws, 'rev-parse', 'refs/review/base') == base
+    assert git(ws, 'status', '--porcelain') == ''
+    assert not (ws / '.git' / 'objects' / 'info' / 'alternates').exists()
+    assert (ws / '.git' / mp.MARKER).read_text().strip() == ws.name
+    return ws
+
+
+def test_d2_pr_head_from_the_target_pull_ref(setup, tmp_path):
+    repo, target, base, head, *_ = setup
+    git(repo, 'push', '-q', str(target), 'topic:refs/pull/7/head')
+    before = operator_state(repo)
+    out = mp.materialize(pr(setup, 7, head), tmp_path / 'runs')
+    ws = assert_materialized(out, tmp_path / 'runs', head, base)
+    assert out['merge_base'] == base
+    assert git(ws, 'remote', 'get-url', 'origin') == str(target)
+    assert operator_state(repo) == before   # refs, config, worktree list, objects and status unchanged
+
+
+def test_d2_fork_pr_head_is_served_by_the_target(setup, tmp_path):
+    repo, target, base, *_ = setup
+    fork = tmp_path / 'fork.git'
+    subprocess.run(['git', 'clone', '-q', '--bare', str(target), str(fork)], check=True)
+    work = tmp_path / 'fork-work'
+    subprocess.run(['git', 'clone', '-q', str(fork), str(work)], check=True)
+    git(work, 'config', 'user.email', 'f@example.invalid')
+    git(work, 'config', 'user.name', 'F')
+    oid = commit(work, 'fork.txt', 'fork\n', 'fork change')
+    git(work, 'push', '-q', 'origin', 'HEAD:refs/heads/feature')
+    git(fork, 'push', '-q', str(target), 'feature:refs/pull/8/head')   # as GitHub publishes a fork head
+    out = mp.materialize(pr(setup, 8, oid, cross=True), tmp_path / 'runs')
+    assert out['is_cross_repository'] is True
+    assert_materialized(out, tmp_path / 'runs', oid, base)
+
+
+def test_d2_remote_branch_and_unpushed_local_branch(setup, tmp_path):
+    repo, target, base, head, *_ = setup
+    other = tmp_path / 'other.git'
+    subprocess.run(['git', 'clone', '-q', '--bare', str(repo), str(other)], check=True)
+    git(repo, 'remote', 'add', 'other', str(other))
+    out = mp.materialize(mp.resolve(repo, 'other/topic', 'origin/main'), tmp_path / 'runs')
+    assert_materialized(out, tmp_path / 'runs', head, base)
+    before = operator_state(repo)
+    out = mp.materialize(mp.resolve(repo, 'topic', 'origin/main'), tmp_path / 'runs')   # unpushed: only here
+    assert out['head']['source'] == str(repo) and out['base']['source'] == str(target)
+    assert_materialized(out, tmp_path / 'runs', head, base)
+    assert operator_state(repo) == before
+
+
+def test_d2_no_remote_clones_the_operator_repo_without_alternates(setup, tmp_path):
+    repo, _, base, head, *_ = setup
+    git(repo, 'remote', 'remove', 'origin')
+    with pytest.raises(mp.ResolutionError, match='--base required'):
+        mp.resolve(repo, 'topic')
+    out = mp.materialize(mp.resolve(repo, 'topic~0', 'main'), tmp_path / 'runs')   # unnamed head: fetched by OID
+    assert out['head']['fetch_ref'] is None and out['target_url'] == str(repo)
+    assert_materialized(out, tmp_path / 'runs', head, base)
+
+
+def test_d2_moved_head_is_refused_and_the_clone_removed(setup, tmp_path, monkeypatch):
+    repo, target, base, head, *_ = setup
+    git(repo, 'push', '-q', str(target), 'topic:refs/pull/7/head')
+    stale = pr(setup, 7, head)
+    git(repo, 'push', '-q', '-f', str(target), 'main:refs/pull/7/head')   # the PR moved after resolution
+    with pytest.raises(mp.MaterializeError, match='head moved'):
+        mp.materialize(stale, tmp_path / 'runs')
+    assert list((tmp_path / 'runs' / 'pr').iterdir()) == []
+    fresh = json.loads(json.dumps(stale))
+    fresh['head']['oid'] = base
+    calls = iter([stale, fresh])
+    monkeypatch.setattr(mp, 'resolve', lambda *args: next(calls))
+    out = mp.resolve_and_materialize(repo, '7', None, None, tmp_path / 'runs')   # re-resolved once
+    assert git(Path(out['workspace']), 'rev-parse', 'HEAD') == base
+    calls = iter([stale, stale])
+    with pytest.raises(mp.MaterializeError, match='head moved'):   # then refused
+        mp.resolve_and_materialize(repo, '7', None, None, tmp_path / 'runs')
+
+
+def test_d2_criss_cross_history_is_refused(setup, tmp_path):
+    repo = setup[0]
+    git(repo, 'checkout', '-q', '-b', 'left', 'main')
+    a1 = commit(repo, 'l', 'l\n', 'left')
+    git(repo, 'checkout', '-q', '-b', 'right', 'main')
+    b1 = commit(repo, 'r', 'r\n', 'right')
+    git(repo, 'merge', '-q', '--no-ff', '-m', 'r<-l', a1)
+    git(repo, 'checkout', '-q', 'left')
+    git(repo, 'merge', '-q', '--no-ff', '-m', 'l<-r', b1)
+    assert len(git(repo, 'merge-base', '--all', 'left', 'right').splitlines()) == 2
+    with pytest.raises(mp.MaterializeError, match='criss-cross'):
+        mp.materialize(mp.resolve(repo, 'left', 'right'), tmp_path / 'runs')
+    assert list((tmp_path / 'runs' / 'pr').iterdir()) == []
+
+
+def test_d2_clone_survives_a_gc_of_the_operator_repo(setup, tmp_path):
+    repo, _, base, head, *_ = setup
+    out = mp.materialize(mp.resolve(repo, 'topic'), tmp_path / 'runs')
+    git(repo, 'checkout', '-q', 'main')
+    git(repo, 'branch', '-qD', 'topic')
+    git(repo, 'reflog', 'expire', '--expire=now', '--all')
+    git(repo, 'gc', '-q', '--prune=now')
+    assert subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', head]).returncode != 0   # gone there
+    ws = Path(out['workspace'])
+    git(ws, 'fsck', '--no-dangling')
+    assert git(ws, 'rev-parse', 'HEAD') == head and (ws / 'file').read_text() == 'unpushed\n'
+
+
+def test_d2_home_hooks_and_smudge_filters_do_not_run(setup, tmp_path, monkeypatch):
+    repo, _, base, *_ = setup
+    sentinel = tmp_path / 'ran'
+    hooks = tmp_path / 'home-hooks'
+    hooks.mkdir()
+    for hook in ('post-checkout', 'reference-transaction', 'post-merge'):
+        (hooks / hook).write_text(f'#!/bin/sh\necho {hook} >> {sentinel}\n')
+        (hooks / hook).chmod(0o755)
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / '.gitconfig').write_text(f'[core]\n\thooksPath = {hooks}\n[filter "x"]\n'
+                                     f'\tsmudge = sh -c "echo smudge >> {sentinel}; cat"\n\trequired = true\n')
+    head = commit(repo, '.gitattributes', '* filter=x\n', 'attributes name a driver')
+    real_home = os.environ['HOME']
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(home / '.config'))
+    out = mp.materialize(mp.resolve(repo, 'topic'), tmp_path / 'runs')
+    assert not sentinel.exists()
+    monkeypatch.setenv('HOME', real_home)   # the test's own git calls below must not use that HOME
+    assert_materialized(out, tmp_path / 'runs', head, base)
+
+
+def test_d2_remove_needs_the_marker(setup, tmp_path):
+    out = mp.materialize(mp.resolve(setup[0], 'topic'), tmp_path / 'runs')
+    ws = Path(out['workspace'])
+    plain = tmp_path / 'runs' / 'pr' / ('0' * 32)
+    (plain / '.git').mkdir(parents=True)
+    link = tmp_path / 'runs' / 'pr' / ('1' * 32)
+    link.symlink_to(ws)
+    wrong = tmp_path / 'elsewhere' / ws.name
+    (wrong / '.git').mkdir(parents=True)
+    (wrong / '.git' / mp.MARKER).write_text(ws.name + '\n')
+    for path in (plain, link, wrong, tmp_path / 'missing'):
+        with pytest.raises(mp.MaterializeError):
+            mp.remove(path)
+    assert plain.is_dir() and link.is_symlink() and wrong.is_dir() and ws.is_dir()
+    (ws / '.git' / mp.MARKER).write_text('f' * 32 + '\n')   # a marker for another run
+    with pytest.raises(mp.MaterializeError, match='marker'):
+        mp.remove(ws)
+    (ws / '.git' / mp.MARKER).write_text(ws.name + '\n')
+    assert mp.remove(ws) == str(ws.resolve()) and not ws.exists()
+
+
+def test_d2_a_clone_killed_before_its_marker_leaves_nothing(setup, tmp_path, monkeypatch):   # R1
+    original = mp.command
+
+    def clone_then_time_out(argv, cwd, **kwargs):
+        out = original(argv, cwd, **kwargs)
+        if 'clone' in argv:   # the clone has written .git and objects, then its timeout kills it
+            raise mp.ResolutionError('git unavailable or timed out')
+        return out
+    monkeypatch.setattr(mp, 'command', clone_then_time_out)
+    with pytest.raises(mp.MaterializeError, match='clone failed'):
+        mp.materialize(mp.resolve(setup[0], 'topic'), tmp_path / 'runs')
+    assert list((tmp_path / 'runs' / 'pr').iterdir()) == []
+
+
+def test_d2_root_inside_the_operator_repository_is_refused(setup, tmp_path):   # R1
+    repo = setup[0]
+    resolution = mp.resolve(repo, 'topic')
+    linked = tmp_path / 'linked-root'
+    linked.mkdir()
+    (linked / 'pr').symlink_to(repo / '.git')
+    before = operator_state(repo)
+    for root in (repo, repo / 'sub', repo / '.git', repo / '.git' / 'x', linked):
+        with pytest.raises(mp.MaterializeError, match='inside the operator repository'):
+            mp.materialize(resolution, root)
+    assert operator_state(repo) == before and not (repo / 'pr').exists() and not (repo / 'sub').exists()
+
+
+@pytest.fixture
+def private_remote(setup, tmp_path, monkeypatch):
+    """A private-remote stand-in: `git http-backend` behind Basic auth on 127.0.0.1 (plain http, so the test widens
+    ALLOWED_PROTOCOLS; production keeps https), with a fake `gh auth git-credential` as the only credential source."""
+    import base64
+    import http.server
+    import threading
+    repo, target, *_ = setup
+    git(repo, 'push', '-q', str(target), 'topic:refs/heads/topic')
+    token = 'Basic ' + base64.b64encode(b'reviewer:FAKE-PAT').decode()
+    project_root = str(target.parent)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.serve()
+
+        def do_POST(self):
+            self.serve()
+
+        def serve(self):
+            if self.headers.get('Authorization') != token:
+                self.send_response(401)
+                self.send_header('WWW-Authenticate', 'Basic realm="private"')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            path, _, query = self.path.partition('?')
+            body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+            env = {**os.environ, 'GIT_PROJECT_ROOT': project_root, 'GIT_HTTP_EXPORT_ALL': '1', 'PATH_INFO': path,
+                   'QUERY_STRING': query, 'REQUEST_METHOD': self.command, 'REMOTE_USER': 'reviewer',
+                   'REMOTE_ADDR': '127.0.0.1', 'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                   'CONTENT_LENGTH': str(len(body))}
+            for header, name in (('Git-Protocol', 'GIT_PROTOCOL'), ('Content-Encoding', 'HTTP_CONTENT_ENCODING')):
+                if self.headers.get(header):
+                    env[name] = self.headers[header]
+            out = subprocess.run(['git', 'http-backend'], input=body, env=env, capture_output=True).stdout
+            head, _, payload = out.partition(b'\r\n\r\n') if b'\r\n\r\n' in out else out.partition(b'\n\n')
+            status, headers = 200, []
+            for line in head.decode().splitlines():
+                key, _, value = line.partition(':')
+                if key.lower() == 'status':
+                    status = int(value.split()[0])
+                else:
+                    headers.append((key, value.strip()))
+            self.send_response(status)
+            for key, value in headers:
+                self.send_header(key, value)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{server.server_address[1]}/{target.name}'
+    bindir = tmp_path / 'cred-bin'
+    bindir.mkdir()
+    log, creds = tmp_path / 'cred.log', tmp_path / 'cred.txt'
+    (bindir / 'gh').write_text('#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\n'
+                               f'Path({str(log)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")\n'
+                               'if sys.argv[1:3] == ["auth", "git-credential"] and sys.argv[3] == "get":\n'
+                               '    sys.stdin.read()\n'
+                               f'    if Path({str(creds)!r}).exists(): print(Path({str(creds)!r}).read_text())\n')
+    (bindir / 'gh').chmod(0o755)
+    monkeypatch.setenv('PATH', str(bindir) + os.pathsep + os.environ['PATH'])
+    monkeypatch.setattr(mp, 'ALLOWED_PROTOCOLS', (*mp.ALLOWED_PROTOCOLS, 'http'))
+    yield url, log, creds
+    server.shutdown()
+
+
+def test_d2_private_remote_clones_and_fetches_through_the_gh_helper(setup, tmp_path, private_remote):
+    repo, _, base, head, *_ = setup
+    url, log, creds = private_remote
+    resolution = {'kind': 'ref', 'operator_repo': str(repo), 'target_url': url,
+                  'head': {'oid': head, 'source': url, 'fetch_ref': 'refs/heads/topic'},
+                  'base': {'oid': base, 'source': url, 'fetch_ref': 'refs/heads/main'}}
+    creds.write_text('username=reviewer\npassword=FAKE-PAT\n')
+    out = mp.materialize(resolution, tmp_path / 'runs')
+    ws = assert_materialized(out, tmp_path / 'runs', head, base)
+    assert 'auth git-credential get' in log.read_text()
+    assert 'FAKE-PAT' not in (ws / '.git' / 'config').read_text()   # nothing stored
+    creds.unlink()   # the helper has no credential: fail closed, no prompt (stdin is closed; prompts are off)
+    with pytest.raises(mp.MaterializeError, match='clone failed'):
+        mp.materialize(resolution, tmp_path / 'runs')
+    assert [p for p in (tmp_path / 'runs' / 'pr').iterdir()] == [ws]
+
+
+def test_d2_cli_materializes_and_removes(setup, tmp_path):
+    script = Path(mp.__file__).resolve()
+
+    def run(*args):
+        return subprocess.run([sys.executable, str(script), *args], text=True, capture_output=True)
+    made = run('topic', '--repo', str(setup[0]), '--root', str(tmp_path / 'runs'))
+    assert made.returncode == 0, made.stderr
+    ws = json.loads(made.stdout)['workspace']
+    assert git(Path(ws), 'rev-parse', 'HEAD') == setup[3]
+    gone = run('--remove', ws)
+    assert gone.returncode == 0 and not Path(ws).exists()
+    refused = run('--remove', str(tmp_path))
+    assert refused.returncode == 2 and 'REFUSED:' in refused.stderr and tmp_path.exists()
+    assert run('topic', '--remove', ws).returncode == 2   # an input and --remove together
