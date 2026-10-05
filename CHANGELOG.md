@@ -1,5 +1,14 @@
 # Changelog
 
+### v2.11.1：插件正常更新不再让回合 HOLD（FIELD-21）；`--timeout` 设上限；author 在被忽略路径写的可执行配置会在报告里列出；legacy → paired-session 对照表
+
+- **fix（FIELD-21，poker-news-bot 现场报告）**：回合进行时，如果另一个 Claude Code 会话把 review-loop 插件更新到新版本（`~/.claude/plugins/installed_plugins.json` 里同一插件条目的 version、installPath、gitCommitSha、lastUpdated 一起变），原来会把这次改动算到 author 头上并 HOLD。现在只要能确认是正常更新，efficient 模式下就作废这个回合，并在新的 baseline 上自动重跑一次；strict 模式下 HOLD，并提示可以 resume。识别条件很严：新 installPath 必须正好是插件缓存里新版本的目录，从缓存根目录往下每一级都必须是真实目录、不能是链接，其他字段不能有任何变化。只要有一项不符，仍按原来的硬 finding 处理。被作废的回合照样计入调用次数，和已有的作废重派路径一致。
+- **改进（timeoutcap）**：`--timeout` 限定在 1 到 86400 秒之间，默认仍是 2700。超出范围时，在创建任何 lease、run 目录或 detach 子进程之前就直接拒绝。
+- **改进（f3，B 类，只报告）**：author、FINISH、DOCS 或 POLISH-Q 修复回合在被 git 忽略的路径里新建或修改了可执行配置文件（`.vscode/tasks.json`、`.vscode/launch.json`、`.claude/settings*.json`、`.claude/commands/**`、`.mcp.json`、`.envrc` 等）时，会写进 receipt 和 state、打印 WARNING，并在 `status --brief` 和交付报告里列出来。两种模式都不 HOLD。清单只看元数据，扫描有上限。
+- **fix（startup40）**：`tests/protocol_loading_graph_test.py` 的 Claude one-file-delivery 启动削减比例，从 v2.9.7 起一直低于 40% 门槛（39.84，后来降到 39.68），现在是 40.45%。修法是把 `loading.md` 里两段很少用到的规则原样移到按需读取的 `docs/protocol/loading-special-cases.md`，再把各入口 skill 里重复 `loading.md` 的措辞改成指针。规则一条没删，测试和门槛都没改。
+- **文档**：`docs/paired-session-migration.md` 新增"Legacy → paired-session map (after v2.11.0)"，共 49 行：已覆盖 27 行，已排进计划 4 行，等 owner 决定 18 行。F6（一家厂商的回合期间另一家的全局配置被改，只记录、不 HOLD）在 1C 安全控制表里登记为接受的残余风险。
+- **审查**：Codex gpt-6.1-sol。field21 2 轮，startup40 1 轮，timeoutcap 2 轮，wrapperdedupe 1 轮，legacy-map 3 轮，f3 2 轮。最后一轮都是 APPROVE。
+
 ### v2.11.0：paired-session 支持"只审已有代码"（`run --review-only`），默认入口的审查请求不再落回 legacy；可选的 `--detach`/`stop`；限流 HOLD 带类型
 
 - **新功能（D-LG1：只审已有代码的入口）**：
