@@ -123,6 +123,9 @@ MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
+DEFAULT_TIMEOUT_SECONDS = 2700
+MAX_TIMEOUT_SECONDS = 86400   # timeoutcap: one day per non-EXEC turn or coordinator test run (an existing run starts with --timeout 20000)
+TIMEOUT_RANGE_ERROR = f'--timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds'
 
 
 def resolve_exec_turn_timeout(value, general_timeout):
@@ -1886,6 +1889,8 @@ class Coordinator:
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
         if getattr(args, 'wi_deadline', None) is not None and args.wi_deadline <= 0: raise ValueError('--wi-deadline must be a positive number of seconds')
+        if not 1 <= getattr(args, 'timeout', DEFAULT_TIMEOUT_SECONDS) <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any state exists
+            raise ValueError(TIMEOUT_RANGE_ERROR)
         self.args = args
         self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
         self._fake_dispatching = False
@@ -8551,7 +8556,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
     p.add_argument('--max-invocations', type=int, default=25)
-    p.add_argument('--timeout', type=int, default=2700)
+    p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT_SECONDS,
+                   help=f'per-dispatch timeout for every non-EXEC turn and the coordinator\'s own test runs '
+                        f'(default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS} seconds)')
     p.set_defaults(exec_turn_timeout_explicit=False)
     p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
                    help=f'EXEC author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
@@ -8942,6 +8949,9 @@ def main(argv=None) -> int:
         except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
     if args.detach and args.action not in DETACH_ACTIONS:
         print('REFUSED: --detach is only for ' + ', '.join(DETACH_ACTIONS))
+        return 2
+    if not 1 <= args.timeout <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any lease, run dir or detached child
+        print('REFUSED: ' + TIMEOUT_RANGE_ERROR)
         return 2
     if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
         args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
