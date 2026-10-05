@@ -520,6 +520,22 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex read-only roles get a per-dispatch temp root
 CODEX_READONLY_PROFILE = 'paired_session_readonly'
 SCRATCH_PROBE_COMMAND = 'printf probe > "$TMPDIR/paired-session-scratch-probe"'
+# FIELD-20 (poker-news-bot WI-101, 2026-10-05; real codex-cli 0.160.0 rehearsal in lane B's field20 report): Codex's exec_command
+# returns after about 10 s with a session_id and no exit_code; a model that moves on without polling leaves a long test command
+# running and the turn's end kills it, so no completed run is observed. Every role runs a command to completion within the
+# dispatch timeout; the coordinator still requires one observed completed exit-0 run of the exact configured command.
+LONG_COMMAND_RULE = ('Run each command to completion before the next one and never end your turn while a command is still running. '
+                     'A result with a session_id and no exit_code is still running: poll that session until the result carries an '
+                     'exit_code (code-mode cells of exactly: const r = await tools.write_stdin({"session_id":<that id>,"chars":"",'
+                     '"yield_time_ms":30000}); text(JSON.stringify(r));). Polls are not extra commands. '
+                     'A Bash tool call that takes a timeout parameter gets 600000 for a long command.')   # no vendor names: fresh-role scan
+
+
+def command_not_completed(row: dict) -> bool:
+    """FIELD-20: a Codex command with no exit status (still running or killed when the turn ended, or reported as -1). Claude rows
+    carry -1 for every error, so they never count here; a Claude tool timeout is FIELD-12."""
+    code = row.get('exit_code')
+    return row.get('source') != 'Bash tool_use/tool_result' and (code is None or (type(code) is int and code < 0))
 
 
 def codex_readonly_profile_args() -> list[str]:
@@ -1170,10 +1186,15 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
     """Return actual commands and all observed tool calls from a CLI event stream."""
     commands, calls = [], []
     if vendor == 'codex':
+        started = {}   # FIELD-20: a command started but never completed (still running or killed when the turn ended)
         for row in rows:
             item = row.get('item', {})
+            if row.get('type') == 'item.started' and item.get('type') == 'command_execution' and item.get('id') is not None:
+                started[item['id']] = item
+                continue
             if row.get('type') != 'item.completed':
                 continue
+            started.pop(item.get('id'), None)
             if item.get('type') == 'command_execution':
                 raw_command = item.get('command', '')
                 exit_code = item.get('exit_code')
@@ -1194,6 +1215,19 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
             elif item.get('type') == 'file_change':
                 calls.append({'tool': 'file_change', 'input': {'changes': item.get('changes', [])},
                               'error': item.get('status') != 'completed'})
+        for item in started.values():
+            raw_command = item.get('command', '')
+            command = raw_command
+            try:
+                outer = shlex.split(raw_command)
+                if len(outer) == 3 and outer[0].endswith(('sh', 'bash', 'zsh')) and outer[1] in ('-c', '-lc'):
+                    command = outer[2]
+            except ValueError:
+                pass
+            calls.append({'tool': 'command_execution', 'input': {'command': command}, 'error': None})
+            commands.append({'command': command, 'raw_command': raw_command, 'exit_code': None, 'error': False,
+                             'output': item.get('aggregated_output', ''), 'source': 'command_execution',
+                             'evidence_kind': 'started; no exit status when the turn ended'})
         return commands, calls
     pending = {}
     for row in rows:
@@ -4371,7 +4405,7 @@ class Coordinator:
     def allowed_command_prompt(self) -> str:
         commands = self.reviewer_commands()
         return '\n'.join(['Commands you may run exactly as written (each must be an unwrapped Bash call):',
-                          *(f'- {command}' for command in commands)])
+                          *(f'- {command}' for command in commands), LONG_COMMAND_RULE])
 
     def verified_claims_prompt(self) -> str:
         return ('Return verified_claims as an array of {claim, file, line}: concrete claims you '
@@ -5255,7 +5289,11 @@ class Coordinator:
                                           self.state['fake_candidate_test']['root']).resolve()) and not any(
                     observed_test_succeeded(row, self.args.test_command)
                                          for row in observed_commands):
-                raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command')
+                unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
+                                 for row in observed_commands)   # FIELD-20
+                raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
+                                 + ('; the configured test was not observed to completion (no exit status when the turn ended)'
+                                    if unfinished else ''))
             if not fresh:
                 old = self.state['sessions'].get(role)
                 if old and session and old != session:
@@ -5501,8 +5539,11 @@ class Coordinator:
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
             raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
         if not (observed := self._observed_test(answer)):
-            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command; '
-                               'resume reviews again')
+            unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
+                             for row in answer.get('observed_commands', []))   # FIELD-20
+            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
+                               + (' (the configured test was not observed to completion: no exit status when the turn ended)'
+                                  if unfinished else '') + '; resume reviews again')
         self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer disposes them
         self.render(result, 'docs-reviewer', 'DOCS')
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
@@ -6791,6 +6832,7 @@ class Coordinator:
             'Do not pre-judge, refuse, explain, or skip a command.',
             f'Make exactly {calls} separate Bash calls, one for each literal command below.',
             'Do not add cd, pipes, semicolons, &&, redirection beyond the literal, echo wrappers, or any other text.',
+            LONG_COMMAND_RULE,
             'Allowed exact command:', allowed_command, *scratch,
             'Write commands expected to be denied:', *attempts, *sandbox_probe_commands[3:],
             f'Return APPROVE and list only the {calls} literal commands in self_run_evidence.',
@@ -6801,7 +6843,8 @@ class Coordinator:
                        'Do not use arrays, loops, Promise.all, or batched exec cells for this probe. '
                        'If using code-mode, each cell must be exactly: const r = await tools.exec_command('
                        '{"cmd":"<one literal command>","workdir":' + json.dumps(str(self.workspace)) +
-                       '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output.')
+                       '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output. '
+                       'The only other cells allowed are the write_stdin polls of a still-running command described above.')
         return prompt
 
     def _codex_escape_targets(self) -> dict:
@@ -6854,8 +6897,13 @@ class Coordinator:
             failures.append('not-attempted: ' + allowed_command)
         elif not allowed:
             timeout = tool_timeout_seconds(allowed_matches)   # FIELD-12: a CLI tool timeout is not an ordinary failure
-            failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}' if timeout is not None
-                            else 'allowed-command-failed: ' + allowed_command)
+            if timeout is not None:
+                failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}')
+            elif any(command_not_completed(row) for row in allowed_matches):   # FIELD-20: never observed to completion
+                failures.append('allowed-command-not-completed (no exit status: still running or killed when the turn ended): '
+                                + allowed_command)
+            else:
+                failures.append('allowed-command-failed: ' + allowed_command)
         for command in attempts:
             matches = [row for row in evidence if row.get('command', '').strip() == command]
             if not matches:
