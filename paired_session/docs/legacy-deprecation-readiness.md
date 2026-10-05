@@ -4,9 +4,14 @@
 
 按 ADR-6，只有四条替换标准全部满足，才能退役 legacy。目前的状态：
 - **第 (3) 条已满足：** 一流的用户验收阶段已经实现，accept/reject 都要先出 intent 再按 expect 执行。
-- **第 (2) 条部分满足：**
-  - 只看 gate run 序列，有 4 次连续的真实 run（ws7–ws10）没有出现 coordinator 缺陷，都经默认入口并 ACCEPTED，其中一次是 review-only。
-  - 但如果把同一天消费者现场的缺陷 FIELD-21 也计入，它之后只剩 ws9、ws10 两次；而包含修复的只有 ws10 一次。
+- **第 (2) 条部分满足，连续计数已归零：**
+  - ws7–ws10 曾是 4 次连续零 coordinator 缺陷的真实 run（都经默认入口并 ACCEPTED，其中一次是 review-only）。
+  - 但在已发布的 v2.11.1 上，supervisor 并行启动了 ws11 和 ws12。ws11 因 coordinator 缺陷 FIELD-22 HOLD：并发的 ws12 的 Codex turn 往共享的 `~/.codex/config.toml` 追加了自己的 trust 条目，而且 `--acknowledge-codex-trust` 无法恢复。所以 FIELD-22 修复之后的连续计数是 **0**。
+  - ws12（review-only，多文件）本身没有 coordinator 缺陷：
+    - reviewer 和 shadow 首轮就发现了植入的 bug，第 2 轮修好。
+    - 之后 POLISH 阶段的 specialist 提出了浮点边界问题，EXEC 因此重开。作者的修复先引入了溢出（r3），修溢出时又引入了一个真正的浮点边界回归（r4）。
+    - 这个回归被 r4 的 shadow 抓住。run 在 EXEC 上限（4 轮）HOLD，没有把已知的 MAJOR 交付出去。
+    - 因此有一个问题请你决定：review-only 的 EXEC 上限 4 轮是否太低。
   - 这些 run 都是小型 toy 任务，由 supervisor 的 headless driver 驱动，每次 run 后还要手工清理 Codex trust 条目。
   - overseer 成本现已测量（§3.2a）：每个 run 的 overseer 花费 $0.91–1.04（标价），占 Claude 侧花费的 48–52%，占输入 token 的 52–69%（绝大部分是缓存读）。
 - **第 (4) 条部分满足：** 已覆盖 poker-tools 以外的仓库（poker-news-bot）；"大任务"还没有定义；真实的订阅限额 HOLD 加 resume 至今没有发生过，只有离线证据，而按现行 ADR-6 离线证据不算满足。
@@ -49,7 +54,7 @@ None of the amendments changes the four retirement criteria.
 | Default-entry switch: 1D go and the parity decision | **MET** | ADR-11 + E-12 (D12 + D-2 + W2a are the parity decision); v2.10.0 `c8336e7` (tag) made paired-session the default entry |
 | Default-entry switch: revised E-1 evidence and the E-12 residual | **E-1 MET; residual OWNER** | Revised E-1 is met. Gate run `6cd57da7` was ACCEPTED. CI run 37252072913 on the release commit rc4 = `c8336e7` concluded success, macOS jobs 64/64 and 0 non-success jobs (supervisor `gh run view`, 2026-10-05). The normal-shell residual (§1) is open; the gate runs were started by a headless driver. |
 | (1) Seeded regressions, new no worse than old | **NOT MET** | M7 (`m7-seeded-defect-comparison.md`, `m7-execution-plan.md`): corpus ready, no scored run (§3.4). One anecdote: gate run `a90a9e54` found and fixed a seeded bug, with no legacy control. |
-| (2) Three consecutive zero-defect real runs, limited overseer, overseer cost measured | **PARTIAL** | The gate-run series has 4 consecutive runs (ws7–ws10). Counting the consumer field defect FIELD-21, only 2 follow it (ws9, ws10). Only ws10 ran with the fix. The cost clause is MET: the overseer's tokens and cost are measured and added to per-item cost (§3.2a). The overseer limit is not met (§3.2). |
+| (2) Three consecutive zero-defect real runs, limited overseer, overseer cost measured | **PARTIAL** | The series was 4 (ws7–ws10), but ws11 on the released v2.11.1 hit a coordinator defect (FIELD-22, §3.2b). The count after the FIELD-22 fix is 0. (Counting FIELD-21 in consumer use had already cut the series to 2 runs, with only ws10 on the fix.) The cost clause is MET: the overseer's tokens and cost are measured and added to per-item cost (§3.2a). The overseer limit is not met (§3.2). |
 | (3) First-class user-acceptance feedback phase | **MET** | `accept` / `reject` with `--intent-only` digest then `--expect`; `note` and `--scope-change`; DONE = acceptance pending (`docs/protocol/paired-session-entry.md` "DONE and acceptance"). Accept exercised in the 4 gate runs and in consumer runs. Reject reopens EXEC; it is covered by tests, and no gate run used it. |
 | (4a) A repo other than poker-tools | **MET** | poker-news-bot ab_pipeline: many paired-session runs since 2026-09-24, including v2.10.0+ runs `runs210/WI-101`, `WI-102` and `runs211/WI-103` (DONE; direct CLI, lifecycle off) |
 | (4b) One large task | **OWNER** | Not defined in ADR-6. A definition is proposed in §3.6. No gate run would qualify; the largest consumer work items are near the proposed size but ran with lifecycle off. |
@@ -60,17 +65,19 @@ None of the amendments changes the four retirement criteria.
 Verified directly, read-only:
 - git tags and commits;
 - the run-dir `state.json` / `usage.md` of the gate runs and of the consumer runs;
+- the `state.json`, receipts and turn logs of ws11 and ws12 (§3.2b);
 - the documents in this tree.
 
 Taken from records:
 - the supervisor log (attempt history, CI runs, times, FIELD-21);
+- the supervisor's FIELD-22 diagnosis (which run appended the trust entry; §3.2b);
 - lane A's M7 results (§3.4).
 
 ### 3.1 Releases
 - **v2.10.0** `c8336e7` (tag): default entry, worktree lifecycle, efficient mode.
 - **v2.10.1** `5b9b8bb` (tag): long test commands polled to completion (FIELD-20, `2726498`).
 - **v2.11.0** `fc5d5f1` (tag): review-only entry (D-LG1), `--detach`/`stop`, typed rate-limit HOLD, F7.
-- **v2.11.1** rc1 `99f0577`: includes FIELD-21 `1adb353` and f3 `1121a4b`. Not tagged at the time of writing.
+- **v2.11.1** `99f0577` (tag; pinned `~/paired-runs/review-loop-v2.11.1`): FIELD-21 `1adb353`, f3 `1121a4b`.
 
 ### 3.2 Gate real runs through the default entry
 Run dirs: `~/.local/state/review-loop/runs/<id>`; supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`
@@ -88,6 +95,7 @@ Each state has status ACCEPTED and no HOLD.
 
 **Which runs count as zero-defect.**
 - **ws7–ws10 count:** four consecutive runs with no coordinator defect and no HOLD, on four release candidates.
+  ws11 then broke the series (§3.2b).
 - **Attempts 1–6 earlier that day do not count.** They HOLDed or failed:
   - attempt 1: FIELD-15/16 — run root under `~/.claude`, and a silent drift to legacy;
   - attempt 2: the Codex plugin-cache capability scan blocked dispatch (fixCG);
@@ -135,7 +143,7 @@ input tokens, including cache reads.
 
 | Run | Overseer input (cache-read) | Overseer output | Overseer $ | Roles input (cached) | Roles output | Claude roles $ (reviewer + shadow) | Total input | Total output | Total Claude-side $ | Overseer share: input / Claude $ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ws7 `6cd57da7` | 1,488,722 (1,430,318) | 9,549 | 0.944 | 679,708 (512,678) | 15,465 | 0.864 | 2,168,430 | 25,014 | 1.809 | 69 % / 52 % |
+| ws7 `6cd57da7` | 1,488,722 (1,430,318) | 9,549 | 0.944 | 679,708 (512,678) | 15,465 | 0.864 | 2,168,430 | 25,014 | 1.808 | 69 % / 52 % |
 | ws8 `3888ea0e` | 1,628,634 (1,565,146) | 10,710 | 1.035 | 1,113,118 (928,672) | 15,959 | 0.971 | 2,741,752 | 26,669 | 2.006 | 59 % / 52 % |
 | ws9 `a90a9e54` | 1,463,773 (1,400,679) | 10,104 | 0.987 | 1,033,530 (859,022) | 17,400 | 1.077 | 2,497,303 | 27,504 | 2.064 | 59 % / 48 % |
 | ws10 `00d73bc6` | 1,314,245 (1,254,656) | 9,332 | 0.914 | 1,187,411 (1,014,064) | 16,635 | 0.975 | 2,501,656 | 25,967 | 1.889 | 52 % / 48 % |
@@ -154,6 +162,59 @@ Per item:
   polls, would cost differently.
 - Codex roles carry no USD figure.
 - A single host and a single day.
+
+### 3.2b Two parallel runs on the released v2.11.1 (ws11, ws12)
+
+Both runs started at 17:49 on 2026-10-05, in parallel. Each was launched by a supervisor headless driver through the
+default entry, on the pinned v2.11.1. Both ran with lifecycle on in efficient mode: Codex author, Claude reviewer,
+Codex gate, max EXEC rounds 4. Run dirs (read-only): `~/.local/state/review-loop/runs/<id>`.
+
+**ws11 `2110ada2`** (fresh multi-file task: `csv_stats.load_column` + `stats.describe`): **HOLD, coordinator defect.**
+- PLAN author and reviewer finished. The EXEC author turn then ended with "codex turn changed global config:
+  codex_config" (unexpected-content-change); 3 invocations.
+- Cause, FIELD-22, assigned to lane B: during ws11's Codex turn, the concurrent ws12 run's Codex turn appended its own
+  workspace trust entry to the shared default `~/.codex/config.toml`.
+- The guard accepts only the turn's own workspace trust append, and `--acknowledge-codex-trust` cannot recover this
+  case.
+- This resets criterion (2): the count after the FIELD-22 fix is 0.
+- It also shows that two runs sharing one `CODEX_HOME` are not safe today (see `concurrent-runs.md`: one absolute
+  `CODEX_HOME` per concurrent run).
+
+**ws12 `70804fc3`** (review-only, multi-file dirty change, seeded bug: `bins()` drops the maximum value): **HOLD at the
+EXEC round limit, no coordinator defect.** 18 turns.
+Turn sequence numbers are in brackets; the ledger is in `state.json` `finding_ledger`.
+1. EXEC r1 [1–2]: reviewer and shadow both found the seeded bug (F001, F003 MAJOR).
+2. EXEC r2 [3–6]: the author fixed it, and the reviewer approved.
+   - The gate returned `needs-attention` with two MEDIUM findings: F007, range overflow and width underflow; F008,
+     decimal-edge rounding.
+   - MEDIUM does not block, so the run went on to FINISH [7].
+3. POLISH-Q [8–11]: four specialists. The pr-test-analyzer raised the interior-edge float case as F015 MAJOR (the same
+   area as F008), which reopened EXEC.
+4. EXEC r3 [12–15]: the author changed the index formula to `(v - low) * n / span`. That fixed F015 and introduced an
+   overflow on large finite inputs (F017 MAJOR, raised by the r3 reviewer).
+5. EXEC r4 [16–18]: the author fixed F017 with `(offset / span) * n`, the form the r3 reviewer suggested. That
+   reintroduced a float-boundary error: F025 MAJOR, `bins([0, 1, 49], 49)` puts 1 in bin 0.
+   - The r4 reviewer approved, but the r4 shadow caught F025, so the effective verdict was REVISE.
+   - The run was at the cap of 4 EXEC rounds and HOLDed with F025 open.
+
+Interpretation:
+- The review roles did their job: the seeded bug was found in round 1, and a regression from an author fix was caught
+  before delivery.
+- The HOLD kept a known MAJOR from shipping. An operator acceptance despite the round limit (RLO) would have
+  delivered it.
+- The run did not converge in 4 EXEC rounds on a numeric task:
+  - In review-only, round 1 reviews the existing change, so the author had 3 fix turns (r2–r4).
+  - The POLISH-Q reopen used rounds from the same cap.
+  - Each fix of a float edge opened the next one: overflow, then rounding. The gate's MEDIUM F008 had flagged the
+    area already in r2.
+- The run was not continued (quota).
+- Owner question (§4, owner 9): is `max_exec_rounds` 4 too low for review-only runs, given round 1 is spent on the
+  existing change and polish fixes share the cap? `max_exec_rounds` is part of the run's frozen configuration. Options:
+  - keep 4: non-convergence is information, and the HOLD hands the decision to the operator;
+  - default review-only to 5;
+  - count POLISH-Q fix rounds separately.
+
+  The memo makes no recommendation from a single run.
 
 ### 3.3 Consumer field use
 - **poker-news-bot:**
@@ -232,7 +293,7 @@ answer.
 1. Authorize the M7 scored runs and a quota window (criterion 1). Decide R4 for the m7-s3 scanner.
 2. Read criterion (2):
    - Do supervisor-driven toy runs with the Codex trust cleanup count?
-   - Does FIELD-21 in consumer use reset the count?
+   - Does FIELD-21 in consumer use reset the count? (Moot for now: FIELD-22 in ws11 reset it on the gate series.)
    - Is the measured driver-session overseer cost (§3.2a) acceptable as the measurement, given its caveats?
 3. Define "one large task" for (4b): accept the §3.6 proposal (6+ files, 400+ changed lines, default entry, lifecycle
    on, ACCEPTED), choose an alternative, or name a work item.
@@ -243,13 +304,20 @@ answer.
 6. Q6 (code-quality-loop A/B/C plus its 6 capabilities).
 7. The 18 owner rows of the legacy map (legacy-gap §5).
 8. LG2 R4 and Q-R1..Q-R10.
+9. Review-only EXEC cap (§3.2b): keep `max_exec_rounds` 4, raise the review-only default, or count POLISH-Q fixes
+   separately.
 
 **Engineering work** (no owner input needed beyond the item above it):
 1. Lane B: `m7_corpus.py` `fresh_commit` uses `add -A --force`; re-freeze the 24 cases; dry grade.
 2. Close the default-entry evidence: if the owner keeps the normal-shell residual (owner 5), run and record that
    evidence-complete run. The rc4 CI result is recorded (success, 64/64 macOS jobs).
-3. Release v2.11.1 (FIELD-21, f3), with its gate run already ACCEPTED (`00d73bc6`) and CI. If the owner counts
-   FIELD-21 against criterion (2), add real runs until three consecutive zero-defect runs exist after the fix.
+3. Criterion (2) streak:
+   - Lane B fixes FIELD-22: a concurrent run's own trust append to a shared Codex config must not HOLD another run,
+     or must be recoverable.
+   - Release it.
+   - Then run 3 new consecutive zero-defect real runs on a release that includes the fix:
+     - ideally at least one with a lane-independent `CODEX_HOME` and one with the default `~/.codex`;
+     - no two runs overlapping, unless concurrency is tested on purpose and recorded as such.
 4. M7: the unscored real pilot (m7-s4), then the D-b1 scanner after R4, then the scored runs and grading (after owner 1).
 5. Run the large task as defined by the owner through the default entry (after owner 3). Measure its overseer cost
    with `overseer_cost.py`, adapting the run list, so (2)'s cost figure also exists for a real-size item.
