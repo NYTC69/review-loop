@@ -273,20 +273,24 @@ entry; never edit history.
   - (a) **Post-gate repair round = A.** The rule as the supervisor put it to the owner (the owner answered "A"),
     verbatim: "终审打回后，修复再过一轮审查，不占 3 轮上限，每次终审只给这一轮；这一轮还不过，就停下来问你".
     - After a failed final gate, the fixes get exactly one more review round by the per-round reviewer.
-    - That round is outside the 3-round cap and outside an owner-authorized round 4.
+    - That round is outside the 3-round cap. It also follows an owner-authorized round 4. The basis is the
+      supervisor's question to the owner, which the owner answered "A", verbatim:
+      "smokefix 和 lg2-design 走这轮终审后的修复审查。审查工具现在最多只放行第 4 轮，会顺带改成允许这一轮。"
+    - The review ledger numbers that round after the last one (`r5-postgate` for smokefix and lg2-design). It is not a
+      general round 5: the "no round 5" rule under Consequences above still limits ordinary rounds.
     - There is one such round per final gate. If it does not approve, the unit stops and the owner is asked; there are
       no further rounds.
-    - It is therefore separate from the "no round 5" rule under Consequences above: that rule limits ordinary rounds,
-      while the post-gate round follows a failed final gate. Its review-ledger row is numbered after the last round.
-    - Tooling: `review_round.py --post-gate-repair '<authorization>' --gate-ref <gate output>` records the
-      authorization and the gate output's sha256, and refuses a second post-gate round for the same gate.
+    - 2026-10-05: smokefix's post-gate round did not pass (REQUEST_CHANGES). The owner then ruled "监工复核后收下"
+      (21:17 JST): the fix f9388b5 is accepted on supervisor review.
+    - Supervisor-local tooling (untracked): `.compass/results/2026-09-23_self-audit-roadmap/review_round.py
+      --post-gate-repair`; not part of the decision.
   - (b) **D12 = A:** the review-only `max_exec_rounds` stays 4; there is no code change. It answers the question from
     the ws12 run (`paired_session/docs/legacy-deprecation-readiness.md` §3.2b).
   - (c) **Review chain ABA/BAB, as in ADR-10.** The owner, verbatim:
     "如果 A 写, B review, 最后就 A 加自己做对抗性审查, 全新独立的 session, 不带作者上下文, 反之, 就是 BAB."
     - The other vendor reviews the rounds.
-    - After its approval, the author's vendor runs a fresh, independent adversarial final review, with no author or
-      review history.
+    - After its approval, the author's vendor runs an adversarial final review with no author context (a fresh,
+      independent session).
     - Fixes from the final review go back to the round reviewer under (a).
     - This applies to lane units as well as to paired-session runs.
   - (d) The D11 rows stay provisional and are re-confirmed with the owner per work item, as recorded under Consequences
