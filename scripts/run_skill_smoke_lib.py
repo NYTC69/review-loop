@@ -1,10 +1,16 @@
+import base64
+import binascii
+import contextlib
+import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -533,6 +539,197 @@ def finalize_stream_capture_artifact(artifact_path: Path, text_path: Path) -> bo
     return True
 
 
+RUNNER_MARKER = ".review-loop/tmp/smoke-runner.json"   # SMOKE-RUNNER-KILL: what a SIGKILLed runner leaves to undo
+RUNNER_LOCK = ".review-loop/tmp/smoke-runner.lock"
+INTERRUPT_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+
+def acquire_runner_lock(root: Path) -> int:
+    """An exclusive flock held for the whole run (the fd stays open until the process ends, SIGKILL included). Only one
+    runner touches .review-loop/config.md at a time, and a runner holding the lock knows any marker left is stale."""
+    path = root / RUNNER_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise RuntimeError(f"another smoke runner holds {path}; wait for it to finish") from None
+    return fd
+
+
+@contextlib.contextmanager
+def signals_deferred():
+    """Block SIGTERM/SIGINT/SIGHUP for a critical step (config change + marker, child start + record, cleanup); a signal
+    that arrives meanwhile is delivered when the step ends, so it can never split one."""
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, INTERRUPT_SIGNALS)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+
+def unblock_interrupt_signals() -> None:
+    """Popen preexec_fn for a child started inside signals_deferred(): the blocked mask is inherited across fork and
+    exec, so the child unblocks the signals itself, or the case's group could never receive the runner's SIGTERM. The
+    runner is single-threaded, so a preexec_fn is safe here."""
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, INTERRUPT_SIGNALS)
+
+
+def _valid_marker(marker) -> bool:
+    if not isinstance(marker, dict) or set(marker) != {"version", "config", "child_pgid"} or marker["version"] != 1:
+        return False
+    config, group = marker["config"], marker["child_pgid"]
+    config_ok = config is None or (isinstance(config, dict) and set(config) == {"had_existing", "data_b64"} and (
+        (config["had_existing"] is True and _strict_b64(config["data_b64"])) or
+        (config["had_existing"] is False and config["data_b64"] is None)))
+    return config_ok and (group is None or (type(group) is int and group > 1))
+
+
+def _strict_b64(value) -> bool:
+    """Only canonical base64 (b64decode alone drops stray characters, so "!!!" would restore an empty config)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return base64.b64encode(base64.b64decode(value, validate=True)).decode("ascii") == value
+    except (binascii.Error, ValueError):
+        return False
+
+
+def _read_marker(root: Path):
+    path = root / RUNNER_MARKER
+    try:
+        marker = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"unreadable smoke runner marker {path}: {exc}; restore .review-loop/config.md by hand, "
+                           "then delete the marker") from exc
+    if not _valid_marker(marker):
+        raise RuntimeError(f"malformed smoke runner marker {path}; restore .review-loop/config.md by hand, then delete it")
+    return marker
+
+
+def config_backup(root: Path) -> dict:
+    """The raw bytes of .review-loop/config.md (CRLF and all), or its absence."""
+    path = root / ".review-loop/config.md"
+    if not path.exists():
+        return {"had_existing": False, "data_b64": None}
+    return {"had_existing": True, "data_b64": base64.b64encode(path.read_bytes()).decode("ascii")}
+
+
+def write_runner_marker(root: Path, config: Optional[dict], child_pgid: Optional[int] = None) -> None:
+    """Record, before the change, the temp_config backup this runner must restore (None when the case changes no
+    config) and the process group it started; the next run (holding the lock) undoes it after a SIGKILL."""
+    marker = {"version": 1, "config": config, "child_pgid": child_pgid}
+    assert _valid_marker(marker)
+    (root / RUNNER_MARKER).parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(root / RUNNER_MARKER, json.dumps(marker, ensure_ascii=True) + "\n")
+
+
+def note_runner_child(root: Path, pgid: int) -> None:
+    """Add the started case's process group to this runner's marker (written by the case's config step)."""
+    marker = _read_marker(root)
+    write_runner_marker(root, marker["config"] if marker else None, pgid)
+
+
+def clear_runner_marker(root: Path) -> None:
+    (root / RUNNER_MARKER).unlink(missing_ok=True)
+
+
+def restore_config(root: Path, config: dict) -> None:
+    path = root / ".review-loop/config.md"
+    if config["had_existing"]:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(base64.b64decode(config["data_b64"]))
+        os.replace(tmp, path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def recover_stale_runner(root: Path) -> list[str]:
+    """With the runner lock held: undo what a runner killed with SIGKILL left behind (the lock proves its owner is gone).
+    A malformed marker refuses the run and changes nothing; a valid one restores its temp_config backup. The dead
+    runner's process group is only reported, never signalled: this runner did not start it."""
+    marker = _read_marker(root)
+    if marker is None:
+        return []
+    notes = []
+    if marker["config"] is not None:
+        restore_config(root, marker["config"])
+        notes.append("restored .review-loop/config.md left by a dead smoke runner")
+    group = marker["child_pgid"]
+    if group is not None:
+        try:
+            os.killpg(group, 0)
+            notes.append(f"process group {group} of that runner may still be alive; it was not signalled, stop it by hand")
+        except ProcessLookupError:
+            pass
+        except OSError:
+            notes.append(f"process group {group} of that runner could not be checked; it was not signalled")
+    clear_runner_marker(root)
+    return notes
+
+
+def interrupt_backstop(root: Path, process: Optional[subprocess.Popen], holds_lock: bool) -> list[str]:
+    """After the first interrupt (every interrupt signal is SIG_IGN by then, so this cannot be cut short): stop the
+    current case's group again and restore temp_config from this runner's own marker, in case a signal landed on the
+    first instruction of a finally before its signals_deferred() block. Both steps are idempotent. Without the runner
+    lock (interrupted while failing to take it) the marker belongs to the runner that holds it and is left alone."""
+    if process is not None:
+        stop_case_group(process)
+    return recover_stale_runner(root) if holds_lock else []
+
+
+def stop_case_group(process: subprocess.Popen, grace_seconds: float = 5) -> None:
+    """Stop the process group of a case this runner started (start_new_session, so pgid == the child's pid): SIGTERM,
+    then SIGKILL while ANY member is left after the grace, judged by the group, not by the direct child. The child is
+    reaped along the way. Once the child was reaped, the group can only still exist through members of it."""
+    try:
+        _stop_group(process, grace_seconds)
+    finally:   # reap the child on every path (a zombie leader answers EPERM on macOS before poll() saw it exit)
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _stop_group(process: subprocess.Popen, grace_seconds: float) -> None:
+    pgid = process.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except OSError:
+        return
+    for sig, wait in ((signal.SIGKILL, grace_seconds), (None, 1.0)):
+        deadline = time.monotonic() + wait
+        while True:
+            process.poll()
+            try:
+                os.killpg(pgid, 0)
+            except OSError:   # ESRCH: gone; EPERM (macOS): only unreaped zombies left
+                return
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+        if sig is None:
+            return
+        try:
+            os.killpg(pgid, sig)
+        except OSError:
+            return
+
+
+def load_scaled_timeout(seconds: int) -> tuple[int, float]:
+    """SMOKE-TIMEOUT: a case timeout times the paired-session test load factor (clamp(load1 / ncpu, 1, 6), or the
+    PAIRED_SESSION_TEST_TIMEOUT_SCALE override), the same rule as paired_session/timeout_scale.py."""
+    try:
+        from paired_session import timeout_scale
+    except ImportError:
+        return seconds, 1.0
+    factor = timeout_scale.factor()
+    return int(math.ceil(seconds * factor)), factor
+
+
 def cleanup_timed_out_process(
     process: subprocess.Popen,
     timeout_exc: subprocess.TimeoutExpired,
@@ -541,22 +738,8 @@ def cleanup_timed_out_process(
     partial_stdout = _coerce_timeout_text(timeout_exc.stdout)
     partial_stderr = _coerce_timeout_text(timeout_exc.stderr)
 
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except OSError:
-        pass
-
-    try:
-        process.wait(timeout=terminate_grace_seconds)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
+    with signals_deferred():   # SMOKE-RUNNER-KILL: the whole group, a second signal cannot cut the cleanup short
+        stop_case_group(process, terminate_grace_seconds)
 
     if process.stdout is not None:
         process.stdout.close()
