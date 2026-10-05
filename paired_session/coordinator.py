@@ -169,7 +169,7 @@ FRESH_HISTORY_RE = re.compile(
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
 # FIELD-23: delta.stat names every path in full (git shortens long ones to ".../tail"), so a path that exists at the base
 # commit is recognised as repository text by the fresh scan.
-STAT_FULL_PATHS = ('--stat=100000,100000',)
+STAT_FULL_PATHS = ('--stat=100000,100000', '--no-renames')   # a rename lists both full paths, not dir/{a => b}
 
 
 def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
@@ -4937,9 +4937,17 @@ class Coordinator:
         return sorted(spellings, key=len, reverse=True)
 
     def _history_markers(self, name: str, content: str) -> list[str]:
-        """The review-history markers the fresh shadow/gate scan finds in one input, in scan order."""
+        """The review-history markers the fresh shadow/gate scan finds in one input, in scan order (as reported)."""
+        return [shown for shown, _ in self._history_matches(name, content)]
+
+    def _history_matches(self, name: str, content: str) -> list[tuple[str, str]]:
+        """(reported marker, whole matched text) per review-history match; a vendor pattern reports its name group
+        ("Claude") while the whole match ("Claude approved") is what a FIELD-23 exemption must find at the base."""
+        def findall(pattern, text, flags=0):
+            return [(match.group(1) if match.re.groups else match.group(0), match.group(0))
+                    for match in re.finditer(pattern, text, flags)]
         # Role/rubric instructions in prompts/templates are not prior verdicts.
-        matches = FRESH_HISTORY_RE.findall(content)
+        matches = findall(FRESH_HISTORY_RE, content)
         # Mask only coordinator-owned absolute paths; require a token boundary after each path.
         prose = content
         # Support paths occur in generated prompts and diff headers, not user plan prose.
@@ -4949,20 +4957,20 @@ class Coordinator:
         for known_path in known_path_patterns:
             prose = known_path.sub('<run-path>', prose)
         # Unknown vendor-named directory paths remain subject to the scan.
-        matches += re.findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
-        matches += re.findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
-                              prose, re.I)
+        matches += findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
+        matches += findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
+                           prose, re.I)
         # Keep attribution prose visible when a vendor-dot token resembles a filename.
-        matches += re.findall(
+        matches += findall(
             r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
             r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
-        matches += re.findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
-                              r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
+        matches += findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
+                           r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
         prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
                        '<path>', prose)
-        matches += re.findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
+        matches += findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
         if name not in ('prompt', 'gate-template'):
-            matches += re.findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
+            matches += findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
         return matches
 
     # FIELD-23 prevents ACCIDENTAL review-history carry-over, not deliberate author evasion.
@@ -4982,11 +4990,17 @@ class Coordinator:
         if not base or name in ('prompt', 'gate-template'):
             return content
 
+        def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
+            return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
+
         def mask(text, exists):
-            # Replace matched text only; unrelated markers in the same quote/line remain visible.
-            for marker in self._history_markers(name, text):
-                if exists(marker):
-                    text = re.sub(re.escape(marker), '<repo-text>', text, flags=re.I)
+            # Replace an exempt whole match as a whole word; unrelated markers in the same quote/line remain visible, and
+            # so does a non-exempt match that contains exempt text ("Claude approved" when only "Claude" is base text).
+            wholes = {whole: exists(whole) for _, whole in self._history_matches(name, text)}
+            kept = [whole.lower() for whole, exempt in wholes.items() if not exempt]
+            for whole, exempt in wholes.items():
+                if exempt and not any(whole.lower() in other for other in kept):
+                    text = repo_word(whole).sub('<repo-text>', text)
             return text
 
         if name.endswith('.patch'):
@@ -5025,10 +5039,10 @@ class Coordinator:
                 paths = (new, old) if 'rename from ' in header or new in renames else (new,)
                 blobs = [self._base_blob(base, rel) for rel in dict.fromkeys(paths) if rel] if old and not (
                     'GIT binary patch' in section or 'Binary files ' in section) else []
-                repository = '\n'.join(blob for blob in blobs if blob is not None).lower()
+                repository = '\n'.join(blob for blob in blobs if blob is not None)
                 for line in section[len(header):].splitlines():
                     if line.startswith('+'):
-                        result.append(mask(line[1:], lambda marker: marker.lower() in repository))
+                        result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository))))
             return '\n'.join(result)
 
         if name in ('context/delta.stat', 'context/status.txt'):
@@ -5053,12 +5067,12 @@ class Coordinator:
             return content
 
         if name in self.REPO_QUOTE_SOURCES:
-            def exists(marker):
-                proc = candidate_tree.run_bounded(candidate_tree.git_command('grep', '-F', '-i', '-I', '-l', '-z', '-e', marker,
+            def exists(whole):   # git grep narrows the files; the blob check applies the word boundary (and a multi-line match)
+                proc = candidate_tree.run_bounded(candidate_tree.git_command('grep', '-F', '-i', '-I', '-l', '-z', '-e', whole,
                                                                              base, '--', cwd=self.workspace),
                                                   cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 return proc.returncode == 0 and any(
-                    marker.lower() in (self._base_blob(base, path[len(base) + 1:]) or '').lower()
+                    repo_word(whole).search(self._base_blob(base, path[len(base) + 1:]) or '')
                     for path in proc.stdout.decode('utf-8', 'replace').split('\0') if path)
             def inline(text):   # a code span may run over line ends within a paragraph, never over a blank line
                 return re.sub(r'(`+)((?:(?!\n[ \t]*\n)[^`])*?)\1', lambda match: mask(match.group(0), exists), text)

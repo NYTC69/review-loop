@@ -73,6 +73,11 @@ exempt if the same matched text, case-insensitively, occurs anywhere in that
 file at the base commit (post-image path; for renames, also pre-image path).
 New files and binaries get no exemption. A base marker reused anywhere in the
 same file therefore passes, including copies: this is a documented residual.
+The exempt text is the whole match ("Claude approved", not "Claude") and must
+occur at the base as a whole word ("APPROVE" is not in "approved"). Another
+known residual, on the strict side: a file moved without `git mv` (`mv`, or `rm`
+plus a new file) appears as a new untracked file and gets no exemption, so a
+base marker in it holds; use `git mv`.
 In `delta.stat` and `status.txt`, matches inside paths that exist at the base
 commit are exempt. In `plan.md` and `workitem.md`, a match is exempt only inside
 backticks or a fenced code block and only if its matched text occurs in a file

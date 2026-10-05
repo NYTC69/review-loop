@@ -196,6 +196,44 @@ class RepoTextScanTests(unittest.TestCase):
         (co.context / 'plan.md').write_text('# Plan\nKeep `x\n\nthe gate finding\n\ny` as is.\n')
         self.assert_holds(co, 'gate finding')
 
+    def test_a_vendor_narrative_needs_its_whole_text_at_the_base(self):   # gate R1: not just the vendor name
+        co = self.coordinator({SWIFT: BASE_SWIFT, 'a.md': 'Works with Claude and Codex.\n'})
+        self.write('a.md', 'Works with Claude and Codex.\nClaude approved this routing.\n')
+        self.assert_holds(co, 'Claude')
+        self.write('a.md', 'Works with Claude and Codex.\nClaude and Codex both work.\n')   # the bare name is base text
+        self.scan(co)
+        (co.context / 'plan.md').write_text('# Plan\nKeep `Codex approved` as is.\n')
+        self.assert_holds(co, 'Codex')   # (PLAN approval checks no vendor wording; the shadow/gate does, as before)
+
+    def test_the_base_text_must_be_the_same_whole_word(self):   # gate R2
+        cases = (('approved.txt', 'The change was approved.\n', 'Verdict: APPROVE\n', 'APPROVE'),
+                 ('revised.txt', 'A revised layout.\n', 'Status: REVISE\n', 'REVISE'),
+                 ('hash.txt', 'commit 9af042bc\n', '# fixes F042\n', 'F042'),
+                 ('ids.txt', 'legacy F042 flag\n', 'legacy F042 flag\nalso F0421\n', 'F0421'))
+        co = self.coordinator({SWIFT: BASE_SWIFT, **{name: base for name, base, _, _ in cases}})
+        for name, base, added, needle in cases:
+            with self.subTest(name=name):
+                self.write(name, base + added)
+                self.assert_holds(co, needle)
+                self.write(name, base)
+
+    def test_a_staged_rename_of_a_history_like_path_does_not_hold_in_the_stat(self):   # gate R3
+        co = self.coordinator({SWIFT: BASE_SWIFT, 'docs/prior-review.md': ''.join(f'note {n}\n' for n in range(20))})
+        subprocess.run(['git', 'mv', 'docs/prior-review.md', 'docs/other.md'], cwd=self.ws, check=True)
+        self.scan(co)
+        self.assertNotIn('=>', (co.context / 'delta.stat').read_text())   # --no-renames: both full paths
+        subprocess.run(['git', 'mv', 'docs/other.md', 'docs/previous-review.md'], cwd=self.ws, check=True)
+        self.assert_holds(co, 'previous-review')   # the new name is not base text
+
+    def test_a_binary_patch_section_is_never_scanned_nor_exempted(self):   # gate R5
+        co = self.coordinator({SWIFT: BASE_SWIFT, 'logo.bin': '\x00\x01'})
+        (self.ws / 'logo.bin').write_bytes(b'\x00\x02 gate finding F042')
+        self.scan(co)   # a GIT binary patch has no "+" lines
+        self.assertIn('GIT binary patch', (co.context / 'delta.patch').read_text())
+        text = ('diff --git a/logo.bin b/logo.bin\nindex 1..2 100644\nBinary files a/logo.bin and b/logo.bin differ\n'
+                f'diff --git a/{SWIFT} b/{SWIFT}\n--- a/{SWIFT}\n+++ b/{SWIFT}\n@@ -1 +1 @@\n+F042\n')
+        self.assertEqual(co._introduced_history('context/delta.patch', text), ['F042'])
+
     def test_new_history_like_path_holds(self):
         co = self.coordinator()
         self.write('docs/previous-review.md', 'notes\n')
@@ -239,7 +277,7 @@ class NoteWhileAwaitingReviewerTests(unittest.TestCase):
         self.addCleanup(self.h.tearDown)
 
     def held(self, phase, waiting, exec_rounds=1):
-        co = self.h.coordinator()
+        co = self.h.coordinator('--shadow', 'off')
         co.state.update(phase=phase, next=waiting, exec_rounds=exec_rounds)
         co.hold('shadow independence check rejected history in context/delta-since-last-review.patch: gate finding')
         return co
@@ -256,7 +294,17 @@ class NoteWhileAwaitingReviewerTests(unittest.TestCase):
 
         class Captured(Exception):
             pass
-        co.state.update(status='ACTIVE', next='author')   # the reviewer's REVISE hands EXEC back to the author
+        # gate R5: a real REVISE through the reviewer-result path (only the provider call is mocked) hands EXEC back
+        co.state.update(status='ACTIVE', hold_reason='')   # as resume reopens the HOLD
+        snap = rc.git_snapshot(self.h.workspace)[0]
+        answer = {'status': 'REVISE', 'reviewed_snapshot': snap, 'prior_findings': [], 'self_run_evidence': [],
+                  'full_review': [{'id': 'F001', 'severity': 'MINOR', 'file': 'tracked.txt', 'line': 1,
+                                   'summary': 'routing comment is stale', 'failure_scenario': 'x', 'evidence': 'x',
+                                   'security': False}]}
+        with patch.object(co, 'invoke', return_value={'answer': answer, 'snapshot': snap, 'sequence': 2,
+                                                       'role': 'reviewer'}), patch.object(co, 'render'):
+            co.reviewer_turn()
+        self.assertEqual((co.state['phase'], co.state['next'], co.state['pending_operator_note_id']), ('EXEC', 'author', 'N001'))
         with patch.object(co, 'assert_fresh_prompt', side_effect=Captured) as fresh, \
                 patch.object(co, '_program_state', return_value=(None, None)):
             with self.assertRaises(Captured):
