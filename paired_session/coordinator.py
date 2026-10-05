@@ -29,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from typing import Optional
 try:
@@ -752,6 +753,150 @@ def resolve_test_executable(workspace: Path, command: str) -> str:
     if not resolved:
         raise ValueError('configured test executable is missing or not on PATH: ' + executable)
     return resolved
+
+
+DETACH_ACTIONS = ('run', 'resume', 'reject', 'permission-probe')
+DETACH_TURN = {'group': None, 'spawning': False}   # detach: the CLI turn in flight, for the SIGTERM handler
+
+
+class DetachStop(BaseException):
+    """detach: SIGTERM to a detached coordinator; a BaseException, so a dispatch kills its turn's process group as on Ctrl-C."""
+
+
+def detach_paths(run_dir) -> tuple[Path, Path]:
+    """detach: the per-user 0700 record and lock of a run dir's detached command (outside the run dir and its parent, which the
+    Claude author probe watches); keyed by the resolved run dir, so relative and symlinked spellings share them."""
+    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{os.getuid()}'
+    try: root.mkdir(mode=0o700)
+    except FileExistsError: pass
+    info = os.lstat(root)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError(f'detach directory {root} must be a directory owned by this user with mode 0700')
+    key = hashlib.sha256(str(Path(run_dir).expanduser().resolve()).encode()).hexdigest()[:16]
+    return root / (key + '.json'), root / (key + '.lock')
+
+
+def detach_holder(run_dir):
+    """None when no detached command holds this run dir's lock; 'starting' while the holder has not published its own record
+    (the caller marks the record `starting` under the lock, so an older run's record is never read as the holder's); else the
+    holder's record. Only the lock holder writes the record."""
+    record, lock = detach_paths(run_dir)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try: data = json.loads(record.read_text())
+        except (OSError, ValueError): return 'starting'
+        ok = data.get('status') == 'running' and type(data.get('pid')) is int and type(data.get('sid')) is int
+        return data if ok else 'starting'
+    finally:
+        os.close(fd)
+    return None
+
+
+def stop_turn_group(_signum=None, _frame=None):
+    """detach: SIGTERM handler. Kill the turn in flight first (a stop between Popen and the dispatch's cleanup guard must not
+    leave it running), then unwind like Ctrl-C: the dispatch keeps the turn active and reaps it. While a turn is being spawned
+    the stop is only noted; the dispatch acts on it as soon as the group is known."""
+    if DETACH_TURN['spawning']:
+        DETACH_TURN['stop'] = True
+        return
+    if (group := DETACH_TURN['group']) is not None:
+        try: os.killpg(group, signal.SIGKILL)
+        except OSError: pass
+    raise DetachStop()
+
+
+def detach(raw_argv: list, run_dir: str) -> int:
+    """FIELD-17 follow-up (docs/detach.md): a host that ends its turn signals the process group it started (Claude Code: SIGTERM)
+    or kills the command (Codex: SIGKILL). setsid() and a second fork leave that tree; the grandchild runs the same command and
+    records its exit code. Nothing else changes: lease, active/uncertain turns, cleanup and every check are those of a plain run."""
+    record, lock = detach_paths(run_dir)
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # inherited by the grandchild, which keeps it until it exits
+    except BlockingIOError:
+        os.close(lock_fd)
+        held = detach_holder(run_dir)
+        print(f"REFUSED: a detached command for this run dir is still running (pid {held.get('pid') if isinstance(held, dict) else held}); "
+              'poll `status --brief` or use `stop`')
+        return 2
+    try:   # under the lock: an older run's record must never be read as this command's
+        atomic_json(record, {'status': 'starting', 'since': time.time()})
+    except OSError as exc:
+        os.close(lock_fd)
+        print('REFUSED: cannot write the detach record: ' + str(exc))
+        return 2
+    log = record.with_name(record.stem + time.strftime('-%Y%m%dT%H%M%S.log'))
+    argv = [arg for arg in raw_argv if arg != '--detach']
+    sys.stdout.flush(); sys.stderr.flush()
+    ready, ready_w = os.pipe()
+    if (child := os.fork()):
+        os.close(ready_w); os.close(lock_fd)
+        answer = b''
+        while (chunk := os.read(ready, 4096)): answer += chunk
+        os.close(ready)
+        os.waitpid(child, 0)
+        if not answer.startswith(b'ok '):
+            print('REFUSED: the detached command did not start: ' + (answer.decode(errors='replace') or 'no answer'))
+            return 2
+        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; poll `status --brief` (or RUN_DIR/state.json) until DONE or '
+              'HOLD; stop with `stop`')
+        return 0
+    os.close(ready)
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(os.open(os.devnull, os.O_RDONLY), 0); os.dup2(out, 1); os.dup2(out, 2)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, stop_turn_group)
+        atomic_json(record, {'pid': os.getpid(), 'sid': os.getsid(0), 'run_dir': str(Path(run_dir).expanduser().resolve()),
+                             'argv': argv, 'log': str(log), 'status': 'running', 'started': time.time()})
+    except BaseException as exc:   # the caller reports it; nothing has run
+        os.write(ready_w, f'{type(exc).__name__}: {exc}'.encode()); os._exit(2)
+    os.write(ready_w, f'ok {os.getpid()}'.encode()); os.close(ready_w)
+    code = 1
+    try:
+        code = main(argv)
+    except DetachStop:
+        print('STOPPED: `stop` ended this detached command; a turn it interrupted stays active: check its process group, then '
+              'resume --retry-uncertain or abort')
+        code = 130
+    except BaseException:
+        traceback.print_exc()
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the stop has been taken; finish the record
+        sys.stdout.flush(); sys.stderr.flush()
+        try: atomic_json(record, {**json.loads(record.read_text()), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
+        finally: os._exit(code)
+
+
+def stop_detached(run_dir: str, wait: float = 60) -> int:
+    """detach: SIGTERM to this run dir's detached coordinator, then wait until it has exited (it kills its turn's group first)."""
+    record, _ = detach_paths(run_dir)
+    held = detach_holder(run_dir)
+    if held is None:
+        print('NOTE: no detached command is running for this run dir')
+        return 0
+    if held == 'starting':
+        print('HOLD: a detached command for this run dir is starting; retry stop in a moment')
+        return 2
+    pid = held['pid']
+    try:   # the recorded session id guards against a pid reused after the holder exited between the read and the signal
+        if os.getsid(pid) != held['sid']: raise ProcessLookupError(pid)
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass   # it exited on its own (a reused pid is never signalled); wait for its lock below
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and detach_holder(run_dir) is not None:
+        time.sleep(0.2)
+    if detach_holder(run_dir) is not None:
+        print(f'HOLD: the detached command (pid {pid}) has not exited after {wait:.0f} s; check it before acting on this run')
+        return 2
+    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text()).get('exit_code')})")
+    return 0
 
 
 @contextmanager
@@ -5084,8 +5229,15 @@ class Coordinator:
                     rejection.update(status='dispatched', dispatched_sequence=seq)
                 self.state['active'] = receipt
                 self.save()
-                process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
-                                           stdout=out, stderr=err, start_new_session=True)
+                DETACH_TURN['spawning'] = True   # detach: a stop in this span waits until the group is known (no signal mask:
+                try:                              # a child would inherit it and could not be terminated)
+                    process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
+                                               stdout=out, stderr=err, start_new_session=True)
+                    DETACH_TURN['group'] = process.pid
+                finally:
+                    DETACH_TURN['spawning'] = False
+                    if DETACH_TURN.pop('stop', False):   # a stop noted while spawning: kill the new group, unwind below
+                        stop_turn_group()
                 receipt['pid'] = process.pid
                 self.state['active'] = receipt
                 self.save()
@@ -5106,6 +5258,7 @@ class Coordinator:
                     process.wait()
                 except BaseException:
                     pass
+                DETACH_TURN['group'] = None
                 raise
             if not isinstance(exc, (OSError, ValueError, subprocess.SubprocessError)):
                 raise
@@ -5161,6 +5314,7 @@ class Coordinator:
                 pass
             raise
         finally:
+            DETACH_TURN['group'] = None   # reaped (or being re-raised after its group was killed)
             usage_stop.set()
             usage_monitor.join()
         receipt['end'] = time.time()
@@ -8263,7 +8417,10 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note', 'status', 'attach-verification'])
+                                      'accept', 'reject', 'note', 'status', 'attach-verification', 'stop'])
+    p.add_argument('--detach', action='store_true',
+                   help='run, resume, reject or permission-probe in a new session, outside the host\'s process tree, and return '
+                        'at once with its pid and log; poll `status --brief`; `stop` ends it (docs/detach.md)')
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -8682,6 +8839,12 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
+        try: return stop_detached(args.run_dir)
+        except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
+    if args.detach and args.action not in DETACH_ACTIONS:
+        print('REFUSED: --detach is only for ' + ', '.join(DETACH_ACTIONS))
+        return 2
     if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
         args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
     args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
@@ -8726,6 +8889,9 @@ def main(argv=None) -> int:
         return 2
     if args.polish and args.action != 'resume':
         parser().error('--polish is only valid with resume')
+    if args.detach:   # after the synchronous refusals above, so a bad command line still fails in the caller's shell
+        try: return detach(raw_argv, args.run_dir)
+        except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
     if args.action == 'snapshot':
         print(git_snapshot(Path(args.workspace))[0])
         return 0

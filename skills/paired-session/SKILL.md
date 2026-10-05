@@ -67,8 +67,13 @@ adds only the Claude Code host rules:
 - Headless sessions: a `claude -p` session exits when its turn ends and kills
   its background tasks, so ending the turn to wait for the notification kills
   the coordinator mid-turn. Use an interactive session. When you know you run
-  headless (the user or the prompt says so), do not end the turn while a
-  coordinator command runs: poll in bounded foreground calls, reading only
+  headless (the user or the prompt says so), prefer `--detach` on `run`,
+  `resume`, `reject --expect` and `permission-probe`: the command returns at
+  once (`DETACHED: pid …; log …`) and survives the session's exit; read
+  `RUN_DIR/state.json` or `status --brief` for its progress, the log for its
+  final line (a probe's result is `RUN_DIR/permission-probe.json`), and end it
+  only with `stop` (`paired_session/docs/detach.md`). Without `--detach`, do not
+  end the turn while a coordinator command runs: poll in bounded foreground calls, reading only
   `status` and `active.phase` from `RUN_DIR/state.json` (or `status --brief`),
   until the background command itself has exited (the host's task-output tool
   if it has one; otherwise `pgrep -f -- "--run-di[r] <RUN_DIR>"` prints nothing; the
