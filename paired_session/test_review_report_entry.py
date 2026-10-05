@@ -1,5 +1,6 @@
 """LG2-a1: report entry and frozen policy; report transitions belong to LG2-a2."""
 import json
+import shlex
 import subprocess
 import unittest
 from unittest import mock
@@ -53,6 +54,23 @@ class ReviewReportEntryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn('REFUSED: --review-report ' + message, result.stdout)
                 self.assertFalse((self.run_dir / 'state.json').exists())
+
+    def test_report_mode_refuses_a_review_only_scope_change_successor(self):
+        (self.workspace / 'tracked.txt').write_text('changed\n')
+        co = rc.Coordinator(self.args('--review-only'))
+        result = self.run_operator_action('note', '--scope-change', '--text', 'Review the expanded scope')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        start = next(line.removeprefix('Start: ') for line in result.stdout.splitlines() if line.startswith('Start: '))
+        before = self.state_bytes()
+        spec = json.loads((co.evidence / 'successor-spec.json').read_text())
+        self.assertIn('review_only', spec)   # the successor inherits the entry without an explicit --review-only
+        result = subprocess.run([*shlex.split(start), '--review-report', '--skip-probe'],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn('--review-report starts a fresh review request; it takes no --supersedes', result.stdout)
+        self.assertFalse((self.root / 'run-successor' / 'state.json').exists())
+        self.assertFalse((co.evidence / 'successor-claim.json').exists())
+        self.assertEqual(self.state_bytes(), before)
 
     def test_operator_profile_auto_commit_true_is_refused(self):
         profile = self.root / 'operator.json'
@@ -123,11 +141,14 @@ class ReviewReportEntryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: review_report'):
             rc.Coordinator(args)
         self.assertEqual(self.state_bytes(), before)
-        for flags in (('--auto-commit', 'true'), ('--stop-after-plan',), ('--polish',)):
+        cases = [(('--auto-commit', 'true'), '--review-report refuses --auto-commit true'),
+                 (('--stop-after-plan',), '--review-report refuses --stop-after-plan'),
+                 (('--polish',), 'report mode refuses resume --polish')]
+        for flags, message in cases:
             with self.subTest(flags=flags):
                 result = self.run_operator_action('resume', *flags)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn('REFUSED:', result.stdout)
+                self.assertIn('REFUSED: ' + message, result.stdout)
                 self.assertEqual(self.state_bytes(), before)
         self.run_dir = self.root / 'ordinary'
         rc.Coordinator(self.args())

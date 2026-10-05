@@ -4641,6 +4641,8 @@ class Coordinator:
                 raise ValueError('resume configuration differs: review_report (fixed when the run was created)')
             self.args.review_report = bool(saved.get('review_report'))
         if not self.args.review_report: return
+        if saved is None and self.args.supersedes:
+            raise ValueError('--review-report starts a fresh review request; it takes no --supersedes')
         if not (saved or {}).get('review_only', self.args.review_only):
             raise ValueError('--review-report needs --review-only')
         if self.args.auto_commit or (saved or {}).get('auto_commit'):
