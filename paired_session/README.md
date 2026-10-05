@@ -412,6 +412,19 @@ Codex change fails; Claude plugin `lastUpdated` is attributed separately.
 The coordinator never edits or restores the user's global config. `--skip-probe`
 is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider
 binaries are fake CLI wrappers. This is a misuse guard for tests, not a security boundary.
+With a Codex home other than the default, the run also hashes the default `~/.codex/config.toml`: a Codex child that
+ignored `CODEX_HOME` would write there (R20-0a). Another process may change that file meanwhile: a Codex run on the
+default home appends its workspace trust entry, or an operator restores the file from a backup. A change that only adds
+or removes whole `[projects."<path>"] trust_level = "trusted"` tables, for paths other than this run's own workspace,
+clone and linked-worktree main root, is recorded as `foreign-default-home-trust-entry`, with the paths, and never
+voids a completed turn (P0, 2026-10-06). An uncertain turn (cut off mid-turn) records only hashes, so such a change
+during it still holds, as before. Any other change to the default config still holds, because the run cannot tell
+it from its own Codex escaping `CODEX_HOME`. A trust entry for this run's own path there holds too. The config the
+run actually uses, `$CODEX_HOME/config.toml`, keeps its check unchanged: its model, sandbox or hooks changing still
+holds. A run on the default home is unchanged.
+Use a separate, absolute `CODEX_HOME` for every run, acceptance and supervisor runs included
+([`docs/concurrent-runs.md`](docs/concurrent-runs.md)). A Codex run on the default home writes trust entries into the
+default config, and other runs then have to attribute them.
 Each Codex turn also records a before/after Codex-config comparison. A changed
 config during an uncertain turn HOLDs before replay. After inspecting the
 change, the operator can run `resume --acknowledge-codex-trust RUN_ID`; this

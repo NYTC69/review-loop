@@ -525,6 +525,96 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         return source.read(max_bytes).decode('utf-8', 'replace')
 
 
+TRUST_HEADER_RE = re.compile(r'^\[projects\.("(?:[^"\\\n]|\\.)*")\]\s*$', re.M)
+FOREIGN_TRUST_MAX_PATHS = 256   # bounds the work (each path is one linear strip); a larger change stays a finding
+
+
+def _top_level_trust_headers(raw: str) -> Optional[set]:
+    """The paths of real top-level `[projects."<path>"]` headers. A match inside a multi-line string is skipped
+    (_toml_top_level_at); a top-level header whose quoted path does not decode returns None (stay conservative)."""
+    paths = set()
+    for match in TRUST_HEADER_RE.finditer(raw):
+        if not _toml_top_level_at(raw, match.start()):
+            continue
+        try:
+            path = json.loads(match.group(1))
+        except ValueError:
+            return None
+        if not isinstance(path, str):
+            return None
+        paths.add(path)
+    return paths
+
+
+def _strip_trust_entries(raw: str, paths) -> Optional[str]:
+    """Remove one exact `[projects."<path>"]` + `trust_level = "trusted"` entry per path. Each entry must start a
+    TOML top-level line and be followed by another table header or the end, so it cannot adopt keys. Returns the rest,
+    or None when an entry is missing or not at such a boundary. Linear in the number of paths."""
+    for path in paths:
+        entry = '[projects.' + json.dumps(path) + ']\ntrust_level = "trusted"\n'
+        pos = next((at for at in _find_all(raw, entry) if _toml_top_level_at(raw, at)), -1)
+        if pos < 0:
+            return None
+        tail = next((line.strip() for line in raw[pos + len(entry):].splitlines() if line.strip()), '[')
+        if not tail.startswith('['):
+            return None
+        raw = raw[:pos] + raw[pos + len(entry):]
+    return raw
+
+
+def _find_all(text: str, needle: str):
+    at = text.find(needle)
+    while at >= 0:
+        yield at
+        at = text.find(needle, at + 1)
+
+
+def _blank_runs_normalized(text: str) -> str:
+    """Removing a table leaves its separating blank lines; runs of blank lines (and the file's leading and trailing
+    blank lines) do not change a TOML setting outside a multi-line string, so they are normalized before comparing."""
+    return re.sub(r'\n(?:[ \t]*\n)+', '\n\n', '\n' + text.strip('\n') + '\n')
+
+
+def default_home_foreign_trust_only(before: dict, after: dict, workspaces) -> Optional[dict]:
+    """P0 (owner 2026-10-06): under an isolated CODEX_HOME the default ~/.codex/config.toml is not the config the run uses.
+    A change there that only adds or removes whole `[projects."<path>"] trust_level = "trusted"` tables, for paths that are
+    not this run's own trust paths (workspace, clone, linked-worktree main root), is another process: a Codex on the
+    default home, or an operator restore. Returns {'added': [...], 'removed': [...]}; anything else returns None and stays
+    a finding. A trust entry for this run's OWN path in the default home is not foreign: it would mean the turn's Codex
+    wrote the default home despite CODEX_HOME, which is what the default-config snapshot exists to catch (R20-0a).
+    Accepted residual of the comparison: only blank-line runs are normalized, so a change that adds or removes blank
+    lines alone inside a multi-line string would also pass (it sets nothing the run uses)."""
+    old, new = before.get('raw'), after.get('raw')
+    if old is None or new is None:
+        return None
+    old_heads, new_heads = _top_level_trust_headers(old), _top_level_trust_headers(new)
+    if old_heads is None or new_heads is None:
+        return None
+    added, removed = sorted(new_heads - old_heads), sorted(old_heads - new_heads)
+    own = {path for workspace in workspaces for path in _codex_trust_paths(workspace)}
+    if (not added and not removed) or len(added) + len(removed) > FOREIGN_TRUST_MAX_PATHS or own & {*added, *removed}:
+        return None
+    new_rest, old_rest = _strip_trust_entries(new, added), _strip_trust_entries(old, removed)
+    if new_rest is None or old_rest is None or _blank_runs_normalized(new_rest) != _blank_runs_normalized(old_rest):
+        return None
+    return {'added': added, 'removed': removed}
+
+
+def reclassify_default_home_trust(changes: dict, before: dict, after: dict, workspaces) -> dict:
+    """P0: in place, a codex_default_config finding that is only foreign trust tables becomes the expected change
+    `foreign-default-home-trust-entry` (recorded in the receipt, never voiding the turn). Only runs whose Codex home is
+    not the default have that snapshot (global_config_snapshot), so a run on the default home is unchanged. Any other
+    change to the default config stays a finding (decision (a): the run cannot tell it from its own escape)."""
+    for row in [row for row in changes['findings'] if row['file'] == 'codex_default_config'
+                and row.get('reason') == 'unexpected-content-change']:
+        if (delta := default_home_foreign_trust_only(before['codex_default_config'], after['codex_default_config'], workspaces)):
+            changes['findings'].remove(row)
+            changes['expected_changes'].append({'file': 'codex_default_config', 'change': 'foreign-default-home-trust-entry',
+                                                **delta})
+    changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
+    return changes
+
+
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex read-only roles get a per-dispatch temp root
 CODEX_READONLY_PROFILE = 'paired_session_readonly'
 SCRATCH_PROBE_COMMAND = 'printf probe > "$TMPDIR/paired-session-scratch-probe"'
@@ -5433,6 +5523,7 @@ class Coordinator:
                 changes['other_vendor_changes'] = [key for key in changes['before'] if not key.startswith(vendor_prefix) and changes['before'][key]['sha256'] != changes['after'][key]['sha256']]
                 changes['findings'] = [row for row in changes['findings'] if row['file'].startswith(vendor_prefix)]
                 changes['expected_changes'] = [row for row in changes['expected_changes'] if row['file'].startswith(vendor_prefix)]
+                reclassify_default_home_trust(changes, vendor_config_before, config_after, [active_workspace, self.workspace])   # P0
                 changes['warnings'] = changes['warnings'] if receipt['vendor'] == 'codex' else []
                 changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
                 receipt['global_config_changes'] = changes
@@ -7476,8 +7567,8 @@ class Coordinator:
                       } if sandbox_probe_paths else None),
                       'claude_sandbox_write_denied': False if sandbox_probe_paths else None}
             global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-            report['global_config_changes'] = attribute_global_config_changes(
-                global_before, global_after, [self.workspace])
+            report['global_config_changes'] = reclassify_default_home_trust(attribute_global_config_changes(   # P0
+                global_before, global_after, [self.workspace]), global_before, global_after, [self.workspace])
             if report['global_config_changes']['status'] != 'PASS':
                 report['failure_reasons'].append('unexpected-global-config-change')
             if escaped_probe_targets:
