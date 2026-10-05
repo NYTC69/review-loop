@@ -4073,8 +4073,17 @@ class Coordinator:
             raise ValueError('note requires a HOLD run; DONE uses reject')
         if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
             raise ValueError('rejection limit: accept, abort or use --scope-change')
-        if self.state.get('next') != 'author':
-            raise ValueError(f"run is waiting for {self.state.get('next')}; resume first, or use --scope-change (not yet available; abort + new run)")
+        waiting = self.state.get('next')
+        # FIELD-23: an EXEC HOLD that waits for the reviewer (or its shadow) takes a note too, so an operator change made in
+        # that HOLD is on record; it reaches the next EXEC author turn (a REVISE), never a review role.
+        if waiting == 'reviewer' and self.state['phase'] == 'PLAN':
+            raise ValueError('run is waiting for reviewer in PLAN, and an approval moves it to EXEC, where a PLAN note is never '
+                             'delivered. To put an operator change on record: resume with --stop-after-plan and add the note '
+                             'at the EXEC HOLD, or note --scope-change (abort; the successor run carries the note)')
+        if waiting not in ('author', 'reviewer'):
+            raise ValueError(f'run is waiting for {waiting}; no author turn is due, so a note would not be delivered. To put '
+                             'an operator change on record: note --scope-change (abort; the successor run carries the note); '
+                             'resume only if the change needs no record')
         if self.state.get('pending_author_result_sequence') is not None:
             raise ValueError('author READY receipt pending; resume first')
         phase = self.state['phase']
@@ -4109,7 +4118,8 @@ class Coordinator:
         row = {'id': note_id, 'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
                'target_phase': phase, 'sha256': hashlib.sha256(raw).hexdigest(), 'evidence': str(path),
                'status': 'pending', 'replaces_id': previous['id'] if previous else None,
-               'replaces_sha256': previous['sha256'] if previous else None}
+               'replaces_sha256': previous['sha256'] if previous else None,
+               **({'while_next': waiting} if waiting != 'author' else {})}
         notes.append(row); self.state['pending_operator_note_id'] = note_id
         self.state.pop('terminal_hold_kind', None)
         self.save(); self.write_comparison()
@@ -4922,11 +4932,172 @@ class Coordinator:
         spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
-    def _plan_history_issue(self, texts: Optional[dict] = None) -> Optional[str]:
+    def _history_markers(self, name: str, content: str) -> list[str]:
+        """The review-history markers the fresh shadow/gate scan finds in one input, in scan order."""
+        # Role/rubric instructions in prompts/templates are not prior verdicts.
+        matches = FRESH_HISTORY_RE.findall(content)
+        # Mask only coordinator-owned absolute paths; require a token boundary after each path.
+        prose = content
+        # Support paths occur in generated prompts and diff headers, not user plan prose.
+        include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
+        known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
+                               for path in self._fresh_scan_run_paths(include_support)]
+        for known_path in known_path_patterns:
+            prose = known_path.sub('<run-path>', prose)
+        # Unknown vendor-named directory paths remain subject to the scan.
+        matches += re.findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
+        matches += re.findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
+                              prose, re.I)
+        # Keep attribution prose visible when a vendor-dot token resembles a filename.
+        matches += re.findall(
+            r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
+            r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
+        matches += re.findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
+                              r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
+        prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
+                       '<path>', prose)
+        matches += re.findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
+        if name not in ('prompt', 'gate-template'):
+            matches += re.findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
+        return matches
+
+    # FIELD-23 prevents ACCIDENTAL review-history carry-over, not deliberate author evasion.
+    # Independence otherwise rests on fresh sessions and unexempted prompt/gate templates.
+    # Only added patch lines are scanned. A marker already in the base file is exempt anywhere
+    # in that file (including copies): this is a known residual, not a positional provenance check.
+    REPO_QUOTE_SOURCES = ('context/plan.md', 'context/workitem.md', 'original-workitem')
+
+    def _base_blob(self, base: str, rel: str) -> Optional[str]:
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('cat-file', '-p', f'{base}:{rel}', cwd=self.workspace),
+                                          cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return proc.stdout.decode('utf-8', 'replace') if proc.returncode == 0 and b'\0' not in proc.stdout else None
+
+    def _fresh_history_text(self, name: str, content: str, base: Optional[str] = None) -> str:
+        """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
+        base = base if base is not None else self.state.get('base_commit')
+        if not base or name in ('prompt', 'gate-template'):
+            return content
+
+        def mask(text, exists):
+            # Replace matched text only; unrelated markers in the same quote/line remain visible.
+            for marker in self._history_markers(name, text):
+                if exists(marker):
+                    text = re.sub(re.escape(marker), '<repo-text>', text, flags=re.I)
+            return text
+
+        if name.endswith('.patch'):
+            if content.strip() and not content.startswith('diff --git '):
+                return content  # A non-patch input gets the old scan; it has no repository provenance.
+            result = []
+            renames = {}
+            if name == 'context/delta-since-last-review.patch':
+                fields = self._git_names(['diff', '--name-status', '-M', '-z', base, '--'])
+                while fields:
+                    status = fields.pop(0)
+                    old_path = fields.pop(0)
+                    if status.startswith(('R', 'C')):
+                        new_path = fields.pop(0)
+                        if status.startswith('R'): renames[new_path] = old_path
+            mirrors = (str(self.internal / 'last-review'), str(self.internal / 'current-review'))
+            for section in re.split(r'(?m)^(?=diff --git )', content):
+                old = new = None
+                header = section.split('\n@@', 1)[0]
+                for line in header.splitlines():
+                    if line.startswith(('--- ', '+++ ')):
+                        raw = line[4:].rstrip('\t')
+                        if raw.startswith('"') and raw.endswith('"'):
+                            raw = self._git_unquote(raw[1:-1])
+                        rel = None
+                        if raw and raw != '/dev/null' and raw[:2] in ('a/', 'b/'):
+                            rel = raw[2:]
+                            if name == 'context/delta-since-last-review.patch':
+                                rel = next((raw[1:][len(root) + 1:] for root in mirrors
+                                            if raw[1:].startswith(root + '/')), None)
+                        if line.startswith('--- '): old = rel
+                        else: new = rel
+                # A new file has no exemption, even if its post-image path happens to exist at base.
+                # --no-index mirrors can render a run rename as a deletion plus an addition.
+                old = renames.get(new, old)
+                paths = (new, old) if 'rename from ' in header or new in renames else (new,)
+                blobs = [self._base_blob(base, rel) for rel in dict.fromkeys(paths) if rel] if old and not (
+                    'GIT binary patch' in section or 'Binary files ' in section) else []
+                repository = '\n'.join(blob for blob in blobs if blob is not None).lower()
+                for line in section[len(header):].splitlines():
+                    if line.startswith('+'):
+                        result.append(mask(line[1:], lambda marker: marker.lower() in repository))
+            return '\n'.join(result)
+
+        if name in ('context/delta.stat', 'context/status.txt'):
+            if not self._history_markers(name, content):
+                return content
+            proc = candidate_tree.run_bounded(candidate_tree.git_command('ls-tree', '-r', '--name-only', '-z', base,
+                                                                         cwd=self.workspace),
+                                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode == 0:
+                paths = set(proc.stdout.decode('utf-8', 'replace').split('\0')) - {''}
+                def quoted(match):
+                    return '<repo-path>' if self._git_unquote(match.group(0)[1:-1]) in paths else match.group(0)
+                quote = r'"(?:[^"\\\n]|\\.)*"'
+                content = re.sub(quote, quoted, content)
+                marked = {path for path in paths if FRESH_HISTORY_RE.search(path) or
+                          re.search(r'(?i:claude|codex|opus|astra)|\b(?:APPROVE|REVISE|needs-attention)\b', path)}
+                for path in sorted(marked, key=len, reverse=True):   # only a path that can carry a marker needs masking
+                    # Consume unknown quoted paths intact; a base filename prefix is not that path.
+                    pattern = quote + r'|(?<![\w/.-])' + re.escape(path) + r'(?=[ \t]*(?:\||\(\d+ bytes\)|$)| -> )'
+                    content = re.sub(pattern, lambda match: '<repo-path>' if match.group(0) == path
+                                     else match.group(0), content, flags=re.M)
+            return content
+
+        if name in self.REPO_QUOTE_SOURCES:
+            def exists(marker):
+                proc = candidate_tree.run_bounded(candidate_tree.git_command('grep', '-F', '-i', '-I', '-l', '-z', '-e', marker,
+                                                                             base, '--', cwd=self.workspace),
+                                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                return proc.returncode == 0 and any(
+                    marker.lower() in (self._base_blob(base, path[len(base) + 1:]) or '').lower()
+                    for path in proc.stdout.decode('utf-8', 'replace').split('\0') if path)
+            result, block, fenced = [], [], None
+            for line in content.splitlines(keepends=True):
+                fence = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+                if fence and not fenced:
+                    fenced = fence.group(1)
+                    result.append(line)
+                elif fence and fenced and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) and not fence.group(2).strip():
+                    result.append(mask(''.join(block), exists))
+                    block, fenced = [], None
+                    result.append(line)
+                elif fenced:
+                    block.append(line)
+                else:
+                    result.append(re.sub(r'(`+)([^`]*?)\1', lambda match: mask(match.group(0), exists), line))
+            return ''.join(result) + mask(''.join(block), exists)
+        return content
+
+    def _introduced_history(self, name: str, content: str) -> list[str]:
+        return self._history_markers(name, self._fresh_history_text(name, content))
+
+    @staticmethod
+    def _git_unquote(body: str) -> Optional[str]:
+        """git's C-style path quoting (\\" \\\\ \\t \\n ... and \\ooo octal bytes) undone; None when malformed."""
+        out, i, simple = bytearray(), 0, {'a': 7, 'b': 8, 'f': 12, 'n': 10, 'r': 13, 't': 9, 'v': 11, '"': 34, '\\': 92}
+        while i < len(body):
+            if body[i] != '\\':
+                out += body[i].encode('utf-8'); i += 1
+            elif body[i + 1:i + 2] and body[i + 1] in simple:
+                out.append(simple[body[i + 1]]); i += 2
+            elif re.fullmatch(r'[0-7]{3}', body[i + 1:i + 4]):
+                out.append(int(body[i + 1:i + 4], 8)); i += 4
+            else:
+                return None
+        try: return out.decode('utf-8')
+        except UnicodeDecodeError: return None
+
+    def _plan_history_issue(self, texts: Optional[dict] = None, base: Optional[str] = None) -> Optional[str]:
         """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval (or, for a
         review-only run, which has no PLAN approval, on the texts it is about to write)."""
         for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
             text = texts[label] if texts else path.read_text() if path.is_file() else ''
+            text = self._fresh_history_text('context/' + path.name, text, base)   # FIELD-23: as the gate scan
             if ids := sorted(set(LEDGER_ID_RE.findall(text))):
                 return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
             if match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):   # as the gate scan
@@ -5002,7 +5173,7 @@ class Coordinator:
                  f'## Goal (the work item, verbatim)\n\n{workitem.rstrip()}\n\n'
                  '## Initial change (as the run was created; later fixes make it stale)\n\n'
                  + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
-        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}):   # FIELD-11: no PLAN approval runs it later
+        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}, base):   # FIELD-11: no PLAN approval runs it later
             issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
         return {'text': scope, 'head': head,
@@ -5046,7 +5217,7 @@ class Coordinator:
         # Do not rewrite past evidence or silently strip meaningful plan content.
         for name in ('workitem.md', 'plan.md'):
             path = self.context / name
-            if path.is_file() and re.search(r'\bF\d{3,}\b', path.read_text()):
+            if path.is_file() and LEDGER_ID_RE.search(self._fresh_history_text(f'context/{name}', path.read_text())):
                 raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}')
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', prompt)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
@@ -5064,34 +5235,9 @@ class Coordinator:
                         for p in sorted(self.context.iterdir()) if p.is_file()})
         if role == 'gate':
             sources['gate-template'] = Path(self.args.gate_prompt).read_text()
-        history = FRESH_HISTORY_RE
         checked = {}
         for name, content in sources.items():
-            # Role/rubric instructions in prompts/templates are not prior verdicts.
-            matches = history.findall(content)
-            # Mask only coordinator-owned absolute paths; require a token boundary after each path.
-            prose = content
-            # Support paths occur in generated prompts and diff headers, not user plan prose.
-            include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
-            known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
-                                   for path in self._fresh_scan_run_paths(include_support)]
-            for known_path in known_path_patterns:
-                prose = known_path.sub('<run-path>', prose)
-            # Unknown vendor-named directory paths remain subject to the scan.
-            matches += re.findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
-            matches += re.findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
-                                  prose, re.I)
-            # Keep attribution prose visible when a vendor-dot token resembles a filename.
-            matches += re.findall(
-                r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
-                r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
-            matches += re.findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
-                                  r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
-            prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
-                           '<path>', prose)
-            matches += re.findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
-            if name not in ('prompt', 'gate-template'):
-                matches += re.findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
+            matches = self._introduced_history(name, content)   # FIELD-23: repository text is not review history
             if matches:
                 raise RuntimeError(f'{role} independence check rejected history in {name}: {matches[0]}')
             checked[name] = {'sha256': hashlib.sha256(content.encode()).hexdigest(),
