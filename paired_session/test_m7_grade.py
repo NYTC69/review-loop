@@ -553,6 +553,16 @@ class M7MechanismRegressionTest(unittest.TestCase):
                 finally:
                     fixture.doCleanups()
 
+    def test_a_case_with_a_tracked_but_ignored_file_grades(self):   # m7-s1b: c06/c19 were refused as "untracked changes"
+        from paired_session.test_m7_corpus import M7CorpusTest
+        fixture = M7CorpusTest(); fixture.setUp()
+        try:
+            fixture.add_tracked_ignored_file()
+            run = self.frozen_cli(fixture)
+            self.assertEqual(run.returncode, 0, run.stderr)
+        finally:
+            fixture.doCleanups()
+
     def test_the_cli_workspace_check_ignores_a_hostile_global_git_config(self):   # m7-s1
         from paired_session.test_m7_corpus import M7CorpusTest
         fixture = M7CorpusTest(); fixture.setUp()

@@ -59,5 +59,12 @@ The following owner decisions define the offline tooling contract. They do not a
 
 - **Hard prerequisite before any real M7 run (OQ5):** a real D-b1 transcript/tool-log scanner and producer authentication must be implemented and independently verified. Synthetic scan/vote fixtures and matching digests do not satisfy this prerequisite. This repair does not implement either component.
 - Every git call on a case repo (the freeze and the grader's workspace check) runs without inherited `GIT_*` variables, system or global git config, init templates or hooks (m7-s1). Otherwise a user's `init.templateDir` could plant hooks in the case repo, and `diff.noprefix` or `apply.whitespace` could change the frozen bytes. The case repo therefore has no `.git/info/`; the harness creates it before it writes `.git/info/exclude` (plan §2).
+- The clean commit stages the archived files left after the cleanup with `git add -A --force` (m7-s1b), so
+  `.gitignore` cannot filter them a second time. A file the base tracks that also matches `.gitignore` therefore stays
+  in `base_tree`; it is not left on disk as an ignored file (poker-news-bot c06/c19). The archive itself still follows
+  the base's `export-ignore` and `export-subst` attributes, so `base_tree` can differ from `source_base_tree` for such a
+  base; both are recorded. The freeze also refuses an `out_root` or `key_path` under any
+  `.compass/results` directory, as it refuses `~/3Cats` and git repositories: the D-b1 scan denies those paths, so every
+  read of such a case would void it (m7-s4 pilot).
 - A manifest frozen before this contract lacks `source_base_tree`, `base_tree`, `status`, `scan_sha256` and `worktree_sha256`. The grader refuses it, so re-freeze before any real run.
 - A result cannot add, remove or change a frozen case exclusion: status and scan digest must equal the frozen manifest. An excluded scan must also pass its existing structural and case/base/diff checks. Rewriting both the manifest and result is outside byte-binding protection; the operator must retain the independently recorded pre-run manifest hash.

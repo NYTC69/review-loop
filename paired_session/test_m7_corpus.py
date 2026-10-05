@@ -74,6 +74,42 @@ class M7CorpusTest(unittest.TestCase):
                           f'[core]\n\thooksPath = {rejecting}\n')
         return {'GIT_CONFIG_GLOBAL': str(config)}
 
+    def add_tracked_ignored_file(self):   # m7-s1b: poker-news-bot c06/c19 track docs/qa/* files their .gitignore matches
+        (self.repo / '.gitignore').write_text('*.png\ndocs/qa/\n')
+        (self.repo / 'docs' / 'qa').mkdir(parents=True)
+        (self.repo / 'docs' / 'qa' / 'sheet.png').write_bytes(b'\x89PNG fake')
+        (self.repo / 'docs' / 'qa' / 'audit.md').write_text('audit\n')
+        git(self.repo, 'add', '-A', '--force')
+        git(self.repo, 'commit', '-qm', 'qa artifacts')
+        self.base = git(self.repo, 'rev-parse', 'HEAD')
+
+    def test_a_tracked_but_ignored_file_stays_in_the_frozen_base_tree(self):   # m7-s1b
+        self.add_tracked_ignored_file()
+        r = self.run_tool()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        case = self.out / 'c01' / 'repo'
+        tracked = git(case, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n')
+        self.assertTrue({'docs/qa/sheet.png', 'docs/qa/audit.md', '.gitignore'} <= set(tracked))
+        self.assertEqual(git(case, 'ls-files', '--others'), '')   # nothing left on disk outside the index
+        source = git(self.repo, 'rev-parse', self.base + '^{tree}')
+        result = json.loads((self.out / 'result.json').read_text())['cases'][0]
+        self.assertEqual((result['source_base_tree'], result['base_tree']), (source, source))   # no context class was removed
+
+    def test_out_root_and_keys_under_compass_results_are_refused(self):   # m7-s1b, m7-s4 pilot finding 3
+        results = self.tmp / 'proj' / '.compass' / 'results'
+        self.out = results / 'm7-corpus'
+        r = self.run_tool()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('out_root under a .compass/results directory', r.stderr)
+        self.out = self.tmp / 'out'
+        key = results / 'keys' / 'c01.txt'
+        key.parent.mkdir(parents=True)
+        key.write_text(self.key.read_text())
+        r = self.run_tool(key=key)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('key_path under a .compass/results directory', r.stderr)
+        self.assertFalse((self.out / 'c01').exists())
+
     def test_a_hostile_global_git_config_cannot_change_or_plant_into_the_frozen_case(self):
         r = self.run_tool(env=self.hostile_git_config())
         self.assertEqual(r.returncode, 0, r.stderr)   # the staged diff keeps its a/ b/ prefixes and its bytes; no hook ran

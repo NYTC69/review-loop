@@ -14,6 +14,7 @@ norm = lambda text: " ".join(text.split())
 under = lambda path, root: root in (path, *path.parents)
 sha = lambda data: hashlib.sha256(data).hexdigest()
 HEX40 = re.compile(r"[0-9a-f]{40}")
+in_results = lambda path: any(a == ".compass" and b == "results" for a, b in zip(path.parts, path.parts[1:]))
 
 
 def git(*args, cwd=None, data=None):
@@ -115,7 +116,9 @@ def worktree_sha256(root, index_listing):
 def fresh_commit(root, timestamp):
     # Local disposable repository only; no templates, global config or inherited hooks.
     case_git(root, "init", "-q", "--template=", ".")
-    case_git(root, "add", "-A")
+    # m7-s1b: --force stages every archived file left after the cleanup, so .gitignore cannot filter a tracked file a
+    # second time (the archive itself still follows the base's export-ignore / export-subst attributes).
+    case_git(root, "add", "-A", "--force")
     case_git(root, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Candidate baseline",
              GIT_AUTHOR_NAME="M7", GIT_COMMITTER_NAME="M7", GIT_AUTHOR_EMAIL="m7@example.invalid",
              GIT_COMMITTER_EMAIL="m7@example.invalid", GIT_AUTHOR_DATE=timestamp, GIT_COMMITTER_DATE=timestamp)
@@ -127,6 +130,8 @@ def freeze_case(case, repo_top, out, pin_corpus):
         raise SystemExit(f"{cid!r}: bad case id or case dir already exists")
     if not key.is_file() or under(key, repo_top) or under(key, out):
         raise SystemExit(f"{cid}: key_path missing, in the repo, or in the corpus dir")
+    if in_results(key):
+        raise SystemExit(f"{cid}: key_path under a .compass/results directory, which the D-b1 scan denies: {key}")
     if not HEX40.fullmatch(str(case["base"])):
         raise SystemExit(f"{cid}: base must be a full 40-hex SHA")
     diff = Path(case["diff_path"]).read_bytes()
@@ -188,6 +193,8 @@ def main(argv):
     out = Path(manifest.get("out_root", "/private/tmp/claude-501/m7-corpus")).resolve()
     if under(out, (Path.home() / "3Cats").resolve()) or any((p / ".git").exists() for p in (out, *out.parents)):
         raise SystemExit(f"out_root inside ~/3Cats or a git repo: {out}")
+    if in_results(out):   # m7-s1b: every read of such a case would trip the D-b1 deny pattern (m7-s4 pilot)
+        raise SystemExit(f"out_root under a .compass/results directory, which the D-b1 scan denies: {out}")
     out.mkdir(parents=True, exist_ok=True)
     pin_corpus, pin_recs = pin_texts(manifest["pins"])
     if not pin_corpus:
