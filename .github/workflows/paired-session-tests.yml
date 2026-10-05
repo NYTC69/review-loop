@@ -105,6 +105,58 @@ jobs:
           path: test.log
           retention-days: 14
 
+  repo-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: runner.os == 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Environment
+        run: |
+          uname -a; nproc 2>/dev/null || sysctl -n hw.ncpu
+          if [ "$RUNNER_OS" = macOS ]; then echo PY=/usr/bin/python3 >> "$GITHUB_ENV"; else echo PY=python3 >> "$GITHUB_ENV"; fi
+          git config --global user.name ci; git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+          # The dev Mac has real codex/claude on PATH; tests only hash them (a Popen guard blocks running them).
+          ci_bin="$RUNNER_TEMP/ci-bin"; mkdir -p "$ci_bin"
+          for n in codex claude; do
+            printf '#!/bin/sh\necho "CI stub: real %s CLI is not installed" >&2\nexit 127\n' "$n" > "$ci_bin/$n"
+            chmod 755 "$ci_bin/$n"
+          done
+          # Candidate test commands resolve bare python3; match the dev Mac (Xcode 3.9), not the image's Homebrew 3.14.
+          if [ "$RUNNER_OS" = macOS ]; then ln -sf /usr/bin/python3 "$ci_bin/python3"; fi
+          echo "$ci_bin" >> "$GITHUB_PATH"
+      - name: Install pytest
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            /usr/bin/python3 -m pip install --user pytest
+          else
+            $PY -m pip install pytest
+          fi
+          $PY -m pytest --version
+      - name: Run tests/ pytest suite
+        run: |
+          $PY --version; command -v python3 codex claude; python3 --version
+          set -o pipefail
+          $PY -m pytest -q -p no:cacheprovider tests 2>&1 | tee repo-tests.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-repo-tests-${{ matrix.os }}
+          path: repo-tests.log
+          retention-days: 14
+
   lint:
     strategy:
       fail-fast: false
