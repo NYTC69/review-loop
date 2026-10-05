@@ -136,6 +136,13 @@ turn's processes, then restores the workspace by hand.
 ### Global config and secret env (B)
 
 - The global Codex and Claude config check (`global_config_changes`) and the env-var deny list are the same in both modes. Tests verify them in efficient mode.
+- One outcome differs by mode (FIELD-21, poker-news-bot WI-102). A new Claude Code session outside the run can rewrite a plugin's entry in `installed_plugins.json` when it materializes a new plugin version. That happened in WI-102, where review-loop went from 2.10.0 to 2.10.1. `normal_plugin_update` recognizes such a normal update precisely:
+  - the document outside `plugins` is unchanged;
+  - the plugin keys, the entries and each entry's keys are unchanged;
+  - a changed entry differs only in the scalar values of `version`, `installPath`, `gitCommitSha` and `lastUpdated`;
+  - a changed `installPath` is the canonical cache directory `<plugins>/cache/<marketplace>/<plugin>/<new version>`, present on disk as a real directory.
+
+  The update is recorded in both modes as `global_config_changes.plugin_update`. In efficient mode the turn is void and is re-dispatched once on a fresh global-config baseline, with the same accounting as a read-only void (`_redispatch_budget`; the void turn stays counted in `invocations_used`). A second update in the same slot holds with `PLUGIN_UPDATE_HINT`. Strict mode holds with that hint, and `resume` re-runs the turn. Any other change, or a turn that also tripped another check, is a hard finding as before. RF-4's version/lastUpdated bump is one case of a normal update.
 
 ## 5. Docs
 

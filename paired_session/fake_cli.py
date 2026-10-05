@@ -191,6 +191,12 @@ def main():
     if append_commands and 'implementer. Phase: EXEC.' in prompt:
         with Path(os.environ['FAKE_APPEND_REVIEWER_COMMAND_FILE']).open('a') as target:
             target.write('\n```reviewer-commands\n' + append_commands + '\n```\n')
+    if os.environ.get('FAKE_PLUGIN_UPDATES') and os.environ.get('FAKE_PLUGIN_UPDATES_MATCH', 'implementer. Phase: EXEC.') in prompt:
+        queue = Path(os.environ['FAKE_PLUGIN_UPDATES'])   # field21: a JSON list of installed_plugins.json documents, one per matching turn
+        documents = json.loads(queue.read_text())          # (an update outside the run rewrites the registry during the turn)
+        if documents:
+            (Path.home() / '.claude' / 'plugins' / 'installed_plugins.json').write_text(json.dumps(documents.pop(0), indent=2))
+            queue.write_text(json.dumps(documents))
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
