@@ -32,7 +32,15 @@ Anchors are at `18479ba`. `C` = `paired_session/coordinator.py`; `PSE` = `docs/p
 - `--stop-after-plan` is given. The skill refuses its own `--plan-only` argument.
 - The work item already carries ledger ids or review-history wording. `_plan_history_issue` (FIELD-11, C:4514-4522) runs
   only at PLAN approval, which this entry skips, so it runs here at creation instead.
-- Until LG1-c lands, `--review-only` with `--lifecycle-mode on` (§9).
+  As built (LG1-e), it also scans the review scope, so a changed path named like review history (`docs/F001.md`,
+  `APPROVE.txt`) is refused, and the message names the scope as the source. This conservative refusal stays: the
+  fresh shadow and gate scan `context/plan.md`, which lists the path, and the ledger-id pattern there
+  (`assert_fresh_prompt`) is an independence guard. Narrowing the entry check alone would only move the refusal to a
+  mid-run gate failure. Such a change is reviewed with the legacy workflow.
+- Until LG1-c lands, `--review-only` with `--lifecycle-mode on` (§9). Lifted in LG1-c.
+
+The scope lists one path per line; since LG1-e a name with a tab, newline, other control character, backslash, leading
+quote or non-UTF-8 byte is written as an ASCII JSON string (`review_scope_path`), read from raw `-z` output.
 
 **Frozen at creation**, in config and state. A different value at resume is refused like any other config mismatch.
 - `entry: review-only`.
@@ -208,6 +216,22 @@ and resumes, or aborts.
     - `reject --scope-change` yields a review-only successor that has the base, scope hash and baseline, with
       parent = `HEAD` at successor creation.
 12. Lint: the changed needles and the new needles PASS.
+
+LG1-e added the following tests:
+- base-tree symlinks and executable files in the from-commit baseline, plus a mode change and a symlink retarget in the
+  delivery;
+- the delivered tree against the accepted manifest by content and mode;
+- scope quoting;
+- the history-shaped path refusal;
+- DOCS deletion and rename pre-ownership;
+- non-UTF-8 names in `commit_state`.
+
+Residuals:
+- A non-UTF-8 name is tested at unit level only. macOS APFS refuses such names, so no coordinator run exercises one.
+- `_changed_paths` still reads names as replaced text, which affects specialist selection and docs pre-ownership for
+  such a name.
+- A writer that stages during a review-only run has no review-only test of its own. The mode-independent W test
+  `test_a_docs_writer_that_moves_the_index_holds` and test 9 (index changed before accept) cover it.
 
 Tests go in a new `paired_session/test_review_only_entry.py` (strict-pinned harness) and in `tests/delivery_scope_test.py`.
 

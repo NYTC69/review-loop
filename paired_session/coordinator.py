@@ -1089,6 +1089,15 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+def review_scope_path(name: str) -> str:
+    """LG1-e: one unambiguous line per path in the review scope. A name with a tab, newline, other control character,
+    backslash, leading quote or non-UTF-8 byte (surrogateescape, shown as \\udcXX) is written as an ASCII JSON string;
+    any other name as is."""
+    if name.isprintable() and '\\' not in name and not name.startswith('"'):
+        return name
+    return json.dumps(name)
+
+
 def directory_digest(root: Path) -> str:
     manifest = []
     for path in sorted(root.rglob('*')):
@@ -3188,6 +3197,11 @@ class Coordinator:
             raise RuntimeError('git ' + ' '.join(args) + ' failed: ' + proc.stderr.strip())
         return proc.stdout
 
+    def _git_names(self, args: list[str]) -> list[str]:   # LG1-e: -z output read as bytes, so a non-UTF-8 name survives
+        raw = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
+        return [name for name in raw.decode(errors='surrogateescape').split('\0') if name]
+
     def _workspace_names(self) -> list[str]:
         raw = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=self.workspace),
                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -4630,13 +4644,14 @@ class Coordinator:
             raise ValueError(f'--base {args.review_base_ref} is not an ancestor of HEAD; review-only reviews a change on top of its base')
         if self._git(['ls-files', '-u']).strip():
             raise ValueError('--review-only refuses an index with unmerged entries; finish or abort the merge first')
-        staged = set(filter(None, self._git(['diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD']).split('\0')))
-        if partial := sorted(staged & set(filter(None, self._git(['diff', '--name-only', '--no-renames', '-z']).split('\0')))):
+        staged = set(self._git_names(['diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD']))
+        if partial := sorted(staged & set(self._git_names(['diff', '--name-only', '--no-renames', '-z']))):
             raise ValueError('--review-only refuses partially staged paths (an auto_commit would drop their staged version): ' +
-                             ', '.join(partial[:10]) + '; stage them fully or unstage them')
-        untracked = sorted(filter(None, self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')))
-        fields = self._git(['diff', '--name-status', '--no-renames', '-z', base, '--']).split('\0')   # Q7: every full path
-        changed = ''.join(f'{status}\t{path}\n' for status, path in zip(fields[0::2], fields[1::2]) if status)
+                             ', '.join(json.dumps(name) if ',' in name else review_scope_path(name) for name in partial[:10]) +
+                             '; stage them fully or unstage them')
+        untracked = sorted(self._git_names(['ls-files', '-z', '--others', '--exclude-standard']))
+        fields = self._git_names(['diff', '--name-status', '--no-renames', '-z', base, '--'])   # Q7: every full path
+        changed = ''.join(f'{status}\t{review_scope_path(path)}\n' for status, path in zip(fields[0::2], fields[1::2]))
         if not changed and not untracked:
             raise ValueError(f'nothing to review: the workspace tree equals the review base {base[:12]}')
         workitem = self.workitem.read_text()
@@ -4645,8 +4660,9 @@ class Coordinator:
                  f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command}\n\n'
                  f'## Goal (the work item, verbatim)\n\n{workitem.rstrip()}\n\n'
                  '## Initial change (as the run was created; later fixes make it stale)\n\n'
-                 + changed + ''.join(f'untracked: {name}\n' for name in untracked))
+                 + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
         if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}):   # FIELD-11: no PLAN approval runs it later
+            issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
         return {'text': scope, 'head': head,
                 'parent_scope_sha256': (self._parent_spec().get('review_only') or {}).get('review_scope_sha256') if args.supersedes else None}

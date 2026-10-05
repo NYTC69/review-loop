@@ -108,6 +108,9 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
 - `run` refuses before creating any state when the change is empty, the index
   has unmerged entries or partially staged paths, the base is not an ancestor of
   `HEAD`, or the work item carries review history; report the refusal verbatim.
+  A changed path named like review history (`docs/F001.md`, `APPROVE.txt`) is
+  refused too, because the fresh shadow and gate scan the review scope that
+  lists it: tell the user to review that change with the legacy workflow.
 
 ## Safety mode and the first commands
 

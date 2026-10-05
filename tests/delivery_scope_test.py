@@ -341,3 +341,39 @@ def test_from_commit_baseline_is_a_clean_checkout_of_the_base(repo):
     owned = dict((row["path"], row["ownership"]) for row in manifest["task_delta"])
     assert owned == dict.fromkeys(("task.txt", "link", "unrelated.txt", "new.txt"), "declared-post-baseline")
     assert run(repo, "capture", "--scope", ".", "--from-commit", "no-such-ref", expect=2)["kind"] == "usage"
+
+
+def test_from_commit_state_equals_the_state_of_a_clean_checkout(repo):
+    """LG1-e: symlinks, executable files and unusual names in the base tree read exactly as a clean checkout of it."""
+    os.symlink("task.txt", repo / "link")
+    write(repo, "run.sh", "#!/bin/sh\necho base\n").chmod(0o755)
+    write(repo, "dir/tab\tname.txt", "tab\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "symlink, executable, tab name")
+    info = SCOPE.repository(str(repo))
+    live = SCOPE.capture_state(info)   # the checkout is clean: HEAD, index and worktree agree
+    assert SCOPE.commit_state(info, "HEAD") == {**live, "index_file_sha256": None}
+    assert (live["worktree"]["link"]["mode"], live["worktree"]["run.sh"]["mode"]) == ("120000", "100755")
+    base = live["head"]
+    (repo / "run.sh").chmod(0o644)   # the change under review: a mode change and a retargeted symlink
+    (repo / "link").unlink()
+    os.symlink("unrelated.txt", repo / "link")
+    document = run(repo, "capture", "--scope", ".", "--from-commit", base)
+    path = repo.parent / "from-commit.json"
+    path.write_text(json.dumps(document))
+    manifest = SCOPE.build_manifest(SCOPE.load_document(str(path), "delivery-baseline"), SCOPE.capture_state(info))
+    owned = dict((row["path"], row["ownership"]) for row in manifest["task_delta"])
+    assert owned == dict.fromkeys(("run.sh", "link"), "declared-post-baseline")
+
+
+def test_from_commit_state_keeps_a_non_utf8_name(repo):
+    """LG1-e: a name that is not UTF-8 (built with plumbing, so no filesystem has to accept it) keeps its bytes."""
+    oid = git(repo, "hash-object", "-w", "--stdin", input=b"latin-1 name\n").stdout.decode().strip()
+    tree = git(repo, "mktree", "-z", input=b"100644 blob " + oid.encode() + b"\tcaf\xe9.txt\0").stdout.decode().strip()
+    commit = git(repo, "commit-tree", tree, "-m", "non-UTF-8 name").stdout.decode().strip()
+    info = SCOPE.repository(str(repo))
+    state = SCOPE.commit_state(info, commit)
+    SCOPE.validate_state(state, info)
+    name = os.fsdecode(b"caf\xe9.txt")
+    assert list(state["worktree"]) == [name]
+    assert state["worktree"][name]["sha256"] == hashlib.sha256(b"latin-1 name\n").hexdigest()

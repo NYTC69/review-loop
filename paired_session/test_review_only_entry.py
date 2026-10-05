@@ -2,6 +2,7 @@
 the EXEC review of the existing change, with its refusals, frozen values and tree check."""
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -35,6 +36,19 @@ class ReviewOnlyEntryTests(unittest.TestCase):
 
     def state(self):
         return json.loads((self.run_dir / 'state.json').read_text())
+
+    def tree_manifest(self, rev='HEAD'):   # a commit's tree as git_snapshot values: content and mode, by path
+        rows = []
+        for entry in filter(None, self.git('ls-tree', '-r', '-z', rev).split('\0')):
+            meta, path = entry.split('\t', 1)
+            mode, _, oid = meta.split()
+            data = subprocess.run(['git', 'cat-file', 'blob', oid], cwd=self.workspace, check=True, capture_output=True).stdout
+            rows.append([path, 'link:' + os.fsdecode(data) if mode == '120000' else
+                         ('exec:' if mode == '100755' else '') + hashlib.sha256(data).hexdigest()])
+        return sorted(rows)
+
+    def accepted_manifest(self):
+        return sorted(row for row in self.state()['approved_manifest'] if row[1] != 'missing')
 
     # --- test 1: creation ----------------------------------------------------------------------------------------------------
     def test_refusals_leave_no_state(self):
@@ -313,6 +327,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         self.assertEqual((self.git('rev-parse', 'HEAD~1'), self.git('rev-parse', 'HEAD~2')), (head, base))   # on HEAD
         manifest = sorted(path for path, value in self.state()['approved_manifest'] if value != 'missing')
         self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'HEAD').splitlines(), manifest)   # exactly the accepted tree
+        self.assertEqual(self.tree_manifest(), self.accepted_manifest())   # LG1-e: by content and mode too
         self.assertEqual(self.git('show', 'HEAD:sum_ints.py') + '\n', SUM_INTS)
         self.assertEqual(self.git('show', 'HEAD:tracked.txt'), 'base\nedited')
         self.assertEqual(self.git('status', '--porcelain'), '')
@@ -368,6 +383,77 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         accepted = self.run_operator_action('accept', *self.W)
         self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
         self.assertEqual(self.git('show', 'HEAD:sum_ints.py') + '\n', SUM_INTS)
+
+    # --- LG1-e: edge cases ---------------------------------------------------------------------------------------------------
+    def test_base_tree_symlinks_and_modes_are_carried_into_the_baseline_and_the_delivery(self):
+        self.w_ready()
+        os.symlink('committed.py', self.workspace / 'link.py')
+        (self.workspace / 'tool.sh').write_text('#!/bin/sh\necho base\n')
+        (self.workspace / 'tool.sh').chmod(0o755)
+        self.git('add', 'link.py', 'tool.sh')
+        self.git('commit', '-qm', 'a symlink and an executable in the base')
+        self.change()
+        (self.workspace / 'tool.sh').chmod(0o644)   # the change under review: a mode change and a retargeted symlink
+        (self.workspace / 'link.py').unlink()
+        os.symlink('sum_ints.py', self.workspace / 'link.py')
+        done = self.run_coordinator(*self.W)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        state = self.state()
+        worktree = json.loads(Path(state['lifecycle']['security_baseline']['path']).read_text())['state']['worktree']
+        self.assertEqual((worktree['link.py']['mode'], worktree['tool.sh']['mode']), ('120000', '100755'))   # as committed
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual(security['preflight']['status'], 'clean')
+        accepted = self.run_operator_action('accept', *self.W)
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        self.assertEqual(self.tree_manifest(), self.accepted_manifest())
+        self.assertEqual(self.git('ls-tree', 'HEAD', 'tool.sh').split()[0], '100644')
+        self.assertEqual(self.git('cat-file', 'blob', 'HEAD:link.py'), 'sum_ints.py')
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_the_review_scope_lists_unusual_paths_one_per_line(self):   # lg1-a1 LOW: tabs, newlines, quotes
+        self.change()
+        (self.workspace / 'tab\tname.txt').write_text('x\n')
+        self.git('add', 'tab\tname.txt')
+        self.git('commit', '-qm', 'a tracked name with a tab')
+        (self.workspace / 'tab\tname.txt').write_text('changed\n')
+        for name in ('new\nline.txt', '"quoted.txt', 'back\\slash.txt', 'café.txt'):
+            (self.workspace / name).write_text('x\n')
+        scope = (rc.Coordinator(self.args()).context / 'plan.md').read_text()
+        for line in ('M\t"tab\\tname.txt"\n', 'untracked: "new\\nline.txt"\n', 'untracked: "\\"quoted.txt"\n',
+                     'untracked: "back\\\\slash.txt"\n', 'untracked: café.txt\n', 'untracked: sum_ints.py\n'):
+            self.assertIn(line, scope)
+        self.assertNotIn('new\nline.txt', scope)
+        self.assertEqual(rc.review_scope_path(os.fsdecode(b'caf\xe9.txt')), '"caf\\udce9.txt"')   # a non-UTF-8 byte
+        self.assertEqual(rc.review_scope_path('caf\\xe9.txt'), '"caf\\\\xe9.txt"')   # a literal backslash stays distinct
+        (self.workspace / 'a, b.txt').write_text('x\n')
+        self.git('add', 'a, b.txt')
+        (self.workspace / 'a, b.txt').write_text('staged, then changed\n')   # partially staged, with a comma in its name
+        self.run_dir = self.root / 'partial'
+        with self.assertRaisesRegex(ValueError, r'refuses partially staged paths .*: "a, b.txt"; stage them fully'):
+            rc.Coordinator(self.args())
+
+    def test_a_ledger_id_or_verdict_shaped_path_is_refused_and_names_its_source(self):   # FIELD-11, kept conservative
+        self.change()
+        for name in ('docs/F001.md', 'APPROVE.txt'):
+            with self.subTest(name=name):
+                (self.workspace / name).parent.mkdir(exist_ok=True)
+                (self.workspace / name).write_text('notes\n')
+                with self.assertRaisesRegex(ValueError, r'refuses review history in the review scope \(a changed path or the '
+                                            r'test command\): .*; the fresh shadow and gate would refuse it'):
+                    rc.Coordinator(self.args())
+                self.assertFalse((self.run_dir / 'state.json').exists())
+                (self.workspace / name).unlink()
+
+    def test_docs_the_change_deletes_or_renames_are_pre_owned(self):   # Q8: deletions and both ends of a rename
+        (self.workspace / 'docs').mkdir()
+        for name in ('CHANGELOG.md', 'docs/old.md'):
+            (self.workspace / name).write_text('# notes\n')
+        self.git('add', 'CHANGELOG.md', 'docs/old.md')
+        self.git('commit', '-qm', 'docs')
+        self.git('rm', '-q', 'CHANGELOG.md')
+        self.git('mv', 'docs/old.md', 'docs/new.md')
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'on', '--docs-allowlist', 'docs/old.md', '--docs-allowlist', 'docs/new.md'))
+        self.assertEqual(co.state['lifecycle']['docs_pre_owned'], ['CHANGELOG.md', 'docs/new.md', 'docs/old.md'])
 
 
 if __name__ == '__main__':
