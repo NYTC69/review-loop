@@ -84,6 +84,34 @@ instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
 never interpolate user text as shell code.
 
+## Review-only entry
+
+A review-only request (the review-loop entry hands off code already implemented,
+or the user asks paired-session to review an existing change) runs
+`run --review-only`. There is no PLAN phase: the run starts at the EXEC review of
+the change, which counts as EXEC round 1, and the coordinator writes the review
+scope itself. The change is the whole non-ignored worktree against the review
+base, `HEAD` by default (the uncommitted work). Add `--base <ref>` only when the
+user names a base (a branch review, for example `--base main`); it must be an
+ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
+- Stage A: list the change (`git status --porcelain --untracked-files=all`, and
+  with `--base` also `git diff --name-status <ref>`). Route only a task-related
+  change: if a path is unrelated to the request, ask whether to review it too (a
+  declined question is a failed stage A check). With `auto_commit`, every
+  reviewed path is delivered. `--plan-only` does not apply: refuse it in stage A.
+- `WORKITEM.md` states the review goal (one line such as "Review the change for
+  correctness" is enough) and carries no review history (ledger ids or earlier
+  findings).
+- Pass `--review-only` (and `--base`) to `permission-probe` and `run`
+  identically, with `--lifecycle-mode on` as for any new run. Later commands read
+  the entry and base from the saved state; never pass a different `--base`.
+- `run` refuses before creating any state when the change is empty, the index
+  has unmerged entries or partially staged paths, the base is not an ancestor of
+  `HEAD`, or the work item carries review history; report the refusal verbatim.
+  A changed path named like review history (`docs/F001.md`, `APPROVE.txt`) is
+  refused too, because the fresh shadow and gate scan the review scope that
+  lists it: tell the user to review that change with the legacy workflow.
+
 ## Safety mode and the first commands
 
 For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to

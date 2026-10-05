@@ -17,6 +17,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from typing import Optional
 
 SCHEMA = 1
@@ -40,15 +41,19 @@ class CaptureError(Exception):
     """Cannot completely and consistently capture the repository (exit 3)."""
 
 
-def git(repo: str, *args: str, codes: tuple = (0,)) -> bytes:
+def git_env(command: str) -> dict:
     env = os.environ.copy()
     for key in GIT_ENV_OVERRIDES:
         env.pop(key, None)
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1")
-    if args[0] != "check-ignore":  # check-ignore accepts literal filenames but rejects pathspec magic.
+    if command != "check-ignore":  # check-ignore accepts literal filenames but rejects pathspec magic.
         env["GIT_LITERAL_PATHSPECS"] = "1"
+    return env
+
+
+def git(repo: str, *args: str, codes: tuple = (0,)) -> bytes:
     result = subprocess.run(
-        ["git", "-c", "core.fsmonitor=false", *args], cwd=repo, env=env,
+        ["git", "-c", "core.fsmonitor=false", *args], cwd=repo, env=git_env(args[0]),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if result.returncode not in codes:
@@ -222,6 +227,53 @@ def read_state(repo: dict) -> dict:
         index_digest = None
     return {"head": head, "head_paths": head_paths, "index": index,
             "index_file_sha256": index_digest, "worktree": worktree, "untracked": sorted(untracked)}
+
+
+def commit_state(repo: dict, commit: str) -> dict:
+    """The state of a clean checkout of `commit` (HEAD, index and worktree all equal to it; nothing untracked): the
+    baseline of a review-only run, whose live tree already holds the change under review (review-only-entry.md §4)."""
+    root = repo["worktree"]
+    head = git_line(root, "rev-parse", "--verify", "-q", commit + "^{commit}", codes=(0, 1)) if not commit.startswith("-") else ""
+    if not head:
+        raise UsageError(f"--from-commit does not name a commit: {commit!r}")
+    head_paths = {}
+    for raw in git(root, "ls-tree", "-r", "-z", head).split(b"\0"):
+        if raw:
+            metadata, path = raw.split(b"\t", 1)
+            mode, _, oid = metadata.decode("ascii").split()
+            if mode == "160000":
+                raise CaptureError(f"submodules/gitlinks are unsupported by this manifest version: {os.fsdecode(path)!r}")
+            head_paths[path_name(os.fsdecode(path))] = {"mode": mode, "oid": oid}
+    worktree, blobs = {}, {}
+    with tempfile.TemporaryFile() as ids:   # one cat-file --batch, read as a stream: bounded memory for any repository
+        ids.write("".join(oid + "\n" for oid in sorted({e["oid"] for e in head_paths.values()})).encode("ascii"))
+        ids.seek(0)
+        process = subprocess.Popen(["git", "-c", "core.fsmonitor=false", "cat-file", "--batch"], cwd=root, stdin=ids,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_env("cat-file"))
+        try:
+            while header := process.stdout.readline():   # "<oid> blob <size>\n<content>\n" per object
+                fields = header.decode("ascii").split()
+                if len(fields) != 3 or fields[1] != "blob":
+                    raise CaptureError(f"unexpected object in {commit!r}: {' '.join(fields)}")
+                oid, _kind, size = fields
+                digest, left = hashlib.sha256(), int(size)
+                while left:
+                    chunk = process.stdout.read(min(left, 1024 * 1024))
+                    if not chunk:
+                        raise CaptureError(f"git cat-file ended inside {oid}")
+                    digest.update(chunk)
+                    left -= len(chunk)
+                if process.stdout.read(1) != b"\n":
+                    raise CaptureError(f"git cat-file framing error after {oid}")
+                blobs[oid] = (digest.hexdigest(), int(size))
+        finally:
+            process.stdout.close()
+            if process.wait() != 0:
+                raise CaptureError(f"git cat-file failed ({process.returncode})")
+    for path, entry in head_paths.items():
+        worktree[path] = {**entry, "sha256": blobs[entry["oid"]][0], "size": blobs[entry["oid"]][1]}
+    return {"head": head, "head_paths": head_paths, "index": {path: [{**entry, "stage": 0}] for path, entry in head_paths.items()},
+            "index_file_sha256": None, "worktree": worktree, "untracked": []}
 
 
 def capture_state(repo: dict) -> dict:
@@ -433,6 +485,7 @@ def main(argv: Optional[list] = None) -> int:
     capture = commands.add_parser("capture", help="capture a pre-task baseline with an explicit literal scope")
     capture.add_argument("--scope", action="append", required=True)
     capture.add_argument("--output")
+    capture.add_argument("--from-commit", help="baseline = a clean checkout of this commit (a review-only run's base)")
     manifest = commands.add_parser("manifest", help="bind the current candidate to an immutable baseline")
     manifest.add_argument("--baseline", required=True)
     manifest.add_argument("--output")
@@ -444,7 +497,8 @@ def main(argv: Optional[list] = None) -> int:
         validate_output(repo, getattr(args, "output", None))
         if args.command == "capture":
             scope = scope_paths(repo["worktree"], args.scope)
-            document = build_baseline(repo, scope, capture_state(repo))
+            document = build_baseline(repo, scope, commit_state(repo, args.from_commit) if args.from_commit
+                                      else capture_state(repo))
         elif args.command == "manifest":
             baseline = load_document(args.baseline, "delivery-baseline")
             match_repository(repo, baseline)

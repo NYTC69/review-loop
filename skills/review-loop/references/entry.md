@@ -66,10 +66,12 @@ which only prints a suggestion, the umbrella dispatches internally:
   resume (equivalent to `execute --session <uuid>`).
 - **No prior state**: start from the planning phase as normal.
 
-**Entry routing (only when `entry` resolved to `paired-session`, set or by default).** Only
-"No prior state" hands off: print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,
+**Entry routing (only when `entry` resolved to `paired-session`, set or by default).** Two
+states hand off, "No prior state" and "Code already implemented" (a review-only request). On
+either, print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,
 or `review-loop: paired-session is the default entry; set "entry: legacy" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow` when it is absent,
-invoke the `paired-session` skill with the work item, and end this workflow
+invoke the `paired-session` skill with the work item (for code already implemented, with
+`--review-only`, plus `--base <ref>` only when the user names a base), and end this workflow
 (no legacy session file, lock or stage), unless the paired-session skill reports a failed
 stage A check before its first `bin/paired-session` command (see below). Print the notice
 and hand off only after this entry's own stage A checks (host, CLIs, background commands,
@@ -77,10 +79,11 @@ Codex home) pass; the question checks run in the paired-session skill after the 
 (Questions row below). This routing is decided once, before
 Step 0.5; once a legacy session file or lock exists, a re-detection or user
 override never hands off. A paired-session probe/run HOLD is
-reported to the user and never falls back to legacy. Plan-exists, code-exists
-(including a dirty tree detected as implemented code) and an existing session
-(explicit resume) always stay legacy; print
-`review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`.
+reported to the user and never falls back to legacy. Code already implemented is detected
+from task-relevant changes only: unrelated dirty work is not a code-exists signal (a
+review-only run reviews and, with auto_commit, delivers every non-ignored change against its
+base). Plan-exists and an existing session (explicit resume) always stay legacy; print
+`review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`.
 
 **Stage A checks (before the first `bin/paired-session` command).** Read-only. The host,
 CLI, background-command and Codex-home rows run here before the handoff; the Questions row

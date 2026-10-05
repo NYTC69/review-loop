@@ -27,7 +27,8 @@ From v2.10.0 a fresh review-loop request with no `entry` key in
 `.review-loop/config.md` hands off to the Codex `paired-session` skill, which
 runs the coordinator through plan, implementation, review, finish, polish,
 docs and security up to DONE; it accepts only on your explicit acceptance.
-`entry: legacy`, an existing plan, code or session, or asking for "the legacy
+A request to review existing code hands off the same way as `run --review-only`.
+`entry: legacy`, an existing plan or session, or asking for "the legacy
 review-loop workflow" keeps the legacy workflow described above. Runs are `efficient` by
 default (every sandbox, no permission-probe PASS required); `--strict` or
 `"safety_mode": "strict"` in the operator profile adds the probe gate.

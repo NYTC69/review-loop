@@ -314,3 +314,66 @@ def test_untracked_session_directory_is_excluded_but_tracked_config_is_not(repo)
     second = sessions / "candidate-2.json"
     run(repo, "manifest", "--baseline", out, "--output", second)
     assert paths(json.loads(second.read_text())["outside_scope_delta"]) == {".review-loop/config.md"}
+
+
+
+def test_from_commit_baseline_is_a_clean_checkout_of_the_base(repo):
+    """LG1-c (review-only-entry.md §4): the base tree, not the live tree that already holds the change under review."""
+    base = git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+    write(repo, "task.txt", "committed change\n")
+    os.symlink("task.txt", repo / "link")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "committed part of the change")
+    write(repo, "unrelated.txt", "uncommitted change\n")
+    write(repo, "new.txt", "untracked part\n")
+    info = SCOPE.repository(str(repo))
+    state = SCOPE.commit_state(info, base)
+    SCOPE.validate_state(state, info)
+    assert (state["head"], state["untracked"], state["index_file_sha256"]) == (base, [], None)
+    assert set(state["worktree"]) == {"task.txt", "unrelated.txt", "delete.txt", ".gitignore"}
+    assert state["worktree"]["task.txt"]["sha256"] == hashlib.sha256(b"base\n").hexdigest()
+    assert state["worktree"]["task.txt"]["size"] == len(b"base\n")
+    assert state["index"]["task.txt"] == [dict(state["head_paths"]["task.txt"], stage=0)]
+    document = run(repo, "capture", "--scope", ".", "--from-commit", base)
+    path = repo.parent / "from-commit.json"
+    path.write_text(json.dumps(document))
+    manifest = SCOPE.build_manifest(SCOPE.load_document(str(path), "delivery-baseline"), SCOPE.capture_state(info))
+    owned = dict((row["path"], row["ownership"]) for row in manifest["task_delta"])
+    assert owned == dict.fromkeys(("task.txt", "link", "unrelated.txt", "new.txt"), "declared-post-baseline")
+    assert run(repo, "capture", "--scope", ".", "--from-commit", "no-such-ref", expect=2)["kind"] == "usage"
+
+
+def test_from_commit_state_equals_the_state_of_a_clean_checkout(repo):
+    """LG1-e: symlinks, executable files and unusual names in the base tree read exactly as a clean checkout of it."""
+    os.symlink("task.txt", repo / "link")
+    write(repo, "run.sh", "#!/bin/sh\necho base\n").chmod(0o755)
+    write(repo, "dir/tab\tname.txt", "tab\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "symlink, executable, tab name")
+    info = SCOPE.repository(str(repo))
+    live = SCOPE.capture_state(info)   # the checkout is clean: HEAD, index and worktree agree
+    assert SCOPE.commit_state(info, "HEAD") == {**live, "index_file_sha256": None}
+    assert (live["worktree"]["link"]["mode"], live["worktree"]["run.sh"]["mode"]) == ("120000", "100755")
+    base = live["head"]
+    (repo / "run.sh").chmod(0o644)   # the change under review: a mode change and a retargeted symlink
+    (repo / "link").unlink()
+    os.symlink("unrelated.txt", repo / "link")
+    document = run(repo, "capture", "--scope", ".", "--from-commit", base)
+    path = repo.parent / "from-commit.json"
+    path.write_text(json.dumps(document))
+    manifest = SCOPE.build_manifest(SCOPE.load_document(str(path), "delivery-baseline"), SCOPE.capture_state(info))
+    owned = dict((row["path"], row["ownership"]) for row in manifest["task_delta"])
+    assert owned == dict.fromkeys(("run.sh", "link"), "declared-post-baseline")
+
+
+def test_from_commit_state_keeps_a_non_utf8_name(repo):
+    """LG1-e: a name that is not UTF-8 (built with plumbing, so no filesystem has to accept it) keeps its bytes."""
+    oid = git(repo, "hash-object", "-w", "--stdin", input=b"latin-1 name\n").stdout.decode().strip()
+    tree = git(repo, "mktree", "-z", input=b"100644 blob " + oid.encode() + b"\tcaf\xe9.txt\0").stdout.decode().strip()
+    commit = git(repo, "commit-tree", tree, "-m", "non-UTF-8 name").stdout.decode().strip()
+    info = SCOPE.repository(str(repo))
+    state = SCOPE.commit_state(info, commit)
+    SCOPE.validate_state(state, info)
+    name = os.fsdecode(b"caf\xe9.txt")
+    assert list(state["worktree"]) == [name]
+    assert state["worktree"][name]["sha256"] == hashlib.sha256(b"latin-1 name\n").hexdigest()

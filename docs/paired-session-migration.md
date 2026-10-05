@@ -5,7 +5,8 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 
 ## Status in v2.10.0
 - **paired-session is the default entry.** A fresh `/review-loop <work item>` (Claude) or a fresh review-loop request (Codex) with no `entry` key in `.review-loop/config.md` hands off to the `paired-session` skill, which runs the coordinator with `--lifecycle-mode on`.
-- Plan-exists, code-exists and existing-session states stay legacy, as do `/review-loop:plan`, `execute` and `review-pr`.
+- A request to review code that already exists (code-exists) hands off as `run --review-only` (D-LG1): no PLAN phase; the EXEC review of the change against `HEAD`, or `--base <ref>` when you name a base, is round 1. Unrelated dirty work is not a code-exists signal.
+- Plan-exists and existing-session states stay legacy, as do `/review-loop:plan`, `execute` and `review-pr`. Legacy `/review-loop:execute --review-only` stays legacy until its retirement; its paired-session equivalent is `run --review-only`, and its `--stop-after exec-round` maps to the operator CLI options `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route).
 - Nothing is removed: the legacy workflow stays available through `entry: legacy`, `/review-loop:legacy`, or (Codex) "use the legacy review-loop workflow".
 - New runs are `efficient` by default and need no permission probe (see Safety modes). In strict mode the probe PASS is bound to the plugin version: after upgrading, a strict run directory needs a new `permission-probe`. Finish a run with the version that started it. If a v2.9.x run is nevertheless continued under v2.10.0, it resumes strict, needs a new probe, keeps `lifecycle_mode=off` and ends at DONE.
 
@@ -32,7 +33,7 @@ entry: legacy
 | Fresh work item, `entry` absent or `paired-session` | paired-session |
 | `entry: legacy`, an invalid value, or an unreadable config | legacy (the invalid and unreadable cases print a warning) |
 | Plan already exists | legacy |
-| Code already implemented (including a dirty tree detected as implemented code) | legacy |
+| Code already implemented (task-relevant changes; unrelated dirty work does not count) | paired-session `run --review-only` |
 | Existing legacy session / explicit resume | legacy |
 
 Before the handoff the entry checks the host (macOS, key absent only), the CLIs the roles need, background or outside-sandbox execution and the Codex home; the paired-session skill then establishes a dedicated worktree and a test command, asking only when it cannot. With the key absent, a failed check before the first `bin/paired-session` command falls back to legacy with a notice; with `entry: paired-session` it refuses. From the first `bin/paired-session` command on, a refusal or HOLD is reported and never falls back to legacy. Legacy sessions and plans cannot be imported into paired-session. A paired run is resumed only with `paired-session resume` and its original options; the two workflows never cross.
@@ -43,7 +44,7 @@ Printed by the `/review-loop` skill text (Claude wording; Codex names "the legac
 - `entry: paired-session`: `review-loop: paired-session entry (entry set in .review-loop/config.md)`
 - Value other than exactly `legacy` or `paired-session` (quoted or differently cased included): `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
 - Duplicate `entry` key or unreadable config: `review-loop: entry could not be read (<reason>); using legacy workflow`
-- Plan, code or a session already exists: `review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`
+- A plan or a session already exists: `review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`
 - A failed check before the coordinator starts, key absent: `review-loop: paired-session default entry ...; using legacy workflow` (the reason names the host, the missing CLI, the unanswered question or the unavailable execution)
 - A failed check before the coordinator starts, `entry: paired-session`: `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or use /review-loop:legacy`
 

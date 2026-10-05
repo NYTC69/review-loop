@@ -2188,7 +2188,7 @@
     "guide_entry_key_and_commands": [
       {
         "path": "skills/guide/SKILL.md",
-        "needle": "| `entry` | absent (paired-session) | `legacy` \\| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work"
+        "needle": "| `entry` | absent (paired-session) | `legacy` \\| `paired-session`; routes fresh and review-only `/review-loop` (Claude) or review-loop skill (Codex) work"
       },
       {
         "path": "skills/guide/SKILL.md",

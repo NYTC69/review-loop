@@ -107,7 +107,11 @@ quoted. Exit 4 from the second invocation means the installed plugin changed
 or became unresolvable after the probe: report it as a HOLD (no fallback); the
 run was not started.
 
+A review-only request (the user asks to review an existing change, or the review-loop handoff of
+a code target) follows the shared contract's review-only entry: add `--review-only` (and
+`--base "$BASE"` only when the user named a base) to both invocations.
+
 This skill is the explicit
 paired-session entry and the review-loop handoff target only when the config
-key `entry` is `paired-session` or absent and the work is fresh; with `legacy`
+key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`
 or an invalid value, routing stays legacy.
