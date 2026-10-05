@@ -445,8 +445,8 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
     return []
 
 
-def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path) -> bool:
-    raw = path.read_bytes()
+def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path, raw: Optional[bytes] = None) -> bool:
+    raw = path.read_bytes() if raw is None else raw   # F7: the caller passes the bytes it hashed, so check and hash agree
     entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode() for root in _codex_trust_paths(workspace)}
     present = [root for root, entry in entries.items() if raw.count(entry) == 1]
     for count in range(1, len(present) + 1):   # RF-7: the expected set, each path at most once, in any order
@@ -4245,7 +4245,21 @@ class Coordinator:
         self.write_comparison()
         return 'ACTIVE'
 
-    def archive_abandoned_turn(self, receipt: dict) -> None:
+    def _recovery_config_issue(self, snapshot: dict, consume=True) -> Optional[str]:
+        """F7: the first dispatch baseline after an uncertain-turn recovery must still show the global-config hashes the
+        recovery validated. The hashes stay pending until a dispatch baseline matches them (consume) or a change is
+        reported once (the operator inspects, then resumes on a fresh baseline); an earlier check only peeks."""
+        pending = self.state.get('recovery_config_hashes') or {}
+        changed = sorted(key for key, value in pending.items() if snapshot.get(key, {}).get('sha256') != value)
+        if changed or consume:
+            self.state.pop('recovery_config_hashes', None)
+        return ('global config changed during uncertain-turn recovery (' + ', '.join(changed) + '); inspect, then resume'
+                if changed else None)
+
+    def archive_abandoned_turn(self, receipt: dict) -> dict:
+        """Archive a stopped uncertain turn; returns the global-config hashes it validated (F7: resume re-checks them right
+        before any dispatch, so a change after this check is not silently taken into the next turn's baseline)."""
+        verified = {}
         scratch = (receipt.get('environment_overrides') or {}).get('TMPDIR')
         if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.run_dir / 'role-tmp':
             self._drop_scratch(Path(scratch))   # b295-f1: the uncertain turn's child is stopped before it is archived
@@ -4258,20 +4272,25 @@ class Coordinator:
                 if self.args.action == 'resume' and self.state.get('claude_uncertain_config_change') == pending:
                     receipt['global_claude_ack'] = {'operator_uid': os.getuid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
                 else: self.state['claude_uncertain_config_change'] = pending; self.hold('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain'); raise RuntimeError('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain')
+            verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_claude_before']})
         if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
+            verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_codex_before']})
             if (receipt.get('global_codex_home') != str(self.global_codex_home) or receipt.get('global_config_home') != str(self.global_config_home) or any(current.get(key, {}).get('sha256') != value for key, value in receipt['global_codex_before'].items())):
+                try: raw = (self.global_codex_home / 'config.toml').read_bytes()   # F7: one read for the hash and the trust check
+                except OSError: raw = None
                 allowed = (self.args.action == 'resume' and self.args.acknowledge_codex_trust == self.run_dir.name
+                           and raw is not None and hashlib.sha256(raw).hexdigest() == current['codex_config']['sha256']
                            and current['codex_config']['sha256'] != receipt['global_codex_before']['codex_config']
                            and all(current.get(key, {}).get('sha256') == value for key, value in receipt['global_codex_before'].items() if key != 'codex_config')
                            and receipt.get('global_codex_home') == str(self.global_codex_home)
-                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace'])))
+                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw))
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
                 self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
-            return
+            return verified
         usage = receipt.get('usage_requests', [])
         provider_usage = 'reported' if usage else 'unknown'
         row = {**receipt, 'recovered_at': time.time(), 'group_gone': True,
@@ -4287,6 +4306,7 @@ class Coordinator:
             path = self.evidence / f'{sequence:03d}-abandoned.receipt.json'
             if not path.exists():
                 atomic_json(path, row)
+        return verified
 
     def done(self, expected: Optional[str] = None, lifecycle_stage: Optional[str] = None) -> str:
         blocking = self.blocking_open_findings()
@@ -5223,6 +5243,8 @@ class Coordinator:
             env = {key: value for key, value in env.items() if not key.startswith('GIT_')}
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
+            raise RuntimeError(issue)
         vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
@@ -7219,7 +7241,8 @@ class Coordinator:
                 self.state['uncertain_active'] = uncertain
                 self.hold('uncertain permission-probe process group is still alive; refusing concurrent retry')
                 return False
-            self.archive_abandoned_turn(uncertain)
+            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against this probe's own baseline below
+                self.state['recovery_config_hashes'] = verified
             self.state['active'] = None
             self.state['uncertain_active'] = None
             if self.state.get('hold_reason', '').startswith(
@@ -7241,6 +7264,9 @@ class Coordinator:
                       "for the probe's git checkout/rm legs; commit at least one file, then re-run permission-probe")
             return False
         global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if issue := self._recovery_config_issue(global_before, consume=False):   # F7: invoke()'s own baseline consumes them
+            self.hold(issue)
+            return False
         allowed_command = self.args.test_command.strip()
         attempts = self._probe_attempts(allowed_command, tracked)
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
@@ -8264,7 +8290,8 @@ class Coordinator:
             else:
                 return self.hold('uncertain CLI process group is still alive; refusing concurrent replay')
         if uncertain:
-            self.archive_abandoned_turn(uncertain)
+            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against the next turn's own baseline
+                self.state['recovery_config_hashes'] = verified
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
