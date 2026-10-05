@@ -79,17 +79,19 @@ def after_finish(life, receipt):
     return {**life, 'stage': 'POLISH-Q'}
 
 
-def finish_prompt(plan, test_command, reserved):
+def finish_prompt(plan, test_command, reserved, review_only=False):
+    subject, label = (('The change described by the review scope below', 'Review scope (no plan was approved)') if review_only
+                      else ('The approved plan below', 'Approved plan'))   # LG1-b
     return ('Role: finisher, fresh. Phase: FINISH.\n'
-            'The approved plan below is implemented and has passed review in this worktree. Check that it is '
-            f'ready to deliver: run the test command ({test_command}) and fix only defects inside the approved '
-            'plan that block delivery. Do not commit, stage, push or change branches, refs or the index. Do not '
+            f'{subject} is implemented and has passed review in this worktree. Check that it is '
+            f'ready to deliver: run the test command ({test_command}) and fix only defects inside the '
+            f'{"review scope" if review_only else "approved plan"} that block delivery. Do not commit, stage, push or change branches, refs or the index. Do not '
             f'expand the scope, edit outside the workspace or edit run state or review files. {reserved} '
             'Do not load review-loop skills and do not invoke or wait for '
             'another model. Answer READY when nothing needed changing or your fixes are complete; answer HOLD '
             'only when a decision is missing or the environment cannot recover, with the reason. Return only '
             'JSON matching the supplied schema.\n\n'
-            'Approved plan:\n' + plan)
+            f'{label}:\n' + plan)
 
 
 def docs_prompt(docs_file, allowlist, run_id, workitem):
@@ -170,12 +172,12 @@ def owned_ledger(owned):
             'findings in full_review.\n' + ''.join(f"- {row['id']}: {row['summary']}\n" for row in owned))
 
 
-def specialist_prompt(name, body, test_command, owned, protocol):
+def specialist_prompt(name, body, test_command, owned, protocol, change='the uncommitted change in this worktree'):
     ledger = owned_ledger(owned)
     return (body + '\n\n'
             f'Role: specialist {name}, fresh. Phase: POLISH-Q.\n'
             'You are a report-only quality specialist (legacy review-loop Step 3.5). Review only the changed paths of '
-            'the uncommitted change in this worktree, with the instructions above. Do not modify any file. Report '
+            f'{change}, with the instructions above. Do not modify any file. Report '
             'every finding in full_review using only the schema severities: report HIGH and MEDIUM as MAJOR and LOW '
             'as MINOR; CRITICAL and MAJOR block delivery.\n' + protocol + '\n'
             f'Run this test command exactly as written in one Bash call: {test_command}\n' + ledger +

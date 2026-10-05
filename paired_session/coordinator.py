@@ -4351,14 +4351,18 @@ class Coordinator:
                 'Do not commit or push. Do not load review-loop skills.',
                 'Return only JSON matching the supplied schema. READY means the plan turn is complete; HOLD means blocked.',
             ])
-        task = ('Implement the approved plan now and run relevant checks. Summarize changes and checks in body.' if first
-                else 'Fix every delivered blocking finding, rerun relevant checks, and summarize the result in body.')
+        review_only = bool(self.state.get('review_only'))   # LG1-b: the existing change, never "the approved plan"
+        task = ('Implement the approved plan now and run relevant checks. Summarize changes and checks in body.'
+                if first and not review_only else
+                'Fix every delivered blocking finding, rerun relevant checks, and summarize the result in body.')
         if self.args.exercise_revisions and first:
             task += ' Exercise rule: intentionally omit bool rejection required by the toy work item on this first implementation only.'
         prior = self.state.get('delivered_review', '')
         return '\n'.join([
             f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
+            *([f'The change under review is the existing work in this workspace; its review scope (no plan was approved): '
+               f'{self.context / "plan.md"}. Fix only what the delivered findings ask for.'] if review_only else []),
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
@@ -4422,6 +4426,19 @@ class Coordinator:
         return ('Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
                 'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n' + APPROVE_CONVERSION_NOTE)
 
+    def _plan_ref(self, default: str) -> str:
+        """LG1-b: how review roles are pointed at plan.md; a review-only run has a coordinator-written scope, no plan."""
+        if not self.state.get('review_only'):
+            return default
+        return (f'Review scope (review-only entry; no plan was drafted or approved): {self.context / "plan.md"}\n'
+                'Review the change itself: correctness, tests and safety, and its alignment with the goal when the work '
+                'item states one.')
+
+    def _change_noun(self, default: str = 'the uncommitted change in this worktree') -> str:   # LG1-b: commits may count
+        if not self.state.get('review_only'):
+            return default
+        return f'the change in this worktree against the review base {self.state["config"]["review_base"][:12]} (commits since it included)'
+
     def _review_prompt(self, role: str, snapshot: str) -> str:
         base_phase = self.state['phase']
         phase = 'POLISH' if self.state['polish']['active'] else base_phase
@@ -4429,7 +4446,7 @@ class Coordinator:
             return '\n'.join([
                 f'Role: shadow, fresh isolated read-only whole-delta reviewer. Phase: {phase}.',
                 f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
-                f'Approved/current plan: {self.context / "plan.md"}',
+                self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
                 REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
@@ -4480,7 +4497,7 @@ class Coordinator:
         return '\n'.join([
             f'Role: {role}, read-only whole-delta reviewer. Phase: {phase}. {fresh_note}',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
-            f'Approved/current plan: {self.context / "plan.md"}',
+            self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
             self.inspection_prompt(role),
             REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
@@ -4497,7 +4514,8 @@ class Coordinator:
     def _gate_prompt(self, snapshot: str) -> str:
         template = Path(self.args.gate_prompt).read_text()
         filled = template.replace('${REVIEW_TARGET_DESC}', str(self.context / 'workitem.md')).replace(
-            '${FOCUS_TEXT}', 'Approved plan: ' + str(self.context / 'plan.md') +
+            '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
+                              else 'Approved plan: ') + str(self.context / 'plan.md') +
             '\nAudit the complete current git delta in ' + str(self.workspace))
         return (filled + '\nRun this test command exactly as written in one Bash call: ' + self.args.test_command +
                 '\n' + self.allowed_command_prompt() +
@@ -5089,7 +5107,8 @@ class Coordinator:
             repeat = 'Repeat: ' if operator_note.get('attempts') else ''
             prompt += (f"\n\n## {repeat}Operator in-scope clarification [{operator_note['id']}]"
                        + (f" supersedes {operator_note['replaces_id']}" if operator_note.get('replaces_id') else '')
-                       + ('\nDo not expand the work item.\n' if phase == 'PLAN' else '\nDo not expand the approved plan.\n')
+                       + ('\nDo not expand the work item.\n' if phase == 'PLAN' else
+                          '\nDo not expand the review scope.\n' if self.state.get('review_only') else '\nDo not expand the approved plan.\n')
                        + note_bytes.decode('utf-8'))
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
         self.assert_fresh_prompt(role, prompt)
@@ -5516,7 +5535,8 @@ class Coordinator:
         """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
-            (self.context / 'plan.md').read_text(), self.args.test_command, self._docs_reserved_note()))
+            (self.context / 'plan.md').read_text(), self.args.test_command, self._docs_reserved_note(),
+            bool(self.state.get('review_only'))))
         self.render(result, 'finisher', 'FINISH')
         answer = result['answer']
         receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
@@ -5610,7 +5630,7 @@ class Coordinator:
         or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again."""
         self.materialize_review_context()
         prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
-                  'Review the documentation of this uncommitted change against the full diff (legacy review-loop '
+                  f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff (legacy review-loop '
                   'Step 3.6): the docs must describe the implemented behavior, APIs and logic accurately, and the '
                   'changed code comments must match the code. Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
@@ -5770,7 +5790,7 @@ class Coordinator:
                 if prompt is None:
                     self.materialize_review_context()
                     prompt = ('Role: security reviewer, fresh. Phase: SECURITY.\n'
-                              'Review this uncommitted change for security defects: secrets or credentials in code, '
+                              f'Review {self._change_noun("this uncommitted change")} for security defects: secrets or credentials in code, '
                               'configuration or docs; injection; unsafe deserialization; path traversal; missing '
                               'authorization or input validation; unsafe subprocess, file or network handling; '
                               'sensitive files that should be ignored. Do not modify any file. Report every finding '
@@ -6008,7 +6028,7 @@ class Coordinator:
         owner = 'specialist:' + name
         owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
-                                                       self._review_protocol(paths)) +
+                                                       self._review_protocol(paths), self._change_noun()) +
                   opv.prompt_block(self, tree, atomic_json))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
             counts = self._specialist_budget(name)
@@ -6050,7 +6070,7 @@ class Coordinator:
     def _review_protocol(self, paths: list[str]) -> str:
         return '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
-            f'Approved plan: {self.context / "plan.md"}',
+            self._plan_ref(f'Approved plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat and status.txt.',
             'Changed paths: ' + (', '.join(paths) or 'none'), self.inspection_prompt('reviewer'),
             REVIEW_SEVERITY_GUIDANCE, self.verified_claims_prompt(), self.allowed_command_prompt(),

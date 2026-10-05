@@ -209,6 +209,82 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         self.assertNotEqual(record['review_scope_sha256'], record['parent_review_scope_sha256'])   # its own scope
         self.assertIn('Also reject floats.', (self.run_dir / 'context' / 'plan.md').read_text())
 
+    # --- LG1-b, test 2: no role is told about an approved plan -----------------------------------------------------------------
+    def prompts(self, role):
+        return [path.read_text() for path in sorted((self.run_dir / 'evidence').glob(f'*-exec-{role}.prompt.txt'))]
+
+    def test_every_role_gets_the_review_scope_wording(self):
+        self.change()
+        held = self.run_coordinator('--review-only', '--max-exec-rounds', '2', env={'FAKE_EXEC_MIXED_REVISE': '1'})
+        self.assertIn('EXEC round limit reached', held.stdout, held.stdout + held.stderr)
+        state = self.state()
+        self.assertEqual(state['turns'][0]['role'], 'reviewer')   # the first dispatch is the EXEC reviewer
+        scope = 'Review scope (review-only entry; no plan was drafted or approved)'
+        for role in ('reviewer', 'shadow'):
+            texts = self.prompts(role)
+            self.assertTrue(texts, role)
+            for text in texts:
+                self.assertIn(scope, text)
+                self.assertNotIn('Approved/current plan', text)
+        [author] = self.prompts('author')   # the first author turn fixes the existing change
+        self.assertIn('The change under review is the existing work in this workspace', author)
+        self.assertIn('Fix every delivered blocking finding', author)
+        self.assertNotIn('Implement the approved plan', author)
+        co = rc.Coordinator(self.args('--max-exec-rounds', '2', action='resume'))
+        self.assertIn(scope, co._review_protocol(['sum_ints.py']))   # specialists, docs and security reviewers
+        self.assertNotIn('Approved plan:', co._review_protocol(['sum_ints.py']))
+        self.assertIn('Review scope (review-only entry; no plan was approved): ', co._gate_prompt('snapshot'))
+        self.assertNotIn('Approved plan: ', co._gate_prompt('snapshot'))
+        noun = f'the change in this worktree against the review base {state["config"]["review_base"][:12]} (commits since it included)'
+        self.assertEqual(co._change_noun(), noun)
+        finish = wl.finish_prompt('SCOPE', 'python3 -m unittest', '', True)
+        self.assertTrue(finish.endswith('Review scope (no plan was approved):\nSCOPE'))
+        self.assertNotIn('approved plan', finish)
+        self.assertIn(noun, wl.specialist_prompt('python-reviewer', 'BODY', 'python3 -m unittest', [], 'PROTOCOL', noun))
+        self.run_dir = self.root / 'default'
+        default = rc.Coordinator(rc.parser().parse_args(self.command()[2:]))   # a default run keeps its wording
+        self.assertIn('Approved plan: ', default._review_protocol([]))
+        self.assertEqual(default._change_noun(), 'the uncommitted change in this worktree')
+        self.assertEqual(default._change_noun('this uncommitted change'), 'this uncommitted change')   # docs/security text
+        self.assertIn('The approved plan below is implemented', wl.finish_prompt('PLAN', 'python3 -m unittest', ''))
+
+    def test_an_operator_note_to_the_fix_author_names_the_review_scope(self):
+        self.change()
+        held = self.run_coordinator('--review-only', '--max-exec-rounds', '3',
+                                    env={'FAKE_EXEC_MIXED_REVISE': '1', 'FAKE_AUTHOR_HOLD_AFTER_WRITE': '1'})
+        self.assertIn('HOLD', held.stdout, held.stdout + held.stderr)
+        self.assertEqual((self.state()['phase'], self.state()['next']), ('EXEC', 'author'))
+        noted = self.run_operator_action('note', '--text', 'Keep the fix inside sum_ints.py.')
+        self.assertEqual(noted.returncode, 0, noted.stdout + noted.stderr)
+        self.run_operator_action('resume', '--max-exec-rounds', '3')
+        [prompt] = [text for text in self.prompts('author') if 'Keep the fix inside sum_ints.py.' in text]
+        self.assertIn('Do not expand the review scope.', prompt)
+        self.assertNotIn('approved plan', prompt)
+
+    # --- LG1-b, test 10: category A in both modes ---------------------------------------------------------------------------------
+    def test_a_read_only_edit_during_the_first_review_is_voided_and_restored_in_both_modes(self):
+        for strict in (True, False):
+            with self.subTest(strict=strict):
+                self.run_dir = self.root / f'void-{strict}'
+                self.change()
+                marker = self.root / f'mutated-{strict}'
+                env = {'FAKE_MUTATION': 'echo', 'FAKE_MUTATION_ONCE': str(marker)}
+                command = self.command('--review-only')
+                if not strict:   # efficient: the product default, no --strict and no --skip-probe
+                    command = [arg for arg in command if arg != '--strict']
+                    result = subprocess.run(command, cwd=self.root, env={**rc.os.environ, **env}, text=True,
+                                            capture_output=True)
+                else:
+                    result = self.run_coordinator('--review-only', env=env)
+                self.assertIn('DONE', result.stdout, result.stdout + result.stderr)
+                self.assertIn('re-dispatching the reviewer turn once', result.stdout)
+                state = self.state()
+                [void] = [row['voided'] for row in state['turns'] if 'voided' in row]
+                self.assertTrue(void['restored'])
+                self.assertFalse((self.workspace / 'forbidden.txt').exists())
+                self.assertEqual((self.workspace / 'sum_ints.py').read_text(), SUM_INTS)   # the change under review stays
+                self.assertEqual(state['config']['safety_mode'], 'strict' if strict else 'efficient')
+
 
 if __name__ == '__main__':
     unittest.main()
