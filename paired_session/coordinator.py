@@ -1729,6 +1729,8 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
+            self._review_report_args(self.state['config'])
+            if args.action in ('note', 'reject'): self._refuse_report_feedback()
             if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
                 raise ValueError('run was created by an older paired-session build; start a new run')
             if not self._fake_lifecycle: worktree_lifecycle.refuse_saved(self.state, args)
@@ -1815,6 +1817,7 @@ class Coordinator:
                                         self.args.claude_bin, self.args.gate_prompt, self.args.config)
             if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
             self._review_only_args(None, self._parent_spec() if args.supersedes else None)
+            self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -2043,6 +2046,7 @@ class Coordinator:
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
+        if getattr(self.args, 'review_report', None): config['review_report'] = True   # LG2-a1, as F2
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -3697,6 +3701,7 @@ class Coordinator:
         return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
 
     def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
+        self._refuse_report_feedback()
         self._publication_guard()
         intent = self.state.get('scope_change_intent')
         target = self.run_dir.with_name(self.run_dir.name + '-successor')
@@ -3770,6 +3775,7 @@ class Coordinator:
                     '\nSuccessor: ' + str(spec_path) + '\n')
 
     def note(self, text: Optional[str], file: Optional[str]) -> str:
+        self._refuse_report_feedback()
         self._publication_guard()
         if self.state['status'] != 'HOLD':
             raise ValueError('note requires a HOLD run; DONE uses reject')
@@ -4076,6 +4082,7 @@ class Coordinator:
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
+        self._refuse_report_feedback()
         self._publication_guard()
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
@@ -4254,6 +4261,7 @@ class Coordinator:
         self.write_ledger()
 
     def resume_polish(self) -> str:
+        if self.state['config'].get('review_report'): raise ValueError('report mode refuses resume --polish')
         self._publication_guard()
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
@@ -4624,6 +4632,27 @@ class Coordinator:
     def _parent_spec(self) -> dict:   # the scope-change parent's spec; its full validation comes later in __init__
         try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text())
         except (OSError, ValueError): return {}
+
+    def _review_report_args(self, saved: Optional[dict]) -> None:
+        """LG2-a1: report mode is fixed at creation; omission on resume keeps the saved entry."""
+        requested = getattr(self.args, 'review_report', None)
+        if saved is not None:
+            if requested is not None and bool(requested) != bool(saved.get('review_report')):
+                raise ValueError('resume configuration differs: review_report (fixed when the run was created)')
+            self.args.review_report = bool(saved.get('review_report'))
+        if not self.args.review_report: return
+        if not (saved or {}).get('review_only', self.args.review_only):
+            raise ValueError('--review-report needs --review-only')
+        if self.args.auto_commit or (saved or {}).get('auto_commit'):
+            raise ValueError('--review-report refuses --auto-commit true')
+        if self.args.stop_after_plan:
+            raise ValueError('--review-report refuses --stop-after-plan')
+        if self.args.polish:
+            raise ValueError('report mode refuses resume --polish')
+
+    def _refuse_report_feedback(self) -> None:
+        if self.state['config'].get('review_report'):
+            raise ValueError('report mode refuses note and reject, including --scope-change; start a new review request')
 
     def _review_only_args(self, saved: Optional[dict], parent: Optional[dict] = None) -> None:
         """--review-only/--base: a new run resolves the base once; a later command keeps the frozen values unless it names
@@ -8190,6 +8219,8 @@ class Coordinator:
         if self.state['active']:
             self.state['uncertain_active'] = self.state['active']
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
+        if self.state['config'].get('review_report'):   # LG2-a1: fail closed until the report sequence lands in a2
+            return self.hold('report sequence not implemented yet (LG2-a2); no role dispatched')
         while self.state['status'] == 'ACTIVE':
             if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
             if (self.state['next'] == 'reviewer' and worktree_lifecycle.is_worktree(self.state) and
@@ -8502,6 +8533,8 @@ def parser() -> argparse.ArgumentParser:
                    help='HOLD once right after PLAN approval; a later resume enters EXEC')
     p.add_argument('--review-only', action='store_true', default=None,
                    help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
+    p.add_argument('--review-report', action='store_true', default=None,
+                   help='report on a --review-only change without writers; fixed at run creation')
     p.add_argument('--base', dest='review_base_ref', metavar='REF',
                    help=f'the review base of --review-only, an ancestor of HEAD (default {REVIEW_ONLY_DEFAULT_BASE})')
     p.add_argument('--author-subagents', choices=['on', 'off'], default='on',
