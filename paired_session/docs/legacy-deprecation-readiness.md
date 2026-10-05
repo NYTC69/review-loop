@@ -307,6 +307,8 @@ next poker-news-bot or poker-tools item that meets the floor and has it run thro
 
 **Owner question:** accept the proposal, choose (b) or (c), or set other thresholds.
 
+Answered: D10 (D-OWNER-1005): the proposed floor, with the owner naming the next qualifying item.
+
 **Already-finished lifecycle-off items:** none of the poker-news-bot items above passed through every stage (they ran
 with lifecycle off), so under the proposal they do not count. Whether such an item may count is part of the owner's
 answer.
@@ -323,8 +325,9 @@ legacy-map rows is in `docs/paired-session-migration.md` ("Deprecation status").
    retirement and the writer port (capability 1, provisional with L117) are still to be done.
 3. **The 18 owner rows of the legacy map**. They were answered on 2026-10-05: D-OWNER-1005, `DECISIONS.md` ADR-13; 13
    keep and 5 retire, all provisional. Each "keep" row needs a paired-session equivalent, or the owner re-confirms
-   it as retire; each "retire" row needs a re-confirmation. Every row is confirmed with the owner again before its work
-   item is implemented. The work items are listed in `docs/paired-session-migration.md` ("Deprecation status").
+   it as retire; each "retire" row needs a re-confirmation, and L133 (Linux) also a real Linux paired-session run before
+   the host check opens. L89 (the stage A fallback) conflicts with removal itself and is resolved at re-confirmation.
+   Every row is confirmed with the owner again before its work item is implemented. The work items are listed in `docs/paired-session-migration.md` ("Deprecation status").
 
 Then a final check: each legacy capability is covered or explicitly dropped. Only then are the legacy entry and its
 last users (`entry: legacy`, `/review-loop:legacy`, `plan`, `execute`) removed, with the owner's go.
@@ -335,6 +338,7 @@ last users (`entry: legacy`, `/review-loop:legacy`, `plan`, `execute`) removed, 
 - The review-only EXEC cap (§3.2b): keep `max_exec_rounds` 4, raise the review-only default, or count POLISH-Q fixes
   separately.
 - M7 (optional): if the owner authorizes it, it measures cost and quality against a pinned legacy copy. Lane B's
-  `fresh_commit` fix and the D-b1 scanner R4 still apply.
-- The large-task definition (§3.6) and the E-12 normal-shell residual (§1): no longer needed for retirement; record
-  them as superseded or keep them as quality checks.
+  `fresh_commit` fix applies; the D-b1 scanner is redesigned (D04), then gets 3 review rounds; scored runs follow D04
+  and D05 (D06).
+- The large-task definition (§3.6) and the E-12 normal-shell residual (§1): answered (D-OWNER-1005 D10: the size floor
+  with an item the owner names; run E-12 once); not gating.

@@ -23,6 +23,7 @@ The legacy code is removed only after every precondition below holds, so that no
 | `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | decided: D09 = A, the retirement itself still to be done; capability 1 (the writers) is to be ported, which is the same question as L117 and provisional with it (re-confirmed with the owner before implementation); capability 3 (the analyzers) goes with D-LG2; capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
 | Every "keep (provisional)" row has a paired-session equivalent, or the owner re-confirms it as retire | 13 rows; removal work items below | the "keep (provisional)" rows |
 | Every "retire (provisional)" row is re-confirmed | 5 rows | the "retire (provisional)" rows |
+| L133 Linux: a real Linux paired-session run, then the host check is opened | not run; the owner's retire answer names it as the condition | `Linux (legacy works today)` |
 
 The owner answered the 18 legacy-map rows on 2026-10-05 (`DECISIONS.md` ADR-13, D-OWNER-1005). Every keep/retire
 answer is **provisional**: the owner asked that each be confirmed again when its work item starts. No row is
@@ -32,8 +33,9 @@ Removal work items (the "keep (provisional)" rows; each needs its paired-session
 before legacy is removed):
 1. L75 plan-exists auto-route and L78 `execute --plan`: a paired-session path for an existing plan (E-8).
 2. L80 `--stop-after before-polish` / `before-docs` / `before-security`: intermediate stops.
-3. L89 the stage A fallback when the key is absent: what the default entry does when its checks fail once legacy is
-   gone.
+3. L89 the stage A fallback when the key is absent. The owner's keep conflicts with removal itself: the sheet called
+   a refusal with new wording mandatory once legacy is gone, and the owner chose "keep legacy". This is resolved at
+   re-confirmation, not here.
 4. L90 handsfree reviewer decisions (`DECISION:`): a decision path that does not HOLD every author question.
 5. L99 `judgment_model`, `cheap_model`: a mapping.
 6. L100 `soft_limit_plan`, `soft_limit_exec`: a continue path at the cap.
@@ -102,7 +104,8 @@ Status values:
 - **planned**: designed or scheduled, under the named decision. M7 is the seeded-defect comparison.
 - **keep (provisional)** / **retire (provisional)**: the owner's answer of 2026-10-05 (D-OWNER-1005), to be confirmed
   again when the row's work item starts. Keep: paired-session needs an equivalent before legacy is removed. Retire:
-  the capability is not carried over. `Lnn` is the row's line in this file when the owner answered.
+  the capability is not carried over as a legacy path; any follow-up named in the row still applies (L105 warn or drop,
+  L107 delete `skip_globs`, L133 open paired-session to Linux after a real Linux run). `Lnn` is the row's line at `57cb6cf`, from which the decision sheet was built.
 
 **Entries and skills**
 
@@ -125,7 +128,7 @@ Status values:
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
 | `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
-| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | keep (provisional): keep legacy (L89) |
+| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | keep (provisional): keep legacy (L89); conflicts with removal itself, resolved at re-confirmation |
 | Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | keep (provisional): keep legacy (L90) |
 
 **Config keys** (`.review-loop/config.md`)

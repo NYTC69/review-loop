@@ -196,7 +196,8 @@ entry; never edit history.
   verbatim: "但是有一些是 keep legacy 还是 retire 的问题, 我其实不太确定. 我建议先按这个结论记下. 但是真到相关工作项的时候, 再单独和我确认一下. 反正每个 workitem 也不小. 但那个时候上下文更清晰. 我更能理解是什么问题."
 - **Options considered**: Per question, the sheet's options. Every answer below is the owner's choice.
 - **Decision**: The answers, by item.
-  - **D01** (D-LG1 review-only entry, Q1–Q9): all nine confirmed as implemented in v2.11.0.
+  - **D01** (D-LG1 review-only entry, Q1–Q9): all nine confirmed. Q1–Q3, Q5 and Q7–Q9 are implemented in v2.11.0;
+    Q4 is a documented mapping only (no code); Q6 defers to D09.
     - Q1 `run --review-only`; Q2 default base `HEAD`; Q3 full W lifecycle through the skill, lifecycle off only for
       CLI/harness.
     - Q4 `--stop-after exec-round` maps to `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off`.
@@ -256,6 +257,8 @@ entry; never edit history.
       `adversarial_gate_skip_paths` (delete `skip_globs`); L123 Compass checkpoint and MemPalace injection; L133 Linux
       (open paired-session after a real Linux run).
     - Owner note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
+- **Amends**: ADR-6 criterion (4c): it accepts the offline test evidence (D10 `amend_offline`). D-READY had already
+  treated the gate as met; this records the owner's choice for (4c).
 - **Consequences**:
   - The D11 answers are recorded, not implemented. Before any work item implements a D11 row, the supervisor confirms
     that row with the owner again.
