@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -93,6 +94,24 @@ class ProtocolLoadingCaptureTest(unittest.TestCase):
             self.assertTrue(target.read_text().startswith("<!-- "))
         finally:
             target.unlink(missing_ok=True)
+
+    def test_output_in_the_protocol_temp_root_counts_and_other_absolute_paths_do_not(self):   # FIELD-18
+        from scripts.read_protocol import outside_root
+        target = outside_root() / ("capture-test-" + uuid.uuid4().hex[:12]) / "protocol.md"
+        try:
+            payload = capture(loader_pair(output=str(target)))
+            self.assert_loaded(payload)
+            self.assertEqual(payload["events"][0]["output_bytes"], target.stat().st_size)
+        finally:
+            target.unlink(missing_ok=True)
+            target.parent.rmdir()
+        with tempfile.TemporaryDirectory() as elsewhere:
+            pair = loader_pair(output=".review-loop/tmp/protocol-capture-test.md")
+            (ROOT / ".review-loop/tmp/protocol-capture-test.md").unlink(missing_ok=True)
+            command = pair[0]["message"]["content"][0]["input"]["command"]
+            pair[0]["message"]["content"][0]["input"]["command"] = command.replace(
+                ".review-loop/tmp/protocol-capture-test.md", str(Path(elsewhere) / "protocol.md"))
+            self.assert_loaded(capture(pair), False)
 
     def test_no_result_does_not_count_tool_intent(self):
         payload = capture(loader_pair()[:1])

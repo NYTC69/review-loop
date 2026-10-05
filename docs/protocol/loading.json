@@ -89,6 +89,9 @@
         "## Startup Banner"
       ]
     },
+    "paired-session-entry": {
+      "path": "docs/protocol/paired-session-entry.md"
+    },
     "session-shape": {
       "path": "docs/protocol/session-file.md",
       "sections": [
@@ -605,6 +608,14 @@
         "codex-config",
         "model-tiers",
         "codex-review-loop-init"
+      ]
+    },
+    "entry-paired-session": {
+      "claude": [
+        "paired-session-entry"
+      ],
+      "codex": [
+        "paired-session-entry"
       ]
     },
     "session-init": {

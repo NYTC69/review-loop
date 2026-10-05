@@ -49,7 +49,9 @@ def _inspect_file(path, project=False, requirements=False):
     return hashlib.sha256(raw).hexdigest(), labels
 
 
-def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=None):
+def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=None, launch_plugins_off=False):
+    """launch_plugins_off (rel210-fixCG): the caller launches every Codex process with `-c features.plugins=false` (CG-1), which
+    makes every cached bundle inert (CG evidence, conclusion 2); such a bundle is then recorded in plugin_bundles_inert, not an issue."""
     workspace, home = Path(workspace).resolve(), Path(code_home).resolve()
     sources = {(home / 'config.toml', False, False), (home / 'managed_config.toml', False, True),
                (home / 'requirements.toml', False, True), (Path('/etc/codex/config.toml'), False, False),
@@ -63,7 +65,7 @@ def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=N
     else:
         project_dirs = [workspace]
     sources.update((p / '.codex/config.toml', not (project_dirs[-1] / '.git').exists(), False) for p in project_dirs)
-    files, issues = {}, []
+    files, issues, inert = {}, [], {}
     for path, project, requirements in sorted(sources, key=lambda row: str(row[0])):
         try:
             if not path.is_file():
@@ -80,7 +82,9 @@ def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=N
             try:
                 if not path.is_file(): continue
                 raw = path.read_bytes()
-                if name in ('mcp.json', '.mcp.json', '.app.json') or b'mcpServers' in raw or b'"apps"' in raw:
+                if not (name in ('mcp.json', '.mcp.json', '.app.json') or b'mcpServers' in raw or b'"apps"' in raw): continue
+                if launch_plugins_off: inert[str(path.resolve())] = hashlib.sha256(raw).hexdigest()   # found, recorded, inert
+                else:
                     files[str(path.resolve())] = hashlib.sha256(raw).hexdigest()
                     issues.append('plugin MCP or app bundle configured in ' + str(path))
             except OSError:
@@ -110,4 +114,4 @@ def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=N
             except (OSError, subprocess.SubprocessError):
                 issues.append('cannot verify macOS MDM Codex policy: ' + key)
     return {'status': 'FAIL' if issues else 'PASS', 'sources': files,
-            'issues': sorted(set(issues))}
+            'issues': sorted(set(issues)), 'plugin_bundles_inert': inert}

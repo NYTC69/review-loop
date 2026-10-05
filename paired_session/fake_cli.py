@@ -60,6 +60,17 @@ def emit_codex(answer, session, command_events=None):
                 'status': 'completed' if event['exit_code'] == 0 else 'failed',
                 'aggregated_output': event.get('output', 'fake permission result'),
             }}))
+    if command_events and os.environ.get('FAKE_CODEX_ROLLOUT_CWD'):   # v297-eg-cwd: Codex's own record of where each command ran
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        rows = [{'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'fake-turn-' + session}},
+                {'timestamp': now, 'type': 'turn_context', 'payload': {'cwd': str(Path.cwd().resolve())}}]
+        rows += [{'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'item_completed', 'turn_id': 'fake-turn-' + session, 'item': {
+            'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', event['command']], 'cwd': Path.cwd().resolve().as_uri()}}}
+                 for event in command_events]
+        rollout = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'sessions' / ('rollout-' + session + '.jsonl')
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        with rollout.open('a') as handle:
+            handle.write(''.join(json.dumps(row) + '\n' for row in rows))
     if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'codex':
         print('{malformed model metadata')
     print(json.dumps({'type': 'item.completed', 'item': {'id': 'fake', 'type': 'agent_message',
@@ -105,7 +116,6 @@ def emit_claude(answer, session, extra_commands=None):
                     ('paired-session-claude-sandbox-' in command or
                      '.paired-session-run-dir-probe-' in command or
                      '.paired-session-context-probe-' in command) and ' > ' in command):
-                import shlex
                 parts = shlex.split(command)
                 target = Path(parts[parts.index('>') + 1])
                 target.write_text('probe escaped sandbox\n')
@@ -149,6 +159,10 @@ def mutate(mode):
         (root / 'forbidden.txt').write_text('x\n')
     elif mode == 'checkout':
         (root / 'tracked.txt').write_text('checkout mutation\n')
+    elif mode == 'commit':   # D-EFF: HEAD moves, the files stay the same
+        subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'reviewer commit'], check=True)
+    elif mode == 'chmod':   # rel210-fixA: a mode change alone, content, HEAD and index unchanged
+        os.chmod(root / 'tracked.txt', 0o755)
     elif mode == 'rm':
         target = root / 'tracked.txt'
         if target.exists():
@@ -239,10 +253,44 @@ def main():
                 module.write_text(module.read_text() + '# rejection applied\n')
             if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
                 module.write_text(module.read_text() + '# resumed author output\n')
+            if 'docs entry still wrong' in prompt:   # worktree-lifecycle: the EXEC author fixes a DOCS-owned entry
+                changelog = Path.cwd() / 'CHANGELOG.md'
+                changelog.write_text(changelog.read_text() + '# corrected entry\n')
+            if 'specialist blocker' in prompt:   # worktree-lifecycle POLISH-Q fix leg: one new tree per fixed id set
+                ids = ' '.join(re.findall(r'"id": "F(\d+)"', prompt))   # no finding ids in code: shadow independence
+                module.write_text(module.read_text() + f'# specialist fix {ids}\n')
             body = 'Implemented sum_ints and ran fake checks.'
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
+        if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
+            subprocess.run(['git', 'add', '-A'], check=True)
+            subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'fake author commit'], check=True)
+        if os.environ.get('FAKE_GLOBAL_CONFIG_WRITE') and 'Phase: EXEC' in prompt:   # D-EFF: a turn that changes the global Codex config
+            with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
+                handle.write('\nmodel_verbosity = "high"\n')
+        if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
+            print('fake author failed after writing', file=sys.stderr)
+            return 1
+    elif 'Role: finisher' in prompt or 'Role: docs writer' in prompt:   # worktree-lifecycle fresh writers (ADR-11)
+        module = Path.cwd() / 'sum_ints.py'
+        if ('Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_WRITE') and
+                '# finisher fix' not in module.read_text()):   # one fix; the next FINISH finds nothing to change
+            module.write_text(module.read_text() + '# finisher fix\n')
+        if 'Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_COMMIT'):   # a writer committing on its own
+            for command in (['git', 'add', '-A'], ['git', '-c', 'user.name=Fake', '-c', 'user.email=fake@example.test',
+                                                   'commit', '-qm', 'finisher commit', '--allow-empty']):
+                __import__('subprocess').run(command, check=True)
+        if 'Phase: DOCS' in prompt and os.environ.get('FAKE_LIFECYCLE_DOCS_FILE'):
+            target = Path.cwd() / os.environ['FAKE_LIFECYCLE_DOCS_FILE']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('# Fake lifecycle guide\n')
+        if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
+            Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: EXEC replays
+            module.write_text(module.read_text() + '# docs comment fix\n')
+        answer = ({'status': 'HOLD', 'body': 'Fake finisher held.'} if os.environ.get('FAKE_FINISH_HOLD') else
+                  {'status': 'READY', 'body': 'Checked readiness; ' + ('fixed a defect.' if
+                   os.environ.get('FAKE_FINISH_WRITE') else 'nothing needed changing.')})
     elif prompt.startswith('You are an adversarial reviewer'):
         configured_test = prompt.split(
             'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
@@ -324,6 +372,7 @@ def main():
                  'Q' if 'Q-FINAL:' in prompt or 'Phase: Q.' in prompt else
                  'SECURITY' if 'Phase: SECURITY' in prompt else
                  'POLISH' if 'Phase: POLISH' in prompt else
+                 'DOCS' if 'Role: docs reviewer, fresh. Phase: DOCS.' in prompt else
                  'EXEC' if 'Phase: EXEC' in prompt else 'PLAN')
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
@@ -399,21 +448,53 @@ def main():
             findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
                          'summary': 'polish regression',
                          'failure_scenario': 'polish broke bool rejection'}]
+        specialist = prompt.split('Role: specialist ', 1)[1].split(',', 1)[0] if 'Role: specialist ' in prompt else None
+        block_once = os.environ.get('FAKE_SPECIALIST_BLOCK_ONCE')
+        if (specialist and specialist == os.environ.get('FAKE_SPECIALIST_BLOCK') and   # worktree-lifecycle POLISH-Q
+                not (block_once and Path(block_once).exists())):
+            if block_once:
+                Path(block_once).write_text('blocked once\n')
+            revise = True
+            findings = [{'severity': os.environ.get('FAKE_SPECIALIST_SEVERITY', 'CRITICAL'), 'file': 'sum_ints.py',
+                         'summary': 'specialist blocker', 'failure_scenario': 'a specialist found a blocking defect'}]
+        docs_block = os.environ.get('FAKE_DOCS_REVIEW_BLOCK_ONCE')   # worktree-lifecycle DOCS review
+        if 'Role: docs reviewer,' in prompt and docs_block and not Path(docs_block).exists():
+            Path(docs_block).write_text('blocked once\n')
+            revise = True
+            findings = [{'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs describe the wrong behavior',
+                         'failure_scenario': 'a reader trusts the stale changelog entry'}]
         disposition = ('still_open' if os.environ.get('FAKE_POLISH_DECLINE') and
                        'Phase: POLISH' in prompt else 'fixed')
         prior = [{'id': finding_id, 'disposition': disposition,
                   'evidence': 'fake verified disposition'} for finding_id in open_ids]
+        docs_open = os.environ.get('FAKE_DOCS_FINDING_STILL_OPEN_ONCE')   # the EXEC reviewer keeps a docs finding
+        if (docs_open and role == 'reviewer' and phase == 'EXEC' and 'docs describe the wrong behavior' in prompt and
+                not Path(docs_open).exists()):
+            Path(docs_open).write_text('still open\n')
+            revise = True
+            prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'docs entry still wrong'}
+                     for finding_id in open_ids]
         if 'Role: shadow,' in prompt or 'Role: shadow,' in prompt.replace('fresh isolated ', ''):
             prior = None
         answer = {'status': 'REVISE' if revise else 'APPROVE',
                   'full_review': findings,
                   'self_run_evidence': ([{'command': configured_test or 'python3 -m unittest'}]
-                                        if phase in ('EXEC', 'SECURITY', 'Q') else [])}
+                                        if phase in ('EXEC', 'SECURITY', 'Q', 'DOCS') else [])}
+        no_test = os.environ.get('FAKE_DOCS_REVIEW_NO_TEST_ONCE')
+        if 'Role: docs reviewer,' in prompt and no_test and not Path(no_test).exists():
+            Path(no_test).write_text('no test\n')
+            answer['self_run_evidence'] = []   # a docs review without the retest
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):
                 answer['self_run_evidence'] = []
                 extra_observed_commands = [{'command': configured_test or 'python3 -m unittest'}]
+            once = os.environ.get('FAKE_SPECIALIST_NO_TOOLS_ONCE')
+            if specialist and (specialist in os.environ.get('FAKE_SPECIALIST_NO_TOOLS', '').split(',') or
+                               (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)):
+                answer['self_run_evidence'] = []   # a turn that made no tool calls
+            if specialist and specialist == os.environ.get('FAKE_SPECIALIST_HOLD'):
+                answer['status'] = 'HOLD'
         if phase in ('Q', 'SECURITY'):
             for finding in findings:
                 finding['severity'] = os.environ.get('FAKE_Q_SEVERITY', finding['severity'])
@@ -428,7 +509,9 @@ def main():
         if prior is not None:
             answer['prior_findings'] = prior
         mode = os.environ.get('FAKE_MUTATION')
-        if mode and 'Role: reviewer,' in prompt:
+        once = os.environ.get('FAKE_MUTATION_ONCE')   # D-EFF: a marker file; only the first reviewer turn mutates
+        if mode and os.environ.get('FAKE_MUTATION_ROLE', 'Role: reviewer,') in prompt and not (once and Path(once).exists()):
+            if once: Path(once).write_text('mutated\n')
             mutate(mode)
         command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]
                           if vendor == 'codex' and role == 'reviewer' and phase == 'EXEC'
@@ -496,6 +579,15 @@ def main():
                     'command': "sed -n '1,20p' tracked.txt", 'exit_code': 0, 'aggregated_output': text}}))
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_MUTATE'):
             (Path.cwd() / 'tracked.txt').write_text('forbidden plan review write\n')
+            if os.environ.get('FAKE_PLAN_REVIEWER_FAIL'):   # D-EFF eff-c: a write, then a CLI that exits non-zero
+                return 1
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_COMMIT'):   # D-EFF eff-c: HEAD moves, files stay the same
+            subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'plan review commit'], check=True)   # the module import: a local one would shadow it in all of main()
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_TOUCH_IGNORED'):   # eff-e: edit an existing ignored file
+            with (Path.cwd() / os.environ['FAKE_PLAN_REVIEWER_TOUCH_IGNORED']).open('a') as handle:
+                handle.write('reviewer edit\n')
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_CORRUPT_INDEX'):   # eff-e: git ls-files fails afterwards
+            (Path.cwd() / '.git' / 'index').write_bytes(b'not an index\n')
 
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
     if snapshot_mode == 'wrong':

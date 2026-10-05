@@ -21,6 +21,18 @@ That means a project can keep one shared config file and one shared session log
 history across both runtimes.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 
+## Entry: paired-session default, legacy on request
+
+From v2.10.0 a fresh review-loop request with no `entry` key in
+`.review-loop/config.md` hands off to the Codex `paired-session` skill, which
+runs the coordinator through plan, implementation, review, finish, polish,
+docs and security up to DONE; it accepts only on your explicit acceptance.
+`entry: legacy`, an existing plan, code or session, or asking for "the legacy
+review-loop workflow" keeps the legacy workflow described above. Runs are `efficient` by
+default (every sandbox, no permission-probe PASS required); `--strict` or
+`"safety_mode": "strict"` in the operator profile adds the probe gate.
+Details: `docs/paired-session-migration.md`.
+
 ## Stage 1 Scope
 
 Stage 1 in Codex includes only:
@@ -48,7 +60,7 @@ This is the override to use when you want Codex to skip the Claude CLI reviewer
 and use the Codex reviewer directly. In that case, `codex_reviewer_model` is
 the paired model override, while `reviewer_model` still applies to the Claude
 CLI reviewer path and `judgment_model` is its shared-tier fallback before the
-explicit `claude-sonnet-4-6` backstop.
+explicit `claude-opus-5-5` backstop.
 
 `cheap_model` is accepted in the shared config so Claude and Codex can share
 the same file, but in Codex Stage 1 it is a documented no-op because only

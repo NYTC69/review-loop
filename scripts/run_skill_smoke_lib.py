@@ -236,7 +236,13 @@ def _protocol_command(command: str):
     output = options.get("--output")
     if output is not None:
         output_path = Path(output)
-        if output_path.is_absolute() or output_path.parts[:2] != (".review-loop", "tmp"):
+        if output_path.is_absolute():
+            from scripts.read_protocol import outside_root   # FIELD-18: the entry loads write outside the worktree
+            try:
+                output_path.resolve().relative_to(outside_root())
+            except ValueError:
+                raise ValueError("loader output is outside .review-loop/tmp and the protocol temp root") from None
+        elif output_path.parts[:2] != (".review-loop", "tmp"):
             raise ValueError("loader output is outside .review-loop/tmp")
     return options["--runtime"], options["--stage"], set(loaded), output
 

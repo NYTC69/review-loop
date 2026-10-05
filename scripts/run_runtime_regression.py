@@ -104,12 +104,12 @@ def prepare_fixture(base, support_root, case, runtime):
         target = support/name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    # Custom role instructions are copied as test configuration, with the
-    # explicitly chosen test model. Production role definitions are untouched.
+    # Custom role instructions are copied as test configuration with their shipped
+    # default model. Production role definitions are untouched.
     for source in (support/".codex/agents").glob("*.toml"):
         target = repo/".codex/agents"/source.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text().replace('model = "gpt-5.4"', 'model = "gpt-5.6-sol"'))
+        target.write_text(source.read_text())
     (repo/"calc.py").write_text("def double(n):\n    return n * " + ("2" if case == "review-only" else "1") + "\n")
     (repo/"verify.py").write_text("from calc import double\nassert double(3) == 6\nassert double(-2) == -4\nprint('verified')\n")
     (repo/"user.txt").write_text("existing user content\n")
@@ -124,9 +124,9 @@ def prepare_fixture(base, support_root, case, runtime):
     config = repo/".review-loop/config.md"
     config.parent.mkdir()
     reviewer_config = (
-        "reviewer: subagent\nreviewer_model: sonnet\n"
+        "reviewer: subagent\nreviewer_model: claude-opus-5-5\n"
         if runtime == "claude" else
-        "reviewer: codex\ncodex_reviewer_backend: codex\ncodex_reviewer_model: gpt-5.6-sol\n"
+        "reviewer: codex\ncodex_reviewer_backend: codex\ncodex_reviewer_model: gpt-6.1-sol\n"
     )
     config.write_text(
         reviewer_config + "soft_limit_plan: 2\nsoft_limit_exec: 2\n"
@@ -382,7 +382,7 @@ def main():
         return 3
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
-    model = args.model or ("gpt-5.6-sol" if args.runtime == "codex" else "sonnet")
+    model = args.model or ("gpt-6.1-sol" if args.runtime == "codex" else "claude-opus-5-5")
     records = []
     try:
         for case in args.case or CASES:

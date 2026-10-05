@@ -18,13 +18,33 @@ A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill 
 
 Start a new session. The `/review-loop` command is now available in all your projects.
 
-The paired-session coordinator is also available as an explicit opt-in through
-`/review-loop:paired-session <work item>`. This does not change the current
-default route. Workspace `.review-loop/paired-session.json` may contain
-non-program limits only. Keep role, vendor, program and test-command settings
-in an operator-owned profile outside the product workspace and run directory,
-then pass its absolute path with `--config` to both probe and run. The plugin
+From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
+`.review-loop/config.md` hands off to the paired-session coordinator (the default
+entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
+`/review-loop:paired-session <work item>` is the explicit entry. See
+[`docs/paired-session-migration.md`](docs/paired-session-migration.md).
+Workspace `.review-loop/paired-session.json` may contain non-program limits only.
+Keep role, vendor, program and test-command settings in an operator-owned profile
+outside the product workspace and run directory, then pass its absolute path with
+`--config` to every command (probe and run in strict mode); the paired-session skill uses
+`~/.config/review-loop/paired-session.json` when it exists and you name no other
+profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
+
+**Safety modes (D-EFF).** Every role runs with the same OS sandboxes in both
+modes. `efficient`, the default, does not require a permission-probe PASS before
+dispatch, and its evidence guard only records what it would have held. `strict`
+(`--strict`, or `"safety_mode": "strict"` in the operator profile; the
+workspace file cannot set it) also requires the probe PASS and lets the evidence
+guard hold. The first command that creates the run (`run` by default,
+`permission-probe` in strict mode) fixes its mode, so pass `--strict` from that
+first command on; a `--strict` that
+arrives after only the probe has run still upgrades the run, later it is
+refused. Runs made before this change resume strict. In both modes a reviewer
+turn that changes the workspace is voided, restored and re-dispatched once (a
+second change or a failed restore is a HOLD), and an author turn that changes
+HEAD or the branch is a HOLD. See
+[`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
 **Optional** — copy the config template to customize per-project defaults:
 
@@ -44,8 +64,8 @@ Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
 `review-loop` skill shares `.review-loop/config.md` and `.review-loop/sessions/`
 with Claude Code, so both runtimes work against the same project state.
 The rest of this README primarily documents the current Claude Code plugin
-surface; Codex Stage 1 also exposes the paired-session skill as an explicit
-opt-in while migration is staged.
+surface; Codex Stage 1 also exposes the paired-session skill, which is the
+default review-loop entry from v2.10.0.
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
@@ -57,11 +77,11 @@ explicitly opt into the local Codex reviewer with
 `codex_reviewer_backend: codex` in `.review-loop/config.md`.
 When a Claude reviewer is selected, the permission probe checks unique writes
 to host `/tmp`, the run directory, and the `context` directory passed through
-`--add-dir`. Strict sandboxing requires a supported Claude host/backend; the
-probe fails closed when the OS sandbox is unavailable.
+`--add-dir`. The Claude reviewer sandbox requires a supported Claude host/backend;
+the probe (required only in strict mode) fails closed when the OS sandbox is unavailable.
 In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
 `judgment_model` is its shared-tier fallback, and the empty backstop is an
-explicit `--model claude-sonnet-4-6`.
+explicit `--model claude-opus-5-5`.
 The shared `cheap_model` key is accepted for cross-runtime config
 compatibility, but Stage 1 currently has no cheap-tier Codex agents, so it is
 a documented no-op there.
@@ -105,9 +125,12 @@ natural-language triggers like "run review-loop on this branch" or
 `/review-loop:plan` etc. are Claude-only and surface as `Unrecognized` in
 Codex.
 
-Ask Codex to "use paired-session for this task" to opt into the coordinator.
+A fresh review-loop request hands off to the coordinator by default from
+v2.10.0; ask Codex to "use paired-session for this task" to name it explicitly,
+or "use the legacy review-loop workflow" for the legacy path.
 It reads non-program workspace defaults from `.review-loop/paired-session.json`
-when no `--config` is given. Program and role settings require an external operator
+when no `--config` is given; the skill passes `~/.config/review-loop/paired-session.json`
+as `--config` when that file exists and you name no other profile. Program and role settings require an external operator
 profile passed with `--config`, which replaces rather than layers onto the workspace profile.
 Run artifacts stay outside the product workspace under
 the user-level Codex state folder.
@@ -337,14 +360,14 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
 | `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |
-| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-haiku-4-5-20251001`; accepted-but-no-op in Codex Stage 1 |
+| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |
 | `executor_model` | `inherit` | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |
 | `codex_reviewer_backend` | `claude_cli` | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
 | `codex_reviewer_model` | `""` | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
 | `codex_executor_model` | `""` | Reserved and ignored in Codex Stage 1 |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
-| `auto_commit` | `false` | Stage changed files and commit after delivery |
+| `auto_commit` | `false` | Stage changed files and commit after delivery. Legacy workflow only: paired-session reads `auto_commit` only from the operator profile and prints a warning when `auto_commit: true` is set here |
 | `commit_message_prefix` | `feat` | Conventional commit type prefix |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
@@ -358,7 +381,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 For Codex Stage 1, the reviewer separation policy is explicit: unless
 `codex_reviewer_backend: codex` is set, review stays on the
 outside-sandbox Claude CLI reviewer path. That default path resolves its model
-as `reviewer_model` > `judgment_model` > `claude-sonnet-4-6` and passes it via
+as `reviewer_model` > `judgment_model` > `claude-opus-5-5` and passes it via
 `--model`. The local Codex reviewer is opt-in only. The `cheap_model` entry is
 accepted in the shared config but remains a no-op in Stage 1 because only
 judgment-tier Codex agents are currently shipped.

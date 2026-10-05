@@ -2,6 +2,8 @@
 
 Design only; lifecycle disabled. Inputs: [docs 1–3](e2e-1-stages-and-roles.md); legacy `execution.md` Delivery/Step 4, `session-file.md` `completed_stages`, Compass close `Mutate`; R12-4 R1 M7/M8, R2 M7/M11.
 
+Real-path note (ADR-11, D12): the real lifecycle will open as the worktree lifecycle W of [doc 6](e2e-6-worktree-lifecycle.md) (not yet implemented); the candidate-tree design here stays fake-only hardening.
+
 ## Acceptance is a current-tree operator act
 
 P EXEC/gate→SECURITY pass is `P_PASSED`, not DONE. Reserve Q; Q SECURITY PASS with zero blockers yields DONE/pending acceptance. Accept uses receipt Q OID and checks OID/manifest/config/HEAD/index; drift HOLDs. Lifecycle accept is allowed only from this DONE state, never the legacy rejection-limit HOLD. Reject reserves P'/Q' (R12-4 R1 M7; doc 2a/2b-i).

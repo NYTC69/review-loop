@@ -147,6 +147,18 @@ entry; never edit history.
 
 ---
 
+### ADR-11: D12 legacy-parity lifecycle activation (worktree lifecycle W)
+- **Date**: 2026-10-03
+- **Status**: Accepted
+- **Context**: paired-session 的真实 EXEC（v2.9.x）已经在专用 live worktree 中运行：permission probe PASS 绑定 author/reviewer/gate flags，author 受 sandbox 约束，reviewer 只读，Step 3.4 gate 开启，operator `accept` 不提交。lifecycle（FINISH/POLISH-Q/DOCS/SECURITY/DELIVERY/CLOSE）只在 fake harness 中通过；它是 candidate-tree 设计（scratch 候选根、独立文件系统、coordinator 测试 sandbox、C1/C2 发布、强制 Compass close），真实激活被 e2e-5 的 A1–A5 gate 和激活聚合器挡住。Yuan 于 2026-10-03 15:30 JST：“为什么 legacy 里的那些 doc/security/polish 的活接入新的 review-loop 要几周, 这明显不合理” → “同意，A 道按 legacy 对等路线改优先级”（D12）。lane A 的 parity map（2026-10-03，supervisor 验收）比较了两条路线，Yuan 于 18:02 JST 对 D-1..D-8 作出决定。
+- **Options considered**: (A) 继续按 e2e-5 完成 A1–A5 与聚合器后激活 candidate-tree lifecycle；(B) 直接放开 candidate-tree lifecycle（其 writer 根不在 probe 覆盖范围内，还需独立文件系统、hook runner、按计划推导的写授权和强制 BACKLOG item，达不到真实 EXEC 的同一门槛）；(W) worktree lifecycle：FINISH → POLISH-Q → DOCS → SECURITY 作为真实 drive loop 在同一 worktree 中的后续 turn，复用真实 EXEC 的角色、flags、probe 与 gate。
+- **Decision**: 采用 (W)（D-2）。(D-1) `auto_commit: true` 时，`accept --expect <digest>` 授权一次不触发 hooks 的本地提交，提交内容为被接受的 manifest；默认 `auto_commit: false`，不提交；push/PR/merge 保持关闭（D8）。(D-3) 不做 Compass close。(D-4) `lifecycle_mode=on` 只能来自 CLI 或 operator profile，workspace `.review-loop/paired-session.json` 仍被拒绝；v2.10.0 由 skill 开启。(D-5) 使用 coordinator 原生的无 hook 提交路径。(D-6) SECURITY 同时运行 `scripts/security_preflight.py`。(D-7) lifecycle run 拒绝 `--accept-unverified-claude-author` 与 `--accept-probe-skip`，允许经过验证的 probe-cache 复用。(D-8) 与真实 EXEC 一致，允许 author 与 reviewer 同厂商。沿用 legacy 默认值（D12 原文）：`auto_commit` false、`docs_file` CHANGELOG.md、`skip_quality_polish` false。设计见 `paired_session/docs/e2e-6-worktree-lifecycle.md`。
+- **Consequences**: e2e-5 的 A1–A5 gate、激活聚合器、CW-b、A2C、A3、pending-dispatch 测试、candidate-tree 真实激活、hook runner（doc 4b）、SECURITY repair/ignore consent 与 Compass CLOSE 都转为 v2.10.0 之后的 hardening，不再阻塞默认入口切换。candidate-tree 路线保持 fake-only，其断言不变。author TMP 仍在 `run_dir/author-tmp`，与真实 EXEC 相同；TMP 隔离（A3）属于 hardening。实现分 W1a（激活）、W1b（FINISH）、W2a（POLISH-Q）、W2b（DOCS）、W3a（SECURITY）、W3b（DELIVERY）；W1a 之前真实路径仍拒绝 `lifecycle_mode=on`，W1b 之前 W run 在 EXEC 收敛后 HOLD。断言授权仅限 Round 49 原文点名的三项、仅用于 W1a：`test_lifecycle_on_and_old_done_are_refused_before_dispatch` 第一个子测试翻转、`test_fake_lifecycle_state_receipts_resume_idempotently_and_cli_stays_off` 中两条 plain-Coordinator 断言翻转、`test_lifecycle_role_manifest_drift_and_shared_tmp_fail_closed` 拆分；`test_lifecycle_project_config_enablement_is_refused` 与 `test_fake_lifecycle_guard_rejects_real_provider_path` 保持不变。doc 1 中“reviewer 与 author 同厂商时拒绝激活”的规定由 D-8 取代。本 ADR 意在满足 ADR-6 对 legacy polish/docs/security/specialist 对等决定的要求，由 owner 在 1D go 时确认；默认入口真正切换仍要等 W3b 落地以及 ADR-6 的其他条件。
+- **Amendments**: (2026-10-04, D-EFF，`paired_session/docs/efficient-mode.md`) D-7 只适用于 strict run；默认的 efficient run 不需要 waiver，也不记录（打印 NOTE）。(2026-10-04, E-12，`paired_session/docs/v2.10-entry-switch.md` §8) D12 + D-2 + W2a 即 ADR-6 要求的对等决定；1C closure 与 M6 不再单独卡默认入口，由 E-1 加上 10-01 记下的 M6 残留项（干净的 Claude-author probe PASS；一次从普通 shell 启动、证据完整的 run）取代；E-1 于 2026-10-04 修订为 GitHub Actions 全绿 + 1 次经默认入口、lifecycle on、走到 ACCEPTED 的真实 run；默认入口不再标注 experimental。(2026-10-05, supervisor) 其中“干净的 Claude-author probe PASS”这一 M6 残留项按 D-EFF（owner 2026-10-04 18:35）属于 C 类，只适用于 strict，已被修订后的 E-1 取代，不是 v2.10.0 的发版条件。
+- **Supersedes**: 无（部分取代 e2e-5 §Scope and authority 中的激活顺序与 doc 1 的同厂商拒绝）
+
+---
+
 ### ADR-12: paired-session Codex 角色默认模型改为 gpt-6.1-sol
 - **Date**: 2026-10-04
 - **Status**: Accepted

@@ -24,7 +24,7 @@ round, matching the schema accepted by `_load_jobs` in
   path
 - `reviewer_model` — for `runtime: "codex"`, resolved via the same shared
   model-tier rule used by the single-shot path: `reviewer_model if set; else judgment_model if
-  set; else claude-sonnet-4-6` (per `docs/protocol/planning.md` §Shared
+  set; else claude-opus-5-5` (per `docs/protocol/planning.md` §Shared
   model-tier contract). For `runtime: "claude_code"`, use `reviewer_model`
   only: a Codex model, or empty to omit `-m`. Never apply `judgment_model`
   or the Claude-tier fallback to these Codex CLI jobs.

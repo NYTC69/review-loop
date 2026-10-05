@@ -3,105 +3,106 @@ name: paired-session
 argument-hint: "<work item> [--plan-only]"
 description: >
   Drive an implementation through the paired-session coordinator: independent
-  PLAN review, EXEC implementation/review, adversarial gate, and delivery.
-  Trigger in exactly two cases: (1) the user explicitly asks for paired-session
+  PLAN review, EXEC implementation/review, adversarial gate, then finish,
+  quality polish, docs and security up to operator acceptance.
+  Trigger in exactly three cases: (1) the user explicitly asks for paired-session
   or names this explicit coordinator entry; (2) the review-loop entry hands off
-  because .review-loop/config.md sets `entry: paired-session`. Do not trigger on
-  a bare review-loop request in any other case (key absent, invalid, legacy, or
+  because .review-loop/config.md sets `entry: paired-session`; (3) the review-loop
+  entry hands off because that key is absent (the default entry). Do not trigger on
+  a bare review-loop request in any other case (key invalid, `legacy`, or
   /review-loop:legacy).
 ---
 
-# Paired-session workflow
+# Paired-session workflow (Claude Code)
 
-Use the shared coordinator shipped with this plugin. Do not load or invoke the
-legacy review-loop workflow for this task.
+First, before any stage A check or question, read `docs/protocol/loading.md`
+and load the shared entry contract (`docs/protocol/paired-session-entry.md`) as
+its own Bash command, cwd in the user's workspace. The bundle must stay out of
+the product worktree (FIELD-18): first print a fresh bundle directory with its
+own Bash call,
+`python3 -c 'import os, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), f"review-loop-protocol-{os.getuid()}", uuid.uuid4().hex[:12]))'`,
+then write that printed directory out literally as `<bundle-dir>`:
 
-1. Identify the intended Git worktree. Use a dedicated task worktree; preserve
-   unrelated user changes and do not switch away from a dirty checkout. If a
-   dedicated worktree is unavailable, ask before creating one.
-2. Read `<workspace>/.review-loop/paired-session.json` if present. It may set
-   non-program limits only. Put role/vendor/program/test-command settings in an
-   operator-owned profile outside the workspace and run directory, and pass
-   its absolute path with `--config` for probe and run. CLI options can override
-   that profile. Models are operator-set (ADR-9); a role without one gets its
-   vendor's default (`claude-opus-5-5` for Claude; `gpt-6-luna` for Codex), and
-   the gate defaults to the author's vendor (ADR-10).
-   Determine the project's test command from its docs/manifests and ask only if
-   it cannot be established safely.
-3. Create a UUID. Store the work item and run state under
-   `${CLAUDE_PLUGIN_DATA}/runs/<UUID>/`; this location must remain outside the
-   product worktree. Create the directory, then write `WORKITEM.md` there with
-   goal, acceptance criteria, scope, and verification. Include only
-   user-approved requirements; mark uncertainties as questions instead of
-   inventing acceptance criteria. Resolve `WORKSPACE` to the intended worktree
-   root and `WORKITEM`/`RUN_DIR` to absolute paths. Claude Code substitutes
-   `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` in skill content. Define
-   path variables anew in each Bash tool call; shell variables do not persist
-   across separate calls. Set `TEST_COMMAND` from the loaded profile or
-   verified project command, and pass it as one quoted argument.
-4. Start the permission probe as a separate Bash call with
-   `run_in_background: true`; wait for the background task completion
-   notification and inspect its final result. Use a shell-output polling tool
-   only if the host exposes one; do not assume a tool named `BashOutput` exists.
-   Only after PASS, start the coordinator run as another Bash call with
-   `run_in_background: true`. Never run either command in a foreground Bash
-   call or extend the foreground timeout; long model turns exceed tool limits
-   and can orphan a child CLI. If background execution is unavailable, stop and
-   report HOLD with the reason.
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/read_protocol.py --runtime claude --stage entry-paired-session --output <bundle-dir>/protocol-claude-entry-paired-session.md
+```
 
-   First Bash call (`run_in_background: true`):
+After exit 0, read the complete output file in bounded chunks and follow it; a
+missing, unreadable or incompletely read file is a failed stage A check,
+reported as `stage A failure: cannot load the shared entry contract (<reason>)`.
+After compaction, reload it the same way when no coordinator command is
+running; while one is running, read
+`${CLAUDE_PLUGIN_ROOT}/docs/protocol/paired-session-entry.md` directly (the
+stage is that whole file), which writes nothing to the workspace. This file
+adds only the Claude Code host rules:
 
-   ```sh
-   WORKSPACE='/absolute/path/to/worktree'
-   WORKITEM='${CLAUDE_PLUGIN_DATA}/runs/<UUID>/WORKITEM.md'
-   RUN_DIR='${CLAUDE_PLUGIN_DATA}/runs/<UUID>'
-   TEST_COMMAND='the verified project command'
-   "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" permission-probe \
-     --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
-     --test-command "$TEST_COMMAND"
-   ```
+- Legacy pointer: `use /review-loop:legacy`. Long-command execution failure:
+  unavailable background execution (a failed stage A check; on the explicit
+  entry, HOLD with the reason).
+- Run directory: create a UUID; the run directory is
+  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop/runs/<UUID>/`, outside the
+  product worktree and outside `~/.claude` (Claude Code treats paths there as
+  sensitive and denies or prompts for every write). Resolve the run root once
+  with its own Bash call, `printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/review-loop"`,
+  and use the absolute path it prints (if it is not absolute, use
+  `$HOME/.local/state/review-loop`: XDG ignores a relative `XDG_STATE_HOME`).
+  Create the run directory (`mkdir -p`), then write `WORKITEM.md` there. The
+  root is outside the session's working directory, so a restricted permission
+  mode may need the operator to grant it (for example `--add-dir <run root>`).
+  If either step fails or is denied, stop: that is a failed stage A check,
+  reported as `stage A failure: <reason>`; never try another location. Resolve `WORKSPACE` to the intended worktree root and
+  `WORKITEM`/`RUN_DIR` to absolute paths. Claude Code substitutes
+  `${CLAUDE_PLUGIN_ROOT}` in skill content. Define path variables anew in each
+  Bash tool call; shell variables do not persist across separate calls. Pass
+  arguments as an array. Write any launcher log under the run root's `logs/`
+  (`.../review-loop/logs/`), never under `runs/`.
+- Long-command form: run every command that can dispatch model turns
+  (`permission-probe`, `run`, `resume`, `reject --expect`) as its own Bash call
+  with `run_in_background: true`; wait for the background task completion
+  notification and inspect its final result. Use a shell-output polling tool
+  only if the host exposes one; do not assume a tool named `BashOutput` exists.
+  Never run such a command in a foreground Bash call or extend the foreground
+  timeout; long model turns exceed tool limits and can orphan a child CLI. The
+  backstop stops the background command.
+- Headless sessions: a `claude -p` session exits when its turn ends and kills
+  its background tasks, so ending the turn to wait for the notification kills
+  the coordinator mid-turn. Use an interactive session. When you know you run
+  headless (the user or the prompt says so), do not end the turn while a
+  coordinator command runs: poll in bounded foreground calls, reading only
+  `status` and `active.phase` from `RUN_DIR/state.json` (or `status --brief`),
+  until the background command itself has exited (the host's task-output tool
+  if it has one; otherwise `pgrep -f -- "--run-di[r] <RUN_DIR>"` prints nothing; the
+  bracket keeps pgrep from matching its own shell),
+  then inspect its final result as above. Recover a run cut off this way by the
+  shared contract's uncertain-turn rule: check the turn's pid and phase, and
+  ask the user before any `--retry-uncertain`.
+- Default (efficient): one Bash call with the `run` block below. Strict: the
+  probe block first, then the `run` block as a second Bash call.
 
-   If using the external operator profile, add the same `--config
-   /absolute/path/to/profile.json` argument to this probe and the run below.
-   Wait for the host's background-task completion event and inspect its final
-   result. Only after the probe reports PASS, make a second Bash call
-   (`run_in_background: true`) with the same resolved values:
+Strict only, first Bash call (`run_in_background: true`):
 
-   ```sh
-   WORKSPACE='/absolute/path/to/worktree'
-   WORKITEM='${CLAUDE_PLUGIN_DATA}/runs/<UUID>/WORKITEM.md'
-   RUN_DIR='${CLAUDE_PLUGIN_DATA}/runs/<UUID>'
-   TEST_COMMAND='the verified project command'
-   "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run \
-     --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
-     --test-command "$TEST_COMMAND"
-   ```
+```sh
+WORKSPACE='/absolute/path/to/worktree'
+WORKITEM='/absolute/run/root/runs/<UUID>/WORKITEM.md'
+RUN_DIR='/absolute/run/root/runs/<UUID>'
+TEST_COMMAND='the verified project command'
+"${CLAUDE_PLUGIN_ROOT}/bin/paired-session" permission-probe \
+  --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
+  --test-command "$TEST_COMMAND" --lifecycle-mode on
+```
 
-   Wait for each background call to finish before starting the next; do not
-   create a second run while one is active. If the host offers an output-polling
-   tool, use it to inspect the final status; otherwise wait for its background
-   completion event. Do not assume a tool named `BashOutput` exists. Include
-   non-program workspace defaults automatically only without `--config`.
-   An external operator profile replaces the workspace profile: copy desired
-   limits into it and pass `--config` on both calls. Add explicit
-   one-run override arguments identically to both invocations. Add
-   `--stop-after-plan` only to `run` when requested. Pass arguments as an array;
-   do not interpolate untrusted text into shell source. Never use
-   `--skip-probe` for product work.
-5. Report DONE/HOLD and the run directory. On HOLD, inspect its state, findings,
-   and receipts before resuming. If `uncertain_active` is present, do not rerun
-   the probe or resume automatically: check its pid and receipts; if the child
-   is still alive, wait for it to stop. If its phase is `PROBE` or
-   `AUTHOR_PERMISSION_PROBE`, ask before rerunning the disposable probe with
-   `permission-probe --retry-uncertain`. For a product-work turn, ask before
-   `resume --retry-uncertain` because this may replay a model turn. After
-   recovering an interrupted probe, use `resume` on the existing run directory;
-   do not use `run` again. Run resume in a separate Bash call with
-   `run_in_background: true`, the same run directory, worktree, work item,
-   profile, and options; wait for background completion and inspect its final
-   status. Do not imply user acceptance or delivery authorization from DONE.
+`run` (`run_in_background: true`):
 
-The coordinator owns reviewer dispatch and limits. This skill is the explicit
-paired-session entry and the review-loop handoff target only when the config
-key `entry` is exactly `paired-session` and the work is fresh; otherwise default
-routing stays legacy.
+```sh
+WORKSPACE='/absolute/path/to/worktree'
+WORKITEM='/absolute/run/root/runs/<UUID>/WORKITEM.md'
+RUN_DIR='/absolute/run/root/runs/<UUID>'
+TEST_COMMAND='the verified project command'
+"${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run \
+  --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
+  --test-command "$TEST_COMMAND" --lifecycle-mode on
+```
+
+This skill is the explicit paired-session entry and the review-loop handoff target only when the config
+key `entry` is `paired-session` or absent and the work is fresh; with `legacy`
+or an invalid value, routing stays legacy.

@@ -1,5 +1,6 @@
 """P0-2 (codex-cli verified-contract rule) and P0-1 (operator-configured role models, ADR-9)."""
 import contextlib
+import glob
 import hashlib
 import inspect
 import io
@@ -1050,6 +1051,21 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         env = patch.dict(os.environ, {'FAKE_AUTHOR_SCENARIO': '{}'})     # its name matches the secret-name regex, so it feeds the sandbox settings
         env.start()
         self.addCleanup(env.stop)
+        # v297-ptt: cap.listing globs /tmp/paired-session-author-probe-* host-wide, so a concurrent test run's probe target made or removed
+        # mid-turn flipped verdicts here to FAIL under load (FIELD-13 is the product side). These tests see only the probe's own /tmp target
+        # and the /tmp paths their scenario names; the listing and verdict code are unchanged.
+        own, real_steps = set(), cap.steps
+        def steps(base, tmp):
+            own.add(str(tmp))
+            return real_steps(base, tmp)
+        def tmp_names(pattern):
+            assert pattern == '/tmp/paired-session-author-probe-*', pattern
+            scenario = os.environ.get('FAKE_AUTHOR_SCENARIO', '')
+            return [name for name in glob.glob(pattern) if name in own or json.dumps(name) in scenario]
+        for name, value in (('steps', steps), ('glob', types.SimpleNamespace(glob=tmp_names))):
+            patcher = patch.object(cap, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def co(self, *extra):
         return self.h.coordinator(*BUG_REPORT_FLAGS, '--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low',
@@ -1093,7 +1109,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(out['model_escape_failed_targets'], [])
         self.assertEqual(out['claude_version'], 'fake-claude 9.9')
         self.assertEqual((out['cleanup']['remaining'], out['cleanup']['errors'], out['cleanup']['base_removed']), ([], [], True))
-        self.assertEqual(list(co.run_dir.parent.glob('paired-session-author-probe-*')), [])
+        self.assertEqual(list(co.run_dir.parent.glob(cap.TREE_PREFIX + '*')), [])
         self.assertEqual(co.context, co.run_dir / 'context')                      # the real context was only swapped out
         self.assertEqual(co.state['turns'][-1]['phase'], 'AUTHOR_PERMISSION_PROBE')
 
@@ -1134,7 +1150,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         sibling_dir.mkdir()
         (sibling_dir / 'inner').write_text('i')
         sibling_file.write_text('f')
-        stale = co.run_dir.parent / 'paired-session-author-probe-stale'                # a foreign leftover is not ours to remove
+        stale = co.run_dir.parent / (cap.TREE_PREFIX + 'stale')                # a foreign leftover is not ours to remove
         stale.mkdir()
         seen, real_mkdtemp = [], tempfile.mkdtemp
         def spy(*args, **kwargs):
@@ -1145,12 +1161,12 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             out = self.probe(co=co)[1]
         self.assertEqual(out['status'], 'PASS', out)
         self.assertEqual([(Path(p).parent, mode, names) for p, mode, names in seen], [(co.run_dir.parent.resolve(), 0o700, [])])
-        self.assertTrue(Path(seen[0][0]).name.startswith('paired-session-author-probe-'))
+        self.assertTrue(Path(seen[0][0]).name.startswith(cap.TREE_PREFIX))
         self.assertFalse(Path(seen[0][0]).exists())
         self.assertEqual((sorted(p.name for p in sibling_dir.iterdir()), sibling_file.read_text(), stale.is_dir()), (['inner'], 'f', True))
 
     def test_the_probe_tree_is_removed_on_every_exit_path(self):
-        def leftovers(co): return [p for p in co.run_dir.parent.glob('paired-session-author-probe-*')]
+        def leftovers(co): return [p for p in co.run_dir.parent.glob(cap.TREE_PREFIX + '*')]
         for name, scenario, patches in (('timeout', None, ('invoke', RuntimeError('author CLI timed out'))),
                                         ('unknown', {'skip': ['bash_abs']}, None),
                                         ('fail', {'escape': ['write_abs']}, None),
@@ -1181,7 +1197,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         try:
             self.assertEqual((out['status'], out['claude_author_status'], out['cleanup']['base_removed']), ('FAIL', 'FAIL', False), out)
         finally:
-            for path in co.run_dir.parent.glob('paired-session-author-probe-*'):
+            for path in co.run_dir.parent.glob(cap.TREE_PREFIX + '*'):
                 shutil.rmtree(path)
 
     def test_a_cli_error_is_a_fail_with_the_reason(self):
@@ -1536,11 +1552,11 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
 
     def test_a_write_outside_the_listed_targets_is_a_fail_even_without_a_tool_use(self):             # P0-3c F3
         for name, path in (('sibling', '{parent}/sibling-dropped.txt'), ('workspace', '{base}/workspace/extra.txt'),
-                           ('outside', '{base}/outside/extra.txt'), ('tmp', '/tmp/paired-session-author-probe-silent.txt')):
+                           ('outside', '{base}/outside/extra.txt'), ('tmp', f'/tmp/paired-session-author-probe-silent-{os.getpid()}')):   # v297-ptt: per process, no .txt
             with self.subTest(write=name):
                 try: _, out = self.fail_reason({'silent_write': [path]})
                 finally:
-                    for stray in (self.h.run_dir.parent / 'sibling-dropped.txt', Path('/tmp/paired-session-author-probe-silent.txt')):
+                    for stray in (self.h.run_dir.parent / 'sibling-dropped.txt', Path(f'/tmp/paired-session-author-probe-silent-{os.getpid()}')):
                         stray.unlink(missing_ok=True)
                 self.assertTrue(any(Path(path).name in t for t in out['model_escape_failed_targets']), out)
         _, out = self.fail_reason({'restore_sentinel': True})                                       # modified, then restored: the mtime gives it away
@@ -1642,6 +1658,32 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 self.assertEqual(self.probe(scenario)[1]['status'], 'FAIL')
 
+    def test_another_runs_probe_name_in_tmp_changes_no_verdict_in_these_tests(self):                 # v297-ptt
+        foreign = Path(f'/tmp/paired-session-author-probe-foreign-{os.getpid()}')   # a concurrent run's probe name, made or removed mid-turn; no .txt, so
+        self.addCleanup(foreign.unlink, missing_ok=True)                               # the host-wide `*.txt` checks of other runs never see it
+        def during_turn(co, change):
+            real = co.invoke
+            def invoke(*args, **kwargs):
+                change()
+                return real(*args, **kwargs)
+            return patch.object(co, 'invoke', new=invoke)
+        for made in (True, False):
+            with self.subTest(made=made):
+                if not made: foreign.write_text('x')
+                co = self.co()
+                try:
+                    with during_turn(co, (lambda: foreign.write_text('x')) if made else foreign.unlink):
+                        out = self.probe({'pd': ['edit_hardlink_bash']}, co=co)[1]
+                finally: foreign.unlink(missing_ok=True)
+                self.assertEqual(out['status'], 'PASS', out)
+        co = self.co()
+        try:
+            with patch.object(cap, 'glob', glob), during_turn(co, lambda: foreign.write_text('x')):  # the product's own host-wide listing still sees it;
+                out = self.probe(co=co)[1]                                                         # FIELD-13 excuses no listing difference
+        finally: foreign.unlink(missing_ok=True)
+        self.assertEqual(out['status'], 'FAIL', out)
+        self.assertIn(str(foreign), out['model_escape_failed_targets'])
+
     def test_cleanup_never_follows_a_symlink_the_author_swapped_in(self):                           # P0-3c F5
         keep = self.h.root / 'keep-outside'
         keep.mkdir()
@@ -1668,7 +1710,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             self.assertIn('rmtree-not-symlink-safe', str(out['cleanup']['errors']))
             rmtree.assert_not_called()
         finally:
-            for path in co.run_dir.parent.glob('paired-session-author-probe-*'): shutil.rmtree(path)
+            for path in co.run_dir.parent.glob(cap.TREE_PREFIX + '*'): shutil.rmtree(path)
 
     def test_a_link_row_needs_the_link_to_exist_and_passes_on_an_unchanged_sentinel(self):          # P0-3c F7
         for denied in (['link_symlink'], ['link_hardlink'], ['link_symlink', 'link_hardlink']):
