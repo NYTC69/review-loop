@@ -182,7 +182,7 @@ class ReviewReportTerminalTests(unittest.TestCase):
     def test_the_budget_follows_the_role_count(self):
         self.change()
         co = rc.Coordinator(self.args())
-        specialists = len(wl.specialists(['sum_ints.py']))
+        specialists = len(wl.report_specialists(['sum_ints.py']))
         self.assertEqual(co._report_budget(), 2 * ((1 + 1 + 1 + specialists + 1) + 2))   # gate codex != reviewer claude
         self.assertEqual(co.state['report_budget'], co._report_budget())   # frozen
         self.run_dir = self.root / 'same-vendor-no-shadow'

@@ -42,7 +42,7 @@ class ReviewReportTransitionTests(unittest.TestCase):
         receipt, security = state['lifecycle']['receipts']
         self.assertEqual((security['stage'], security['status'], security['route']), ('SECURITY', 'READY', 'REPORTED'))
         self.assertEqual((receipt['stage'], receipt['status']), ('POLISH-Q', 'READY'))
-        self.assertEqual(receipt['specialists'], list(wl.specialists(['sum_ints.py'])))
+        self.assertEqual(receipt['specialists'], list(wl.report_specialists(['sum_ints.py'])))
         self.assertEqual(len(receipt['specialist_turns']), len(receipt['specialists']))
         self.assertNotIn('fix_base', state['lifecycle'])
         self.assertEqual((state['plan_rounds'], state['exec_rounds']), (0, 1))

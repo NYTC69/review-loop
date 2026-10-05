@@ -50,6 +50,7 @@ try:
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
     from paired_session import worktree_lifecycle
+    from paired_session import review_report
     from paired_session import timeout_scale
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
@@ -71,6 +72,7 @@ except ModuleNotFoundError:
     import sensitive_policy
     import security_repair_policy
     import worktree_lifecycle
+    import review_report
     import timeout_scale
     from program_binding import snapshot as program_snapshot, safe_path
 
@@ -2202,7 +2204,8 @@ class Coordinator:
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
-        if getattr(self.args, 'review_report', None): config['review_report'] = True   # LG2-a1, as F2
+        if getattr(self.args, 'review_report', None):   # LG2-a1, as F2
+            config.update(review_report=True, review_aspects=list(self.args.review_aspects))   # LG2-b1
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -3808,6 +3811,7 @@ class Coordinator:
         self.state['hold_reason'] = reason
         if (self.state.get('config') or {}).get('review_report'):
             self._report_mark(False, reason)
+            self._write_review_report()
         if terminal_kind:
             self.state['terminal_hold_kind'] = terminal_kind
         elif not keep_rejection_limit:
@@ -4802,7 +4806,10 @@ class Coordinator:
             if requested is not None and bool(requested) != bool(saved.get('review_report')):
                 raise ValueError('resume configuration differs: review_report (fixed when the run was created)')
             self.args.review_report = bool(saved.get('review_report'))
-        if not self.args.review_report: return
+        if not self.args.review_report:
+            if getattr(self.args, 'review_aspects', None) is not None:
+                raise ValueError('--aspects needs --review-report')
+            return
         if saved is None and self.args.supersedes:
             raise ValueError('--review-report starts a fresh review request; it takes no --supersedes')
         if not (saved or {}).get('review_only', self.args.review_only):
@@ -4815,6 +4822,16 @@ class Coordinator:
             raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
         if self.args.polish:
             raise ValueError('report mode refuses resume --polish')
+        requested = self.args.review_aspects   # LG2-b1: the aspect subset, fixed at creation
+        if requested is not None:
+            aspects = [name.strip() for name in requested.split(',') if name.strip()] if isinstance(requested, str) else list(requested)
+            if not aspects or any(name not in worktree_lifecycle.REPORT_ASPECTS for name in aspects):
+                raise ValueError('--aspects takes a comma list of ' + ','.join(worktree_lifecycle.REPORT_ASPECTS))
+            aspects = [name for name in worktree_lifecycle.REPORT_ASPECTS if name in aspects]
+            if saved is not None and aspects != saved.get('review_aspects', list(worktree_lifecycle.REPORT_ASPECTS)):
+                raise ValueError('resume configuration differs: review_aspects (fixed when the run was created)')
+        self.args.review_aspects = (saved.get('review_aspects', list(worktree_lifecycle.REPORT_ASPECTS)) if saved is not None
+                                    else aspects if requested is not None else list(worktree_lifecycle.REPORT_ASPECTS))
 
     def dispatched_vendors(self) -> tuple:
         """The vendors a run can dispatch; a report run never dispatches the author (LG2-a2)."""
@@ -6106,12 +6123,32 @@ class Coordinator:
         self.state.update(status='REPORTED', next='reported', completed_at=time.time())
         self._report_mark(True)
         self.save()
+        self._write_review_report()
         self.write_ledger()
         self.write_comparison()
         self.write_open_findings()
         self.write_usage()
         self._progress_terminal('REPORTED')
         return 'REPORTED'
+
+    def _polish_specialists(self, paths: list[str]) -> tuple:
+        """POLISH-Q's specialists; a report run uses its aspect subset and the two report-only analyzers (LG2-b1)."""
+        config = self.state['config']
+        if config.get('skip_quality_polish'):
+            return ()
+        if not config.get('review_report'):
+            return worktree_lifecycle.specialists(paths)
+        base = config.get('review_base') or 'HEAD'
+        diff = self._git(['diff', '--no-ext-diff', '--no-textconv', '-U0', base, '--'])
+        untracked = [path for path in self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0') if path]
+        added = ''.join('+' + line + '\n' for path in untracked if (self.workspace / path).is_file()
+                        for line in (self.workspace / path).read_text(errors='replace').splitlines())
+        return worktree_lifecycle.report_specialists(paths, config.get('review_aspects') or worktree_lifecycle.REPORT_ASPECTS,
+                                                     worktree_lifecycle.touches_comment_lines(diff + added))
+
+    def _write_review_report(self) -> None:
+        """LG2-b1: review-report.md in the run directory, at REPORTED and at every HOLD (marked incomplete)."""
+        atomic_text(self.run_dir / 'review-report.md', review_report.render(self.state))
 
     def _report_mark(self, complete: bool, reason: Optional[str] = None) -> None:
         """LG2-a3: the report's completeness, for the report file (b2). A HOLD marks it incomplete and names the stages
@@ -6132,7 +6169,7 @@ class Coordinator:
         if (budget := self.state.get('report_budget')) is None:
             if git_snapshot(self.workspace)[0] != (self.state.get('review_only') or {}).get('candidate_tree_sha256'):
                 raise RuntimeError('the report tree changed since the run was created; restore it and resume, or abort')
-            names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(self._changed_paths())
+            names = self._polish_specialists(self._changed_paths())
             roles = 1 + (self.args.shadow == 'on') + 1 + len(names) + 1
             probes = 1 + (self.args.gate_vendor != self.args.reviewer_vendor)
             budget = self.state['report_budget'] = 2 * (roles + probes)
@@ -6342,7 +6379,7 @@ class Coordinator:
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
         paths = self._changed_paths()
-        names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(paths)
+        names = self._polish_specialists(paths)
         done = self.state['lifecycle']['specialist_done']
         if (need := len([name for name in names if name not in done])) > (
                 self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
@@ -6418,6 +6455,9 @@ class Coordinator:
             try:
                 result = self.invoke('reviewer', 'POLISH-Q', prompt, review_schema(), fresh=True)
             finally:   # reconcile the reservation: protocol retries add, refused or refunded launches give back
+                if self.state['config'].get('review_report'):   # LG2-b1: every sequence of this dispatch is this specialist's
+                    life.setdefault('specialist_sequences', {}).update(
+                        {str(seq): name for seq in range(before + 1, self.state['sequence'] + 1)})
                 refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
                                if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
                 if delta := self.state['sequence'] - before - refunded - 1:
@@ -8849,6 +8889,8 @@ def parser() -> argparse.ArgumentParser:
                    help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
     p.add_argument('--review-report', action='store_true', default=None,
                    help='report on a --review-only change without writers; fixed at run creation')
+    p.add_argument('--aspects', dest='review_aspects', metavar='LIST', default=None,
+                   help='report mode: the specialist aspects, a comma list of code,errors,comments,types,tests (default all)')
     p.add_argument('--base', dest='review_base_ref', metavar='REF',
                    help=f'the review base of --review-only, an ancestor of HEAD (default {REVIEW_ONLY_DEFAULT_BASE})')
     p.add_argument('--author-subagents', choices=['on', 'off'], default='on',
