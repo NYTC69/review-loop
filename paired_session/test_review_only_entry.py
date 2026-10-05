@@ -6,8 +6,10 @@ import shutil
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from paired_session import test_real_coordinator as trc
+from paired_session import worktree_lifecycle as wl
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli',
@@ -41,7 +43,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
                  (('--base', foreign), 'is not an ancestor of HEAD'),
                  (('--stop-after-plan',), 'has no PLAN phase'),
                  (('--lifecycle-mode', 'on'), 'runs with --lifecycle-mode off until'),
-                 (('--supersedes', str(self.root / 'parent')), 'cannot start a scope-change successor yet')]
+                 (('--supersedes', str(self.root / 'parent')), "a scope-change successor keeps its parent's entry")]
         for extra, message in cases:
             with self.subTest(extra=extra):
                 if extra:
@@ -156,6 +158,56 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         rc.Coordinator(rc.parser().parse_args(self.command()[2:]))
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: review_only'):
             rc.Coordinator(self.args(action='resume'))
+
+    # --- LG1-a2, test 4: a base below HEAD -----------------------------------------------------------------------------------
+    def test_a_base_below_head_reviews_the_committed_part_too(self):
+        (self.workspace / 'committed.py').write_text('VALUE = 1\n')
+        self.git('add', 'committed.py')
+        self.git('commit', '-qm', 'committed part of the change')
+        (self.workspace / 'tracked.txt').write_text('base\nuncommitted\n')
+        base, head = self.git('rev-parse', 'HEAD~1'), self.git('rev-parse', 'HEAD')
+        co = rc.Coordinator(self.args('--base', 'HEAD~1'))
+        self.assertEqual((co.state['base_commit'], co.state['review_only']['head_at_start']), (base, head))
+        co.materialize_review_context()
+        delta = (co.context / 'delta.patch').read_text()
+        self.assertEqual(delta, self.git('diff', '--no-ext-diff', '--no-textconv', '--binary', base, '--') + '\n')
+        self.assertIn('committed.py', delta)
+        self.assertEqual(sorted(co._changed_paths()), ['committed.py', 'tracked.txt'])   # HEAD-relative would miss committed.py
+        self.assertIn('python-reviewer', wl.specialists(co._changed_paths()))
+        self.run_dir = self.root / 'w-parent'
+        with mock.patch.object(rc, 'REVIEW_ONLY_LIFECYCLE_READY', True):   # LG1-c lifts the refusal; the parent is HEAD now
+            w = rc.Coordinator(self.args('--base', 'HEAD~1', '--lifecycle-mode', 'on'))
+        self.assertEqual((w.state['lifecycle']['parent'], w.state['base_commit']), (head, base))
+
+    # --- LG1-a2, test 11b: a scope-change successor ---------------------------------------------------------------------------
+    def test_a_scope_change_successor_keeps_the_entry_and_freezes_its_own_scope(self):
+        self.change()
+        parent_dir = self.run_dir
+        done = self.run_coordinator('--review-only')
+        self.assertIn('DONE', done.stdout, done.stdout + done.stderr)
+        parent_state = self.state()
+        parent = rc.Coordinator(self.args(action='reject'))
+        parent.args.action = 'reject'
+        start = parent.scope_change('Also reject floats.', None).split('Start: ', 1)[1].split()
+        option = lambda name: start[start.index(name) + 1]
+        self.assertNotIn('--review-only', start)   # the entry travels in the spec, not on the command line or in a profile
+        spec = json.loads((parent_dir / 'evidence' / 'successor-spec.json').read_text())
+        self.assertEqual(spec['review_only'], {'review_base': parent_state['config']['review_base'],
+                                               'review_scope_sha256': parent_state['review_only']['review_scope_sha256']})
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'the parent work, committed')   # HEAD moves; the base stays an ancestor
+        self.run_dir, self.workitem = Path(option('--run-dir')), Path(option('--workitem'))
+        argv = [a for a in self.command('--config', option('--config'), '--supersedes', str(parent_dir))[2:]]
+        with self.assertRaisesRegex(ValueError, "keeps its parent's entry and base"):
+            rc.Coordinator(rc.parser().parse_args([*argv, '--base', 'HEAD']))
+        child = rc.Coordinator(rc.parser().parse_args(argv)).state
+        record = child['review_only']
+        self.assertEqual((child['config']['review_only'], child['config']['review_base'], child['base_commit']),
+                         (True, parent_state['config']['review_base'], parent_state['config']['review_base']))
+        self.assertEqual((child['phase'], child['next'], record['head_at_start']), ('EXEC', 'reviewer', self.git('rev-parse', 'HEAD')))
+        self.assertEqual(record['parent_review_scope_sha256'], parent_state['review_only']['review_scope_sha256'])
+        self.assertNotEqual(record['review_scope_sha256'], record['parent_review_scope_sha256'])   # its own scope
+        self.assertIn('Also reject floats.', (self.run_dir / 'context' / 'plan.md').read_text())
 
 
 if __name__ == '__main__':

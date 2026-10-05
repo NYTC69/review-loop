@@ -1802,7 +1802,7 @@ class Coordinator:
             _, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin,
                                         self.args.claude_bin, self.args.gate_prompt, self.args.config)
             if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
-            self._review_only_args(None)
+            self._review_only_args(None, self._parent_spec() if args.supersedes else None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -3716,6 +3716,9 @@ class Coordinator:
                 'item_uuid': self.state['item_uuid'],
                 'item_blockers': pending_item_blockers(self.state, self.run_dir),
                 'item_blockers_complete': bool(self.state.get('item_blockers_complete'))}
+        if self.state.get('review_only'):   # LG1-a2: the successor keeps the entry and base and freezes its own scope
+            spec['review_only'] = {'review_base': self.state['config']['review_base'],
+                                   'review_scope_sha256': self.state['review_only']['review_scope_sha256']}
         spec_path = self.evidence / 'successor-spec.json'; atomic_json(spec_path, spec)
         self._write_scope_change_report(spec_path)
         self.state.update(status='ABORTED', abort_kind='scope-change',
@@ -4549,9 +4552,14 @@ class Coordinator:
             raise ValueError(f'--base {ref} does not name a commit')
         return oid
 
-    def _review_only_args(self, saved: Optional[dict]) -> None:
+    def _parent_spec(self) -> dict:   # the scope-change parent's spec; its full validation comes later in __init__
+        try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text())
+        except (OSError, ValueError): return {}
+
+    def _review_only_args(self, saved: Optional[dict], parent: Optional[dict] = None) -> None:
         """--review-only/--base: a new run resolves the base once; a later command keeps the frozen values unless it names
-        them, and a different value is refused like any other configuration change."""
+        them, and a different value is refused like any other configuration change. A scope-change successor (parent = its
+        parent's spec) keeps the parent's entry and base from the spec, never from a profile (LG1-a2)."""
         args = self.args
         args.review_only, args.review_base_ref = getattr(args, 'review_only', None), getattr(args, 'review_base_ref', None)
         if saved is not None:
@@ -4561,6 +4569,12 @@ class Coordinator:
                                                      self._commit_oid(args.review_base_ref) != saved['review_base']):
                 raise ValueError('resume configuration differs: review_base (fixed when the run was created)')
             args.review_only, args.review_base = bool(saved.get('review_only')), saved.get('review_base')
+        elif parent is not None:
+            entry = parent.get('review_only') or {}
+            if (args.review_only is not None and bool(args.review_only) != bool(entry)) or (
+                    args.review_base_ref is not None and (not entry or self._commit_oid(args.review_base_ref) != entry['review_base'])):
+                raise ValueError("a scope-change successor keeps its parent's entry and base; drop --review-only/--base")
+            args.review_only, args.review_base = bool(entry), entry.get('review_base')
         elif args.review_only:
             args.review_base = self._commit_oid(args.review_base_ref or REVIEW_ONLY_DEFAULT_BASE)
         elif args.review_base_ref is not None:
@@ -4575,8 +4589,6 @@ class Coordinator:
             raise ValueError('--review-only has no PLAN phase; --stop-after-plan does not apply')
         if args.lifecycle_mode == 'on' and not REVIEW_ONLY_LIFECYCLE_READY:
             raise ValueError('--review-only runs with --lifecycle-mode off until its base-tree delivery baseline lands (LG1-c)')
-        if args.supersedes:
-            raise ValueError('--review-only cannot start a scope-change successor yet (LG1-a2)')
         head = self._head_commit()
         if head is None:
             raise ValueError('--review-only needs a commit to review against')
@@ -4603,7 +4615,8 @@ class Coordinator:
                  + changed + ''.join(f'untracked: {name}\n' for name in untracked))
         if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}):   # FIELD-11: no PLAN approval runs it later
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
-        return {'text': scope, 'head': head}
+        return {'text': scope, 'head': head,
+                'parent_scope_sha256': (self._parent_spec().get('review_only') or {}).get('review_scope_sha256') if args.supersedes else None}
 
     def _start_review_only(self, scope: dict) -> None:
         """Freeze the review-only start: the scope (as plan.md), the tree and index under review, a mirror of the tree, EXEC
@@ -4616,7 +4629,10 @@ class Coordinator:
                               'plan_skipped': True, 'round1': 'the existing change; no author turn',
                               'head_at_start': scope['head'], 'candidate_tree_sha256': git_snapshot(self.workspace)[0],
                               'index_at_start': index, 'mirror': str(mirror),
-                              'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest()})
+                              'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest(),
+                              **({'parent_review_scope_sha256': scope['parent_scope_sha256']} if scope['parent_scope_sha256'] else {})})
+        if 'lifecycle' in self.state:   # LG1-a2: the W parent (HEAD-moved checks, auto_commit CAS) is HEAD, never the base
+            self.state['lifecycle']['parent'] = scope['head']
 
     def _review_only_start_issue(self) -> Optional[str]:
         """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""
@@ -5860,8 +5876,9 @@ class Coordinator:
         return result
 
     def _changed_paths(self, deleted: bool = False) -> list[str]:
-        diff = (['diff', '--name-only', '-z', '--no-renames', 'HEAD'] if deleted else   # a rename lists both paths
-                ['diff', '--name-only', '-z', '--diff-filter=d', 'HEAD'])
+        base = self.state['config'].get('review_base') or 'HEAD'   # LG1-a2: a review-only run's committed part too
+        diff = (['diff', '--name-only', '-z', '--no-renames', base] if deleted else   # a rename lists both paths
+                ['diff', '--name-only', '-z', '--diff-filter=d', base])
         return [path for path in (*self._git(diff).split('\0'),
                                   *self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')) if path]
 
