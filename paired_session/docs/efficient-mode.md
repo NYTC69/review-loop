@@ -81,10 +81,16 @@ If the restore verifies, the turn is re-dispatched once. If it does not, or the 
 **Cost:** one `git add -A` into a temporary index per read-only turn. It is stat-cached, so a large repository with few changes stays fast.
 
 **Not covered:** the content of ignored files (it is never kept or restored), submodule contents, refs other than HEAD and its
-branch, and files outside the workspace. A change of the executable bit alone is detected and undone since lane A rel210-fixA (the
-snapshot marks executable files; with `core.fileMode` false git records no mode, so such an undo does not verify and the run holds).
-Other permission bits of a tracked file (for example `0644` to `0600`) are not detected: git does not record them, so they are never
-reviewed or delivered (auto_commit takes modes from the accepted manifest), and the read-only sandbox is the barrier against them.
+branch, and files outside the workspace. A change of the executable bit alone is detected since lane A rel210-fixA (the snapshot
+marks executable files). Every permission bit (for example `0644` to `0600`, or the executable bit) is detected and undone since
+lane A roperm: `capture()` also records `st_mode & 0o7777` of every tracked and non-ignored untracked regular file (one lstat each,
+no content read); a change voids the turn like any other change, the undo chmods the recorded bits back after the tree restore
+(so it verifies with `core.fileMode` false too, where git records no mode), and the evidence file lists `mode:` lines. A failed
+undo records the bits still wrong (a path now missing or no longer a regular file included), and the run stays refused until they
+are back.
+Delivery is unchanged: git does not record those bits, so they are never reviewed or delivered (auto_commit takes modes from the
+accepted manifest). Residuals: the bits of ignored files (their type, size, mtime and mode are only checked by the ignored-entry
+lstat below), of symlinks and directories, and ACLs, extended attributes and file flags.
 A workspace below the repository top is not a case: the coordinator requires `.git` in the workspace.
 
 **Ignored entries (eff-e).** The read-only sandbox is the first barrier; this is the second line. The check runs in both modes.

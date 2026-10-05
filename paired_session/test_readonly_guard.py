@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,27 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         self.assertFalse(rg.moved(self.ws, recorded))
         self.assertEqual(rg.state(self.ws, self.keep)['tree'], recorded['tree'])
 
+    def test_a_permission_bit_change_is_detected_undone_and_verified(self):   # roperm: 0644 -> 0600, invisible to git
+        for name in ('a.txt', 'new.py'):
+            (self.ws / name).chmod(0o644)
+        (self.ws / ' lead.txt').write_text('x\n')   # sorts first in ls-files -z: its leading space must survive
+        (self.ws / ' lead.txt').chmod(0o644)
+        self.git('add', ' lead.txt')
+        recorded = rg.capture(self.ws, self.keep)
+        (self.ws / ' lead.txt').chmod(0o600)
+        self.assertEqual(rg.perm_changes(self.ws, recorded), [' lead.txt'])
+        (self.ws / ' lead.txt').chmod(0o644)
+        self.assertEqual((recorded['perms']['a.txt'], rg.moved(self.ws, recorded)), (0o644, False))   # untouched: no change
+        (self.ws / 'a.txt').chmod(0o600)
+        self.assertEqual((rg.perm_changes(self.ws, recorded), rg.moved(self.ws, recorded)), (['a.txt'], True))
+        rg.evidence(self.ws, recorded, self.keep, self.root / 'change.diff')
+        self.assertIn('mode: a.txt 0644 -> 0600', (self.root / 'change.diff').read_text())
+        with patch.object(rg.os, 'chmod'):   # an undo whose chmod does not take does not verify
+            self.assertEqual(rg.restore(self.ws, recorded, self.keep), 'permission bits still differ after the restore')
+        self.assertIsNone(rg.restore(self.ws, recorded, self.keep))
+        self.assertEqual((stat.S_IMODE((self.ws / 'a.txt').stat().st_mode), (self.ws / 'a.txt').read_text()), (0o644, 'author change\n'))
+        self.assertFalse(rg.moved(self.ws, recorded))
+
     def test_an_undo_that_cannot_use_its_record_reports_why(self):
         recorded = rg.capture(self.ws, self.keep)
         (self.ws / 'a.txt').write_text('review edit\n')
@@ -170,6 +192,64 @@ class ReadOnlyTurnTests(unittest.TestCase):
                 self.assertTrue(any('your previous answer to this request changed the workspace' in f.read_text() for f in prompts))
                 self.assertEqual(len(list((self.h.run_dir / 'internal' / 'readonly').iterdir())), 1)   # clean turns leave no undo record
                 self.assertEqual(self.state()['config']['safety_mode'], 'strict' if strict else 'efficient')
+
+    def test_a_review_that_only_changed_permission_bits_is_void_restored_and_re_dispatched(self):   # roperm, both modes
+        tracked = self.h.workspace / 'tracked.txt'
+        mode = stat.S_IMODE(tracked.stat().st_mode)
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                self.h.run_dir = self.h.root / f'perm-{strict}'
+                marker = self.h.root / f'perm-marker-{strict}'
+                result = self.launch({'FAKE_MUTATION': 'chmod600', 'FAKE_MUTATION_ONCE': str(marker)}, strict)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('re-dispatching the reviewer turn once', result.stdout)
+                [voided] = self.voided()
+                self.assertTrue(voided['restored'])
+                self.assertIn(f'mode: tracked.txt {mode:04o} -> 0600', Path(voided['evidence']).read_text())
+                self.assertEqual((stat.S_IMODE(tracked.stat().st_mode), self.state()['status']), (mode, 'DONE'))
+
+    def test_an_unrestored_permission_change_blocks_until_the_bits_are_back(self):   # roperm
+        co = self.h.coordinator()
+        tracked = self.h.workspace / 'tracked.txt'
+        mode, keep = stat.S_IMODE(tracked.stat().st_mode), self.h.root / 'keep'
+        recorded, before = rg.capture(self.h.workspace, keep), rc.git_snapshot(self.h.workspace)[0]
+        tracked.chmod(0o600)
+        with patch.object(co, '_stop_turn_group'), patch.object(rc.readonly_guard, 'restore', return_value='simulated failure'):
+            voided = co._void_readonly_turn('reviewer', {'sequence': 9}, self.h.workspace, recorded, keep, self.h.root / '009-x', before)
+        self.assertFalse(voided.restored)
+        self.assertEqual(co.state['unrestored_readonly_turn']['perms'], {'tracked.txt': mode})
+        self.assertIn(f'file modes: tracked.txt {mode:04o}', co.unrestored_workspace_issue())   # content and marks match; bits do not
+        tracked.chmod(mode)
+        self.assertEqual(co.unrestored_workspace_issue(), '')
+        self.assertNotIn('unrestored_readonly_turn', co.state)
+        tracked.chmod(0o600)   # a 0600 file the turn deleted: content restored by hand at 0644 is not enough
+        recorded, before = rg.capture(self.h.workspace, keep), rc.git_snapshot(self.h.workspace)[0]
+        tracked.unlink()
+        with patch.object(co, '_stop_turn_group'), patch.object(rc.readonly_guard, 'restore', return_value='simulated failure'):
+            co._void_readonly_turn('reviewer', {'sequence': 10}, self.h.workspace, recorded, keep, self.h.root / '010-x', before)
+        self.assertEqual(co.state['unrestored_readonly_turn']['perms'], {'tracked.txt': 0o600})
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)
+        self.assertNotEqual(stat.S_IMODE(tracked.stat().st_mode), 0o600)
+        self.assertIn('file modes: tracked.txt 0600', co.unrestored_workspace_issue())
+        tracked.chmod(0o600)
+        self.assertEqual(co.unrestored_workspace_issue(), '')
+        other = self.h.workspace / 'other.txt'   # a chmod during the group stop and a file turned into a symlink are both kept
+        other.write_text('o\n')
+        subprocess.run(['git', 'add', 'other.txt'], cwd=self.h.workspace, check=True)
+        recorded, before = rg.capture(self.h.workspace, keep), rc.git_snapshot(self.h.workspace)[0]
+        tracked.unlink()
+        tracked.symlink_to('other.txt')
+        with patch.object(co, '_stop_turn_group', side_effect=lambda sequence: other.chmod(0o600)), \
+                patch.object(rc.readonly_guard, 'restore', return_value='simulated failure'):
+            co._void_readonly_turn('reviewer', {'sequence': 11}, self.h.workspace, recorded, keep, self.h.root / '011-x', before)
+        self.assertEqual(co.state['unrestored_readonly_turn']['perms'], {'other.txt': recorded['perms']['other.txt'], 'tracked.txt': 0o600})
+        tracked.unlink()
+        subprocess.run(['git', 'checkout', '--', 'tracked.txt'], cwd=self.h.workspace, check=True)
+        other.chmod(recorded['perms']['other.txt'])
+        self.assertIn(f"file modes: other.txt {recorded['perms']['other.txt']:04o}, tracked.txt 0600",
+                      co.unrestored_workspace_issue())   # regular again, bits not yet
+        tracked.chmod(0o600)
+        self.assertEqual(co.unrestored_workspace_issue(), '')
 
     def test_a_second_change_holds_and_both_are_undone(self):
         for strict, mode in ((False, 'checkout'), (True, 'checkout'), (False, 'commit')):

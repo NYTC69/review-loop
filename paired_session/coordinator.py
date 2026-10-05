@@ -1948,14 +1948,13 @@ class Coordinator:
         try: self._stop_turn_group(receipt['sequence'])
         except RuntimeError as exc:
             receipt['voided'] = {'restored': False, 'reason': str(exc)}
-            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': f'process group could not be stopped (stop every process of that turn first): {exc}'}
-            self._save_unrestored()
+            self._record_unrestored(unrestored, workspace, recorded,
+                                    reason=f'process group could not be stopped (stop every process of that turn first): {exc}')
             return ReadOnlyTurnVoided(f'{role} mutated workspace and its process group could not be stopped ({exc}); '
                                       'stop it and restore the workspace by hand', restored=False)
         if not recorded or 'error' in recorded:
             receipt['voided'] = {'restored': False, 'reason': (recorded or {}).get('error', 'no pre-turn record')}
-            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': receipt['voided']['reason']}
-            self._save_unrestored()
+            self._record_unrestored(unrestored, workspace, recorded, reason=receipt['voided']['reason'])
             return ReadOnlyTurnVoided(f'{role} mutated workspace; there is no verified pre-turn record to restore it from '
                                       f'({receipt["voided"]["reason"]}); restore the workspace by hand', restored=False)
         diff = prefix.with_suffix('.workspace-change.diff')
@@ -1966,11 +1965,17 @@ class Coordinator:
         except Exception as exc: why = f'{type(exc).__name__}: {exc}'
         receipt['voided'] = {'evidence': str(diff), 'restored': why is None, **({'restore_failure': why} if why else {})}
         if why:
-            self.state['unrestored_readonly_turn'] = {**unrestored, 'reason': why, 'evidence': str(diff)}
-            self._save_unrestored()
+            self._record_unrestored(unrestored, workspace, recorded, reason=why, evidence=str(diff))
         if why: return ReadOnlyTurnVoided(f'{role} mutated workspace and the coordinator could not restore it ({why}); '
                                           f'restore it by hand, see {diff}', restored=False)
         return ReadOnlyTurnVoided(f'{role} mutated workspace; the turn is void and the workspace was restored (evidence: {diff})', restored=True)
+
+    def _record_unrestored(self, unrestored, workspace, recorded, **fields) -> None:
+        """roperm: the permission bits are taken as the record is written (after the group stop and any restore try): every recorded
+        path whose bits are not as before, a path now missing or no longer a regular file included, so clearing waits for them."""
+        bits = {name: recorded['perms'][name] for name in readonly_guard.perm_changes(workspace, recorded or {}, missing=True)}
+        self.state['unrestored_readonly_turn'] = {**unrestored, **fields, **({'perms': bits} if bits else {})}
+        self._save_unrestored()
 
     def _save_unrestored(self) -> None:   # on disk at once: no later exception of this turn may lose the record
         try: self.save()
@@ -1978,10 +1983,12 @@ class Coordinator:
 
     def unrestored_workspace_issue(self) -> str:
         """D-EFF category A: a read-only turn's change that could not be undone blocks every dispatch until the workspace is back to
-        the coordinator's pre-turn snapshot (content digest, HEAD, branch and index); then the record is cleared."""
+        the coordinator's pre-turn snapshot (content digest, HEAD, branch and index, and the permission bits the turn changed);
+        then the record is cleared."""
         if not (record := self.state.get('unrestored_readonly_turn')): return ''
         try: back = git_snapshot(self.workspace)[0] == record['snapshot'] and all(
-                 value == readonly_guard.marks(self.workspace)[key] for key, value in record['marks'].items())
+                 value == readonly_guard.marks(self.workspace)[key] for key, value in record['marks'].items()) and not (
+                 readonly_guard.perm_changes(self.workspace, record, missing=True))
         except (OSError, RuntimeError, subprocess.SubprocessError, KeyError): back = False
         if back:
             self.state.pop('unrestored_readonly_turn'); self.save()
@@ -1989,7 +1996,8 @@ class Coordinator:
         return (f'read-only turn {record["sequence"]} ({record["role"]}) changed the workspace and it could not be restored; manual '
                 f'restore needed ({record["reason"]}' + (f'; evidence: {record["evidence"]}' if record.get('evidence') else '') +
                 '); restore the workspace by hand to its state before that turn (content, HEAD, branch and index; the evidence diff '
-                'shows the change). The next run, resume, reject or accept clears this record by itself once the workspace matches '
+                'shows the change' + ('; file modes: ' + ', '.join(f'{name} {mode:04o}' for name, mode in sorted(record['perms'].items()))
+                                      if record.get('perms') else '') + '). The next run, resume, reject or accept clears this record by itself once the workspace matches '
                 'again; otherwise abort the run')
 
     @property

@@ -5,8 +5,9 @@ and the worktree as a tree object (the index copied to a temporary file, `git ad
 workspace, evidence() writes the diff from that tree to the worktree's tree now, and restore() puts back only what capture() recorded
 and then verifies that HEAD, the branch, the index and the worktree tree all equal the recorded values. Ignored files, submodule
 contents and refs other than HEAD and its branch are not recorded. The detection is the coordinator's snapshot (content and, since
-rel210-fixA, the executable bit) plus HEAD, the branch and the index; the recorded tree carries git file modes, so the undo restores
-a mode change too. The undo touches only the paths whose content or mode differs between
+rel210-fixA, the executable bit) plus HEAD, the branch, the index and (roperm) the full permission bits of every tracked and
+non-ignored untracked regular file; the recorded tree carries git file modes and the undo chmods the recorded bits back, so a
+mode change of any bit is undone and verified. The undo touches only the paths whose content or mode differs between
 the recorded tree and the tree now, and never deletes a path that was ignored when the turn began, whatever the turn did to the
 ignore rules."""
 import hashlib
@@ -24,12 +25,12 @@ except ImportError:   # run as a script from the package directory
     import candidate_tree
 
 
-def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None) -> str:
+def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None, raw: bool = False) -> str:
     proc = subprocess.run(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, env={**candidate_tree.git_env(), **(env or {})},
                           input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='surrogateescape', timeout=300)
     if check and proc.returncode:
         raise RuntimeError(f'git {args[0]} failed: {proc.stderr.strip()[:300]}')
-    return proc.stdout.strip() if proc.returncode == 0 else ''
+    return '' if proc.returncode else proc.stdout if raw else proc.stdout.strip()   # raw: a -z path list keeps edge whitespace
 
 
 def _index_path(workspace: Path) -> Path:
@@ -52,8 +53,33 @@ def marks(workspace: Path) -> dict:
             'index': hashlib.sha256(_git(workspace, 'ls-files', '-s', '-z').encode('utf-8', 'surrogateescape')).hexdigest()}
 
 
+def perms(workspace: Path) -> dict:
+    """roperm: the permission bits (st_mode & 0o7777) of every tracked and non-ignored untracked regular file. Git records only
+    the executable bit, so a chmod 0644 -> 0600 is invisible to the tree; one lstat per file, no content read."""
+    result = {}
+    for name in filter(None, _git(workspace, 'ls-files', '-co', '--exclude-standard', '-z', raw=True).split('\0')):
+        try: info = os.lstat(workspace / name)
+        except OSError: continue
+        if stat.S_ISREG(info.st_mode): result[name] = stat.S_IMODE(info.st_mode)
+    return result
+
+
+def perm_changes(workspace: Path, recorded: dict, missing: bool = False) -> list:
+    """The recorded regular files whose permission bits differ now. A file gone or no longer regular is the tree check's, unless
+    missing=True (an unrestored record: such a path keeps its constraint until it is a regular file with its old bits again)."""
+    changed = []
+    for name, mode in (recorded.get('perms') or {}).items():
+        try: info = os.lstat(workspace / name)
+        except OSError:
+            if missing: changed.append(name)
+            continue
+        if (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) != mode) or (missing and not stat.S_ISREG(info.st_mode)):
+            changed.append(name)
+    return sorted(changed)
+
+
 def moved(workspace: Path, recorded: dict) -> bool:
-    return any(recorded[key] != value for key, value in marks(workspace).items())
+    return any(recorded[key] != value for key, value in marks(workspace).items()) or bool(perm_changes(workspace, recorded))
 
 
 def state(workspace: Path, keep: Path) -> dict:
@@ -87,7 +113,7 @@ def capture(workspace: Path, keep: Path) -> dict:
         if time.monotonic() > deadline: break
         meta[name] = _lstat(workspace / name)
     bounded = len(meta) == len(ignored)
-    return {**state(workspace, keep), 'ignored': ignored, 'ignored_meta': meta if bounded else None,
+    return {**state(workspace, keep), 'perms': perms(workspace), 'ignored': ignored, 'ignored_meta': meta if bounded else None,
             **({} if bounded else {'ignored_note': f'ignored set too large: not checked ({len(ignored)} entries)'})}
 
 
@@ -95,7 +121,9 @@ def evidence(workspace: Path, recorded: dict, keep: Path, path: Path) -> dict:
     """Write the turn's change (HEAD, branch, index and the worktree diff) to path; return the state now."""
     now = state(workspace, keep)
     lines = [f'{key}: {recorded[key]!r} -> {now[key]!r}' for key in ('head', 'branch', 'index', 'tree') if recorded[key] != now[key]]
-    diff = _git(workspace, 'diff', '--binary', '--no-ext-diff', '--no-textconv', recorded['tree'], now['tree'], check=False)
+    lines += [f'mode: {name} {recorded["perms"][name]:04o} -> {stat.S_IMODE(os.lstat(workspace / name).st_mode):04o}'
+              for name in perm_changes(workspace, recorded)]   # roperm: bits the git diff below does not show
+    diff =_git(workspace, 'diff', '--binary', '--no-ext-diff', '--no-textconv', recorded['tree'], now['tree'], check=False)
     path.write_text('\n'.join(lines) + '\n\n' + diff + '\n', errors='surrogateescape')
     return now
 
@@ -125,8 +153,11 @@ def restore(workspace: Path, recorded: dict, keep: Path) -> Optional[str]:
         index = _index_path(workspace)
         if recorded['index_present']: shutil.copy2(keep / 'index', index)
         else: index.unlink(missing_ok=True)
+        for name in perm_changes(workspace, recorded):   # roperm: after checkout-index, which writes only git's 0644/0755
+            os.chmod(workspace / name, recorded['perms'][name])
         now = state(workspace, keep)
+        bits = perm_changes(workspace, recorded)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         return f'{type(exc).__name__}: {exc}'
-    differs = [key for key in ('head', 'branch', 'index', 'tree') if recorded[key] != now[key]]
+    differs = [key for key in ('head', 'branch', 'index', 'tree') if recorded[key] != now[key]] + (['permission bits'] if bits else [])
     return f'{", ".join(differs)} still differ after the restore' if differs else None

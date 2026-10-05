@@ -163,6 +163,8 @@ def mutate(mode):
         subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'reviewer commit'], check=True)
     elif mode == 'chmod':   # rel210-fixA: a mode change alone, content, HEAD and index unchanged
         os.chmod(root / 'tracked.txt', 0o755)
+    elif mode == 'chmod600':   # roperm: non-executable permission bits only, invisible to git
+        os.chmod(root / 'tracked.txt', 0o600)
     elif mode == 'rm':
         target = root / 'tracked.txt'
         if target.exists():
