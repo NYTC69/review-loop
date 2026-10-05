@@ -57,6 +57,106 @@ New runs are `efficient` by default ([`paired_session/docs/efficient-mode.md`](.
 ## Config mapping
 Set legacy keys map to one-run paired-session options: `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` / `--max-exec-rounds`; the start line shows the effective values and which came from `.review-loop/config.md`. `auto_commit: true` in `.review-loop/config.md` is not applied (set `auto_commit` in the operator profile; with it, `accept` makes one local commit of the accepted tree) and prints a warning; `reviewer_model` / `executor_model` print a warning when set to anything other than empty or `inherit` (models come from the profile). Other legacy keys (`reviewer`, `review_focus`, `review_style`, `quality_focus`, ...) are not mapped; `handsfree` only means that the paired-session skill cannot ask its stage A questions, and it never runs `accept` or `reject`. paired-session caps are hard (a HOLD), not a prompt; unset defaults are plan 3 / exec 4 rounds (legacy 3/3).
 
+## Legacy → paired-session map (after v2.11.0)
+How close legacy is to retirement: every legacy entry, flag, skill, config key and step, with its paired-session equivalent. Source: the legacy-gap inventory of 2026-10-05, updated for D-LG1 (review-only entry, v2.11.0) and the D-LG2 design.
+
+Status values:
+- **covered**: an equivalent exists, or none is needed once legacy is gone (marked "none needed").
+- **planned**: designed or scheduled, under the named decision. M7 is the seeded-defect comparison.
+- **owner decision**: the owner must decide; the number is the item of the owner list at the end of this section.
+
+**Entries and skills**
+
+| Legacy | paired-session equivalent | Status |
+|---|---|---|
+| `/review-loop` with fresh work (Claude), a fresh review-loop request (Codex) | the paired-session skill runs `run --lifecycle-mode on` | covered |
+| Code-exists auto-route (review an existing change) | `run --review-only [--base <ref>]` (D-LG1) | covered |
+| `/review-loop:execute --review-only` | `run --review-only`; the legacy command stays until E-8 is revisited, and M7 needs it from a pinned copy | covered |
+| Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | owner decision (1) |
+| `/review-loop:plan` (both hosts) | `run --stop-after-plan`: `/review-loop:paired-session <work item> --plan-only` (Claude), or a request to stop after the plan (Codex, PSE) | covered |
+| `/review-loop:execute --session <uuid>` | `resume` of a paired run (after `--stop-after-plan`) | covered |
+| `/review-loop:execute --plan <text\|path>` | plan text in `WORKITEM.md`, then drafted and reviewed again (no `plan_source` import) | owner decision (1) |
+| `--stop-after exec-round` | operator CLI `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route) | planned (M7) |
+| `--stop-after before-polish` / `before-docs` / `before-security` | none; a HOLD plus `resume` partly substitutes | owner decision (7) |
+| `--stop-after before-delivery` | DONE = acceptance pending | covered |
+| `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
+| Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
+| `/review-loop:review-pr` | a report mode on a materialized PR copy (D-LG2 design under review; nothing is posted or committed) | planned (D-LG2) |
+| `/review-loop:code-quality-loop` | none yet | planned (D-LG2, after the first real LG1 run, Q6) |
+| `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
+| `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
+| `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
+| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | owner decision (15) |
+| Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | owner decision (5) |
+
+**Config keys** (`.review-loop/config.md`)
+
+| Key | paired-session equivalent | Status |
+|---|---|---|
+| `reviewer`, `codex_reviewer_backend` | role vendors from the operator profile or `--reviewer-vendor` | covered |
+| `reviewer_model`, `executor_model` | `--reviewer-model` / `--author-model` or the operator profile; warned when set to anything other than empty or `inherit`, not applied | covered |
+| `codex_reviewer_model`, `codex_executor_model` | `--reviewer-model` / `--author-model` or the operator profile; silently ignored | covered |
+| `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | owner decision (8) |
+| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a hard HOLD, not a prompt; exec default 4 (legacy 3) | owner decision (6) |
+| `auto_commit` | operator-profile `auto_commit`: one hook-free local commit on accept | covered |
+| `commit_message_prefix` | none: the commit message is fixed | owner decision (8) |
+| `docs_file` | `--docs-file` | covered |
+| `handsfree` | stage A questions fail; `accept` / `reject` are never run | owner decision (5) |
+| `review_focus`, `review_style`, `quality_focus` | none (ignored) | owner decision (8) |
+| `skip_quality_polish` | `--skip-quality-polish` | covered |
+| `adversarial_gate_skip_paths` | none: `skip_globs` is frozen but not read, and the lifecycle refuses `--adversarial-gate off` | owner decision (8) |
+| `cross_vendor_review` | the default roles are cross-vendor; no same-vendor detection | owner decision (8) |
+| `context_persist_threshold` | none needed: state lives in the run directory | covered |
+| `entry` | none needed: goes away with legacy | covered |
+
+**Workflow steps and integrations**
+
+| Legacy step | paired-session equivalent | Status |
+|---|---|---|
+| Plan drafting and review; implementation and execution review; stuck detection; terminal adversarial gate (3.4); quality-polish specialists (3.5: language reviewers, code-reviewer, silent-failure-hunter, pr-test-analyzer); docs (3.6); security (3.7); delivery gate and `auto_commit`; evidence and usage | PLAN / EXEC with shadow, FIELD-5 structural HOLD, gate, POLISH-Q, DOCS, SECURITY, accept, receipts and `usage.json` | covered |
+| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | none | owner decision (4) |
+| comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | planned (D-LG2) |
+| Dispute / triage of a finding | owner-only disposition; operator `note` | owner decision (9) |
+| Chinese delivery report with findings, rounds and token totals | a shorter report, only at ACCEPTED | owner decision (14) |
+| Push / PR | none in either workflow; `accept` refuses external delivery | covered |
+| Compass BACKLOG close | none needed: legacy never closed items either; no close stage (D-3) | covered |
+| Compass checkpoint injection, MemPalace historical context | none | owner decision (10) |
+
+**Runtimes and platforms**
+
+| Legacy | paired-session equivalent | Status |
+|---|---|---|
+| Claude Code plugin; Codex Stage 1 (natural-language triggers) | `skills/paired-session` and `.agents/skills/paired-session` with the shared entry contract | covered |
+| `reviewer: codex \| subagent`, `.codex/agents/*.toml`, `scripts/run_claude_reviewer.py` | the coordinator launches its own role CLIs | covered |
+| Parallel reviewer fan-out | none needed: roles run in sequence (wall time only) | covered |
+| macOS | the full path | covered |
+| Linux (legacy works today) | with the `entry` key absent, a non-macOS host falls back to legacy; with `entry: paired-session` there is no host check; no real Linux run recorded | owner decision (12) |
+| Windows | unsupported in both | covered |
+| CI and off-macOS tests | the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`); the workflow location is to be confirmed | owner decision (13) |
+
+**Owner decisions referenced above:**
+- (1) map or remove `plan` and `execute` (E-8);
+- (4) port or formally drop the simplifier and test-consolidation writers;
+- (5) handsfree: a reviewer decision path, or HOLD to a human;
+- (6) soft limits: keep hard caps or add a continue path, and align the exec default;
+- (7) intermediate `--stop-after` stops;
+- (8) the unmapped keys: map, warn or drop;
+- (9) the dispute flow;
+- (10) Compass and MemPalace injection;
+- (12) Linux and Windows;
+- (13) CI;
+- (14) the delivery report;
+- (15) the stage A fallback after retirement.
+
+Push and PR delivery stays an owner decision (D8).
+
+**Must stay runnable for M7:** until M7 is scored, the legacy arm needs these from a pinned copy, even if the live plugin drops them:
+- `execute --review-only` with `--stop-after exec-round` or `before-polish`;
+- `reviewer: subagent`;
+- `adversarial_gate_skip_paths`;
+- `skip_quality_polish`;
+- handsfree.
+
 ## Known gaps
 Details and evidence: [`paired_session/docs/1c-safety-controls.md`](../paired_session/docs/1c-safety-controls.md) and ADR-11 in `DECISIONS.md` (added with the lifecycle in the same release).
 - **1C remains an inventory, not a closure.** Owner decision E-12 (2026-10-04) means it no longer gates the default entry; it does not mean these gaps are fixed. The lifecycle runs with a sandboxed author, fresh reviewers and the adversarial gate on; a probe PASS or PASS_RESIDUAL_RISK is required only in strict mode.
