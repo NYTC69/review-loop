@@ -23,6 +23,9 @@ From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
 `/review-loop:paired-session <work item>` is the explicit entry. See
 [`docs/paired-session-migration.md`](docs/paired-session-migration.md).
+The legacy workflow is deprecated since v2.12.0: it still runs unchanged and prints a
+one-line notice when you choose it, and it will be removed only after review-pr and
+code-quality-loop are ported (the removal preconditions are in the migration guide).
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
@@ -127,7 +130,8 @@ Codex.
 
 A fresh review-loop request hands off to the coordinator by default from
 v2.10.0; ask Codex to "use paired-session for this task" to name it explicitly,
-or "use the legacy review-loop workflow" for the legacy path.
+or "use the legacy review-loop workflow" for the legacy path (deprecated since
+v2.12.0; it prints a one-line notice).
 It reads non-program workspace defaults from `.review-loop/paired-session.json`
 when no `--config` is given; the skill passes `~/.config/review-loop/paired-session.json`
 as `--config` when that file exists and you name no other profile. Program and role settings require an external operator

@@ -16,10 +16,10 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
 `.review-loop/config.md` once, before allocating a UUID or acquiring the lock:
 - The user explicitly asks for the legacy workflow (for example "use the
   legacy review-loop workflow"): ignore `entry`, do not read or validate it, and
-  print none of its notices.
+  print none of its notices; print only the deprecation notice below.
 - Absent: paired-session, the default entry; route it exactly as `paired-session` below,
   but print `review-loop: paired-session is the default entry; set "entry: legacy" in .review-loop/config.md or ask for "the legacy review-loop workflow"` instead of the routed notice.
-- `legacy`: legacy, with no entry notice.
+- `legacy`: legacy, with no entry notice; print only the deprecation notice below.
 - Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
 - Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
 - `paired-session`: fresh work and a review-only code target hand off (an existing plan or session does not). Print `review-loop: paired-session entry (entry set in .review-loop/config.md)`,
@@ -35,6 +35,9 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
   `review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`.
   Decided once, before session creation; once a legacy session file or lock
   exists, a re-detection or user override never hands off.
+
+Deprecation notice (the explicit legacy request and `entry: legacy` only; once, before the UUID and lock; it changes
+no routing): `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
 
 Stage A checks (before the first `bin/paired-session` command), read-only. The host, CLI,
 outside-sandbox and Codex-home rows run here before the handoff; the Questions row runs in

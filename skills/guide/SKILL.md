@@ -63,7 +63,12 @@ session already exists. Two explicit entry commands sit beside it:
 | Command | What it does |
 |---|---|
 | `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
-| `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice) |
+| `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice; it prints the deprecation notice) |
+
+The legacy workflow is deprecated since v2.12.0. It still runs unchanged; `entry: legacy`,
+`/review-loop:legacy`, `/review-loop:plan` and `/review-loop:execute` print a one-line
+deprecation notice. Removal waits for the review-pr and code-quality-loop ports and the
+open owner rows of the legacy map in `docs/paired-session-migration.md`.
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
 With the key absent or `paired-session`, fresh work and a review-only request on
@@ -79,7 +84,7 @@ such question counts as unanswered) falls back to legacy with a notice. With `en
 same failure refuses (there is no host check, and unavailable background or
 outside-sandbox execution is reported as HOLD). Once the coordinator has
 started, a refusal or HOLD is reported, never turned into a legacy run.
-`entry: legacy` keeps the legacy workflow without a notice. Roles come from the
+`entry: legacy` keeps the legacy workflow and prints only the deprecation notice. Roles come from the
 operator profile you name or `~/.config/review-loop/paired-session.json`;
 without one, Codex is the author and gate and Claude the reviewer.
 Runs are `efficient` by default: every sandbox applies, but no permission-probe

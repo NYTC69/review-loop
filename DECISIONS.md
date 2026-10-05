@@ -100,6 +100,17 @@ entry; never edit history.
 - **Options considered**: (A) Keep the new architecture alongside the old one without changing the primary daily entry until all four replacement criteria pass; (B) after 1A–1C readiness and explicit authorization for 1D, allow paired-session to become the primary daily entry while retaining legacy as an explicit control until all four criteria pass.
 - **Decision**: Adopt (B). Criterion (1) decides WHETHER; criteria (2)–(4) decide WHEN. (1) The fresh reviewing roles must catch most seeded regressions that keep the suite green; run the same seeded diffs through the old reviewer path as control; the new path must be no worse than the old. If both miss, that is a reviewer limit, not an architecture verdict; if only the new one misses, fix its review design first. (2) Three consecutive real runs with zero coordinator defects and an overseer limited to scoping the work item and verifying at the end; measure overseer steady-state token cost and include it in per-item cost. (3) A first-class user-acceptance feedback phase exists in the coordinator. (4) Coverage includes at least one repo other than poker-tools, one large task, and one real subscription-limit HOLD followed by a successful resume. Paired-session may become the primary daily entry only after 1A–1C readiness and an explicit owner go for 1D. 1D may not switch the default route until there is an owner decision or explicit mapping on parity with legacy polish, docs, security stages, and specialist reviewer agents; until then those stages remain reachable through the explicit legacy/control path. The old implementation may be retired only after all four criteria pass. owner 2026-09-24 decision.
 - **Consequences**: After 1A–1C readiness and explicit go for 1D, the daily entry may switch to paired-session, subject to the parity decision or explicit mapping for legacy polish, docs, security stages, and specialist reviewer agents; until then those stages remain reachable through the explicit legacy/control path. This does not authorize retirement of the old implementation, which remains the explicit control until all four replacement criteria pass, or authorize starting a real task.
+- **Amendments**: (2026-10-05, D-READY, owner) The owner, verbatim: "我觉得已经跑了很多了，bob和tools两个repo这两天一直在跑，也在ship 工作，而且一周前还遇到过额度用完 hold，reset了继续的情况，所以我觉得已经算ready了".
+  - Supervisor reading, recorded as such: the replacement gate is treated as MET by field evidence.
+    - poker-news-bot ("bob") and poker-tools ("tools") ran and shipped real work on paired-session over the preceding days.
+    - About a week earlier a real subscription-limit HOLD was followed by the reset and a successful resume. This is owner-attested; the supervisor did not locate the run id.
+  - Criterion (1) (M7) no longer gates retirement; M7 stays an optional cost and quality study.
+  - The evidence collected before the ruling is in `paired_session/docs/legacy-deprecation-readiness.md`: (3) and (4a) met; (2) and (4b) partial or open; (1) and the recorded part of (4c) not met.
+  - Legacy is deprecated from v2.12.0: choosing it prints a one-line notice, and routing and behavior are unchanged.
+  - Code removal waits for three things, so that nothing only legacy can do is lost:
+    - the review-pr port (D-LG2; its design is parked for the owner's round 4);
+    - code-quality-loop (the Q6 memo, owner);
+    - the 18 owner rows of the legacy map (`docs/paired-session-migration.md`).
 
 ---
 

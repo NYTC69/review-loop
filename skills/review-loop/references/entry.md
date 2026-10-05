@@ -11,7 +11,8 @@ Reviewer backend availability check (`which codex` for
 
 Resolve `entry` (exact values `legacy` and `paired-session` only):
 - Absent: paired-session, the default entry; route it exactly as `paired-session` below.
-- `legacy`: legacy, with no entry notice.
+- `legacy`: legacy, with no entry notice. Print only the one-line deprecation notice, once, before Step 0.5:
+  `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
 - Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
 - Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
 - `paired-session`: apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock.

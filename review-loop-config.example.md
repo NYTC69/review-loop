@@ -20,6 +20,8 @@ executor_model: inherit         # shared Claude/plugin executor override; "" and
 # Fresh work and review-only requests (run --review-only) are routed; plan-exists and resume stay legacy. `/review-loop:legacy` ignores this key.
 # Absent key = paired-session (the default entry), which prints a one-line notice. Codex honors this key the same way;
 # its explicit legacy control is the request "use the legacy review-loop workflow".
+# The legacy workflow is deprecated since v2.12.0 (removal after review-pr and code-quality-loop are ported);
+# choosing it prints a one-line notice.
 # Set `entry: legacy` to keep the legacy workflow:
 # entry: legacy
 soft_limit_plan: 3              # after N rounds, ask user to continue if CRITICALs remain

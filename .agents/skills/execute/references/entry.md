@@ -7,6 +7,10 @@ Read selected sections through `scripts/read_protocol.py`; shared protocol rules
 
 Execute before any lock or session write.
 
+When this skill is invoked directly (not reached from the review-loop entry, which prints its own), first print the
+one-line deprecation notice once; it changes nothing else:
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
+
 1. **Entry-mode mutual exclusion**: count how many of `--session`,
    `--plan`, `--review-only` are present. If ≠ 1 → print usage and
    exit with non-zero.
