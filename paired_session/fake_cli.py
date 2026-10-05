@@ -199,6 +199,12 @@ def main():
         if documents:
             (Path.home() / '.claude' / 'plugins' / 'installed_plugins.json').write_text(json.dumps(documents.pop(0), indent=2))
             queue.write_text(json.dumps(documents))
+    foreign = os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG')   # P0: another process rewrites the DEFAULT ~/.codex/config.toml
+    marker = {'author': 'implementer. Phase: EXEC.', 'probe': 'Role: permission-system probe'}[
+        os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG_ON', 'author')]
+    if foreign and marker in prompt and not Path(foreign + '.done').exists():   # once, during that turn
+        (Path(os.environ['HOME']) / '.codex' / 'config.toml').write_text(Path(foreign).read_text())
+        Path(foreign + '.done').write_text('done')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
@@ -293,10 +299,6 @@ def main():
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
-        foreign = os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG')   # P0: another process rewrites the DEFAULT ~/.codex/config.toml
-        if foreign and 'Phase: EXEC' in prompt and not Path(foreign + '.done').exists():   # once, during an author turn
-            (Path(os.environ['HOME']) / '.codex' / 'config.toml').write_text(Path(foreign).read_text())
-            Path(foreign + '.done').write_text('done')
         if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
             subprocess.run(['git', 'add', '-A'], check=True)
             subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'fake author commit'], check=True)

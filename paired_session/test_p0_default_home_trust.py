@@ -69,6 +69,32 @@ class DefaultHomeAttributionTests(unittest.TestCase):
         changes = self.check(lambda: self.default.write_text(BASE + '\n[projects."\\U00000061"]\ntrust_level = "trusted"\n'))
         self.assertEqual(changes['status'], 'FAIL')
 
+    def test_thousands_of_existing_tables_are_checked_in_linear_time(self):
+        import time
+        many = BASE + ''.join(trust(f'/old/w{index}') for index in range(3000))
+        self.default.write_text(many)
+        began = time.monotonic()
+        changes = self.check(lambda: self.default.write_text(many + trust('/other/new')))
+        self.assertLess(time.monotonic() - began, 1.0)
+        self.assertEqual(changes['status'], 'PASS', changes['findings'])
+
+    def test_own_path_spellings_still_fail(self):
+        link = self.ws.parent / 'ws-link'
+        link.symlink_to(self.ws)
+        spellings = [str(link), str(self.ws) + '/']
+        if os.uname().sysname == 'Darwin':
+            spellings.append(str(self.ws.resolve()).upper())
+        for spelling in spellings:
+            with self.subTest(spelling):
+                self.default.write_text(BASE)
+                changes = self.check(lambda: self.default.write_text(BASE + trust(spelling)))
+                self.assertEqual(changes['status'], 'FAIL')
+
+    def test_an_undecodable_file_fails_closed(self):
+        self.default.write_bytes(b'# \xff\n' + BASE.encode())
+        changes = self.check(lambda: self.default.write_bytes(b'# \xff\n' + (BASE + trust('/other/b')).encode()))
+        self.assertEqual(changes['status'], 'FAIL')
+
     def test_other_default_config_changes_still_fail(self):
         own = str(self.ws.resolve())
         for name, text in (('own path trust', BASE + trust(own)),                       # the run's own Codex escaped
@@ -122,6 +148,27 @@ class DefaultHomeTurnTests(unittest.TestCase):
                     if row['change'] == 'foreign-default-home-trust-entry']
         self.assertEqual(recorded, [{'file': 'codex_default_config', 'change': 'foreign-default-home-trust-entry',
                                      'added': ['/Users/someone/paired-runs/ws15'], 'removed': []}])
+
+    def test_a_foreign_trust_entry_during_the_permission_probe_passes_it(self):
+        import subprocess
+        (self.test_home / '.codex' / 'config.toml').write_text(BASE)
+        iso = self.root / 'iso-codex'
+        iso.mkdir()
+        (iso / 'config.toml').write_text('model = "gpt-6-luna"\n')
+        foreign = self.root / 'foreign.toml'
+        foreign.write_text(BASE + trust('/Users/someone/paired-runs/ws15'))
+        command = self.command()
+        command[2] = 'permission-probe'
+        result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, env={
+            **os.environ, 'CODEX_HOME': str(iso), 'FAKE_FOREIGN_DEFAULT_CONFIG': str(foreign),
+            'FAKE_FOREIGN_DEFAULT_CONFIG_ON': 'probe'})
+        self.assertTrue((self.root / 'foreign.toml.done').exists(), result.stdout + result.stderr)   # written during the probe
+        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
+        changes = report['global_config_changes']
+        self.assertEqual((changes['status'], changes['findings']), ('PASS', []), result.stdout)
+        self.assertIn({'file': 'codex_default_config', 'change': 'foreign-default-home-trust-entry',
+                       'added': ['/Users/someone/paired-runs/ws15'], 'removed': []}, changes['expected_changes'])
+        self.assertNotIn('unexpected-global-config-change', report.get('failure_reasons', []))
 
     def test_a_foreign_non_trust_change_still_holds(self):   # decision (a)
         result, state = self.run_with_foreign_default(BASE.replace('gpt-6.1-sol', 'other-model'))
