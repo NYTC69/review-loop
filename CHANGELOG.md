@@ -1,5 +1,65 @@
 # Changelog
 
+### v2.10.0：paired-session 成为默认入口（完整 lifecycle，默认 efficient 安全模式）；`entry: legacy` 可退回旧流程
+
+- **升级须知**：
+  - **默认入口变了。** 没有 `entry` 键时，新的 `/review-loop`（Claude）或 review-loop 请求（Codex）交给 paired-session，并打印一行默认入口提示。想继续用 legacy：在 `.review-loop/config.md` 写 `entry: legacy`（v2.9.x 上也有效，可以先写再升级），或用 `/review-loop:legacy`（Codex 说 "use the legacy review-loop workflow"）。已有 plan、代码或 session 的工作，以及 `/review-loop:plan`、`execute`、`review-pr`，仍走 legacy。
+  - **前提条件。** 需要 macOS、各角色所需的 CLI（默认 Codex 当 author 和 gate、Claude 当 reviewer）、一个专用 worktree 和测试命令。缺了任何一项：没有 `entry` 键时带提示回退 legacy；写了 `entry: paired-session` 时直接拒绝。
+  - **默认安全模式是 efficient。** 和 strict 相比只少 C 类：
+    - 派发前不要求 permission-probe PASS；
+    - 不要求 Claude author 的 opt-in 或 probe；
+    - 不做 Codex CLI 沙箱契约校验；
+    - `--accept-*` 豁免照收，但不记录（打印 NOTE）；
+    - 证据守卫只记 `would_hold`，不拦截。
+    所有沙箱、Codex 能力扫描、全局配置检查、敏感环境变量屏蔽、"必须观察到测试命令"、run 目录在 workspace 之外，这些两种模式都照旧。
+  - **strict 怎么开。** `--strict`，或在 operator profile 写 `"safety_mode": "strict"`；workspace 里的配置不能设置它。模式在创建 run state 时冻结：不同的模式会被拒绝，只有"只跑过 probe"的 run 可以用 `--strict` 升级。strict 的 lifecycle run 拒绝 `--accept-unverified-claude-author` 和 `--accept-probe-skip`（D-7）。
+  - **旧 run 按 strict 恢复。** v2.9.x 上启动的 run 没有 `safety_mode`，恢复时按 strict 处理，保持 `lifecycle_mode=off`，到 DONE 结束。Claude author 的 probe PASS 绑定插件版本：这类 run 在 `resume`/`reject` 前要重跑一次 `permission-probe`。另外，默认的 gate prompt 文件属于程序绑定，插件安装路径变了也会要求重跑。不要在 run 进行中换版本。新的 efficient run 不需要 probe。
+  - **同一棵树会被重新审查。** 快照现在把可执行位记为 `exec:<sha>`。所以跨版本 resume 时：含可执行文件的树，旧的批准和 accept intent 会失效（要重新审查）；被旧版本拒绝过的这类树，`rejected_digests` 认不出来。auto_commit journal 从未在正式版里出现过；内部候选版留下的旧 journal 会 HOLD，只能 abort。
+- **feat（默认入口，v210-entry / U0–U6，E-1..E-12）**：两份 paired-session skill 默认走 efficient：直接 `run`，不先跑 probe；strict 仍是先 probe 再 run。skill 总是传 `--lifecycle-mode on`（D-4）。`auto_commit` 只从 operator profile 读取，`.review-loop/config.md` 里的 `auto_commit: true` 只会警告（E-4）。agent 只在你在对话里明确接受后才执行 `accept`，handsfree 下从不执行（E-6）。不再标注 "experimental"（E-12）。
+- **feat（worktree lifecycle W，lane A W1a–W3c）**：EXEC 收敛之后，依次在同一 worktree 里跑 FINISH → POLISH-Q（三个 specialist，各自负责自己的 finding）→ DOCS（docs writer 加 docs review，review 必须观察到测试）→ SECURITY（`sensitive_policy` 和 `security_preflight.py` 两个扫描，加一个 fresh security reviewer），然后到 DONE 等待接受。任何一步改了树，都从 EXEC 审查和 gate 重放。
+- **feat（accept / reject / auto_commit）**：
+  - `accept --expect` 的 intent 绑定所有阶段 receipt，并写一份中文 `delivery-report.md`；W run 拒绝 `--override-rejection`。`reject` 重开 EXEC。
+  - operator profile 设了 `auto_commit: true` 时，接受会做一次不触发 hook 的本地提交，内容正好是被接受的 manifest，从不 push。流程是先写 journal，再用 CAS 移动 ref（6878582 起绑定 accept 时的分支和 index；文件权限取自 manifest，不取自当前 lstat），最后同步 index。
+  - 中途崩溃后可以用 `accept --expect <journal digest>` 补完。被取代或已 ABORTED 的 run 不能重放（w3c）。
+  - FINISH/DOCS writer 改了 HEAD、分支或 index 会 HOLD（writer guard），HOLD 信息保留回合的原始错误。
+- **feat（D-EFF A/B 类，两种模式都生效）**：
+  - **只读保护**：reviewer、gate 或 shadow 回合改动了工作区（包括只改权限的 chmod），这个回合作废，判定不采用。差异存到 `evidence/`。先确认进程组已停，再按回合前的记录恢复，并核验 HEAD、分支、index 和树；然后重派一次。W 阶段的这次重派计入该阶段的上限。第二次再改动，或恢复、捕获失败，都会 HOLD。
+  - **恢复失败**：恢复失败的记录写进 `unrestored_readonly_turn`。只要它还在，`run`、`resume`、`reject`、`accept`（包括 `--override-rejection`）和任何 `--scope-change` 都会被拒。手动把工作区恢复原样后，记录自动清除；否则只能 abort。
+  - **author 守卫**：author 回合改变 HEAD 或分支（commit、reset、checkout）一律 HOLD。
+- **feat（证据守卫 eg-wire / eg-cwd）**：
+  - 每个工具调用都按类型分类，只有 PROTECTED 才 HOLD；像 workspace 里 `tests/evidence/` 这类误报不再 HOLD。解析不了的调用退回原来的子串守卫，次数记在 receipt 里。
+  - Codex 命令的工作目录改从 rollout 读取，前提是同一命令的各条记录一致。
+- **fix（probe）**：
+  - 只有敏感环境变量名字变了时，probe PASS 仍然有效（FIELD-10）；PATH 或程序变了仍要重跑，拒绝信息会写明哪一项变了。
+  - 失败的 probe 报告在名字变化后仍算负面证据（env-name）。
+  - probe 允许执行的命令被 Claude CLI 超时杀掉时，报 `allowed-command-timeout (<N> s)`（FIELD-12）。
+  - 同一父目录下的 run 共用一把 probe 锁，Claude author probe 树改名为 `paired-session-claude-probe-tree-*`；锁一直被占时，在写任何 state 之前报 REFUSED（FIELD-13）。
+- **fix（审查历史，FIELD-11）**：plan 里带审查历史（例如 F001 这类 ledger 编号）时，在 PLAN 批准那一刻就拦下，不再拖到最后的 gate。如果是最后一轮 PLAN，author 额外得到一次只改写、不计轮数的回合，内容写到 `plan-rewrite.md`。
+- **fix（operator 证据，修复 v2.9.5 的已知限制）**：author 回合看过的每一棵树（包括失败的回合、被杀的回合），其上的 operator verification 都作废。
+- **fix（v210-field）**：CLI 回合仍在运行或状态不确定时，`accept` 拒绝，提示先收尾或 abort；`--help` 里 attach-verification 的参数归成一组。
+- **chore（models-b，MEDIUM-3）**：
+  - Claude 的 reviewer backstop 和 cheap-tier 默认值改为 `claude-opus-5-5`；`.codex/agents` 和 runtime regression 的 Codex 默认值改为 `gpt-6.1-sol`；`docs/install-codex.md` 要求 codex-cli 0.159.2 或更新。
+  - report-only agent 的 frontmatter 保留 Bash，但只用于直接调用；launcher 路径仍然只读（文档对齐，MEDIUM-3）。
+- **refactor（v210-dedup）**：两份 paired-session 入口 skill 的共用规则移到 `docs/protocol/paired-session-entry.md`，通过 `read_protocol.py --stage entry-paired-session` 加载；SKILL.md 只留宿主相关的规则。行为不变。
+- **fix（lane C eff-e）**：Codex 跨厂商审查提出的 A 类问题，两种模式都生效：
+  - `safety_mode` 不能由 workspace、run 目录或 author 临时目录里的 `--config` 设置，创建时和 probe-only 升级时都一样；
+  - 只读回合改动或删除了已有的被忽略条目（按 git 列出的条目记录类型、大小、mtime、权限、链接目标）时，判定作废并 HOLD，不恢复、不重派；条目数或耗时超过上限时，receipt 写明未检查；
+  - 回合结束后工作区读不出来（例如 `.git/index` 损坏）时，按无法验证的只读违规处理：写入恢复阻断记录，恢复原样前派发和 accept 都被拒绝。
+- **fix（发版前真实 run 发现，rel210-fixCG）**：Codex 能力扫描不再因为 `$CODEX_HOME/plugins/cache` 里的插件 bundle（例如 Codex 给每个 ChatGPT 登录自动装的 chatgpt-global 插件）而 HOLD。coordinator 每次派发 Codex 角色都带 `-c features.plugins=false`，这些 bundle 不会生效；扫描把它们记为 inert 并写进 receipt。去掉这个启动参数时，扫描照旧报出来。config.toml 里的 MCP/apps、项目配置、requirements 和 MDM 检查不变。之前用默认 `~/.codex` 走 Codex 角色时，第一次派发就会 HOLD。
+- **fix（发版前真实 run 发现，FIELD-15 / FIELD-16）**：Claude 侧的 run 目录从 `${CLAUDE_PLUGIN_DATA}`（在 `~/.claude` 下，Claude Code 视为敏感路径，每次都要确认，无交互时直接被拒）移到 `${XDG_STATE_HOME:-~/.local/state}/review-loop/runs/<UUID>/`。建 run 目录、写 WORKITEM.md 等准备步骤失败时，一律报 `stage A failure: <reason>`，默认入口按文档回退 legacy 并打印提示，不再悄悄换流程。无交互的 `claude -p` 会话结束回合时会杀掉后台的 run，驱动不了 paired-session，请用交互式会话（FIELD-17，已写进 skill 和迁移文档）。
+- **fix（发版前真实 run 发现，FIELD-18）**：入口 skill 加载协议时，原来把 `.review-loop/tmp/protocol-*.md` 写进产品工作区；这些未跟踪文件会被当成本次改动的一部分去审查、可能被 auto_commit 提交，并触发 shadow 的独立性检查而 HOLD。现在 review-loop 入口和 paired-session 入口（Claude、Codex 两边）把协议写到系统临时目录下按用户隔离的目录里；共享入口规则写明 run 开始前产品工作区里不能有入口 skill 留下的文件。
+- **已知限制**：
+  - 只读回合把 tracked 文件的非执行权限位改掉（例如 0644 改成 0600）检测不到。git 不记录这些位，它们不会被审查或交付，只读沙箱是第一道防线。
+  - 被忽略条目的检查只看条目本身的元数据：折叠目录内部的改动、记录之外新增的被忽略文件检测不到；CLI home 或测试缓存放在 workspace 的被忽略路径里会让每个只读回合 HOLD，请放到 workspace 之外。
+  - auto_commit 绑定的是 accept 那一刻的分支（由 `--expect` 授权），不是 run 开始时的分支。
+  - candidate-tree 隔离（独立候选检出、coordinator 测试沙箱）仍是之后的加固项；没有 Compass BACKLOG close 阶段；不提供 push、PR、merge。
+  - `accept`/`reject` 没有 operator 身份认证；DONE 不等于接受。
+  - 干净的 Claude-author probe PASS（M6 残留项）只在 strict 下需要，不是本版的发版条件（D-EFF）。
+  - 候选测试沙箱只在 macOS 上可用。
+- **审查与验证**：
+  - 每个批次 Claude Opus 审查最多 2 轮。Codex gpt-6.1-sol 跨厂商审查（只在本版做）分三部分：W lifecycle 与交付、efficient 模式与 A/B 类、入口与文档；前两部分提出的 7 个问题由 rel210-fixA 和 eff-e 修复，复审 6 个 FIXED，1 个 PARTIAL（见已知限制）。
+  - 按 E-1（2026-10-04 修订），发版门槛是 GitHub Actions 全绿 + 1 次经默认入口、lifecycle on、走到 ACCEPTED 的真实 run；跨厂商审查只在本版做。
+
 ### v2.9.7：可选的整个工作项截止时间（FIELD-2）；同一类阻断连续三次就停下（FIELD-5）；Codex 默认模型改为 gpt-6.1-sol（paired-session 仍是可选入口，默认 legacy）
 
 - **升级须知**：
