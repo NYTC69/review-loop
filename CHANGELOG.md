@@ -1,5 +1,37 @@
 # Changelog
 
+### v2.12.1：fresh shadow/gate 不再把仓库原有文字当成泄漏的审查记录（FIELD-23）；EXEC 等待 reviewer 时可以 note；smoke runner 被杀后不留残局；owner 决策单落档；review-pr 移植的设计与前两批内部实现
+
+- **fix（FIELD-23，poker-tools 现场）**：仓库里本来就有的注释（例如 "gate finding"）被作者改动后，出现在 delta patch 的 -/+ 行里，fresh shadow 的独立性检查把它当成泄漏的审查记录，run 因此 HOLD；改写注释也没用，因为旧文字留在 "-" 行里。owner 选了简单规则：
+  - 有 `base_commit` 时，patch 只扫描 "+" 行；"-" 行和上下文行都不扫。
+  - "+" 行里的命中，如果整段命中文字按整词在 base 中同一文件（或重命名前的文件）里出现过，就豁免；新文件和二进制文件不豁免。
+  - delta.stat 和 status.txt：命中落在 base 已有路径里就豁免；stat 改为完整路径，并且不合并重命名。
+  - plan.md 和 workitem.md：只豁免用反引号或代码块引用的 base 原文。
+  - prompt 和 gate 模板永远不豁免。fresh shadow、gate、PLAN 批准和 review-only 创建共用同一个 helper。
+  - 威胁模型：只防无意中带入审查记录，不防作者刻意绕过。已知残余：base 中已有的标记词在同一文件里任何位置都豁免；不用 `git mv` 的移动按新文件处理（偏严）。
+- **note**：EXEC 在等 reviewer（或它的 shadow）而 HOLD 时，现在接受 `note`，只交给下一个 EXEC author 回合，不会进任何审查角色。PLAN 阶段等 reviewer 时仍然拒绝，并提示替代做法。
+- **smoke runner（SMOKE-RUNNER-KILL / SMOKE-TIMEOUT）**：
+  - runner 被杀后会停掉 case 进程组并恢复临时配置，不留残局。
+  - 以 nohup 方式或在后台作业中启动时，继承下来的 SIGHUP 忽略状态会被保留。
+  - case 超时只在机器有负载时放宽，最多 6 倍；空闲时不变。SMOKE-TIMEOUT 的根因没有查清，详见 smoke README 和 ADR-4 的修订。
+  - 已知残余：marker 不校验 temp_config 的 sha，孤儿进程组还活着时也不拒绝运行。
+- **review-pr 移植（D-LG2），内部实现，尚未接入任何 skill**：
+  - 设计文档 `paired_session/docs/review-pr-port.md` 已经 owner 答复并通过终审。
+  - 前两批是 coordinator 里的 report mode，入口是 `run --review-only --review-report`：
+    - 创建、resume 和反馈时的拒绝规则；
+    - 不论 EXEC 和 gate 给出什么结论，都依次走到 gate 和 POLISH-Q，全程没有任何 writer 回合；
+    - 每次派发前都核对冻结的树；
+    - report run 上的 permission-probe 不跑 author probe（标为 NOT-APPLICABLE）。
+  - 目前 report run 在 POLISH-Q 之后停在临时 HOLD，SECURITY、REPORTED 和报告文件由后续批次补齐。这个开关还没有写进文档，请勿使用。
+- **决策记录**：ADR-13 D-OWNER-1005（owner 对 2026-10-05 决策单的 59 项答复；D11 各行为暂定）及其补充条款：终审后的修复审查、D12（review-only 的 max_exec_rounds 保持 4）、ABA/BAB 审查链。
+- **测试**：`tests/evidence_ledger_test.py` 的一条断言不再依赖 git 自己的 hook 报错原文（新版 git 措辞不同）。
+- **CI（D08）**：GitHub Actions 新增 tests/ 的 pytest job，Linux 和 macOS 都跑。
+- **审查**：采用 ABA/BAB 审查链。
+  - FIELD-23：Codex 2 轮，加 Opus 终审和终审后的修复审查轮。
+  - LG2-a2：Codex 1 轮，加 Opus 终审和修复审查轮。
+  - LG2-a1：BAB，Codex 写、Opus 2 轮、Codex 终审，加修复审查轮。
+  - smokefix 的修复审查轮没过，按 owner 裁定由监工复核后收下。
+
 ### v2.12.0：legacy 工作流正式弃用（owner 裁定 D-READY）；同一台机器上的并发 run 不再因对方的 Codex trust 条目而 HOLD（FIELD-22）；M7 评分与冻结工具
 
 - **弃用（D-READY，owner 2026-10-05）**：
