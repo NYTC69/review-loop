@@ -1,7 +1,16 @@
 # Changelog
 
-### v2.12.1：fresh shadow/gate 不再把仓库原有文字当成泄漏的审查记录（FIELD-23）；EXEC 等待 reviewer 时可以 note；smoke runner 被杀后不留残局；owner 决策单落档；review-pr 移植的设计与前两批内部实现
+### v2.12.1：用独立 CODEX_HOME 的 run 不再因默认 ~/.codex/config.toml 里别人的 trust 条目而 HOLD（owner P0）；fresh shadow/gate 不再把仓库原有文字当成泄漏的审查记录（FIELD-23）；EXEC 等待 reviewer 时可以 note；smoke runner 被杀后不留残局；owner 决策单落档；review-pr 移植的设计与前两批内部实现
 
+- **fix（owner P0，poker-news-bot 现场）**：run 用独立 `CODEX_HOME` 时，也会对默认 `~/.codex/config.toml` 做快照，用来发现无视 `CODEX_HOME` 的 Codex 子进程。原先这个文件有任何变化，都会作废已完成的回合并 HOLD。而另一个项目在默认 home 上跑 Codex（或有人还原备份）时，Codex 会自动追加 `[projects."<dir>"] trust_level = "trusted"`，于是 WI-108 丢了 19 分钟和 13 分钟的 author 回合。现在：
+  - 默认配置的变化如果只是增删整张外来 trust 表，即路径不是本 run 自己的 workspace、clone 或 worktree 主根，就记为 `foreign-default-home-trust-entry {added, removed}`，不作废回合。Codex 回合和 permission probe（包括 probe 正常结束的路径）都适用。
+  - 其他变化照旧 HOLD。下列情况也照旧 HOLD：
+    - 本 run 自己路径的 trust 条目（比较前先做 realpath、去掉尾部斜杠，macOS 上不区分大小写）；
+    - 无法按 UTF-8 解码的内容；
+    - 超过 1 MiB 或结构有歧义的文件。
+  - 扫描只过一遍：已有 3000 张表时也在 1 秒内完成。
+  - 不变的部分：`$CODEX_HOME/config.toml` 本身的检查、在默认 home 上跑的 run、uncertain 回合，行为都不变。
+  - 建议：每个 run（包括验收 run 和监工 run）都使用独立的绝对路径 `CODEX_HOME`。实测 codex-cli 0.160.0 在 git 目录里以 workspace-write 运行时一定会写 trust 条目，`-c` 和 `--ignore-user-config` 都挡不住。
 - **fix（FIELD-23，poker-tools 现场）**：仓库里本来就有的注释（例如 "gate finding"）被作者改动后，出现在 delta patch 的 -/+ 行里，fresh shadow 的独立性检查把它当成泄漏的审查记录，run 因此 HOLD；改写注释也没用，因为旧文字留在 "-" 行里。owner 选了简单规则：
   - 有 `base_commit` 时，patch 只扫描 "+" 行；"-" 行和上下文行都不扫。
   - "+" 行里的命中，如果整段命中文字按整词在 base 中同一文件（或重命名前的文件）里出现过，就豁免；新文件和二进制文件不豁免。
@@ -31,6 +40,7 @@
   - LG2-a2：Codex 1 轮，加 Opus 终审和修复审查轮。
   - LG2-a1：BAB，Codex 写、Opus 2 轮、Codex 终审，加修复审查轮。
   - smokefix 的修复审查轮没过，按 owner 裁定由监工复核后收下。
+  - P0：Codex 2 轮，加 Opus 终审（1 HIGH、1 MEDIUM、2 LOW）和终审后的修复审查轮（APPROVE）。
 
 ### v2.12.0：legacy 工作流正式弃用（owner 裁定 D-READY）；同一台机器上的并发 run 不再因对方的 Codex trust 条目而 HOLD（FIELD-22）；M7 评分与冻结工具
 
