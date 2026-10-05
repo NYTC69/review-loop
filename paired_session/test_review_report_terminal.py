@@ -67,6 +67,34 @@ class ReviewReportTerminalTests(unittest.TestCase):
                          [('MINOR', '[class: secret-preexisting')], rows)
         self.assertNotIn('ghp_', json.dumps(rows))
 
+    def removed_secret_rows(self, move_to=None):
+        import subprocess
+        (self.workspace / 'fixtures').mkdir()
+        old = self.workspace / 'fixtures' / 'old.py'
+        old.write_text('TOKEN = "ghp_' + 'C' * 36 + '"\n')
+        for args in (('add', '-A'), ('commit', '-qm', 'base with a secret')):
+            subprocess.run(['git', *args], cwd=self.workspace, check=True, capture_output=True)
+        if move_to:
+            old.rename(self.workspace / move_to)   # an unstaged rename
+        else:
+            old.unlink()                           # an unstaged delete
+        result = self.run_coordinator(*FLAGS)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return [row for row in self.state()['finding_ledger'] if row['source'] == 'security-preflight']
+
+    def test_an_unstaged_delete_of_a_secret_is_not_reported_as_published(self):
+        rows = self.removed_secret_rows()
+        self.assertFalse([row for row in rows if row['severity'] == 'CRITICAL'], rows)
+        old = [row for row in rows if row['file'] == 'fixtures/old.py']
+        self.assertEqual([(row['severity'], row['summary'].split(']')[0]) for row in old],
+                         [('MINOR', '[class: secret-removed')], rows)
+
+    def test_an_unstaged_rename_does_not_report_the_old_path_as_published(self):
+        rows = self.removed_secret_rows(move_to='fixtures/moved.py')
+        self.assertFalse([row for row in rows if row['severity'] == 'CRITICAL' and row['file'] == 'fixtures/old.py'], rows)
+        self.assertIn(('MINOR', 'fixtures/old.py'), [(row['severity'], row['file']) for row in rows])
+        self.assertIn(('CRITICAL', 'fixtures/moved.py'), [(row['severity'], row['file']) for row in rows])   # the tree carries it there
+
     def test_security_reviewer_findings_are_report_content(self):
         co, _ = self.drive_to_security()
         with mock.patch.object(co, '_security_review_turn', return_value={

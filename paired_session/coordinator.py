@@ -6059,9 +6059,13 @@ class Coordinator:
         changed = set(self._changed_paths(deleted=True))   # spec §2.3: "a secret or a sensitive path in the PR"
 
         def row_for(kind: str, path: str, summary: str, what: str) -> dict:
-            if path in changed:
+            if path in changed and os.path.lexists(self.workspace / path):   # carried: in the change AND in the tree
                 return {'severity': 'CRITICAL', 'security': True, 'file': path, 'summary': f'[class: {kind}] {summary}',
                         'body': f'The change carries {what}.', 'failure_scenario': 'Merging the change publishes it.'}
+            if path in changed:   # deleted or renamed away, staged or not: downgraded, not dropped (it stays in history)
+                return {'severity': 'MINOR', 'security': True, 'file': path, 'summary': f'[class: {kind}-removed] {summary}',
+                        'body': f'{what[0].upper() + what[1:]} is removed by this change; it stays in the repository history.',
+                        'failure_scenario': 'None from this change; the history still holds it.'}
             return {'severity': 'MINOR', 'security': True, 'file': path,   # gate a3: downgraded, not dropped
                     'summary': f'[class: {kind}-preexisting] {summary}',
                     'body': f'{what[0].upper() + what[1:]} is already in the repository, not introduced by this change.',
