@@ -43,6 +43,7 @@ try:
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import evidence_guard
+    from paired_session import ignored_config
     from paired_session import readonly_guard
     from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
@@ -63,6 +64,7 @@ except ModuleNotFoundError:
     import codex_capability_guard
     import docs_policy
     import evidence_guard
+    import ignored_config
     import readonly_guard
     import finish_dispatch
     import lifecycle_spine
@@ -3386,6 +3388,26 @@ class Coordinator:
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
         return [name for name in raw.decode(errors='surrogateescape').split('\0') if name]
 
+    def _ignored_paths(self, workspace: Path, names: list) -> set:   # F3: which of these paths git ignores (tracked ones never)
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('check-ignore', '-z', '--stdin', cwd=workspace), cwd=workspace,
+                                          input=b''.join(os.fsencode(name) + b'\0' for name in names), timeout=10,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode not in (0, 1):
+            raise RuntimeError('git check-ignore failed: ' + proc.stderr.decode(errors='replace').strip()[:200])
+        return {os.fsdecode(name) for name in proc.stdout.split(b'\0') if name}
+
+    def _record_ignored_config(self, receipt: dict, before: dict, after: dict) -> None:
+        """F3: report (never hold) the ignored executable-config files a writer turn created or changed."""
+        if notes := [note for note in (before.get('note'), after.get('note')) if note]:
+            receipt['ignored_config_note'] = '; '.join(notes)
+        if 'failed' in (before.get('note') or ''):
+            return   # nothing to compare against: the note says so
+        if written := ignored_config.written(before, after):
+            receipt['ignored_config_written'] = written
+            self.state['ignored_config_written'] = sorted({*self.state.get('ignored_config_written', []), *written})
+            print('WARNING: the author wrote ignored executable-config files that no reviewer sees: ' + ', '.join(written)
+                  + '; inspect them before an editor, MCP client or shell runs them')
+
     def _workspace_names(self) -> list[str]:
         raw = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-co', '--exclude-standard', '-z', cwd=self.workspace),
                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -5386,6 +5408,8 @@ class Coordinator:
             try: recorded = readonly_guard.capture(snapshot_workspace, keep)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc: recorded = {**marks, 'error': f'{type(exc).__name__}: {exc}'}
         head_before = git_head_state(snapshot_workspace) if role == 'author' else None   # D-EFF git guard (category B), both modes
+        config_before = (ignored_config.inventory(snapshot_workspace, lambda names: self._ignored_paths(snapshot_workspace, names))
+                         if role == 'author' and workspace_override is None else None)   # F3: report only, both modes
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh, active_workspace)
@@ -5548,6 +5572,9 @@ class Coordinator:
                 after, after_manifest, snapshot_failure = None, [], f'the post-turn workspace snapshot failed ({type(exc).__name__}: {exc})'
             receipt['snapshot_after'] = after
             atomic_json(prefix.with_suffix('.snapshot-after.json'), {'digest': after, 'manifest': after_manifest})
+            if config_before is not None:   # F3: only after the git control check, so no git call follows a changed control file
+                self._record_ignored_config(receipt, config_before, ignored_config.inventory(
+                    snapshot_workspace, lambda names: self._ignored_paths(snapshot_workspace, names)))
         voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
         try:
             if control_problem: raise ValueError(control_problem)
@@ -8973,6 +9000,10 @@ def status_brief(run_dir: Path, count: int) -> int:
         try: print(progress_line(json.loads(line))); shown += 1
         except (ValueError, KeyError, TypeError): continue
     if not shown: print('no progress events yet')
+    try: written = json.loads((run_dir / 'state.json').read_text()).get('ignored_config_written')
+    except (OSError, ValueError, AttributeError): written = None
+    if written:   # F3
+        print('WARNING: ignored executable-config files written by the author: ' + ', '.join(written))
     return 0
 
 

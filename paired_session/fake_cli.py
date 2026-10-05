@@ -290,6 +290,10 @@ def main():
         if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
             subprocess.run(['git', 'add', '-A'], check=True)
             subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'fake author commit'], check=True)
+        if os.environ.get('FAKE_AUTHOR_WRITE_IGNORED') and 'Phase: EXEC' in prompt:   # F3: comma-separated ignored paths the author writes
+            for name in os.environ['FAKE_AUTHOR_WRITE_IGNORED'].split(','):
+                (Path.cwd() / name).parent.mkdir(parents=True, exist_ok=True)
+                (Path.cwd() / name).write_text('{"tasks": []}\n')
         if os.environ.get('FAKE_GLOBAL_CONFIG_WRITE') and 'Phase: EXEC' in prompt:   # D-EFF: a turn that changes the global Codex config
             with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
                 handle.write('\nmodel_verbosity = "high"\n')

@@ -164,6 +164,10 @@ def delivery_report(state, run_id, workitem, delivery):
              f"扫描 {preflight.get('scanned_files')} 个文件；安全评审 {review.get('status')}",
              f"- 未关闭的发现：{len(open_ids)} 条" + (f"（{', '.join(open_ids)}）" if open_ids else ''),
              f"- 用量：调用 {state.get('invocations_used')} 次，epoch {life.get('epoch')}，用时约 {minutes / 60:.0f} 分钟", '']
+    if written := state.get('ignored_config_written'):   # F3: outside the review snapshot, so no reviewer saw them
+        lines += ['## Ignored executable-config files written by the author', '',
+                  '被 git 忽略、不在审查快照里的可执行配置文件（编辑器任务、MCP、shell hook 等）；在任何工具运行它们之前先检查：',
+                  *(f'- `{name}`' for name in written), '']
     return '\n'.join(lines)
 
 
