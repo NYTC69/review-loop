@@ -303,6 +303,12 @@ def main():
         if os.environ.get('FAKE_GLOBAL_CONFIG_WRITE') and 'Phase: EXEC' in prompt:   # D-EFF: a turn that changes the global Codex config
             with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
                 handle.write('\nmodel_verbosity = "high"\n')
+        once = os.environ.get('FAKE_CONCURRENT_TRUST_ONCE')
+        if os.environ.get('FAKE_CONCURRENT_TRUST_APPEND') and 'Phase: EXEC' in prompt and not (once and Path(once).exists()):
+            # FIELD-22: another run on the same Codex home trusts its own workspace while this turn runs
+            with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
+                handle.write('\n[projects.' + json.dumps(os.environ['FAKE_CONCURRENT_TRUST_APPEND']) + ']\ntrust_level = "trusted"\n')
+            if once: Path(once).write_text('done')
         if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
             print('fake author failed after writing', file=sys.stderr)
             return 1

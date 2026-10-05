@@ -456,20 +456,33 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
     return []
 
 
-def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path, raw: Optional[bytes] = None) -> bool:
+def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path, raw: Optional[bytes] = None, extra=()) -> bool:
+    """The file is the before-hash file plus exact trust blocks for this workspace's trust paths (and, FIELD-22, for the
+    `extra` workspaces of other paired-session runs) and nothing else."""
     raw = path.read_bytes() if raw is None else raw   # F7: the caller passes the bytes it hashed, so check and hash agree
-    entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode() for root in _codex_trust_paths(workspace)}
+    entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode()
+               for each in (workspace, *extra) for root in _codex_trust_paths(each)}
     present = [root for root, entry in entries.items() if raw.count(entry) == 1]
-    for count in range(1, len(present) + 1):   # RF-7: the expected set, each path at most once, in any order
-        for roots in itertools.permutations(present, count):
-            for variants in itertools.product(((b'', b''), (b'\n', b''), (b'', b'\n'), (b'\n', b'\n')), repeat=count):
-                before = raw
-                for root, (leading, trailing) in zip(roots, variants):
-                    block = leading + entries[root] + trailing
-                    if block not in before: break
-                    before = before.replace(block, b'', 1)
-                else:
-                    if (hashlib.sha256(before).hexdigest() == before_sha256 or (before_sha256 is None and not before)) and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace]): return True
+    if not extra:   # RF-7: the expected set, each path at most once, in any order (unchanged)
+        candidates = (roots for count in range(1, len(present) + 1) for roots in itertools.permutations(present, count))
+    else:   # FIELD-22: older trust blocks of lease-recorded workspaces may be present too, so search subsets in file order,
+        # smallest first, under a fixed budget of attempts (fail closed past it); no cap on how many blocks were added
+        ordered = sorted(present, key=lambda root: raw.index(entries[root]))
+        candidates = (roots for count in range(1, len(ordered) + 1) for roots in itertools.combinations(ordered, count))
+    budget = 400_000
+    for roots in candidates:
+        for variants in itertools.product(((b'', b''), (b'\n', b''), (b'', b'\n'), (b'\n', b'\n')), repeat=len(roots)):
+            if extra:
+                budget -= 1
+                if budget < 0:
+                    return False
+            before = raw
+            for root, (leading, trailing) in zip(roots, variants):
+                block = leading + entries[root] + trailing
+                if block not in before: break
+                before = before.replace(block, b'', 1)
+            else:
+                if (hashlib.sha256(before).hexdigest() == before_sha256 or (before_sha256 is None and not before)) and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace, *extra]): return True
     return False
 
 
@@ -518,8 +531,58 @@ def plugin_version_bump_only(findings: list, before: dict, after: dict) -> bool:
     return normal_plugin_update(before['claude_plugins'], after['claude_plugins']) is not None
 
 
-def attribute_global_config_changes(before: dict, after: dict, workspaces=()) -> dict:
-    """Attribute only the known Codex trust and Claude lastUpdated side effects."""
+def concurrent_run_workspaces(own_workspace, live=True) -> dict:
+    """FIELD-22: {workspace: run id} of OTHER paired-session runs, read from this user's workspace-lease directory without
+    taking any lock (a probe lock could make that run's own lease acquisition fail). A lease file counts only when it is
+    a private regular file owned by this user, its name is the lease path of the workspace it names (no stray entry),
+    and the run dir it names holds a state.json naming that same workspace. live=True also needs the lease pid alive,
+    that run's coordinator lock naming the same pid, and its state ACTIVE; live=False (an operator acknowledgment)
+    accepts such a record of a run that has ended. Boundary: this is evidence of a paired-session coordinator of this
+    user; a same-UID process could forge it, but such a process can edit config.toml directly anyway. The guard holds
+    against sandboxed turns, which can write neither the lease directory nor the Codex home. Residual: a reused pid
+    with a stale ACTIVE state and lock record counts as live."""
+    try:
+        own = Path(own_workspace).expanduser().resolve()
+        lock_dir = workspace_lease_path(own).parent
+        info = lock_dir.lstat()
+    except (OSError, RunLeaseError):
+        return {}
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        return {}
+    found = {}
+    for entry in sorted(lock_dir.glob('*.lock')):
+        try:
+            meta = entry.lstat()
+            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or stat.S_IMODE(meta.st_mode) & 0o077:
+                continue
+            record = json.loads(entry.read_text(encoding='utf-8', errors='replace')[:4096])
+            if not isinstance(record, dict) or not isinstance(record.get('workspace'), str) or not isinstance(record.get('run_dir'), str):
+                continue
+            workspace, run_dir = Path(record['workspace']).resolve(), Path(record['run_dir'])
+            if workspace == own or workspace_lease_path(workspace) != entry:
+                continue
+            state = json.loads((run_dir / 'state.json').read_text(encoding='utf-8'))
+            if not isinstance(state, dict) or not isinstance(state.get('workspace'), str) or Path(state['workspace']).resolve() != workspace:
+                continue
+            if live:
+                pid = record.get('pid')
+                if type(pid) is not int or pid <= 1 or state.get('status') != 'ACTIVE':
+                    continue
+                lock = json.loads((run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
+                if not isinstance(lock, dict) or lock.get('pid') != pid:   # the same coordinator holds the run lease
+                    continue
+                try: os.kill(pid, 0)
+                except ProcessLookupError: continue
+                except PermissionError: pass
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RunLeaseError):
+            continue
+        found[str(workspace)] = run_dir.name
+    return found
+
+
+def attribute_global_config_changes(before: dict, after: dict, workspaces=(), concurrent=None) -> dict:
+    """Attribute only the known Codex trust and Claude lastUpdated side effects. FIELD-22: concurrent = {workspace: run id}
+    of other live paired-session runs (concurrent_run_workspaces); an exact trust append for one of them is expected too."""
     expected, findings = [], []
     public = {'before': {}, 'after': {}}
     for label in ('codex_config', 'claude_settings', 'claude_plugins',
@@ -535,11 +598,18 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=()) ->
             findings.append({'file': label, 'reason': 'unreadable-or-invalid'})
             continue
         if label == 'codex_config':
-            trusted_workspaces = _only_codex_workspace_trust_append(old, new, workspaces)
-            if trusted_workspaces:
+            trusted_workspaces = _only_codex_workspace_trust_append(old, new, [*workspaces, *(concurrent or {})])
+            own = {path for workspace in workspaces for path in _codex_trust_paths(workspace)}
+            others = {path: run for workspace, run in (concurrent or {}).items() for path in _codex_trust_paths(workspace)}
+            mine = [path for path in trusted_workspaces if path in own]
+            theirs = [path for path in trusted_workspaces if path not in own]
+            if mine:
                 expected.append({'file': label, 'change': 'trusted-probe-workspace-entry',
-                                 'workspaces': trusted_workspaces})
-            else:
+                                 'workspaces': mine})
+            if theirs:   # FIELD-22: another live paired-session run's own trust entry, on the shared Codex home
+                expected.append({'file': label, 'change': 'trusted-concurrent-run-workspace', 'workspaces': theirs,
+                                 'runs': sorted({others[path] for path in theirs})})
+            if not trusted_workspaces:
                 findings.append({'file': label, 'reason': 'unexpected-content-change'})
         elif label == 'claude_plugins':
             old_doc, new_doc = old['document'], new['document']
@@ -551,7 +621,7 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=()) ->
         else:
             findings.append({'file': label, 'reason': 'unexpected-content-change'})
     return {'status': 'FAIL' if findings else 'PASS', **public,
-            'expected_changes': expected, 'findings': findings, 'warnings': ['global config mutated by codex CLI trust persistence'] if any(row['file'] == 'codex_config' for row in expected) else []}
+            'expected_changes': expected, 'findings': findings, 'warnings': ['global config mutated by codex CLI trust persistence'] if any(row['file'] == 'codex_config' and row['change'] == 'trusted-probe-workspace-entry' for row in expected) else []}
 
 
 def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
@@ -4389,7 +4459,8 @@ class Coordinator:
                            and current['codex_config']['sha256'] != receipt['global_codex_before']['codex_config']
                            and all(current.get(key, {}).get('sha256') == value for key, value in receipt['global_codex_before'].items() if key != 'codex_config')
                            and receipt.get('global_codex_home') == str(self.global_codex_home)
-                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw))
+                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw,
+                                                           extra=list(concurrent_run_workspaces(receipt['workspace'], live=False))))   # FIELD-22: the operator inspected it
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
                 self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         sequence = receipt.get('sequence')
@@ -5645,7 +5716,9 @@ class Coordinator:
                     raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(run_dir_touched[:5]))
             if vendor_config_before is not None:
                 config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-                changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace])
+                concurrent = (concurrent_run_workspaces(active_workspace) if receipt['vendor'] == 'codex' and   # FIELD-22, read lazily
+                              vendor_config_before['codex_config']['sha256'] != config_after['codex_config']['sha256'] else None)
+                changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace], concurrent)
                 changes['other_vendor_changes'] = [key for key in changes['before'] if not key.startswith(vendor_prefix) and changes['before'][key]['sha256'] != changes['after'][key]['sha256']]
                 changes['findings'] = [row for row in changes['findings'] if row['file'].startswith(vendor_prefix)]
                 changes['expected_changes'] = [row for row in changes['expected_changes'] if row['file'].startswith(vendor_prefix)]

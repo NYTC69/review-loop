@@ -421,6 +421,17 @@ Attribution removes exactly one such block per path (plus at most one blank
 line) and the remainder must equal the earlier file byte for byte.
 The file is **not** byte-identical in that case. Any other
 Codex change fails; Claude plugin `lastUpdated` is attributed separately.
+FIELD-22: when two runs share one Codex home (the default `~/.codex` included), the other run's own trust block is
+also attributed, as `trusted-concurrent-run-workspace` with that run's id. This applies only when all of these hold:
+- that workspace's lease in this user's workspace-lease directory is a private record under its own identity key;
+- its run dir's `state.json` names the same workspace and is ACTIVE;
+- that run's coordinator lock carries the same pid, and that pid is alive.
+
+Any other addition still fails. This is evidence of another coordinator of the same user, not proof against a
+same-UID process, which could edit `config.toml` directly anyway. Sandboxed turns can write neither the lease
+directory nor the Codex home. A turn held by such a change before this rule recovers
+with a plain `resume`, which re-runs the turn on a fresh baseline. `resume --acknowledge-codex-trust` also accepts
+exact trust blocks for a workspace that has such a lease record, including one from a run that has since ended.
 The coordinator never edits or restores the user's global config. `--skip-probe`
 is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider
 binaries are fake CLI wrappers. This is a misuse guard for tests, not a security boundary.
