@@ -22,16 +22,17 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
 - `legacy`: legacy, with no entry notice.
 - Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
 - Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
-- `paired-session`: only fresh work (no existing plan, code target or session) hands off. Print `review-loop: paired-session entry (entry set in .review-loop/config.md)`,
+- `paired-session`: fresh work and a review-only code target hand off (an existing plan or session does not). Print `review-loop: paired-session entry (entry set in .review-loop/config.md)`,
   invoke the Codex `paired-session` skill (`.agents/skills/paired-session`) with
-  the work item, and end this workflow (no legacy session file, lock or stage),
+  the work item (for a code target, as a review-only request: `--review-only`, plus
+  `--base <ref>` only when the user names a base), and end this workflow (no legacy session file, lock or stage),
   unless the skill reports a failed stage A check before its first
   `bin/paired-session` command (below). Print the notice and hand off only after
   this entry's own stage A checks (host, CLIs, outside-sandbox execution, Codex home)
   pass; the question checks run in the paired-session skill after the handoff.
   A paired-session probe/run HOLD is reported and never falls back to legacy.
-  Plan-exists, code-exists and explicit resume always stay legacy; print
-  `review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`.
+  Plan-exists and explicit resume always stay legacy; print
+  `review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`.
   Decided once, before session creation; once a legacy session file or lock
   exists, a re-detection or user override never hands off.
 
@@ -70,7 +71,7 @@ From the first `bin/paired-session` command on, every refusal or HOLD is reporte
 ## Initialize / route
 For fresh work use the plan initialization, work-item parsing and Step 1.6
 historical-context retrieval from .agents/skills/plan/references/entry.md.
-For an existing plan/code target or explicit resume use the corresponding
+On the legacy route, for an existing plan/code target or explicit resume use the corresponding
 mode in .agents/skills/execute/references/entry.md and the shared init table.
 Load plan-init or execute-init accordingly. On planning APPROVE continue
 execution in this same session. Preserve the one-fetch historical-context

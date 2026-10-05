@@ -42,9 +42,9 @@ one that matches where your work currently is:
 
 | Skill | When to pick | What it does |
 |---|---|---|
-| `/review-loop` | You want the full pipeline in one invocation (default; fresh work goes to paired-session, see Entry below) | Fresh work → paired-session coordinator (Entry below); an existing plan or code → legacy execute → polish → docs → security → delivery |
+| `/review-loop` | You want the full pipeline in one invocation (default; fresh work goes to paired-session, see Entry below) | Fresh work → paired-session coordinator; existing code → paired-session `run --review-only` (Entry below); an existing plan → legacy execute → polish → docs → security → delivery |
 | `/review-loop:plan` | You only want to iterate on the plan; run the code later (possibly on a different runtime) | Runs the planning loop only. On approval, prints the session UUID and a hint: `Next: review-loop:execute --session <uuid>` |
-| `/review-loop:execute` | You already have a plan, or you just want a pure CR sweep over existing code | Runs execution + polish + delivery. Three entry modes: `--session <uuid>`, `--plan <text\|path>`, `--review-only` |
+| `/review-loop:execute` | You already have a plan, or you just want a pure CR sweep over existing code | Runs execution + polish + delivery. Three entry modes: `--session <uuid>`, `--plan <text\|path>`, `--review-only` (legacy workflow only; on the paired-session entry `/review-loop` reviews existing code with `run --review-only`) |
 
 All three skills write the same session-file schema under
 `.review-loop/sessions/{uuid}.md`, so you can hand off between them (and
@@ -57,7 +57,7 @@ Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 From v2.10.0 a fresh `/review-loop <work item>` (Claude) or a fresh review-loop
 request (Codex) with no `entry` key in `.review-loop/config.md` hands off to the
 paired-session coordinator. The workflow drawn above is the legacy workflow; it
-runs with `entry: legacy`, with `/review-loop:legacy`, or when a plan, code or
+runs with `entry: legacy`, with `/review-loop:legacy`, or when a plan or a
 session already exists. Two explicit entry commands sit beside it:
 
 | Command | What it does |
@@ -66,9 +66,11 @@ session already exists. Two explicit entry commands sit beside it:
 | `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice) |
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
-With the key absent or `paired-session`, only fresh work (no existing plan, code
-target or session) is handed to paired-session; plan-exists, code-exists and
-resume stay legacy. With the key absent, `/review-loop` prints a one-line
+With the key absent or `paired-session`, fresh work and a review-only request on
+existing code (`run --review-only`, plus `--base <ref>` when you name a base) are
+handed to paired-session; plan-exists and resume stay legacy. Unrelated dirty
+work is not existing code: a review-only run reviews and, with `auto_commit`,
+delivers every change against its base. With the key absent, `/review-loop` prints a one-line
 default-entry notice when it hands off, and a failed check before the
 coordinator starts (macOS host, required CLIs, background or outside-sandbox
 execution, Codex home, on Codex an installed plugin older than v2.10.0, or a
@@ -198,7 +200,7 @@ Create `.review-loop/config.md` in your project to customize:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `entry` | absent (paired-session) | `legacy` \| `paired-session`; routes only fresh `/review-loop` (Claude) or review-loop skill (Codex) work (see Entry above) |
+| `entry` | absent (paired-session) | `legacy` \| `paired-session`; routes fresh and review-only `/review-loop` (Claude) or review-loop skill (Codex) work (see Entry above) |
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
 | `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | "" | Shared tier override for judgment-tier agents |

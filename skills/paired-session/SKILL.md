@@ -1,6 +1,6 @@
 ---
 name: paired-session
-argument-hint: "<work item> [--plan-only]"
+argument-hint: "<work item> [--plan-only | --review-only [--base REF]]"
 description: >
   Drive an implementation through the paired-session coordinator: independent
   PLAN review, EXEC implementation/review, adversarial gate, then finish,
@@ -103,6 +103,10 @@ TEST_COMMAND='the verified project command'
   --test-command "$TEST_COMMAND" --lifecycle-mode on
 ```
 
+A review-only request (`--review-only`, or the review-loop handoff of code already implemented)
+follows the shared contract's review-only entry: add `--review-only` (and `--base "$BASE"`
+only when the user named a base) to both blocks.
+
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
-key `entry` is `paired-session` or absent and the work is fresh; with `legacy`
+key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`
 or an invalid value, routing stays legacy.

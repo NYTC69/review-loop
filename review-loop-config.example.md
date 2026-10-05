@@ -17,7 +17,7 @@ executor_model: inherit         # shared Claude/plugin executor override; "" and
 # codex_executor_model: ""            # shared key remains `executor_model`; this is reserved/ignored in Stage 1
 # Entry for fresh `/review-loop <work item>` (Claude) or the review-loop skill (Codex); default paired-session from v2.10.0.
 # "legacy" | "paired-session" (exact values only; anything else falls back to legacy with a warning).
-# Only fresh work is routed; plan-exists, code-exists and resume stay legacy. `/review-loop:legacy` ignores this key.
+# Fresh work and review-only requests (run --review-only) are routed; plan-exists and resume stay legacy. `/review-loop:legacy` ignores this key.
 # Absent key = paired-session (the default entry), which prints a one-line notice. Codex honors this key the same way;
 # its explicit legacy control is the request "use the legacy review-loop workflow".
 # Set `entry: legacy` to keep the legacy workflow:

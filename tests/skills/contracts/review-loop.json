@@ -3518,16 +3518,16 @@
       "needle": "`review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow`"
     },
     {
-      "id": "entry_routing_only_fresh_work_hands_off",
+      "id": "entry_routing_fresh_and_code_exists_hand_off",
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
-      "needle": "\"No prior state\" hands off: print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,"
+      "needle": "states hand off, \"No prior state\" and \"Code already implemented\" (a review-only request). On\neither, print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,"
     },
     {
       "id": "entry_routing_non_fresh_states_stay_legacy",
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
-      "needle": "`review-loop: entry is paired-session but <plan exists|code exists|existing session> detected; using legacy workflow`"
+      "needle": "`review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`"
     },
     {
       "id": "entry_routing_hold_never_falls_back_to_legacy",
@@ -3639,10 +3639,10 @@
       "mapping_id": "entry_default_notice"
     },
     {
-      "id": "codex_entry_only_fresh_work_hands_off",
+      "id": "codex_entry_fresh_work_and_code_target_hand_off",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "`paired-session`: only fresh work (no existing plan, code target or session) hands off."
+      "needle": "`paired-session`: fresh work and a review-only code target hand off (an existing plan or session does not)."
     },
     {
       "id": "codex_entry_hold_never_falls_back_to_legacy",
@@ -3654,7 +3654,67 @@
       "id": "codex_entry_non_fresh_states_stay_legacy",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "Plan-exists, code-exists and explicit resume always stay legacy; print"
+      "needle": "Plan-exists and explicit resume always stay legacy; print"
+    },
+    {
+      "id": "review_only_routes_to_paired_session",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "(for code already implemented, with\n`--review-only`, plus `--base <ref>` only when the user names a base)"
+    },
+    {
+      "id": "codex_review_only_routes_to_paired_session",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "(for a code target, as a review-only request: `--review-only`, plus\n  `--base <ref>` only when the user names a base)"
+    },
+    {
+      "id": "review_only_unrelated_dirty_work_is_not_code_exists",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "unrelated dirty work is not a code-exists signal (a\nreview-only run reviews and, with auto_commit, delivers every non-ignored change against its\nbase)"
+    },
+    {
+      "id": "codex_review_only_unrelated_dirty_work_is_not_code_exists",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "unrelated dirty work is not a code-exists signal."
+    },
+    {
+      "id": "review_only_base_flag_documented",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "base, `HEAD` by default (the uncommitted work). Add `--base <ref>` only when the\nuser names a base"
+    },
+    {
+      "id": "review_only_task_related_change_only",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "Route only a task-related\n  change: if a path is unrelated to the request, ask whether to review it too"
+    },
+    {
+      "id": "review_only_probe_and_run_get_the_same_flags",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "Pass `--review-only` (and `--base`) to `permission-probe` and `run`\n  identically"
+    },
+    {
+      "id": "claude_paired_session_review_only_flags",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "add `--review-only` (and `--base \"$BASE\"`\nonly when the user named a base) to both blocks."
+    },
+    {
+      "id": "codex_paired_session_review_only_flags",
+      "kind": "contains",
+      "path": ".agents/skills/paired-session/SKILL.md",
+      "needle": "add `--review-only` (and\n`--base \"$BASE\"` only when the user named a base) to both invocations."
+    },
+    {
+      "id": "legacy_execute_review_only_mapping_documented",
+      "kind": "contains",
+      "path": "docs/paired-session-migration.md",
+      "needle": "Legacy `/review-loop:execute --review-only` stays legacy until its retirement; its paired-session equivalent is `run --review-only`, and its `--stop-after exec-round` maps to the operator CLI options `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off`"
     },
     {
       "id": "codex_entry_resolved_before_uuid_and_lock",
