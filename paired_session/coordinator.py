@@ -6056,17 +6056,30 @@ class Coordinator:
         preflight = self._security_preflight(request['request_id'])
         if preflight.get('status') not in ('clean', 'blocked', 'review-required'):   # it could not scan: a HOLD class
             raise RuntimeError(preflight.get('reason') or 'security preflight did not complete')
-        rows = [{'severity': 'CRITICAL', 'security': True, 'file': row['path'],
-                 'summary': f"[class: sensitive-path] {row['path']} ({row['category']})",
-                 'body': f"The change carries a sensitive path: {row['path']} ({row['category']}).",
-                 'failure_scenario': 'Merging the change publishes the file.'} for row in sensitive]
-        rows += [{'severity': 'CRITICAL', 'security': True, 'file': row['path'],
-                  'summary': f"[class: secret] {row['rule']} in {row['path']}" + (f":{row['line']}" if row['line'] else ''),
-                  'body': f"security preflight rule {row['rule']} matched {row['path']} (value not shown).",
-                  'failure_scenario': 'Merging the change publishes the secret.'} for row in preflight.get('findings', [])]
-        rows += [{'severity': 'MINOR', 'security': True, 'file': '.gitignore',
-                  'summary': f'.gitignore does not cover {category}', 'body': f'.gitignore does not cover {category}.',
-                  'failure_scenario': 'Such files could be committed later.'} for category in preflight.get('uncovered_ignore', [])]
+        changed = set(self._changed_paths(deleted=True))   # spec §2.3: "a secret or a sensitive path in the PR"
+
+        def row_for(kind: str, path: str, summary: str, what: str) -> dict:
+            if path in changed:
+                return {'severity': 'CRITICAL', 'security': True, 'file': path, 'summary': f'[class: {kind}] {summary}',
+                        'body': f'The change carries {what}.', 'failure_scenario': 'Merging the change publishes it.'}
+            return {'severity': 'MINOR', 'security': True, 'file': path,   # gate a3: downgraded, not dropped
+                    'summary': f'[class: {kind}-preexisting] {summary}',
+                    'body': f'{what[0].upper() + what[1:]} is already in the repository, not introduced by this change.',
+                    'failure_scenario': 'None from this change; the repository already carries it.'}
+        rows = [row_for('sensitive-path', row['path'], f"{row['path']} ({row['category']})",
+                        f"a sensitive path: {row['path']} ({row['category']})") for row in sensitive]
+        seen = set()   # gate a3: preflight reports a committed file twice (worktree and index); one finding each
+        for row in preflight.get('findings', []):
+            if (key := (row['rule'], row['path'], row['line'])) in seen:
+                continue
+            seen.add(key)
+            where = f"{row['path']}" + (f":{row['line']}" if row['line'] else '')
+            rows.append(row_for('secret', row['path'], f"{row['rule']} in {where}",
+                                f"a secret matching security preflight rule {row['rule']} in {where} (value not shown)"))
+        if any(Path(path).name == '.gitignore' for path in changed):   # repository-wide coverage, reported only then
+            rows += [{'severity': 'MINOR', 'security': True, 'file': '.gitignore',
+                      'summary': f'.gitignore does not cover {category}', 'body': f'.gitignore does not cover {category}.',
+                      'failure_scenario': 'Such files could be committed later.'} for category in preflight.get('uncovered_ignore', [])]
         self.record_findings('security-preflight', 'SECURITY', life['epoch'], rows)
         self.write_ledger()
         review = self._security_review_turn(tree, request['request_id'])

@@ -44,6 +44,36 @@ class ReviewReportTerminalTests(unittest.TestCase):
         self.assertEqual(sum(t['phase'] == 'SECURITY' for t in state['turns']), 1)   # the reviewer still runs
         self.assertTrue(all(t['role'] != 'author' for t in state['turns']))
 
+    def test_committed_secrets_are_deduplicated_and_scoped_to_the_change(self):
+        import subprocess
+
+        def git(*args):
+            subprocess.run(['git', *args], cwd=self.workspace, check=True, capture_output=True)
+        token = lambda letter: 'TOKEN = "ghp_' + letter * 36 + '"\n'
+        (self.workspace / 'fixtures').mkdir()
+        (self.workspace / 'fixtures' / 'old.py').write_text(token('A'))   # already in the base
+        git('add', '-A')
+        git('commit', '-qm', 'base with an old fixture secret')
+        (self.workspace / 'added.py').write_text(token('B'))          # carried by the change, committed
+        git('add', '-A')
+        git('commit', '-qm', 'the change')
+        result = self.run_coordinator(*FLAGS, '--base', 'HEAD~1')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        rows = [row for row in self.state()['finding_ledger'] if row['source'] == 'security-preflight']
+        critical = [row for row in rows if row['severity'] == 'CRITICAL']
+        self.assertEqual([row['file'] for row in critical], ['added.py'], rows)   # once, though worktree and index both match
+        old = [row for row in rows if row['file'] == 'fixtures/old.py']
+        self.assertEqual([(row['severity'], row['summary'].split(']')[0]) for row in old],
+                         [('MINOR', '[class: secret-preexisting')], rows)
+        self.assertNotIn('ghp_', json.dumps(rows))
+
+    def test_security_reviewer_findings_are_report_content(self):
+        co, _ = self.drive_to_security()
+        with mock.patch.object(co, '_security_review_turn', return_value={
+                'status': 'REQUEST_CHANGES', 'finding_ids': ['F099'], 'reason': 'security reviewer findings: F099'}):
+            self.assertEqual(co.drive(), 'REPORTED')
+        self.assertIs(co.state['report']['complete'], True)
+
     def test_refusals_on_reported(self):
         self.change()
         self.assertEqual(self.run_coordinator(*FLAGS).returncode, 0)
