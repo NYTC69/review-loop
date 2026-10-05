@@ -1,5 +1,18 @@
 # Changelog
 
+### v2.12.0：legacy 工作流正式弃用（owner 裁定 D-READY）；同一台机器上的并发 run 不再因对方的 Codex trust 条目而 HOLD（FIELD-22）；M7 评分与冻结工具
+
+- **弃用（D-READY，owner 2026-10-05）**：
+  - owner 按现场证据裁定 ADR-6 的替换门槛已经满足，legacy 工作流从 v2.12.0 起标为 deprecated。现场证据有两条：poker-news-bot 和 poker-tools 连续多天在 paired-session 上做真实工作并交付；owner 记得的那次额度用完后 reset 续跑，事后查实是 Codex 额度、发生在试验版协调程序上；它暴露的两个问题（限额暂停没有类型、失败重试占用调用上限）v2.11.0 已修。新流程从中断恢复并跑完的证据是 poker-news-bot 的 WI-86。owner 看过证据后维持裁定。
+  - 显式选用 legacy 时会打印一行弃用提示。显式选用指：`entry: legacy`、`/review-loop:legacy`、Codex 的 legacy 请求，或直接调用 `/review-loop:plan` / `/review-loop:execute`。路由和行为都没有改。
+  - 删除 legacy 代码要等三项都完成：review-pr 迁到 paired-session（D-LG2）；code-quality-loop 并入 `run --review-only`（Q6）；legacy 对照表中 18 个 owner 行由 owner 定夺。在此之前，review-pr 和 code-quality-loop 仍走 legacy。
+  - M7 种子缺陷对比不再是退役门槛，改为可选的成本/质量研究。不计分的试点显示，paired 的首轮 review 成本约为 legacy 的 6%，墙钟约为 1/12。
+  - 相关文档：DECISIONS.md 中 ADR-6 新增修订，迁移文档新增 "Deprecation status (v2.12.0)"，`paired_session/docs/legacy-deprecation-readiness.md`；README 和 guide 同步更新。
+- **fix（FIELD-22，supervisor 并行真实 run 发现）**：两个 run 共用默认的 `~/.codex` 时，一个 run 的 Codex 回合会给自己的 workspace 写 trust 条目，原来会让另一个 run 的 Codex 回合误判为全局配置被改而 HOLD。现在，如果某个 workspace 属于另一个正在运行的 paired-session run，它的 trust-only 追加记为预期改动 `trusted-concurrent-run-workspace`，并附上那个 run 的 id。"正在运行"需要同时满足：有本用户私有的 workspace lease、该 run 的 state 写的是同一个 workspace、coordinator lock 的 pid 与 lease 一致且进程还活着。uncertain 回合的 `resume --acknowledge-codex-trust` 也接受这类条目。其他任何改动仍然是硬 finding。仍然推荐每条 lane 用独立的 CODEX_HOME。
+- **M7 工具（不影响产品行为）**：采纳了 Dot 的评分修复 21/21b，lane B 又补了几项加固：对案例仓库做 git 隔离；DUPLICATE 不能链式引用；冻结时记录原始字节摘要，skip-worktree 和 eol 转换都藏不住改动。冻结时会保留被跟踪但匹配 .gitignore 的文件；拒绝放在 `.compass/results` 下的语料。D-b1 扫描器停在评审上限，没有包含在本版里。
+- **文档**：Q6 code-quality-loop 备忘、legacy 退役就绪度报告（附 overseer 成本测量）、大任务定义提案。
+- **审查**：Codex gpt-6.1-sol。field22 3 轮，m7-s1 3 轮，m7-s1b 2 轮，deprecate 2 轮。
+
 ### v2.11.1：插件正常更新不再让回合 HOLD（FIELD-21）；`--timeout` 设上限；author 在被忽略路径写的可执行配置会在报告里列出；legacy → paired-session 对照表
 
 - **fix（FIELD-21，poker-news-bot 现场报告）**：回合进行时，如果另一个 Claude Code 会话把 review-loop 插件更新到新版本（`~/.claude/plugins/installed_plugins.json` 里同一插件条目的 version、installPath、gitCommitSha、lastUpdated 一起变），原来会把这次改动算到 author 头上并 HOLD。现在只要能确认是正常更新，efficient 模式下就作废这个回合，并在新的 baseline 上自动重跑一次；strict 模式下 HOLD，并提示可以 resume。识别条件很严：新 installPath 必须正好是插件缓存里新版本的目录，从缓存根目录往下每一级都必须是真实目录、不能是链接，其他字段不能有任何变化。只要有一项不符，仍按原来的硬 finding 处理。被作废的回合照样计入调用次数，和已有的作废重派路径一致。
