@@ -218,7 +218,14 @@ def main():
         os.link(os.environ['FAKE_CODEX_LINK_WRITE_UNLINK'], through)
         through.write_bytes(through.read_bytes())   # the same bytes: only the inode's ctime records the write
         through.unlink()
-    if os.environ.get('FAKE_RATE_LIMIT'):
+    limit_match = os.environ.get('FAKE_RATE_LIMIT_MATCH')   # ratelimit: only a turn whose prompt contains this text
+    limit_once = os.environ.get('FAKE_RATE_LIMIT_ONCE')     # ratelimit: a marker file; only the first matching turn is limited
+    if (os.environ.get('FAKE_RATE_LIMIT') and (not limit_match or limit_match in prompt)
+            and not (limit_once and Path(limit_once).exists())):
+        if limit_once: Path(limit_once).write_text('limited\n')
+        if os.environ.get('FAKE_RATE_LIMIT_STAGE_FIRST'):   # ratelimit: a writer that changed the index before the provider refused
+            (Path.cwd() / 'rate-limit-stray.txt').write_text('stray\n')
+            __import__('subprocess').run(['git', 'add', 'rate-limit-stray.txt'], check=True)
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
     session = 'fake-codex-thread'

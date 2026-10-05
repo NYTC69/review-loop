@@ -233,6 +233,11 @@ class RateLimitError(ValueError):
     pass
 
 
+class RateLimitedTurn(RuntimeError):
+    """ratelimit: a turn the provider rejected for a rate limit, as raised by invoke(). Only this exact type makes a typed
+    rate-limit hold; an error that wraps it (a W writer's git guard) is a different hold and needs its own repair."""
+
+
 def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
     clock = time.monotonic if clock is None else clock
     sleep = time.sleep if sleep is None else sleep
@@ -3741,7 +3746,7 @@ class Coordinator:
         if self.state.get('publication_hold') or (journal_path.exists() and not complete):
             raise ValueError('publication incomplete; use locked publication recovery before operator commands')
 
-    def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
+    def hold(self, reason: str, terminal_kind: Optional[str] = None, rate_limited: bool = False) -> str:
         self._publication_guard()
         if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED'):
             return self.state['status']
@@ -3765,6 +3770,12 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
+        last = next((row for row in reversed(self.state.get('turns', [])) if row.get('error_kind') == 'rate_limited'), {})
+        if rate_limited and last:   # ratelimit: the drive passes it for a RateLimitedTurn only
+            self.state['hold_kind'] = 'rate_limited'
+            self.state['rate_limit'] = {key: last.get(key) for key in ('role', 'phase', 'sequence', 'reset_hint')}
+        else:
+            self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
         if terminal_kind:
             self.state['terminal_hold_kind'] = terminal_kind
         elif not keep_rejection_limit:
@@ -5467,7 +5478,8 @@ class Coordinator:
             self.state['last_end'][role] = receipt['end']
             self.state['active'] = None
             self.save()
-            raise RuntimeError(receipt['error']) from exc
+            raise (RateLimitedTurn if receipt.get('error_kind') == 'rate_limited' and voided is None else RuntimeError)(
+                receipt['error']) from exc
         receipt['answer'] = answer
         atomic_json(prefix.with_suffix('.receipt.json'), receipt)
         self.state['turns'].append(receipt)
@@ -5712,12 +5724,18 @@ class Coordinator:
         caller's next check refuses and max_invocations bounds the run."""
         if phase not in ('POLISH-Q', 'DOCS', 'SECURITY') or not worktree_lifecycle.is_worktree(self.state): return
         rows = [row for row in [*self.state['turns'], *self.state.get('spawn_failures', [])] if row.get('phase') == phase]
-        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else len(rows)
+        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else self._stage_calls(phase)
         if used + 1 > self._worktree_run_cap(phase):
             raise RuntimeError(f'{phase} budget has no room to re-dispatch the void turn ({voided}); abort') from voided
 
+    def _stage_calls(self, phase: str) -> int:
+        """DOCS/SECURITY calls against the stage cap: every row of the phase except a provider rate-limit rejection, which is
+        refunded like the invocation budget (ratelimit), so a limited call never uses up the stage."""
+        return sum(row.get('phase') == phase and row.get('error_kind') != 'rate_limited'
+                   for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+
     def _docs_budget(self) -> None:
-        used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+        used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
 
@@ -5828,7 +5846,7 @@ class Coordinator:
                               'in full_review; any finding stops delivery.\n' + worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
-                used = sum(row.get('phase') == 'SECURITY' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+                used = self._stage_calls('SECURITY')
                 if used + 1 > self._worktree_run_cap('SECURITY'):
                     raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
                 result = self.invoke('reviewer', 'SECURITY', prompt, review_schema(), fresh=True)
@@ -8185,7 +8203,7 @@ class Coordinator:
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
-                return self.hold(str(exc))
+                return self.hold(str(exc), rate_limited=type(exc) is RateLimitedTurn)
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
@@ -8255,6 +8273,7 @@ class Coordinator:
             return self.hold(past_deadline)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
+        self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
