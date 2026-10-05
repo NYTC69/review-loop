@@ -158,6 +158,29 @@ class ReviewReportEntryTests(unittest.TestCase):
         self.assertIn('resume configuration differs: review_report', result.stdout)
         self.assertEqual(self.state_bytes(), before)
 
+    def test_strict_combined_refusals_preserve_efficient_report_state_bytes(self):
+        cases = [('reject', ('--strict',), 'report mode refuses note and reject'),
+                 ('reject', ('--strict', '--scope-change'), 'report mode refuses note and reject'),
+                 ('resume', ('--strict', '--auto-commit', 'true'), '--review-report refuses --auto-commit true')]
+        (self.workspace / 'tracked.txt').write_text('changed\n')
+        for status in ('ACTIVE', 'HOLD'):
+            for index, (action, flags, message) in enumerate(cases):
+                with self.subTest(status=status, action=action, flags=flags):
+                    self.run_dir = self.root / f'report-{status}-{index}'
+                    args = self.args('--review-only', '--review-report')
+                    args.safety_mode = 'efficient'
+                    co = rc.Coordinator(args)
+                    if status == 'HOLD': co.hold('temporary report hold')
+                    self.assertEqual(co.state['turns'], [])
+                    self.assertEqual(co.state['config']['safety_mode'], 'efficient')
+                    before = self.state_bytes()
+                    command = self.command(*flags, '--skip-probe')
+                    command[2] = action
+                    result = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('REFUSED: ' + message, result.stdout)
+                    self.assertEqual(self.state_bytes(), before)
+
     def test_report_dispatch_holds_without_any_role_until_a2(self):
         co = self.create()
         with mock.patch.object(co, 'author_turn') as author, mock.patch.object(co, 'reviewer_turn') as reviewer:

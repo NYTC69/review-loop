@@ -1709,6 +1709,9 @@ class Coordinator:
         upgraded = None
         if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
             saved_state = json.loads(self.state_path.read_text())
+            self.state = saved_state
+            self._review_report_args(saved_state['config'])
+            if args.action in ('note', 'reject'): self._refuse_report_feedback()
             args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
             if requested and requested != args.safety_mode:
                 probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
@@ -1729,8 +1732,6 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
-            self._review_report_args(self.state['config'])
-            if args.action in ('note', 'reject'): self._refuse_report_feedback()
             if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
                 raise ValueError('run was created by an older paired-session build; start a new run')
             if not self._fake_lifecycle: worktree_lifecycle.refuse_saved(self.state, args)
