@@ -131,6 +131,9 @@ MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
+DEFAULT_TIMEOUT_SECONDS = 2700
+MAX_TIMEOUT_SECONDS = 86400   # timeoutcap: one day per non-EXEC turn or coordinator test run (an existing run starts with --timeout 20000)
+TIMEOUT_RANGE_ERROR = f'--timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds'
 
 
 def resolve_exec_turn_timeout(value, general_timeout):
@@ -473,18 +476,46 @@ def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path,
 PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re-runs the turn on a fresh baseline)'
 
 
-def _plugin_entries_without_bump(value):
-    if isinstance(value, dict): return {k: None if k in ('version', 'lastUpdated') and not isinstance(v, (dict, list)) else _plugin_entries_without_bump(v) for k, v in value.items()}   # G-b: the keys stay, only scalar values are ignored
-    if isinstance(value, list): return [_plugin_entries_without_bump(v) for v in value]
-    return value
+PLUGIN_UPDATE_FIELDS = ('version', 'installPath', 'gitCommitSha', 'lastUpdated')   # field21: what a normal plugin update rewrites
+
+
+def normal_plugin_update(old: dict, new: dict) -> Optional[list]:
+    """field21: the entries a NORMAL Claude Code plugin update changed in installed_plugins.json, or None for anything else. Same
+    document apart from `plugins`, same plugin keys, same entries (count and keys); a changed entry differs only in the scalar
+    values of PLUGIN_UPDATE_FIELDS, and a changed installPath is the canonical cache directory of that plugin and its new version
+    (<plugins>/cache/<marketplace>/<plugin>/<version>), present on disk as a real directory."""
+    if old.get('error') or new.get('error') or not isinstance(old.get('document'), dict) or not isinstance(new.get('document'), dict): return None
+    before, after = old['document'], new['document']
+    if before == after or {k: v for k, v in before.items() if k != 'plugins'} != {k: v for k, v in after.items() if k != 'plugins'}: return None
+    plugins = (before.get('plugins'), after.get('plugins'))
+    if not all(isinstance(p, dict) for p in plugins) or set(plugins[0]) != set(plugins[1]): return None
+    cache = Path(new['path']).parent / 'cache' if new.get('path') else None
+    updates = []
+    for key in sorted(plugins[0]):
+        rows = (plugins[0][key], plugins[1][key])
+        if not all(isinstance(r, list) for r in rows) or len(rows[0]) != len(rows[1]): return None
+        for index, (was, now) in enumerate(zip(*rows)):
+            if not isinstance(was, dict) or not isinstance(now, dict) or set(was) != set(now): return None
+            changed = sorted(field for field in was if was[field] != now[field])
+            if not changed: continue
+            if any(field not in PLUGIN_UPDATE_FIELDS or isinstance(was[field], (dict, list)) or isinstance(now[field], (dict, list)) for field in changed): return None
+            if 'installPath' in changed:
+                plugin, _, marketplace = key.rpartition('@')
+                version = now.get('version')
+                if not (cache and plugin and marketplace and isinstance(version, str) and isinstance(now['installPath'], str)
+                        and version not in ('', '.', '..') and '/' not in version and '/' not in plugin and '/' not in marketplace):
+                    return None
+                canonical = cache / marketplace / plugin / version
+                levels = (cache, cache / marketplace, cache / marketplace / plugin, canonical)   # every level a real directory: no link out
+                if Path(now['installPath']) != canonical or any(level.is_symlink() or not level.is_dir() for level in levels): return None
+            updates.append({'plugin': key, 'entry': index, 'fields': changed, 'version': [was.get('version'), now.get('version')]})
+    return updates or None
 
 
 def plugin_version_bump_only(findings: list, before: dict, after: dict) -> bool:
-    """RF-4: the only finding is installed_plugins.json and it differs from the baseline only in version/lastUpdated values."""
+    """RF-4, widened by field21: the only finding is installed_plugins.json and it is a normal plugin update (normal_plugin_update)."""
     if [row['file'] for row in findings] != ['claude_plugins']: return False
-    old, new = before['claude_plugins'], after['claude_plugins']
-    if old.get('error') or new.get('error') or old.get('document') is None or new.get('document') is None: return False
-    return old['document'] != new['document'] and _plugin_entries_without_bump(old['document']) == _plugin_entries_without_bump(new['document'])
+    return normal_plugin_update(before['claude_plugins'], after['claude_plugins']) is not None
 
 
 def attribute_global_config_changes(before: dict, after: dict, workspaces=()) -> dict:
@@ -1857,6 +1888,11 @@ class ReadOnlyTurnVoided(ValueError):
         self.restored = restored
 
 
+class PluginUpdateTurnVoided(ValueError):
+    """field21: in efficient mode, a turn during which only a normal plugin update outside the run rewrote installed_plugins.json;
+    its result is never used and invoke() re-dispatches the turn once on a fresh global-config baseline."""
+
+
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -1870,6 +1906,8 @@ class Coordinator:
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
         if getattr(args, 'wi_deadline', None) is not None and args.wi_deadline <= 0: raise ValueError('--wi-deadline must be a positive number of seconds')
+        if not 1 <= getattr(args, 'timeout', DEFAULT_TIMEOUT_SECONDS) <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any state exists
+            raise ValueError(TIMEOUT_RANGE_ERROR)
         self.args = args
         self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
         self._fake_dispatching = False
@@ -5273,6 +5311,7 @@ class Coordinator:
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
+        plugin_redispatched = False                                      # field21: one re-dispatch per invoke after a plugin update
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
@@ -5291,6 +5330,15 @@ class Coordinator:
                                 self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
                                 self._drop_scratch(scratch)
                             except RuntimeError: pass
+                        if isinstance(exc, RuntimeError) and isinstance(exc.__cause__, PluginUpdateTurnVoided):   # field21
+                            if plugin_redispatched: raise RuntimeError(f'{exc}; again after one re-dispatch{PLUGIN_UPDATE_HINT}') from exc
+                            self._redispatch_budget(phase, exc)
+                            plugin_redispatched = True
+                            turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request was discarded because the '
+                                            'global plugin registry changed while it ran (recognized as a normal plugin update). Answer '
+                                            'the request again on the current tree.')
+                            print(f'NOTE: {exc}; re-dispatching the {role} turn once on a fresh global-config baseline')
+                            continue
                         if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
                                 and exc.__cause__.restored): raise
                         if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
@@ -5576,6 +5624,7 @@ class Coordinator:
                 self._record_ignored_config(receipt, config_before, ignored_config.inventory(
                     snapshot_workspace, lambda names: self._ignored_paths(snapshot_workspace, names)))
         voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
+        plugin_void = None   # field21: set below when only a normal plugin update changed the global config (efficient mode)
         try:
             if control_problem: raise ValueError(control_problem)
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
@@ -5604,8 +5653,14 @@ class Coordinator:
                 changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
                 receipt['global_config_changes'] = changes
                 if changes['status'] != 'PASS':
-                    raise ValueError(receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings'])
-                                     + (PLUGIN_UPDATE_HINT if plugin_version_bump_only(changes['findings'], vendor_config_before, config_after) else ''))
+                    message = receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings'])
+                    if update := ([row['file'] for row in changes['findings']] == ['claude_plugins'] and
+                                  normal_plugin_update(vendor_config_before['claude_plugins'], config_after['claude_plugins'])):
+                        changes['plugin_update'] = update   # field21: recorded in both modes
+                    if not update or self.strict or voided is not None or touched:
+                        raise ValueError(message + (PLUGIN_UPDATE_HINT if update else ''))
+                    plugin_void = PluginUpdateTurnVoided(message + ' (a normal plugin update outside the run: ' + ', '.join(
+                        f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update) + '); the turn is void')
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -5686,10 +5741,12 @@ class Coordinator:
                 raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
                                  + ('; the configured test was not observed to completion (no exit status when the turn ended)'
                                     if unfinished else ''))
+            old = self.state['sessions'].get(role)
+            if not fresh and old and session and old != session:
+                raise ValueError(f'{role} resumed a different session')
+            if plugin_void is not None:   # field21: after every check of this turn, so any of them still leads; before the session update
+                raise plugin_void
             if not fresh:
-                old = self.state['sessions'].get(role)
-                if old and session and old != session:
-                    raise ValueError(f'{role} resumed a different session')
                 if session:
                     self.state['sessions'][role] = session
                 self.state['started'][role] = True
@@ -8733,7 +8790,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
     p.add_argument('--max-invocations', type=int, default=25)
-    p.add_argument('--timeout', type=int, default=2700)
+    p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT_SECONDS,
+                   help=f'per-dispatch timeout for every non-EXEC turn and the coordinator\'s own test runs '
+                        f'(default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS} seconds)')
     p.set_defaults(exec_turn_timeout_explicit=False)
     p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
                    help=f'EXEC author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
@@ -9132,6 +9191,9 @@ def main(argv=None) -> int:
         except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
     if args.detach and args.action not in DETACH_ACTIONS:
         print('REFUSED: --detach is only for ' + ', '.join(DETACH_ACTIONS))
+        return 2
+    if not 1 <= args.timeout <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any lease, run dir or detached child
+        print('REFUSED: ' + TIMEOUT_RANGE_ERROR)
         return 2
     if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
         args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
