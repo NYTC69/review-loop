@@ -12,9 +12,13 @@ Each `.json` file in this directory defines one smoke case. The runner is
   FAIL even when the underlying skill is correct.
 
   The smoke runner reports `best-effort smoke timed out` when the
-  invocation exceeds `setup.timeout_seconds` (runner default 300s,
-  per-case override common — the regression case below overrides to
-  600s) and falls back to seeding the synthetic fixture. Subsequent
+  invocation exceeds its effective timeout: `setup.timeout_seconds`
+  (runner default 300s, per-case override common — the regression case
+  below overrides to 600s) times the paired-session test load factor
+  `clamp(load1 / ncpu, 1, 6)` (or `PAIRED_SESSION_TEST_TIMEOUT_SCALE`),
+  recorded as `meta.effective_timeout_seconds` and `meta.timeout_scale`.
+  On an idle machine the factor is 1 and the timeout is the fixture's own.
+  It then falls back to seeding the synthetic fixture. Subsequent
   assertions then fail against the seeded fixture rather than the
   (unproduced) real output.
 
@@ -27,7 +31,8 @@ Each `.json` file in this directory defines one smoke case. The runner is
 
 The following cases are documented as intentionally allowed to FAIL on
 machines where `claude -p` cannot converge within the case's
-`setup.timeout_seconds` budget (typical override 240–600s, per case).
+effective timeout (`setup.timeout_seconds`, typical override 240–600s,
+times the load factor above).
 The underlying skill behavior is verified by lint contracts in
 `tests/skills/contracts/review-loop.json` and unit tests in
 `tests/run_skill_lint_test.py` / `tests/replay_sessions_test.py` /
@@ -45,6 +50,10 @@ The underlying skill behavior is verified by lint contracts in
   `completed_stages_ordered_exec_polish_docs_security`) fail against the
   seed. Future paths: either (a) raise the timeout when the runtime
   budget allows, or (b) move the case to a non-real-LLM smoke harness.
+  The load factor only helps when the machine is loaded; why the case
+  needs more than 600 s on an idle machine is not established (the one
+  recorded SKIP, 2026-10-05 02:45 on c80b8c9, kept no artifacts and no
+  load reading).
 
 - `execute.stop-after-before-polish.smoke.claude` /
   `execute.stop-after-polish.smoke.claude` /

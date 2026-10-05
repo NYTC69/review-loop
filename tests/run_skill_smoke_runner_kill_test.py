@@ -128,6 +128,10 @@ class RunnerKillTest(unittest.TestCase):
     """The real runner on a fake case: the case applies a temp_config and leaves a background child in its group."""
 
     def setUp(self):
+        try:   # a real smoke runner holds the lock: these tests would touch its config, case dir and marker
+            os.close(lib.acquire_runner_lock(ROOT))
+        except RuntimeError:
+            self.skipTest("a smoke runner is running in this checkout")
         self.case_id = "smokefix.runner-kill.fake"
         self.case_path = SMOKE_DIR / f"{self.case_id}.json"
         self.artifact_dir = ROOT / "tests/skills/.artifacts" / self.case_id
@@ -168,15 +172,24 @@ class RunnerKillTest(unittest.TestCase):
             CONFIG.unlink(missing_ok=True)
         else:
             CONFIG.write_bytes(self.original)
+        try:   # only while no runner holds the lock: never delete a live runner's SIGKILL safety net
+            fd = lib.acquire_runner_lock(ROOT)
+        except RuntimeError:
+            return
         MARKER.unlink(missing_ok=True)
+        os.close(fd)
 
     def run_runner(self, *args):
         return subprocess.run(["bash", "scripts/run-skill-smoke", *args], cwd=ROOT, capture_output=True, text=True,
                               env=RUNNER_ENV, timeout=180)
 
-    def start_runner(self):
+    def start_runner(self, ignored=()):
+        def preexec():   # like nohup: the runner starts with these signals ignored
+            for signum in ignored:
+                signal.signal(signum, signal.SIG_IGN)
         runner = subprocess.Popen(["bash", "scripts/run-skill-smoke", "--case", self.case_id], cwd=ROOT, env=RUNNER_ENV,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                                  preexec_fn=preexec)
         self.addCleanup(lambda: runner.poll() is None and (os.killpg(runner.pid, signal.SIGKILL), runner.wait()))
         self.assertTrue(wait_for(self.pgid_file.exists), "the fake case never started")
         self.assertEqual(CONFIG.read_text(encoding="utf-8"), "entry: smokefix-temp\n")
@@ -199,6 +212,19 @@ class RunnerKillTest(unittest.TestCase):
                 self.assertTrue(Path(str(self.pgid_file) + '.term').exists(), "the case never received SIGTERM")
                 self.assertEqual(CONFIG.read_bytes() if CONFIG.exists() else None, self.original)
                 self.assertFalse(MARKER.exists())
+
+    def test_an_inherited_ignored_sighup_stays_ignored(self):
+        runner, pgid = self.start_runner(ignored=(signal.SIGHUP,))
+        runner.send_signal(signal.SIGHUP)   # a closed terminal under nohup
+        time.sleep(1)
+        self.assertIsNone(runner.poll(), "a nohup runner was interrupted by SIGHUP")
+        self.assertEqual(CONFIG.read_text(encoding="utf-8"), "entry: smokefix-temp\n")
+        self.assertTrue(group_alive(pgid))
+        runner.send_signal(signal.SIGTERM)   # still stoppable on purpose
+        out, err = runner.communicate(timeout=60)
+        self.assertEqual(runner.returncode, 128 + signal.SIGTERM, out + err)
+        self.assertTrue(wait_for(lambda: not group_alive(pgid), 10))
+        self.assertEqual(CONFIG.read_bytes() if CONFIG.exists() else None, self.original)
 
     def test_after_sigkill_the_next_run_restores_the_config_and_only_reports_the_group(self):
         runner, pgid = self.start_runner()

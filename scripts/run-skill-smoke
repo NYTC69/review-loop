@@ -1445,7 +1445,8 @@ def _interrupt(signum, _frame):
 
 RUNNER_LOCK_FD = None   # set only once this runner holds the lock; the backstop touches the marker only then
 for _signum in INTERRUPT_SIGNALS:
-    signal.signal(_signum, _interrupt)
+    if signal.getsignal(_signum) is not signal.SIG_IGN:   # nohup / a background job: an inherited SIG_IGN stays ignored
+        signal.signal(_signum, _interrupt)
 try:
     try:
         with signals_deferred():
@@ -1462,6 +1463,9 @@ except RunnerError as exc:
 except RunnerInterrupted as exc:   # every interrupt signal is SIG_IGN now: the backstop runs to the end
     for note in interrupt_backstop(ROOT, CURRENT_CASE["process"], RUNNER_LOCK_FD is not None):
         print(f"NOTE {note} (interrupt backstop)", flush=True)
-    print(f"INTERRUPTED - signal {exc.signum}: the case's process group was stopped and temp_config restored", flush=True)
+    done = ["the running case's process group was stopped"] if CURRENT_CASE["process"] is not None else []
+    done.append("this runner left no temp_config or marker behind" if RUNNER_LOCK_FD is not None
+                else "the runner lock was not taken, so nothing was changed")
+    print(f"INTERRUPTED - signal {exc.signum}: {'; '.join(done)}", flush=True)
     raise SystemExit(128 + exc.signum)
 PY
