@@ -47,6 +47,12 @@ or loops; otherwise ask for a `/bin/bash /absolute/path/script.sh` form. A
 declined or unanswered question is a failed stage A check. Under `--handsfree`
 or `handsfree: true` nobody answers, so any such question is a failed stage A
 check, reported as `stage A failure: handsfree cannot answer (<question>)`.
+Before `run`, the product worktree must contain no file the entry skills
+created: protocol bundles go to the temp root and the run directory lives
+outside the worktree. Report any other untracked, non-ignored file in it (`git
+status --porcelain --untracked-files=all`) in stage A or with the start line:
+it becomes part of the reviewed change and, with `auto_commit`, of the
+delivered commit.
 
 ## Profile and settings
 

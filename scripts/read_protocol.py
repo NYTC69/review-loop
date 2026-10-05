@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 
@@ -92,8 +93,28 @@ def resolve(root, runtime, stage):
     return resolved
 
 
+def outside_root():
+    """The per-user temp-area root for bundles that must stay out of the product worktree (paired-session entry,
+    FIELD-18). The last component is not resolved: write_bundle refuses it when it is a symlink."""
+    return Path(tempfile.gettempdir()).resolve() / f"review-loop-protocol-{os.getuid()}"
+
+
+def checked_outside_root(create=False):
+    """The root must be a real directory owned by this user with no group/other access (shared /tmp)."""
+    root = outside_root()
+    if create:
+        try:
+            root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    info = os.lstat(root)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError(f"protocol temp root {root} must be a directory owned by this user with mode 0700")
+    return root
+
+
 def write_bundle(path, content):
-    """Atomically write a bundle only inside the task's ignored tmp area."""
+    """Atomically write a bundle only inside the task's ignored tmp area or the temp-area root."""
     workspace = Path.cwd().resolve()
     requested = Path(path)
     if requested.is_absolute():
@@ -103,7 +124,17 @@ def write_bundle(path, content):
             raise ValueError("--output must be inside .review-loop/tmp")
         target = (workspace / requested).resolve()
     allowed = (workspace / ".review-loop" / "tmp").resolve()
-    target.relative_to(allowed)
+    try:
+        target.relative_to(allowed)
+    except ValueError:
+        target.relative_to(outside_root())
+        checked_outside_root(create=True)
+        try:
+            target.relative_to(workspace)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("--output outside .review-loop/tmp must not resolve into the workspace")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -131,7 +162,8 @@ def main(argv=None):
                         help="only units still available in THIS live context; repeatable")
     parser.add_argument("--inventory", action="store_true", help="metadata only; does not count as reading instructions")
     parser.add_argument("--output", type=Path,
-                        help="atomically write output under task workspace .review-loop/tmp")
+                        help="atomically write output under task workspace .review-loop/tmp, or as an absolute "
+                             "path under <system temp>/review-loop-protocol/ (outside the product worktree)")
     args = parser.parse_args(argv)
     try:
         units = resolve(args.root, args.runtime, args.stage)

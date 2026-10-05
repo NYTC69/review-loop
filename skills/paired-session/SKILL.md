@@ -17,10 +17,14 @@ description: >
 
 First, before any stage A check or question, read `docs/protocol/loading.md`
 and load the shared entry contract (`docs/protocol/paired-session-entry.md`) as
-its own Bash command, cwd in the user's workspace:
+its own Bash command, cwd in the user's workspace. The bundle must stay out of
+the product worktree (FIELD-18): first print a fresh bundle directory with its
+own Bash call,
+`python3 -c 'import os, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), f"review-loop-protocol-{os.getuid()}", uuid.uuid4().hex[:12]))'`,
+then write that printed directory out literally as `<bundle-dir>`:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/read_protocol.py --runtime claude --stage entry-paired-session --output .review-loop/tmp/protocol-claude-entry-paired-session.md
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/read_protocol.py --runtime claude --stage entry-paired-session --output <bundle-dir>/protocol-claude-entry-paired-session.md
 ```
 
 After exit 0, read the complete output file in bounded chunks and follow it; a
