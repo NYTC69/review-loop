@@ -3629,7 +3629,7 @@ class Coordinator:
 
     def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
         self._publication_guard()
-        if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED'):
+        if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED', 'REPORTED'):
             return self.state['status']
         if reason == 'rejected-tree':
             author = next((r for r in reversed(self.state['turns']) if r.get('role') == 'author'), {})
@@ -3651,6 +3651,8 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
+        if (self.state.get('config') or {}).get('review_report'):
+            self._report_mark(False, reason)
         if terminal_kind:
             self.state['terminal_hold_kind'] = terminal_kind
         elif not keep_rejection_limit:
@@ -3828,6 +3830,7 @@ class Coordinator:
         return note_id
 
     def accept(self) -> str:
+        self._refuse_report_accept()
         self._publication_guard()
         if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
                 and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
@@ -4663,6 +4666,10 @@ class Coordinator:
         roles = (self.args.reviewer_vendor, self.args.gate_vendor)
         return roles if self.state['config'].get('review_report') else (self.args.author_vendor, *roles)
 
+    def _refuse_report_accept(self) -> None:
+        if self.state['config'].get('review_report'):
+            raise ValueError('report mode has nothing to accept: a report run ends at REPORTED')
+
     def _refuse_report_feedback(self) -> None:
         if self.state['config'].get('review_report'):
             raise ValueError('report mode refuses note and reject, including --scope-change; start a new review request')
@@ -5220,8 +5227,11 @@ class Coordinator:
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
-        if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
-            raise RuntimeError('invocation limit reached')
+        limit = self.args.max_invocations - self.state.get('q_reserved', 0)
+        if self.state['config'].get('review_report'):
+            limit = min(limit, self._report_budget())
+        if self.state['invocations_used'] >= limit:
+            raise RuntimeError('invocation limit reached' + (f' (report budget {limit})' if self.state['config'].get('review_report') else ''))
         if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
         timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
                            else self.args.timeout)
@@ -5827,6 +5837,8 @@ class Coordinator:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
         (legacy Step 3.7) run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
         hit or finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
+        if self.state['config'].get('review_report'):
+            return self._report_security_turn()
         life = self.state['lifecycle']
         request = worktree_lifecycle.stage_request(life, 'security')
         tree = git_snapshot(self.workspace)[0]
@@ -5872,6 +5884,87 @@ class Coordinator:
             self.hold('; '.join(reasons))
         else:   # acceptance pending: accept --expect (W3b) delivers it
             self.done(expected=after, lifecycle_stage='DONE')
+
+    def _report_security_turn(self) -> None:
+        """LG2-a3, report mode: the sensitive path scan and the preflight results become security findings, the
+        security reviewer always runs, and the run ends at REPORTED. A preflight that could not scan, a failed security
+        review or a tree change stays a HOLD (marking the report incomplete); nothing here blocks on a finding."""
+        life = self.state['lifecycle']
+        request = worktree_lifecycle.stage_request(life, 'security')
+        tree = git_snapshot(self.workspace)[0]
+        if tree != life['candidate_oid']:
+            raise RuntimeError('SECURITY tree differs from the reviewed report tree; restore it and resume, or abort')
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.save()
+        sensitive = self._sensitive_paths()
+        preflight = self._security_preflight(request['request_id'])
+        if preflight.get('status') not in ('clean', 'blocked', 'review-required'):   # it could not scan: a HOLD class
+            raise RuntimeError(preflight.get('reason') or 'security preflight did not complete')
+        rows = [{'severity': 'CRITICAL', 'security': True, 'file': row['path'],
+                 'summary': f"[class: sensitive-path] {row['path']} ({row['category']})",
+                 'body': f"The change carries a sensitive path: {row['path']} ({row['category']}).",
+                 'failure_scenario': 'Merging the change publishes the file.'} for row in sensitive]
+        rows += [{'severity': 'CRITICAL', 'security': True, 'file': row['path'],
+                  'summary': f"[class: secret] {row['rule']} in {row['path']}" + (f":{row['line']}" if row['line'] else ''),
+                  'body': f"security preflight rule {row['rule']} matched {row['path']} (value not shown).",
+                  'failure_scenario': 'Merging the change publishes the secret.'} for row in preflight.get('findings', [])]
+        rows += [{'severity': 'MINOR', 'security': True, 'file': '.gitignore',
+                  'summary': f'.gitignore does not cover {category}', 'body': f'.gitignore does not cover {category}.',
+                  'failure_scenario': 'Such files could be committed later.'} for category in preflight.get('uncovered_ignore', [])]
+        self.record_findings('security-preflight', 'SECURITY', life['epoch'], rows)
+        self.write_ledger()
+        review = self._security_review_turn(tree, request['request_id'])
+        reason = review['reason'] if review['status'] == 'HOLD' else None   # findings are report content; a failed role HOLDs
+        if (after := git_snapshot(self.workspace)[0]) != tree:
+            reason = 'SECURITY tree changed during the stage; restore it and resume, or abort'
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
+            **request, 'status': 'HOLD' if reason else 'READY', 'output_oid': after,
+            'route': 'HOLD' if reason else 'REPORTED', 'sensitive_paths': sensitive, 'preflight': preflight, 'review': review})
+        for key in ('security_turn', 'security_review'):
+            self.state['lifecycle'].pop(key, None)
+        if reason:
+            self.hold(reason)
+        else:
+            self.reported()
+
+    def reported(self) -> str:
+        """LG2-a3: the terminal of a report run. Nothing is delivered, so nothing is accepted; findings stay findings."""
+        self.state['lifecycle']['stage'] = 'REPORTED'
+        self.state.update(status='REPORTED', next='reported', completed_at=time.time())
+        self._report_mark(True)
+        self.save()
+        self.write_ledger()
+        self.write_comparison()
+        self.write_open_findings()
+        self.write_usage()
+        self._progress_terminal('REPORTED')
+        return 'REPORTED'
+
+    def _report_mark(self, complete: bool, reason: Optional[str] = None) -> None:
+        """LG2-a3: the report's completeness, for the report file (b2). A HOLD marks it incomplete and names the stages
+        that did not complete."""
+        receipts = (self.state.get('lifecycle') or {}).get('receipts', [])
+        progress = self.state.get('report_progress') or {}   # set only when a stage's result moved the run on
+        missing = [name for name, ran in (
+            ('EXEC reviewer and shadow', bool(progress.get('exec_review'))),
+            ('adversarial gate', bool(progress.get('gate'))),
+            ('POLISH-Q specialists', any(r.get('stage') == 'POLISH-Q' and r.get('status') == 'READY' for r in receipts)),
+            ('SECURITY', any(r.get('stage') == 'SECURITY' and r.get('route') == 'REPORTED' for r in receipts))) if not ran]
+        self.state['report'] = {'complete': complete, 'hold_reason': reason, 'not_completed': [] if complete else missing}
+
+    def _report_budget(self) -> int:
+        """LG2-a3: a report run's invocation budget, set by its role count (reviewer, shadow, gate, the selected
+        specialists, the security reviewer) plus the permission-probe turns a2 kept (the reviewer probe, and the gate
+        probe when the gate vendor differs), each with one retry. Frozen at first use; the --max-invocations cap still applies."""
+        if (budget := self.state.get('report_budget')) is None:
+            if git_snapshot(self.workspace)[0] != (self.state.get('review_only') or {}).get('candidate_tree_sha256'):
+                raise RuntimeError('the report tree changed since the run was created; restore it and resume, or abort')
+            names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(self._changed_paths())
+            roles = 1 + (self.args.shadow == 'on') + 1 + len(names) + 1
+            probes = 1 + (self.args.gate_vendor != self.args.reviewer_vendor)
+            budget = self.state['report_budget'] = 2 * (roles + probes)
+            self.save()
+        return budget
 
     def _security_review_turn(self, tree: str, request_id: str) -> dict:
         """Fresh security reviewer over the clean scan: any open finding of its own HOLDs (no repair); on the new
@@ -6097,10 +6190,9 @@ class Coordinator:
         if report_mode:   # LG2-a2: specialists only report; no fix leg, no blocker gate
             if tree != request['candidate_oid']:
                 self.hold('POLISH-Q tree differs from the reviewed report tree; inspect, then abort')
-            else:   # TEMPORARY until LG2-a3 lands SECURITY and REPORTED
+            else:   # LG2-a3: on to the report SECURITY stage
                 self.state['lifecycle']['stage'] = 'SECURITY'
                 self.state['next'] = 'security'
-                self.hold('report sequence stopped after POLISH-Q; SECURITY pending (LG2-a3)')
         elif blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
             self.state['lifecycle']['fix_base'] = tree
             self.state.update(phase='EXEC', next='polish-fix',
@@ -6388,6 +6480,7 @@ class Coordinator:
             return
         if phase == 'EXEC' and self.state['config'].get('review_report'):
             self.state['pending_reviewer_result_sequence'] = None
+            self.state.setdefault('report_progress', {})['exec_review'] = True   # LG2-a3: a verdict that reached the gate route
             self.state['next'] = 'gate'
             self.save()
             return
@@ -6619,6 +6712,7 @@ class Coordinator:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
         if self.state['config'].get('review_report'):
+            self.state.setdefault('report_progress', {})['gate'] = True
             self.state['next'] = 'polish-q'
             if worktree_lifecycle.is_worktree(self.state):
                 self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
@@ -8264,11 +8358,9 @@ class Coordinator:
                 if git_snapshot(self.workspace)[0] != record.get('candidate_tree_sha256'):
                     return self.hold('the report tree changed since the run was created; restore it from '
                                      + str(record.get('mirror')) + ' and resume, or abort')
-                if self.state['next'] == 'security':
-                    return self.hold('report sequence stopped after POLISH-Q; SECURITY pending (LG2-a3)')
-                if self.state['next'] not in ('reviewer', 'gate', 'polish-q') or self.state['phase'] != 'EXEC':
+                if self.state['next'] not in ('reviewer', 'gate', 'polish-q', 'security') or self.state['phase'] != 'EXEC':
                     return self.hold('report mode refuses a writer or unsupported phase')
-                if self.state['next'] == 'polish-q' and not worktree_lifecycle.is_worktree(self.state):
+                if self.state['next'] in ('polish-q', 'security') and not worktree_lifecycle.is_worktree(self.state):
                     return self.hold('report POLISH-Q requires --lifecycle-mode on; start a new run')
             if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
             if (self.state['next'] == 'reviewer' and worktree_lifecycle.is_worktree(self.state) and
@@ -8305,6 +8397,7 @@ class Coordinator:
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
+        if self.state['status'] == 'REPORTED': return 'REPORTED'   # LG2-a3: terminal
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
                                   bool(self.state.get('uncertain_active') or self.state.get('active')))
         if self.args.acknowledge_codex_trust:
@@ -8848,6 +8941,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
         return co.refused(issue)
+    if args.action == 'accept': co._refuse_report_accept()   # LG2-a3: before an intent too
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
             and 'codex' in co.dispatched_vendors()):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
@@ -8916,7 +9010,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             status = co.drive()
         print(status + (' (acceptance pending)' if status == 'DONE' else
                         ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
-        return 0 if status in ('DONE', 'ACCEPTED') else 2
+        return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
     pending = co.state.get('uncertain_active') or {}
     before_config = pending.get('global_codex_before', {}).get('codex_config')
     changed_codex = (args.action == 'resume' and args.retry_uncertain and not args.polish
@@ -8930,7 +9024,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return co.refused(reason + '; run permission-probe before continuing')
     co._probe_gate_required = co.strict and not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
-        if co.state.get('status') in ('ACCEPTED', 'CLOSED'):
+        if co.state.get('status') in ('ACCEPTED', 'CLOSED', 'REPORTED'):   # LG2-a3: REPORTED is terminal too
             print(co.state['status'])
             return 0
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
@@ -8943,7 +9037,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
     print(status + (' (acceptance pending)' if status == 'DONE' else
                     ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
-    return 0 if status in ('DONE', 'ACCEPTED') else 2
+    return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
 
 
 def main(argv=None) -> int:

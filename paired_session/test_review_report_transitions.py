@@ -12,7 +12,6 @@ rc = trc.rc
 HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen',
            'fake_codex_cli', 'fake_claude_cli', 'command', 'run_coordinator', 'run_operator_action')
 FLAGS = ('--review-only', '--review-report', '--lifecycle-mode', 'on')
-STOP = 'report sequence stopped after POLISH-Q; SECURITY pending (LG2-a3)'
 
 
 class ReviewReportTransitionTests(unittest.TestCase):
@@ -30,15 +29,18 @@ class ReviewReportTransitionTests(unittest.TestCase):
         return rc.parser().parse_args(command[2:])
 
     def assert_report_path(self, result):
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = self.state()
-        self.assertEqual((state['status'], state['hold_reason'], state['next']), ('HOLD', STOP, 'security'))
+        self.assertEqual((state['status'], state['next'], state['lifecycle']['stage']), ('REPORTED', 'reported', 'REPORTED'))
+        self.assertEqual(state['report'], {'complete': True, 'hold_reason': None, 'not_completed': []})
         turns = state['turns']
         self.assertEqual([(t['role'], t['phase']) for t in turns[:3]],
                          [('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('gate', 'EXEC')])
         self.assertTrue(all(t['role'] != 'author' for t in turns))
-        self.assertTrue(all(t['phase'] in ('EXEC', 'POLISH-Q') for t in turns))
-        [receipt] = state['lifecycle']['receipts']
+        self.assertTrue(all(t['phase'] in ('EXEC', 'POLISH-Q', 'SECURITY') for t in turns))
+        self.assertEqual(sum(t['phase'] == 'SECURITY' for t in turns), 1)   # the security reviewer always runs
+        receipt, security = state['lifecycle']['receipts']
+        self.assertEqual((security['stage'], security['status'], security['route']), ('SECURITY', 'READY', 'REPORTED'))
         self.assertEqual((receipt['stage'], receipt['status']), ('POLISH-Q', 'READY'))
         self.assertEqual(receipt['specialists'], list(wl.specialists(['sum_ints.py'])))
         self.assertEqual(len(receipt['specialist_turns']), len(receipt['specialists']))
@@ -55,13 +57,13 @@ class ReviewReportTransitionTests(unittest.TestCase):
                             for f in state['finding_ledger']))
         self.assertTrue(any(f['severity'] == 'MAJOR' and f['status'] == 'open' for f in state['finding_ledger']))
 
-    def test_approve_runs_gate_and_specialists_once_and_resume_keeps_the_temporary_hold(self):
+    def test_approve_reaches_reported_and_resume_keeps_it(self):
         self.change()
         state = self.assert_report_path(self.run_coordinator(*FLAGS))
         self.assertEqual(state['exec_comparisons'][0]['persistent']['verdict'], 'APPROVE')
         result = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertEqual(self.state()['hold_reason'], STOP)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state()['status'], 'REPORTED')
         self.assertEqual(self.state()['turns'], state['turns'])
 
     def test_gate_request_changes_still_runs_polish_q_and_keeps_findings_open(self):
@@ -91,7 +93,7 @@ class ReviewReportTransitionTests(unittest.TestCase):
                     env = {**os.environ, 'FAKE_MUTATION': 'echo'}
                     if once: env['FAKE_MUTATION_ONCE'] = str(self.root / f'marker-{strict}')
                     result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(result.returncode, 0 if once else 2, result.stdout + result.stderr)
                     state = self.state()
                     voids = [t for t in state['turns'] if t.get('voided')]
                     self.assertEqual(len(voids), 1 if once else 2)
@@ -99,7 +101,7 @@ class ReviewReportTransitionTests(unittest.TestCase):
                     self.assertTrue(all(t['role'] != 'author' for t in state['turns']))
                     self.assertEqual(rc.git_snapshot(self.workspace)[0], before)
                     self.assertFalse((self.workspace / 'forbidden.txt').exists())
-                    if once: self.assertEqual(state['hold_reason'], STOP)
+                    if once: self.assertEqual(state['status'], 'REPORTED')
                     else:
                         self.assertIn('mutated workspace again after one re-dispatch', state['hold_reason'])
                         self.assertFalse(any(t['role'] == 'gate' for t in state['turns']))
