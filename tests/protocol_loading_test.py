@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -235,3 +236,79 @@ def test_output_file_must_stay_in_workspace_protocol_tmp(tmp_path, target):
 
     assert result.stdout == ""
     assert "read_protocol:" in result.stderr
+
+
+def run_with_tmpdir(root: Path, tmpdir: Path, *args: str, expect: int = 0) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        [sys.executable, str(READER), "--root", str(root), "--runtime", "codex", "--stage", "planning", *args],
+        cwd=str(root.parent), capture_output=True, text=True, check=False,
+        env={**os.environ, "TMPDIR": str(tmpdir)},
+    )
+    assert result.returncode == expect, result.stderr
+    return result
+
+
+def user_root(temp: Path) -> Path:
+    return temp.resolve() / f"review-loop-protocol-{os.getuid()}"
+
+
+def test_output_may_go_to_the_protocol_temp_root_outside_the_worktree(tmp_path):
+    """FIELD-18: the entry loads must not leave files in the product worktree (cwd)."""
+    root, temp = tmp_path / "work" / "support", tmp_path / "systemtmp"   # cwd (the worktree) is tmp_path/work
+    temp.mkdir()
+    body = "Instruction.\n"
+    write(root, "instructions.md", body)
+    manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+    target = user_root(temp) / "a1b2c3" / "protocol-codex-planning.md"
+
+    result = run_with_tmpdir(root, temp, "--output", str(target))
+
+    assert json.loads(result.stdout)["protocol_output"] == str(target)
+    assert target.read_text() == bundle("instructions", "instructions.md", body)
+    assert user_root(temp).stat().st_mode & 0o777 == 0o700   # created private for this user
+    assert not (tmp_path / "work" / ".review-loop").exists()   # nothing written in the worktree
+
+
+@pytest.mark.parametrize("relative", ["bundle.md", "review-loop-protocol/bundle.md",
+                                      "review-loop-protocol-0x/bundle.md", "elsewhere/review-loop-protocol/b.md"])
+def test_an_absolute_output_outside_both_roots_is_refused(tmp_path, relative):
+    root, temp = tmp_path / "work" / "support", tmp_path / "systemtmp"   # cwd (the worktree) is tmp_path/work
+    temp.mkdir()
+    write(root, "instructions.md", "Instruction.\n")
+    manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+
+    result = run_with_tmpdir(root, temp, "--output", str(temp.resolve() / relative), expect=2)
+
+    assert result.stdout == ""
+    assert "read_protocol:" in result.stderr
+    assert not (temp / relative).exists()
+
+
+def test_a_protocol_temp_root_symlinked_into_the_worktree_is_refused(tmp_path):
+    root, temp = tmp_path / "work" / "support", tmp_path / "systemtmp"   # cwd (the worktree) is tmp_path/work
+    temp.mkdir()
+    write(root, "instructions.md", "Instruction.\n")
+    manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+    inside = tmp_path / "work" / "planted"   # inside the product worktree (the run's cwd)
+    inside.mkdir(mode=0o700)
+    user_root(temp).symlink_to(inside, target_is_directory=True)
+
+    result = run_with_tmpdir(root, temp, "--output", str(user_root(temp) / "x" / "bundle.md"), expect=2)
+
+    assert result.stdout == ""
+    assert "read_protocol:" in result.stderr
+    assert list(inside.iterdir()) == []
+
+
+def test_a_shared_or_open_protocol_temp_root_is_refused(tmp_path):
+    root, temp = tmp_path / "work" / "support", tmp_path / "systemtmp"   # cwd (the worktree) is tmp_path/work
+    temp.mkdir()
+    write(root, "instructions.md", "Instruction.\n")
+    manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+    user_root(temp).mkdir(mode=0o755)
+    user_root(temp).chmod(0o755)
+
+    result = run_with_tmpdir(root, temp, "--output", str(user_root(temp) / "x" / "bundle.md"), expect=2)
+
+    assert "must be a directory owned by this user with mode 0700" in result.stderr
+    assert not (user_root(temp) / "x").exists()

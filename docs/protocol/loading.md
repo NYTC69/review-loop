@@ -12,6 +12,9 @@ or `entry-review-loop` before interpreting flags or touching session state:
 python3 <support-root>/scripts/read_protocol.py --runtime <claude|codex> --stage <stage> --output .review-loop/tmp/protocol-<runtime>-<stage>.md
 ```
 
+`entry-review-loop` and `entry-paired-session` may precede a paired-session run, so they write to an
+absolute `<system temp>/review-loop-protocol-<uid>/<id>/` path printed by the entry skill, never into the worktree.
+
 Every `read_protocol.py` call is its own Bash command, with no `&&`, `;`, pipes,
 loops, command substitution or shell variables. Write `--loaded` values out literally.
 

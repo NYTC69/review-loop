@@ -12,10 +12,14 @@ description: >
 
 # review-loop — claude orchestration
 
-Read `docs/protocol/loading.md`, then run:
+Read `docs/protocol/loading.md`. This entry may hand off to paired-session, so its
+load must leave no file in the product worktree: first print a fresh bundle
+directory outside it with its own Bash call,
+`python3 -c 'import os, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), f"review-loop-protocol-{os.getuid()}", uuid.uuid4().hex[:12]))'`,
+then run, with that printed directory written out literally as `<bundle-dir>`:
 
 ```bash
-python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-review-loop --output .review-loop/tmp/protocol-entry-review-loop.md
+python3 <support-root>/scripts/read_protocol.py --runtime claude --stage entry-review-loop --output <bundle-dir>/protocol-claude-entry-review-loop.md
 ```
 
 Resolve <support-root> to this plugin/repository, not the task workspace.
