@@ -9,7 +9,8 @@ Owner answers of 2026-10-05 (`DECISIONS.md` ADR-13, D-OWNER-1005):
   - Its capability 3 (comment-analyzer and type-design-analyzer) is deferred to this port, as review-pr specialists
     (§2.4).
   - Its capability 1 (the simplifier and test-consolidation writers) is ported separately; that is provisional, with
-    the legacy-map row L117.
+    the D11 row L117 (decision-sheet numbering at `57cb6cf`; today the "code-simplifier writer" row of
+    `docs/paired-session-migration.md`).
 
 Anchors are at `6af06ef` (moved from `03acfb0` for round 4; the cited lines moved, their text did not):
 - `C` = `paired_session/coordinator.py`; `WL` = `paired_session/worktree_lifecycle.py`; `RP` = `skills/review-pr/SKILL.md`;
@@ -63,7 +64,10 @@ is committed, pushed or posted.
 - an unresolvable PR or ref;
 - an OID that cannot be fetched or does not verify;
 - no single merge base;
-- a declined question (§2.4 tests, Q-R10 size).
+- a declined or unanswered Q-R10 size question.
+
+No tests is the default (§2.4), not a question: a declined or unanswered offer to confirm a test command, under
+handsfree too, leaves the run without tests and never refuses the request.
 
 Legacy review-pr cannot review a PR (L1), so a fallback would silently review, and with `simplify` edit, the operator's
 local change instead. Only the no-argument request may fall back on the default entry (as PSE "Entry and failure
@@ -77,6 +81,10 @@ operator's checkout must not change: no branch switch, no new refs, no stash. It
 **Decided (Q-R7, owner 2026-10-05): a temporary, self-contained clone, not a worktree.**
 
 Every git command below runs with `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 -c core.hooksPath=/dev/null`.
+That also drops the operator's credential helpers (`gh auth setup-git` in `~/.gitconfig`, osxkeychain in the system
+config), so a private repository would fail to clone. The network steps (the clone and the fetches from a remote URL)
+therefore add `-c credential.helper= -c 'credential.helper=!gh auth git-credential'` and run with
+`GIT_TERMINAL_PROMPT=0`: credentials come from `gh` only, and nothing prompts.
 No hook and no filter driver from the operator's configuration runs (for example an LFS smudge with network access).
 Attributes in the PR cannot define drivers. LFS pointers stay pointers; their content is not reviewed and the report
 says so.
@@ -147,7 +155,11 @@ pattern of `review_only`):
   report run can reach a writer:
   - `reject` and `note` are refused at every point of the run, not only after `REPORTED`;
   - `resume` continues only the report sequence;
-  - a scope-change successor keeps report mode (as RO §1 freezes the entry).
+  - there is no scope-change successor. Successors exist only through `note --scope-change` and
+    `reject --scope-change` (C:1779), which stay refused like every `note`/`reject`. A successor carries an accepted
+    or rejected work item into a new scope; a report run has neither acceptance nor a writer, so a changed scope is a
+    new review-pr request with fresh pinning. Keeping the refusal total also keeps "no state reaches a writer" a
+    single rule with no exception.
 - **Findings vs failures.**
   - Into the report:
     - every verdict and finding of a role that completed validly (REVISE, BLOCK, specialist blockers, security
@@ -174,8 +186,20 @@ pattern of `review_only`):
   work.
 - **Category A:** every role is read-only. The existing void-and-restore of a workspace change applies unchanged
   (efficient-mode §4a).
-- **Category B:** no writer exists, so the author sandbox is unused. Roles keep their flags; the `~/.config/gh` deny
-  (C:2404) keeps the GitHub token from roles.
+- **Category B:** no writer exists, so the author sandbox is unused. Roles keep their flags, and those differ by vendor:
+  - Claude roles get the credential-path deny (`~/.config/gh`, `~/.ssh`, `~/.npmrc`, `~/.netrc` and others;
+    C:2392-2419, C:2404).
+  - Codex read-only roles run with `":root"="read"` (C:540): they can read the whole filesystem, credential files and
+    other repositories included. With the default roles that is the gate (ADR-10). In efficient mode the evidence
+    guard only logs (PSE).
+  - A PR is untrusted content. A prompt injection in it can ask a role to quote a file it read into a finding, and the
+    report is generated from the findings. A local report is not an outbound channel; posting to GitHub is (§2.5), so
+    the post is guarded there.
+  - **Residual, stated explicitly:** report mode does not narrow the Codex read root in v1. Whether a Codex
+    permissions profile can confine reads to the clone and the run context, and still run its tools, is unverified.
+    LG2-c records this residual in the PSE section; narrowing it is a follow-up that needs a verified profile. An
+    operator who wants the credential deny on every role can run report mode with Claude read-only roles (operator
+    profile).
 - **Category C:** unchanged (efficient default, strict opt-in).
 
 ### 2.4 Specialists (L4, L5)
@@ -193,6 +217,8 @@ pattern of `review_only`):
 
 - Aspect arguments select a subset of the specialists, with the same names as legacy (`code errors comments types
   tests`; `all` is the default). The EXEC reviewer, gate and security reviewer always run.
+- `simplify` on the paired route is refused at stage A, with a pointer to `--legacy` (legacy review-pr still has it);
+  it is never silently ignored. A LG2-c test covers the refusal.
 - **Tests run inside the PR copy.** The coordinator's specialist prompt has the specialist run the test command
   (WL:190) as an exact `Bash(<cmd>)` (efficient-mode §2), so a PR's own test code executes on the operator's machine.
   The sandbox has no network and denies writes outside the clone. Code under review is untrusted, though. This is a
@@ -213,7 +239,18 @@ pattern of `review_only`):
     - the specialist prompt (WL:190) and the reviewer prompts say that no tests were run and ask the roles to mark
       claims that would need them;
     - the report states "tests not run".
-  - Today `--test-command` defaults to `npm test` (C:8495), so the value needs a frozen config key.
+  - `test_command` is already frozen (C:2038, C:8551) and defaults to `npm test` (C:8495). What is missing is a value
+    for "none": LG2-b adds `--no-test-command` (report mode only), frozen as `test_command: null`. Every consumer must
+    accept null:
+    - `reviewer_commands()` (C:2131-2149) and `_saved_configured_commands` (C:1294);
+    - the CLI checks in `main`: `resolve_test_executable` (C:8942), `dontask_command_hint` (C:8916) and
+      `configured_command_issue` (C:8949);
+    - the evidence guard's configured-command list (C:5430) and the EXEC approval evidence gate (C:5451-5463);
+    - the specialist and reviewer prompts (WL:190);
+    - the strict permission probe. It takes the test command as its allowed command (C:7176, C:7258-7263) and records
+      `not-attempted` when it was not run (C:7087-7088). With null, the allowed-command part of the probe prompt and
+      that check are skipped; the sandbox-denial attempts stay. So a strict no-test report run can pass the probe,
+      while an ordinary strict probe keeps requiring the attempt.
 - Tier config (L3, `judgment_model` / `cheap_model`) does not map: models come from the operator profile (ADR-9).
   `review_style` is not mapped (as the migration doc already says for paired-session).
 
@@ -241,7 +278,13 @@ pattern of `review_only`):
   - on the user's explicit request, it shows the exact command bound to the pinned target,
     `gh pr review <pinned PR URL> --comment --body-file <report>`, together with the target repository, the PR number
     and the head OID the report reviewed;
-  - it runs the command only after a second confirmation, and refuses if the PR's head moved since the review (the
+  - before it asks, it scans the exact body file with the SECURITY preflight's content rules (`CONTENT_RULES` in
+    `scripts/security_preflight.py`, through a single-file entry that LG2-b adds; matched values are never printed).
+    Any hit refuses the post, and the report stays local with the rule and line named. The rules are patterns: they
+    do not catch every secret (for example a password quoted from `~/.netrc`), so the full body below is the human
+    check;
+  - the second confirmation shows the **full body** that would be posted, not only the command;
+  - it runs the command only after that confirmation, and refuses if the PR's head moved since the review (the
     report would describe another commit);
   - never `--approve` or `--request-changes`;
   - no inline comments in v1 (Q-R4).
@@ -260,8 +303,9 @@ pattern of `review_only`):
   - the flags (§2.3);
   - the posting rule (§2.5);
   - the test-command rule for every review-pr input (§2.4, Q-R3);
-  - handsfree: as in PSE, a question nobody can answer (a test command, the size threshold, posting) is a failed
-    stage A check, and posting never happens under handsfree.
+  - handsfree: as in PSE, a question nobody can answer (the size threshold) is a failed stage A check. The test
+    command is never asked under handsfree: the run has no tests, which is the default. Posting never happens under
+    handsfree.
 - **Stage A failures for PR and ref inputs refuse** on every entry (§2.1). Only the no-argument request, which is the
   LG1 route, may fall back to legacy on the default entry, and then without `simplify` unless the user named it.
 
@@ -269,10 +313,10 @@ pattern of `review_only`):
 
 | Batch | Content | Lines | Tests |
 |---|---|---|---|
-| LG2-a | Report mode in the coordinator: flag and frozen key, refusals, and every changed transition: the EXEC verdict to the gate, the gate to POLISH-Q whatever the verdict, POLISH-Q with no fix leg and no blocker gate, SECURITY with preflight results as findings, the `REPORTED` terminal; `reject`/`note` refused throughout; resume and successor stay in report mode; `status` without the workspace | ~250 (may split a1/a2) | fake end-to-end REVISE → gate → specialists → security → REPORTED with no author turn; BLOCK; a preflight secret reported; every HOLD class of §2.3 stays a HOLD and marks the report incomplete; refusals; resume mismatch; Category A void in report mode |
-| LG2-b | `review-report.md` from the ledger; specialists `comment-analyzer` and `type-design-analyzer` and the aspect subset; "no test command" for report mode (no allow rule from any of the three sources, the static-untested approval in report mode only, and every CLI precheck of the test command such as `resolve_test_executable` (C:690, C:7590, C:7860, and the CLI precheck at C:8942) skipped for it) | ~150 | report content and attribution; aspect selection; with no tests and no findings the run reaches REPORTED with static-untested approvals; no allow rule from any source, still empty after resume; a work-item `reviewer-commands` is refused; ordinary runs keep the evidence gate; through the CLI, a repository with no npm or test script still starts a no-test report run and reaches REPORTED |
-| LG2-c | Skills: Claude `review-pr` routing on `entry`, the new Codex skill, the PSE section, guide, migration doc, lint needles | ~180 doc lines + lint | lint PASS |
-| LG2-d | The materializer (`scripts/materialize_pr.py`): resolve and pin, clone `--reference-if-able --dissociate` (or `--no-local`), fetch head and base into clone-local refs, verify OIDs, single merge base, detached checkout with no global config, hooks or filters, marker file, `--remove` | ~150 (may split) | local bare "target" and "fork" remotes with `refs/pull/N/head` (no network): PR, fork PR, remote branch, local ref, a local branch with unpushed commits in a repository that has a remote, a local ref with no remote and no `--base` refused, moved head refused, criss-cross refused, the operator repo's refs, config, worktree list and objects unchanged, the clone survives a gc of the operator repo, `--remove` refuses a directory without its marker |
+| LG2-a | Report mode in the coordinator: flag and frozen key, refusals, and every changed transition: the EXEC verdict to the gate, the gate to POLISH-Q whatever the verdict, POLISH-Q with no fix leg and no blocker gate, SECURITY with preflight results as findings, the `REPORTED` terminal; `reject`/`note` refused throughout, `--scope-change` forms included (no successor); resume stays in report mode; `status` without the workspace | ~250 (may split a1/a2) | fake end-to-end REVISE → gate → specialists → security → REPORTED with no author turn; BLOCK; a preflight secret reported; every HOLD class of §2.3 stays a HOLD and marks the report incomplete; refusals, including `note --scope-change` and `reject --scope-change`; resume mismatch; Category A void in report mode; Claude report-mode roles keep the credential deny |
+| LG2-b | `review-report.md` from the ledger; specialists `comment-analyzer` and `type-design-analyzer` and the aspect subset; "no test command" for report mode (no allow rule from any of the three sources, the static-untested approval in report mode only, and the null sentinel through every consumer listed in §2.4: the CLI precheck `resolve_test_executable` (C:690, called in `main` at C:8942; the fake harness paths C:7590 and C:7860 are not CLI prechecks), `dontask_command_hint`, `configured_command_issue`, `_saved_configured_commands`, the evidence gate and the strict probe; the pre-post secret scan and the full-body confirmation (§2.5) as a testable `post` step) | ~200 (may split b1/b2) | report content and attribution; aspect selection; with no tests and no findings the run reaches REPORTED with static-untested approvals; no allow rule from any source, still empty after resume; a work-item `reviewer-commands` is refused; ordinary runs keep the evidence gate; through the CLI, a repository with no npm or test script still starts a no-test report run and reaches REPORTED; a strict no-test report run passes a fake probe while an ordinary strict probe still records `not-attempted`; a report with a planted secret refuses the post and stays local; the confirmation text holds the full body; a moved head refuses the post |
+| LG2-c | Skills: Claude `review-pr` routing on `entry`, the new Codex skill, the PSE section (with the Codex read-root residual), guide, migration doc, lint needles | ~180 doc lines + lint | lint PASS; `simplify` on the paired route is refused with the `--legacy` pointer |
+| LG2-d | The materializer (`scripts/materialize_pr.py`): resolve and pin, clone `--reference-if-able --dissociate` (or `--no-local`), fetch head and base into clone-local refs, verify OIDs, single merge base, detached checkout with no global config, hooks or filters, marker file, `--remove` | ~150 (may split) | local bare "target" and "fork" remotes with `refs/pull/N/head` (no network): PR, fork PR, remote branch, local ref, a local branch with unpushed commits in a repository that has a remote, a local ref with no remote and no `--base` refused, moved head refused, criss-cross refused, the operator repo's refs, config, worktree list and objects unchanged, the clone survives a gc of the operator repo, `--remove` refuses a directory without its marker; a private-remote stand-in (a local HTTP server running `git http-backend` behind Basic auth, with a fake `gh` as the credential helper) clones and fetches through the helper, and fails closed with no prompt when the helper has no credential; a hook and a smudge filter configured in a fake HOME's gitconfig do not run |
 
 - Order: a → b → d → c (skills last, once the CLI exists).
 - **Closing check:** one real review of a real PR through the default entry, with no post.
@@ -280,7 +324,7 @@ pattern of `review_only`):
 ## 5. Legacy features dropped
 
 - **`simplify` (L7):** a writer that edits the operator's checkout during a "review". It is not part of a PR review.
-  The writers are ported separately under D09 capability 1 (provisional, with legacy-map row L117).
+  The writers are ported separately under D09 capability 1 (provisional, with the D11 row L117, sheet numbering).
 - **`parallel` (L8):** the coordinator schedules its roles. Specialists run one after another as today (sequential
   per-specialist receipts). A parallel specialist fan-out is a separate performance item.
 - **Per-agent tier config (L3)** and **`review_style`**: models come from the operator profile.
@@ -293,7 +337,7 @@ pattern of `review_only`):
 
 ## 6. Owner answers (D-OWNER-1005 D03 and D09, 2026-10-05)
 
-Every question was answered as recommended, except Q-R9, which D09 resolved.
+Every question was answered as recommended; D09 = A then superseded Q-R9's "decide later".
 
 | Question | Answer |
 |---|---|
