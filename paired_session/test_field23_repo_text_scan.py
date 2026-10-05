@@ -179,6 +179,23 @@ class RepoTextScanTests(unittest.TestCase):
         for name in ('delta.stat', 'status.txt'):
             self.assertIn('review', (co.context / name).read_text())
 
+    def test_a_long_existing_path_is_not_shortened_in_the_stat(self):   # field23s R1: git shortens to ".../tail"
+        long_path = 'ios/' + '/'.join(f'very-long-directory-name-{n}' for n in range(6)) + '/docs/previous-review.md'
+        co = self.coordinator({SWIFT: BASE_SWIFT, long_path: 'notes\n'})
+        self.write(long_path, 'updated notes\n')
+        self.scan(co)
+        self.assertIn(long_path + ' |', (co.context / 'delta.stat').read_text())
+        self.write(long_path.replace('previous-review', 'previous-review-2'), 'notes\n')   # a new long path still holds
+        self.assert_holds(co, 'previous-review')
+
+    def test_a_code_span_over_a_line_end_is_a_quote_but_not_over_a_blank_line(self):   # field23s R1
+        co = self.coordinator()
+        (co.context / 'plan.md').write_text('# Plan\nKeep `gate finding\nrouting comment` as is.\n')
+        self.scan(co)
+        self.assertIsNone(co._plan_history_issue())
+        (co.context / 'plan.md').write_text('# Plan\nKeep `x\n\nthe gate finding\n\ny` as is.\n')
+        self.assert_holds(co, 'gate finding')
+
     def test_new_history_like_path_holds(self):
         co = self.coordinator()
         self.write('docs/previous-review.md', 'notes\n')

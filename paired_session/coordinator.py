@@ -167,6 +167,9 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# FIELD-23: delta.stat names every path in full (git shortens long ones to ".../tail"), so a path that exists at the base
+# commit is recognised as repository text by the fresh scan.
+STAT_FULL_PATHS = ('--stat=100000,100000',)
 
 
 def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
@@ -3538,7 +3541,8 @@ class Coordinator:
         """Create program-owned, read-only review views without reviewer Git Bash access."""
         base = self.state.get('base_commit')
         tracked = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--binary', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--binary', '--'])
-        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--stat', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--stat', '--'])
+        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, base, '--'] if base else
+                         ['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, '--'])
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
@@ -5056,12 +5060,15 @@ class Coordinator:
                 return proc.returncode == 0 and any(
                     marker.lower() in (self._base_blob(base, path[len(base) + 1:]) or '').lower()
                     for path in proc.stdout.decode('utf-8', 'replace').split('\0') if path)
-            result, block, fenced = [], [], None
+            def inline(text):   # a code span may run over line ends within a paragraph, never over a blank line
+                return re.sub(r'(`+)((?:(?!\n[ \t]*\n)[^`])*?)\1', lambda match: mask(match.group(0), exists), text)
+            result, prose, block, fenced = [], [], [], None
             for line in content.splitlines(keepends=True):
                 fence = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
                 if fence and not fenced:
                     fenced = fence.group(1)
-                    result.append(line)
+                    result.append(inline(''.join(prose)) + line)
+                    prose = []
                 elif fence and fenced and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) and not fence.group(2).strip():
                     result.append(mask(''.join(block), exists))
                     block, fenced = [], None
@@ -5069,8 +5076,8 @@ class Coordinator:
                 elif fenced:
                     block.append(line)
                 else:
-                    result.append(re.sub(r'(`+)([^`]*?)\1', lambda match: mask(match.group(0), exists), line))
-            return ''.join(result) + mask(''.join(block), exists)
+                    prose.append(line)
+            return ''.join(result) + inline(''.join(prose)) + mask(''.join(block), exists)
         return content
 
     def _introduced_history(self, name: str, content: str) -> list[str]:
