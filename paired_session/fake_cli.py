@@ -318,6 +318,23 @@ def main():
         if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
             print('fake author failed after writing', file=sys.stderr)
             return 1
+    elif 'Role: simplifier' in prompt or 'Role: test consolidator' in prompt:   # D09 C1-b1 POLISH-Q writer legs
+        writer = 'simplifier' if 'Role: simplifier' in prompt else 'test-writer'
+        chosen = lambda name: writer in os.environ.get(name, '').split(',')
+        once = os.environ.get('FAKE_WRITER_NO_TOOLS_ONCE')
+        no_tools = chosen('FAKE_WRITER_NO_TOOLS') or (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)
+        command_events = [] if no_tools else [{'command': 'git diff --stat', 'exit_code': 0, 'output': ''}]
+        if chosen('FAKE_WRITER_WRITE'):
+            target = Path.cwd() / os.environ.get('FAKE_WRITER_FILE', 'sum_ints.py')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text((target.read_text() if target.exists() else '') + f'# {writer} edit\n')
+        if chosen('FAKE_WRITER_STAGE'):   # a writer that stages its change: the index guard
+            __import__('subprocess').run(['git', 'add', '-A'], check=True)
+        if chosen('FAKE_WRITER_FAIL'):   # a failed attempt after a write
+            print('fake writer failed after writing', file=sys.stderr)
+            return 1
+        answer = ({'status': 'HOLD', 'body': 'Fake writer held.'} if chosen('FAKE_WRITER_HOLD') else
+                  {'status': 'READY', 'body': f'Fake {writer} done.'})
     elif 'Role: finisher' in prompt or 'Role: docs writer' in prompt:   # worktree-lifecycle fresh writers (ADR-11)
         module = Path.cwd() / 'sum_ints.py'
         if ('Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_WRITE') and

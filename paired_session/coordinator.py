@@ -7156,16 +7156,17 @@ class Coordinator:
             self.hold('POLISH-Q open blocking findings: ' + ', '.join(row['id'] for row in blocking))
         elif tree != request['candidate_oid']:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        elif queue := self._quality_writers_tail(paths, len(names), request):   # D09 C1-b1: the writer legs, in order
+            self.state['lifecycle']['writer_queue'] = queue
+            self.state['next'] = 'polish-simplify' if queue[0] == 'simplifier' else 'polish-tests'
         else:
-            self._quality_writers_tail(paths, len(names), request)
             self.state['lifecycle']['stage'] = 'DOCS'
             self.state['next'] = 'docs'
         self.save()
 
-    def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> None:
+    def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> list[str]:
         """D09 C1-a (d09-cap1-writer-passes.md §3): at a clean POLISH-Q exit, check each writer without a state against
-        the skip rules and record a skip once per item. The writer legs land in C1-b1; until then a writer that passes
-        every rule is not reached, and nothing writes."""
+        the skip rules and record a skip once per item. Returns the writers that pass every rule, in leg order (C1-b1)."""
         life, config = self.state['lifecycle'], self.state['config']
         marker = life.setdefault('quality_writers', {})
         if not any(writer in marker for writer in worktree_lifecycle.QUALITY_WRITERS['both']):   # §2: this exit's tree
@@ -7182,14 +7183,134 @@ class Coordinator:
         detail = self._quality_writer_shortfall(len(left), specialists) if left else None
         for writer, reason in reasons.items():
             if reason is None and not detail:
-                self.progress('quality-writer', writer=writer, state='not reached (writer legs land in C1-b1)')
+                self.progress('quality-writer', writer=writer, state='queued')
                 continue
-            row = {'state': 'skipped:' + (reason or 'budget'), **({'detail': detail} if reason is None else {}),
-                   'receipt': request['request_id'], 'digest': marker['base_oid']}
-            row['evidence'] = str(self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.json")
-            atomic_json(Path(row['evidence']), {'writer': writer, **row})
-            marker[writer] = row
-            self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
+            self._writer_state(writer, {'state': 'skipped:' + (reason or 'budget'), **({'detail': detail} if reason is None else {}),
+                                        'receipt': request['request_id'], 'digest': marker['base_oid']})
+        return [] if detail else left
+
+    def _writer_state(self, writer: str, row: dict) -> None:
+        """D09 §3: a writer's state, written once per item, with one evidence record and a progress line."""
+        row['evidence'] = str(self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.json")
+        atomic_json(Path(row['evidence']), {'writer': writer, **row})
+        self.state['lifecycle']['quality_writers'][writer] = row
+        self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
+
+    def worktree_writer_turn(self) -> None:
+        """D09 C1-b1 (d09-cap1-writer-passes.md §2): one POLISH-Q writer leg through the FINISH writer path, bound to its
+        input tree, judged by the tree, not the answer. Until the replay (C1-b2) and the local check (C1-b3) land, a kept
+        write could only reach DOCS unreviewed, so every change is rolled back (verified): READY as
+        `rolled-back:pending-replay`, HOLD as `rolled-back:hold`. A failed attempt is rolled back as `exhausted`; only a
+        turn without tool calls is retried, once."""
+        life = self.state['lifecycle']
+        marker, writer = life['quality_writers'], 'simplifier' if self.state['next'] == 'polish-simplify' else 'test-writer'
+        if not (leg := life.get('writer_leg')) or leg['writer'] != writer:   # a new leg: bind and capture once
+            input_oid = (marker.get('simplifier') or {}).get('output_oid') if writer == 'test-writer' else None
+            input_oid = input_oid or marker['base_oid']
+            if git_snapshot(self.workspace)[0] != input_oid:
+                raise RuntimeError(f'POLISH-Q {writer}: the tree differs from its input {input_oid[:12]}; inspect, then abort')
+            if 'base_capture' not in marker:   # §2: the restore point of a whole-group rollback (C1-b2)
+                marker['base_capture'] = self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-base")
+            leg = life['writer_leg'] = {'writer': writer, 'input_oid': input_oid, 'attempts': 0,
+                                        'capture': self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-{writer}")}
+            self.save()
+        request = worktree_lifecycle.stage_request(life, writer) if life['pending'] is None else life['pending']
+        paths = self._changed_paths()
+        paths = paths if writer == 'simplifier' else [path for path in paths if worktree_lifecycle.is_test_path(path)]
+        prompt = lambda: worktree_lifecycle.writer_prompt(writer, self._simplifier_body() if writer == 'simplifier' else '',
+                                                          paths, self.args.test_command, self._docs_reserved_note())
+        result, state = None, None
+        while state is None and result is None:
+            life = self.state['lifecycle']   # lifecycle_spine.begin replaces the dict: count on the current one
+            counts = life.setdefault('writer_counts', {})
+            if (counts.get(writer, 0) + 1 > budget_policy.BUDGET_CAPS[writer][0] or
+                    life.get('polish_calls', 0) + 1 > self._worktree_run_cap('POLISH-Q')):
+                state = 'exhausted'
+                break
+            counts[writer] = counts.get(writer, 0) + 1
+            life['polish_calls'] = life.get('polish_calls', 0) + 1   # §3: the writer cap and POLISH-Q's run cap
+            leg['attempts'] += 1
+            self.save()
+            before = self.state['sequence']
+            try:
+                result = self._lifecycle_writer(request, f'POLISH-Q {writer}', prompt)
+            except RateLimitedTurn:
+                raise
+            except RuntimeError as exc:   # the HEAD/ref/index guard still HOLDs; any other failure is a failed attempt
+                if 'changed HEAD, refs or the index' in str(exc):
+                    raise
+                self.progress('quality-writer', writer=writer, state='failed attempt', detail=str(exc)[:120])
+                state = 'exhausted'
+            finally:   # reconcile as _specialist_turn: a refunded (rate-limited) or reused launch gives its count back
+                life = self.state['lifecycle']
+                refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
+                               if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
+                if delta := self.state['sequence'] - before - refunded - 1:
+                    life['writer_counts'][writer] += delta
+                    life['polish_calls'] += delta
+                    leg['attempts'] += delta
+                    self.save()
+            if state:
+                break
+            turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+            if not turn.get('observed_tool_calls'):
+                turn['discarded'] = 'no tool calls'
+                result = None
+                if leg['attempts'] >= 2: state = 'exhausted'
+                elif git_snapshot(self.workspace)[0] != leg['input_oid']: state = 'exhausted'   # it wrote anyway: no retry
+        output = git_snapshot(self.workspace)[0]
+        if state is None:
+            self.render(result, writer, 'POLISH-Q')
+            state = ('no-op' if output == leg['input_oid'] else
+                     'rolled-back:hold' if result['answer']['status'] == 'HOLD' else 'rolled-back:pending-replay')
+        evidence = self._writer_rollback(writer, leg, (result or {}).get('sequence')) if output != leg['input_oid'] else None
+        receipt = {**request, 'status': 'READY', 'output_oid': git_snapshot(self.workspace)[0], 'writer_state': state,
+                   'sequence': (result or {}).get('sequence')}
+        self.state['lifecycle'] = life = lifecycle_spine.complete(self.state['lifecycle'], receipt)
+        life.pop('writer_git', None)
+        life.pop('writer_leg', None)
+        self._writer_state(writer, {'state': state, 'input_oid': leg['input_oid'], 'output_oid': receipt['output_oid'],
+                                    'receipt': request['request_id'], 'digest': leg['input_oid'], 'sequence': receipt['sequence'],
+                                    'attempts': leg['attempts'], **({'diff': evidence} if evidence else {})})
+        queue = [name for name in life.get('writer_queue', []) if name not in life['quality_writers']]
+        if queue:
+            self.state['next'] = 'polish-tests'
+        else:
+            life.pop('writer_queue', None)
+            life['stage'] = 'DOCS'
+            self.state['next'] = 'docs'
+        self.save()
+
+    def _writer_capture(self, keep: Path) -> str:
+        """§2: the verified pre-writer record (RG.capture keeps the index copy, the permissions and the ignored set)."""
+        record = readonly_guard.capture(self.workspace, keep)
+        atomic_json(keep / 'record.json', record)
+        return str(keep)
+
+    def _writer_rollback(self, writer: str, leg: dict, sequence: Optional[int]) -> str:
+        """§2: put the writer's input back from its capture and verify it; an unverified restore HOLDs through the
+        existing unrestored path (resume refuses until the workspace is back)."""
+        keep = Path(leg['capture'])
+        recorded = json.loads((keep / 'record.json').read_text())
+        diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.workspace-change.diff"
+        try:
+            readonly_guard.evidence(self.workspace, recorded, keep, diff)
+            why = readonly_guard.restore(self.workspace, recorded, keep)
+            if why is None and git_snapshot(self.workspace)[0] != leg['input_oid']: why = 'the tree still differs after the restore'
+        except Exception as exc: why = f'{type(exc).__name__}: {exc}'
+        if why:
+            self._record_unrestored({'sequence': sequence, 'role': writer, 'snapshot': leg['input_oid'],
+                                     'marks': {key: recorded[key] for key in ('head', 'branch', 'index')}},
+                                    self.workspace, recorded, reason=why, evidence=str(diff))
+            raise RuntimeError(f'POLISH-Q {writer}: its change could not be rolled back ({why}); restore it by hand, see {diff}')
+        return str(diff)
+
+    def _simplifier_body(self) -> str:
+        path = HERE.parent / 'agents' / 'code-simplifier.md'
+        raw = _read_role_source(path)
+        if hashlib.sha256(raw).hexdigest() != self.state['role_dispatch_manifest']['agent_body_sha256'].get(path.name):
+            raise RuntimeError('the code-simplifier body differs from the frozen role manifest')
+        return worktree_lifecycle.agent_body(raw)
 
     def _quality_writer_shortfall(self, writers: int, specialists: int) -> Optional[str]:
         """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists), the replay round plus
@@ -9408,6 +9529,8 @@ class Coordinator:
                     self.worktree_polish_fix_turn()
                 elif self.state['next'] == 'polish-recheck' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_polish_recheck_turn()
+                elif self.state['next'] in ('polish-simplify', 'polish-tests') and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_writer_turn()   # D09 C1-b1
                 elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_docs_turn()
                 elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):
