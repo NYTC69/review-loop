@@ -343,6 +343,15 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
                    ignore_coverage_complete=ignore_ok, current_fingerprint=ds.fingerprint(after))
 
 
+def scan_file(path: str) -> list:
+    """One file under CONTENT_RULES (the review-pr post body, LG2-b2): rule and line only, never the matched value."""
+    content = Path(path).read_bytes()
+    if len(content) > MAX_FILE_BYTES:
+        raise ScanError("content scan limit exceeded")
+    found = {(rule, content.count(b"\n", 0, hit.start()) + 1) for rule, pattern in CONTENT_RULES for hit in pattern.finditer(content)}
+    return [{"rule": rule, "line": line} for rule, line in sorted(found, key=lambda item: (item[1], item[0]))]
+
+
 def start_coverage(repo_path: str) -> dict:
     """FIELD-19: the ignore coverage a later scan credits for an unchanged repository, i.e. ignore_coverage() with no
     task-owned `.gitignore` (only a tracked `.gitignore` equal to HEAD counts); for a warning before a run starts."""
@@ -358,8 +367,18 @@ def main(argv=None) -> int:
     mode.add_argument("--manifest")
     mode.add_argument("--ignore-coverage", action="store_true",
                       help="print only the start-time .gitignore coverage (start_coverage) as JSON; exit 0")
+    mode.add_argument("--file", help="scan one file with the content rules only; print rule and line as JSON; exit 1 on a match")
     parser.add_argument("--output", help="optional immutable JSON report path")
     args = parser.parse_args(argv)
+    if args.file:
+        try:
+            findings = scan_file(args.file)
+        except (OSError, ScanError) as exc:
+            sys.stderr.write(json.dumps({"error": str(exc), "kind": "scan"}, ensure_ascii=True) + "\n")
+            return 3
+        sys.stdout.write(json.dumps({"kind": "security-preflight-file", "ruleset": RULES_VERSION, "findings": findings},
+                                    ensure_ascii=True) + "\n")
+        return 1 if findings else 0
     if args.ignore_coverage:
         try:
             sys.stdout.write(json.dumps(start_coverage(args.repo), ensure_ascii=True) + "\n")

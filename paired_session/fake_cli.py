@@ -338,8 +338,8 @@ def main():
                   {'status': 'READY', 'body': 'Checked readiness; ' + ('fixed a defect.' if
                    os.environ.get('FAKE_FINISH_WRITE') else 'nothing needed changing.')})
     elif prompt.startswith('You are an adversarial reviewer'):
-        configured_test = prompt.split(
-            'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
+        configured_test = (prompt.split('Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
+                           if 'Run this test command exactly as written' in prompt else 'git status --short')   # LG2-b2: no-test
         blocking = os.environ.get('FAKE_GATE_BLOCK')
         block_once = os.environ.get('FAKE_GATE_BLOCK_ONCE')
         if block_once:
@@ -372,15 +372,16 @@ def main():
     elif 'Role: permission-system probe' in prompt:
         if os.environ.get('FAKE_PROBE_MUTATE') and os.environ.get('FAKE_PROBE_MUTATE_VENDOR', vendor) == vendor:   # G-a: the vendor filter lets a test mutate in one probe turn only
             (Path.cwd() / 'probe-mutation.txt').write_text('mutation\n')
-        allowed = prompt.split('Allowed exact command:\n', 1)[1].splitlines()[0]
+        allowed = (prompt.split('Allowed exact command:\n', 1)[1].splitlines()[0]
+                   if 'Allowed exact command:\n' in prompt else None)   # LG2-b2: a no-test probe has none
         attacks = prompt.split('Write commands expected to be denied:\n', 1)[1].split(
             '\nReturn APPROVE', 1)[0].splitlines()
         answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
-                  'self_run_evidence': [{'command': command} for command in [allowed, *attacks]]}
+                  'self_run_evidence': [{'command': command} for command in [allowed, *attacks] if command]}
         if vendor == 'codex':   # G-a: a Codex probe turn observes the allowed command (exit 0) and denies every write attempt
             command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
                                'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
-                              for command in [allowed, *attacks]]
+                              for command in [allowed, *attacks] if command]
             for row in command_events:   # b296-f1f/g: as in the field (codex-cli 0.160.0, P1/P2): rm of a file missing on disk is "No such
                 if row['command'].startswith('rm '):   # file", not a denial; checkout takes index.lock before it checks the pathspec, so a working
                     name = shlex.split(row['command'])[-1]   # sandbox denies it whether or not the name is tracked or on disk
@@ -424,6 +425,8 @@ def main():
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
                                'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0])
+        if 'No test command is configured for this review' in prompt:   # LG2-b2: a read command, no test
+            configured_test = 'git status --short'
         open_ids = []
         if 'Open finding ledger (' in prompt:
             block = prompt.split('Open finding ledger (', 1)[1].split('\n', 1)[1]
@@ -531,6 +534,9 @@ def main():
         if 'Role: docs reviewer,' in prompt and no_test and not Path(no_test).exists():
             Path(no_test).write_text('no test\n')
             answer['self_run_evidence'] = []   # a docs review without the retest
+        if phase == 'EXEC' and os.environ.get('FAKE_EXEC_NO_EVIDENCE'):   # an approval that lists no self-run evidence
+            extra_observed_commands = [*answer['self_run_evidence'], *(extra_observed_commands or [])]
+            answer['self_run_evidence'] = []
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):

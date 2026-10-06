@@ -21,6 +21,8 @@
 <!-- 迁移自 README.md:26-42 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
 ## Migrated — README.md:26-42
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 ## Codex Stage 1
 
 Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
@@ -41,6 +43,8 @@ Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
 
 <!-- 迁移自 README.md:64-137 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:64-137
+
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
 
 ## Three Skills: `plan`, `execute`, `review-loop`
 
@@ -120,6 +124,8 @@ passed explicitly.
 <!-- 迁移自 README.md:139-181 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:139-181
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 ## Workflow Overview
 
 ```
@@ -167,6 +173,8 @@ shown. Optionally auto-commits the result.
 <!-- 迁移自 README.md:183-222 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:183-222
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 ## Standalone Tools
 
 ### `/review-loop:code-quality-loop`
@@ -211,6 +219,8 @@ Show the usage guide — how it works, commands, configuration, and key features
 <!-- 迁移自 README.md:263-273 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:263-273
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 ## Reviewer Modes
 
 | Mode | Config | How it works |
@@ -225,6 +235,8 @@ Reviewer uses.
 
 <!-- 迁移自 README.md:275-290 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:275-290
+
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
 
 ## Included Agents
 
@@ -245,6 +257,8 @@ Reviewer uses.
 
 <!-- 迁移自 README.md:319-366 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:319-366
+
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
 
 ## File Structure
 

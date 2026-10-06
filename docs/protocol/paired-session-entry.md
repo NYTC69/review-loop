@@ -27,8 +27,8 @@ the first command that runs `bin/paired-session`):
   plugin) belongs to stage A. If one fails or is denied, stop and report
   `stage A failure: <reason>`. Do not retry in another location or improvise,
   and never start or continue another workflow from this skill (no legacy
-  session file, lock or evidence snapshot): only the review-loop entry falls
-  back, and only through its documented notice.
+  session file, lock or evidence snapshot): only the review-loop or review-pr
+  entry falls back, and only through its documented notice.
 - From the first `bin/paired-session` command on, every refusal or HOLD is
   reported verbatim and never falls back to legacy.
 
@@ -108,9 +108,71 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
 - `run` refuses before creating any state when the change is empty, the index
   has unmerged entries or partially staged paths, the base is not an ancestor of
   `HEAD`, or the work item carries review history; report the refusal verbatim.
-  A changed path named like review history (`docs/F001.md`, `APPROVE.txt`) is
-  refused too, because the fresh shadow and gate scan the review scope that
-  lists it: tell the user to review that change with the legacy workflow.
+  The change as created is the user's code (FIELD-26/27): its content and its
+  paths pass the fresh shadow and gate scan even when they name a vendor or a
+  review (`bin/codex-run`, `docs/gate-review-notes.md`); text or paths a later
+  fix round adds are scanned as before. A changed path shaped like a ledger id
+  or a verdict (`docs/F001.md`, `APPROVE.txt`) is still refused: tell the user
+  to review that change with the legacy workflow.
+
+## Review-PR entry
+
+A review-pr request (the review-pr skill's paired route, `paired_session/docs/review-pr-port.md`) reviews a
+change and writes a report; it never fixes, commits, pushes or posts on its own. It runs report mode:
+`run --review-only --review-report`, with no author and no writer (REPORTED is its terminal status).
+- CLIs: the review-pr skill checks nothing before it hands off, so run the direct-invocation CLI check
+  of Stage A checks here, plus `gh` for a PR input; a missing CLI is a failed stage A check.
+- Input, resolved in stage A before any coordinator command:
+  - none: the local change. Run on the current worktree as the review-only entry above (`--base`
+    only when the user names one), with no materialization.
+  - a PR number or GitHub PR URL, or a local or remote ref: run
+    `python3 <support-root>/scripts/materialize_pr.py <input> --repo <operator repo> --root <run root>`,
+    plus `-R <owner/repo>` or `--base <ref>` when the user gives them. It pins the head and base OIDs,
+    clones them into `<run root>/pr/<UUID>/` (never the operator's checkout) and prints one JSON object;
+    its `workspace` is the clone and `merge_base` the review base. `REFUSED: <reason>` (exit 2) is a
+    failed stage A check.
+- Size (Q-R10): in the clone, `git diff --shortstat <merge_base> HEAD`. Above about 100 files or 5,000
+  changed lines, ask before running; a declined or unanswered question is a failed stage A check.
+- Aspects: `code errors comments types tests` select the specialists (`--aspects` with a comma list);
+  `all` or none omits the flag. `simplify` is a writer and is not part of the paired review-pr: refuse
+  it in stage A on every entry, with no fallback, as
+  `review-pr: simplify is not part of the paired review-pr (a writer that edits the checkout); <host legacy review-pr pointer>`,
+  never ignore it silently. `parallel` does not apply (the coordinator schedules its roles); say so in
+  one line and continue.
+- Tests: no test command is the default for every review-pr input (Q-R3): pass `--no-test-command`
+  instead of `--test-command`. A test command runs only when the user confirms one for this review; a
+  PR's test code then runs on this machine. Never ask about tests under handsfree; a declined or
+  unanswered offer leaves the run without tests and never refuses the request.
+- `WORKITEM.md` states the review goal and the pins (target repository, PR URL and number, head OID,
+  pinned base OID, merge base), and no review history. Write the materializer's JSON object, unchanged, to
+  `RUN_DIR/pr-pins.json`.
+- `run` (and in strict mode `permission-probe`) gets `--review-only --review-report --lifecycle-mode on
+  --auto-commit false`, `--workspace` the clone (or the current worktree), `--base <merge_base>` and
+  `--review-pr-pins RUN_DIR/pr-pins.json` for a materialized input (the run freezes them for the report
+  and the post), `--no-test-command` and `--aspects` as above. Never `--adversarial-gate off`.
+- REPORTED: show `RUN_DIR/review-report.md` in the conversation (Strengths only where a role gave
+  them). A HOLD leaves the report marked incomplete; report the HOLD as usual. Never `accept`,
+  `reject` or `note` a report run.
+- Posting (off by default): only on the user's explicit request, never under handsfree. Run
+  `python3 <support-root>/paired_session/review_post.py --run-dir RUN_DIR`: it scans the report for
+  secrets (refusing names a rule and line, never the value; the report stays local) and prints the
+  target, PR, reviewed head, the exact `gh pr review --comment` command and the full body with a
+  digest. Show all of it and ask again; only on that second confirmation run it with
+  `--confirm <digest>`. It refuses when the PR head moved since the review, and for a run without PR
+  pins (the local change, or a ref); report a refusal verbatim. Never `--approve` or `--request-changes`.
+- Cleanup: once the report has been shown and the run is terminal, ask before removing the clone, and
+  remove it only with `materialize_pr.py --remove <workspace>`; otherwise name the clone. After a stage
+  A failure that follows the materialization, name the clone the same way.
+- Failures: a failed stage A check for a PR or ref input refuses on every entry and never falls back to
+  legacy, since legacy review-pr cannot review a PR. Only the no-argument request may fall back on the
+  default entry (Entry and failure handling), and that fallback runs legacy review-pr without `simplify`
+  unless the user named it.
+- Residual, stated: report mode does not narrow the Codex read root. Codex read-only roles (the gate,
+  with the default roles) can read the whole filesystem, credential files included; the efficient
+  evidence guard only logs. A prompt injection in an untrusted PR could have a role quote such a file
+  into a finding, which is why the post is scanned and confirmed. Narrowing it needs a verified Codex
+  permissions profile (follow-up). An operator who wants the credential deny on every role uses Claude
+  read-only roles (operator profile).
 
 ## Safety mode and the first commands
 

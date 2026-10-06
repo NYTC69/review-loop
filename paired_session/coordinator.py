@@ -1535,6 +1535,23 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+INITIAL_CHANGE_HEADING = '## Initial change (as the run was created; later fixes make it stale)\n\n'
+
+
+def mask_initial_change(scope: str) -> str:
+    """FIELD-27: the review scope's initial-change list names the user's paths, not review history; each listed path
+    becomes <repo-path> (the list is the scope's last section; the status letters and `untracked:` stay). A ledger-id or
+    verdict shaped path (docs/F001.md, APPROVE.txt) stays visible: FIELD-11 keeps refusing it (an independence guard)."""
+    head, sep, listing = scope.rpartition(INITIAL_CHANGE_HEADING)
+    if not sep:
+        return scope
+    def mask(match):
+        kept = LEDGER_ID_RE.search(match.group(2)) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', match.group(2))
+        return match.group(0) if kept else match.group(1) + '<repo-path>'
+    return head + sep + ''.join(re.sub(r'^(untracked: |[A-Z][0-9]*\t)(.*)$', mask, line)
+                                for line in listing.splitlines(keepends=True))
+
+
 def review_scope_path(name: str) -> str:
     """LG1-e: one unambiguous line per path in the review scope. A name with a tab, newline, other control character,
     backslash, leading quote or non-UTF-8 byte (surrogateescape, shown as \\udcXX) is written as an ASCII JSON string;
@@ -1700,7 +1717,7 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
 
 def command_invokes_test(command: str, configured: str) -> bool:
     """Only the exact configured command counts; whitespace at its edges is irrelevant."""
-    return bool(configured.strip()) and command.strip() == configured.strip()
+    return bool(configured and configured.strip()) and command.strip() == configured.strip()   # None: a no-test report run
 
 
 def observed_test_succeeded(row: dict, configured: str) -> bool:
@@ -1745,6 +1762,27 @@ def configured_command_issue(workspace: Path, run_dir: Path, commands: list) -> 
             return (f'configured command {command!r} names a protected path ({found[1]}); keep its operands and output paths '
                     'outside the run directory')
     return None
+
+
+def review_pr_pins(path: str, workspace: Path, head: Optional[str], base: Optional[str]) -> dict:
+    """LG2-c: the JSON `scripts/materialize_pr.py --root` printed, as the report's pins (review-pr-port.md §2.5); it must
+    describe this run: the clone is the workspace, its head is HEAD and its merge base is the review base."""
+    try:
+        data = json.loads(Path(path).read_text())
+        pins = {'Target repository': data.get('repository') or data['target_url'], 'PR URL': data.get('url'),
+                'Head': data['head']['oid'], 'Base (pinned)': data['base']['oid'], 'Merge base': data['merge_base']}
+        clone = Path(data['workspace']).resolve()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f'--review-pr-pins cannot be read: {exc}') from exc
+    if clone != workspace.resolve() or pins['Head'] != head or pins['Merge base'] != base:
+        raise ValueError('--review-pr-pins does not describe this run: the workspace, HEAD and --base must be the '
+                         'materialized clone, its head and its merge base')
+    return {label: value for label, value in pins.items() if value}
+
+
+def saved_no_test(config) -> bool:
+    """LG2-b2: a report run created with --no-test-command froze test_command as null."""
+    return isinstance(config, dict) and bool(config.get('review_report')) and 'test_command' in config and config['test_command'] is None
 
 
 def _saved_configured_commands(run_dir: Path) -> list:
@@ -2315,6 +2353,8 @@ class Coordinator:
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
+            if self._pr_pins:
+                self.state['review_pr'] = self._pr_pins   # LG2-c: review-report.md and review_post.py read them
             if self._fake_lifecycle:
                 self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
             elif args.lifecycle_mode == 'on':
@@ -2614,7 +2654,7 @@ class Coordinator:
             raise RuntimeError(reason)
         result = []
         for command in [self.args.test_command, *self.args.reviewer_command, *frozen]:
-            if command not in result:
+            if command and command not in result:   # LG2-b2: a no-test report run has no test command
                 result.append(command)
         return result
 
@@ -5023,7 +5063,7 @@ class Coordinator:
                 self.inspection_prompt(role),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
-                f'Run this test command exactly as written in one Bash call: {self.args.test_command}',
+                self._test_instruction(),
                 'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.',
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
@@ -5074,7 +5114,7 @@ class Coordinator:
             self.verified_claims_prompt(),
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt(),
-            f'Run this test command exactly as written in one Bash call: {self.args.test_command}',
+            self._test_instruction(),
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
             'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
@@ -5087,7 +5127,7 @@ class Coordinator:
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
             '\nAudit the complete current git delta in ' + str(self.workspace))
-        return (filled + '\nRun this test command exactly as written in one Bash call: ' + self.args.test_command +
+        return (filled + '\n' + self._test_instruction() +
                 '\n' + self.allowed_command_prompt() +
                 '\nRead program-materialized delta.patch, delta.stat, status.txt, and optional delta-since-last-review.patch in: ' + str(self.context) +
                 '\n' + self.inspection_prompt('gate') +
@@ -5175,6 +5215,9 @@ class Coordinator:
         base = base if base is not None else self.state.get('base_commit')
         if not base or name in ('prompt', 'gate-template'):
             return content
+        record = (getattr(self, 'state', None) or {}).get('review_only') or {}
+        if name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256'):
+            content = mask_initial_change(content)   # FIELD-27: this run's frozen review scope
 
         def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
@@ -5225,7 +5268,7 @@ class Coordinator:
                 paths = (new, old) if 'rename from ' in header or new in renames else (new,)
                 blobs = [self._base_blob(base, rel) for rel in dict.fromkeys(paths) if rel] if old and not (
                     'GIT binary patch' in section or 'Binary files ' in section) else []
-                repository = '\n'.join(blob for blob in blobs if blob is not None)
+                repository = '\n'.join([*(blob for blob in blobs if blob is not None), self._review_start_text(new)])
                 for line in section[len(header):].splitlines():
                     if line.startswith('+'):
                         result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository))))
@@ -5238,7 +5281,7 @@ class Coordinator:
                                                                          cwd=self.workspace),
                                               cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if proc.returncode == 0:
-                paths = set(proc.stdout.decode('utf-8', 'replace').split('\0')) - {''}
+                paths = set(proc.stdout.decode('utf-8', 'replace').split('\0')) - {''} | self._review_start_paths()   # FIELD-27
                 def quoted(match):
                     return '<repo-path>' if self._git_unquote(match.group(0)[1:-1]) in paths else match.group(0)
                 quote = r'"(?:[^"\\\n]|\\.)*"'
@@ -5279,6 +5322,36 @@ class Coordinator:
                     prose.append(line)
             return ''.join(result) + inline(''.join(prose)) + mask(''.join(block), exists)
         return content
+
+    def _review_start_text(self, rel: Optional[str]) -> str:
+        """FIELD-26: a review-only run's change as created is the user's code, not this run's review history: the file at
+        `rel` in the creation mirror ('' for an ordinary run, a missing or binary file, or a symlink). Text a later fix
+        round adds is not in it, so the scan still catches that."""
+        mirror = self._review_start_root()
+        if not rel or not mirror:
+            return ''
+        root, path = mirror.resolve(), mirror / rel
+        try:
+            if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
+                return ''
+            data = path.read_bytes()
+        except OSError:
+            return ''
+        return '' if b'\0' in data else data.decode('utf-8', 'replace')
+
+    def _review_start_root(self) -> Optional[Path]:
+        """The review-only creation mirror whose content is user code (a scope-change successor keeps its parent's)."""
+        record = self.state.get('review_only') or {}
+        mirror = record.get('history_mirror') or record.get('mirror')
+        return Path(mirror) if mirror else None
+
+    def _review_start_paths(self) -> set:
+        """FIELD-27: the paths in the creation mirror (empty for an ordinary run or a missing mirror)."""
+        root = self._review_start_root()
+        if root is None or not root.is_dir():
+            return set()
+        return {str((Path(top) / name).relative_to(root)) for top, dirs, files in os.walk(root) for name in (*files, *dirs)
+                if (Path(top) / name).is_symlink() or name in files}
 
     def _introduced_history(self, name: str, content: str) -> list[str]:
         return self._history_markers(name, self._fresh_history_text(name, content))
@@ -5325,13 +5398,22 @@ class Coordinator:
     def _review_report_args(self, saved: Optional[dict]) -> None:
         """LG2-a1: report mode is fixed at creation; omission on resume keeps the saved entry."""
         requested = getattr(self.args, 'review_report', None)
+        self._pr_pins = None
         if saved is not None:
             if requested is not None and bool(requested) != bool(saved.get('review_report')):
                 raise ValueError('resume configuration differs: review_report (fixed when the run was created)')
             self.args.review_report = bool(saved.get('review_report'))
+            if saved_no_test(saved):   # LG2-b2: the frozen null wins; main() refuses an explicit --test-command
+                self.args.test_command = None
+            elif getattr(self.args, 'no_test_command', None) and self.args.review_report:
+                raise ValueError('resume configuration differs: test_command (fixed when the run was created)')
         if not self.args.review_report:
             if getattr(self.args, 'review_aspects', None) is not None:
                 raise ValueError('--aspects needs --review-report')
+            if getattr(self.args, 'no_test_command', None):
+                raise ValueError('--no-test-command needs --review-report')
+            if getattr(self.args, 'review_pr_pins', None):
+                raise ValueError('--review-pr-pins needs --review-report')
             return
         if saved is None and self.args.supersedes:
             raise ValueError('--review-report starts a fresh review request; it takes no --supersedes')
@@ -5341,13 +5423,29 @@ class Coordinator:
             raise ValueError('--review-report refuses --auto-commit true')
         if self.args.stop_after_plan:
             raise ValueError('--review-report refuses --stop-after-plan')
+        if self.args.no_test_command and saved is None:   # LG2-b2: frozen as test_command null at creation
+            self.args.test_command = None
+            if self.args.reviewer_command:
+                raise ValueError('--no-test-command refuses --reviewer-command, including a reviewer_command list from the '
+                                 'workspace or operator paired-session.json (a no-test report run allows no command)')
+            if workitem_reviewer_commands(self.workitem.read_text()):
+                raise ValueError('--no-test-command refuses a work item that declares reviewer-commands')
         if (saved or {}).get('adversarial_gate', self.args.adversarial_gate) == 'off':
             raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
+        if getattr(self.args, 'review_pr_pins', None):   # LG2-c: fixed at creation; a resume may repeat the same pins
+            pins = review_pr_pins(self.args.review_pr_pins, self.workspace, self._head_commit(),
+                                  saved.get('review_base') if saved is not None else self.args.review_base)
+            if saved is not None and pins != self.state.get('review_pr'):
+                raise ValueError('resume configuration differs: review_pr (fixed when the run was created)')
+            self._pr_pins = pins
         if self.args.polish:
             raise ValueError('report mode refuses resume --polish')
         requested = self.args.review_aspects   # LG2-b1: the aspect subset, fixed at creation
         if requested is not None:
             aspects = [name.strip() for name in requested.split(',') if name.strip()] if isinstance(requested, str) else list(requested)
+            if 'simplify' in aspects:   # LG2-c: a writer, dropped from the paired review-pr (review-pr-port.md §2.4, §5)
+                raise ValueError('--aspects simplify is not part of a paired review-pr (simplify is a writer that edits the '
+                                 'checkout); legacy review-pr still has it: /review-loop:review-pr --legacy simplify')
             if not aspects or any(name not in worktree_lifecycle.REPORT_ASPECTS for name in aspects):
                 raise ValueError('--aspects takes a comma list of ' + ','.join(worktree_lifecycle.REPORT_ASPECTS))
             aspects = [name for name in worktree_lifecycle.REPORT_ASPECTS if name in aspects]
@@ -5360,6 +5458,13 @@ class Coordinator:
         """The vendors a run can dispatch; a report run never dispatches the author (LG2-a2)."""
         roles = (self.args.reviewer_vendor, self.args.gate_vendor)
         return roles if self.state['config'].get('review_report') else (self.args.author_vendor, *roles)
+
+    def _test_instruction(self) -> str:
+        """LG2-b2: the review prompt line for the configured test command, or the no-test line of a report run."""
+        if self.args.test_command is None:
+            return ('No test command is configured for this review: do not run tests; mark any claim that needs a test run '
+                    'as unverified, and list the read commands you ran in self_run_evidence.')
+        return f'Run this test command exactly as written in one Bash call: {self.args.test_command}'
 
     def _refuse_report_accept(self) -> None:
         if self.state['config'].get('review_report'):
@@ -5423,11 +5528,10 @@ class Coordinator:
         workitem = self.workitem.read_text()
         scope = ('# Review scope (review-only entry)\n\nNo plan was drafted or approved; review the change itself: the '
                  'workspace tree against the review base.\n\n'
-                 f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command}\n\n'
+                 f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command or "none (no tests run in this review)"}\n\n'
                  f'## Goal (the work item, verbatim)\n\n{workitem.rstrip()}\n\n'
-                 '## Initial change (as the run was created; later fixes make it stale)\n\n'
-                 + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
-        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}, base):   # FIELD-11: no PLAN approval runs it later
+                 + INITIAL_CHANGE_HEADING + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
+        if issue := self._plan_history_issue({'work item': workitem, 'plan': mask_initial_change(scope)}, base):   # FIELD-11; FIELD-27
             issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
         return {'text': scope, 'head': head,
@@ -5444,12 +5548,23 @@ class Coordinator:
                               'plan_skipped': True, 'round1': 'the existing change; no author turn',
                               'head_at_start': scope['head'], 'candidate_tree_sha256': git_snapshot(self.workspace)[0],
                               'index_at_start': index, 'mirror': str(mirror),
+                              'history_mirror': self._parent_history_mirror() or str(mirror),   # FIELD-27
                               'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest(),
                               **({'parent_review_scope_sha256': scope['parent_scope_sha256']} if scope['parent_scope_sha256'] else {})})
         if 'lifecycle' in self.state:   # LG1-a2: the W parent (HEAD-moved checks, auto_commit CAS) is HEAD, never the base
             self.state['lifecycle']['parent'] = scope['head']
             if REVIEW_ONLY_DOCS_PRE_OWNED and (pre := sorted(set(self._changed_paths(deleted=True)) & set(self._docs_allowlist()))):
                 self.state['lifecycle']['docs_pre_owned'] = pre   # LG1-c, Q8
+
+    def _parent_history_mirror(self) -> Optional[str]:
+        """FIELD-27: a scope-change successor's user content is its parent's change as created, not the parent's fixes."""
+        if not self.args.supersedes:
+            return None
+        try:
+            record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text()).get('review_only') or {}
+        except (OSError, ValueError, AttributeError):
+            return None
+        return record.get('history_mirror') or record.get('mirror')
 
     def _review_only_start_issue(self) -> Optional[str]:
         """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""
@@ -6177,7 +6292,7 @@ class Coordinator:
                     session, receipt['start'], receipt['end'], (self.workspace, active_workspace, self.author_temp_dir)))
             forbidden = sensitive_access(guard_calls, role, self.evidence, self.rounds, guard_cwd,   # configured bytes: CLI commands only
                                          env, (self.workspace, active_workspace, self.author_temp_dir),
-                                         (self.args.test_command, *self.args.reviewer_command), fallbacks)
+                                         tuple(c for c in (self.args.test_command, *self.args.reviewer_command) if c), fallbacks)
             receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20],   # v297-eg-wire: substring-guard calls
                                          **({'codex_cwd_proven': proven} if proven is not None else {})}
             if forbidden and self.strict:
@@ -6201,7 +6316,9 @@ class Coordinator:
             approves_exec = (phase in ('EXEC', 'POLISH') and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'approve')))
-            if approves_exec and not (self._fake_lifecycle and workspace_override and
+            if approves_exec and self.args.test_command is None and self.state['config'].get('review_report'):   # LG2-b2
+                receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
+            elif approves_exec and not (self._fake_lifecycle and workspace_override and
                                       self.state.get('fake_candidate_test') and
                                       self.state.get('fake_ingest_receipt') and
                                       self.state['fake_candidate_test']['ingest_id'] ==
@@ -7021,7 +7138,7 @@ class Coordinator:
         self.record_findings(owner, 'POLISH-Q', result['sequence'], findings)
         self.render(result, 'specialist-' + name, 'POLISH-Q')
         return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree,
-                'observed_test': self._observed_test(answer)}   # W2a-1 L-3: recorded, not enforced
+                'observed_test': self._observed_test(answer), 'status': answer['status']}   # W2a-1 L-3: recorded, not enforced
 
     def _review_protocol(self, paths: list[str]) -> str:
         return '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
@@ -7215,7 +7332,8 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('reviewer HOLD')
             return
-        if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence']:
+        if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and not (
+                self.args.test_command is None and self.state['config'].get('review_report')):   # LG2-b2: a static approval
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
             return
@@ -7887,12 +8005,12 @@ class Coordinator:
                     except OSError:
                         pass
 
-    def _probe_attempts(self, allowed_command: str, tracked: str) -> tuple:
+    def _probe_attempts(self, allowed_command: Optional[str], tracked: str) -> tuple:
         """`tracked` is probe_tracked_file(self.workspace): the tracked-file legs need a file that exists (b296-f1f). b296-f1g:
         --literal-pathspecs (no glob, no pathspec magic), so a name like `*.py` or `:(glob)**` can only ever reach that one file."""
         return ('echo x > forbidden-probe', 'git --literal-pathspecs checkout -- ' + shlex.quote(tracked), 'rm ' + shlex.quote(tracked),
                 'git diff --output=forbidden-diff', 'git log --output=forbidden-log -1',
-                'git show --output=forbidden-show HEAD', allowed_command + ' --help > forbidden-test-help')
+                'git show --output=forbidden-show HEAD', *([allowed_command + ' --help > forbidden-test-help'] if allowed_command else []))
 
     def _tracked_file_escape(self, tracked: str) -> list:
         """b296-f1f: the probe's tracked file must still be a regular file; it is never restored, the operator is told to."""
@@ -7924,9 +8042,9 @@ class Coordinator:
         self._probe_sandbox_commands = [sandbox_probe_commands[1], sandbox_probe_commands[3]]
         return sandbox_probe_paths, sandbox_probe_commands
 
-    def _probe_prompt(self, vendor: str, allowed_command: str, attempts: tuple, sandbox_probe_commands: list) -> str:
+    def _probe_prompt(self, vendor: str, allowed_command: Optional[str], attempts: tuple, sandbox_probe_commands: list) -> str:
         scratch = ['Scratch write expected to succeed:', SCRATCH_PROBE_COMMAND] if vendor == 'codex' else []   # b295-f1: one more exact command
-        calls = len(attempts) + 1 + bool(sandbox_probe_commands) + bool(scratch)
+        calls = len(attempts) + bool(allowed_command) + bool(sandbox_probe_commands) + bool(scratch)
         prompt = '\n'.join([
             'Role: permission-system probe in an authorized throwaway checkout. Do not report exit codes.',
             f'Workspace: {self.workspace}',
@@ -7937,7 +8055,7 @@ class Coordinator:
             f'Make exactly {calls} separate Bash calls, one for each literal command below.',
             'Do not add cd, pipes, semicolons, &&, redirection beyond the literal, echo wrappers, or any other text.',
             LONG_COMMAND_RULE,
-            'Allowed exact command:', allowed_command, *scratch,
+            *(['Allowed exact command:', allowed_command] if allowed_command else []), *scratch,
             'Write commands expected to be denied:', *attempts, *sandbox_probe_commands[3:],
             f'Return APPROVE and list only the {calls} literal commands in self_run_evidence.',
             'Other finding arrays must be empty; the coordinator derives all results from tool_result events.',
@@ -7989,15 +8107,15 @@ class Coordinator:
                    and 'paired-session-scratch-probe' in turn.get('scratch_entries', []))
         return '' if written else 'scratch-write-not-observed: ' + SCRATCH_PROBE_COMMAND
 
-    def _probe_eval(self, evidence: list, unchanged: bool, allowed_command: str, attempts: tuple, explicit: bool = False):
+    def _probe_eval(self, evidence: list, unchanged: bool, allowed_command: Optional[str], attempts: tuple, explicit: bool = False):
         allowed_matches = [row for row in evidence if row.get('command', '').strip() == allowed_command]
-        allowed = (len(allowed_matches) == 1 and type(allowed_matches[0].get('exit_code')) is int
-                   and allowed_matches[0].get('exit_code') == 0
-                   and allowed_matches[0].get('error') is False)
+        allowed = allowed_command is None or (len(allowed_matches) == 1 and type(allowed_matches[0].get('exit_code')) is int
+                                              and allowed_matches[0].get('exit_code') == 0
+                                              and allowed_matches[0].get('error') is False)   # LG2-b2: None = no allowed command
         denied = {}
         outcomes = {}
         failures = []
-        if not any(row.get('command', '').strip() == allowed_command for row in evidence):
+        if allowed_command is not None and not any(row.get('command', '').strip() == allowed_command for row in evidence):
             failures.append('not-attempted: ' + allowed_command)
         elif not allowed:
             timeout = tool_timeout_seconds(allowed_matches)   # FIELD-12: a CLI tool timeout is not an ordinary failure
@@ -8091,7 +8209,7 @@ class Coordinator:
 
     def _gate_probe_turn(self, snapshot: str, tracked: str) -> dict:
         """G-a K2: a second fresh read-only turn as role gate-probe (the gate's vendor, model and read-only argv) with the reviewer turn's prompt, attempts and checks."""
-        allowed_command = self.args.test_command.strip()
+        allowed_command = (self.args.test_command or '').strip() or None   # LG2-b2: None in a no-test report run
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('gate-probe', self.args.gate_vendor)
         codex = self._codex_escape_targets() if self.args.gate_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
         attempts = (*self._probe_attempts(allowed_command, tracked), *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
@@ -8177,7 +8295,7 @@ class Coordinator:
         if issue := self._recovery_config_issue(global_before, consume=False):   # F7: invoke()'s own baseline consumes them
             self.hold(issue)
             return False
-        allowed_command = self.args.test_command.strip()
+        allowed_command = (self.args.test_command or '').strip() or None   # LG2-b2: None in a no-test report run
         attempts = self._probe_attempts(allowed_command, tracked)
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
         codex = self._codex_escape_targets() if self.args.reviewer_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
@@ -8291,7 +8409,7 @@ class Coordinator:
         if gate_probe:   # the overall status is the worse of the two turns: FAIL > UNKNOWN > PASS_RESIDUAL_RISK > PASS
             report['gate_permission_probe'] = gate_probe
             if 'message' not in report and (gone := [r for r in gate_probe['failure_reasons'] if r.startswith('probe-tracked-file-escaped: ')]): report['message'] = gone[0]
-            if gate_probe['status'] != 'PASS':
+            if gate_probe['status'] != 'PASS':   # a gate turn is PASS, UNKNOWN or FAIL (probe_turn_status); only a Codex author's synthetic check gives PASS_RESIDUAL_RISK
                 report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
                 report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'
         global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
@@ -8335,8 +8453,8 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
-                and not (ok := self.codex_contract_verified())[0]:
+        if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
+                and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
         if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.claude_author_verified())[0]:
@@ -9444,6 +9562,10 @@ def parser() -> argparse.ArgumentParser:
                    help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
     p.add_argument('--review-report', action='store_true', default=None,
                    help='report on a --review-only change without writers; fixed at run creation')
+    p.add_argument('--review-pr-pins', metavar='FILE', default=None,
+                   help='report mode: the JSON scripts/materialize_pr.py --root printed, frozen as the report\'s PR pins')
+    p.add_argument('--no-test-command', action='store_true', default=None,
+                   help='report mode: run no test command (frozen as test_command null); approvals are static and untested')
     p.add_argument('--aspects', dest='review_aspects', metavar='LIST', default=None,
                    help='report mode: the specialist aspects, a comma list of code,errors,comments,types,tests (default all)')
     p.add_argument('--base', dest='review_base_ref', metavar='REF',
@@ -9459,7 +9581,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--accept-unverified-codex-cli', action='store_true',
-                   help='operator override: run a Codex author on an unverified codex-cli version (needs --reason)')
+                   help='operator override: run Codex roles (author, reviewer or gate) on an unverified codex-cli version (needs --reason)')
     p.add_argument('--accept-unverified-claude-author', action='store_true',
                    help='operator opt-in: run a Claude author with path-scoped Edit rules but no probe PASS (needs --reason; '
                         'with run, resume or reject). Persisted and re-applied on restore until the author flags change. '
@@ -9755,7 +9877,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject')
+            and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too; report runs keep skipping it (residual)
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
@@ -9842,6 +9965,13 @@ def main(argv=None) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
+    try: saved_null = restores_run(args) and saved_no_test(json.loads((Path(args.run_dir) / 'state.json').read_text()).get('config'))
+    except (OSError, ValueError, AttributeError): saved_null = False   # the Coordinator reports an unreadable state itself
+    if (saved_null or args.no_test_command) and any(a == '--test-command' or a.startswith('--test-command=') for a in raw_argv):
+        print('REFUSED: --test-command conflicts with a no-test report run (--no-test-command)')
+        return 2
+    if args.no_test_command or saved_null:   # LG2-b2: the null sentinel before every precheck below
+        args.test_command = None
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
     if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action == 'accept') and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
         print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip needs --reason and run, resume or reject')
@@ -9868,7 +9998,7 @@ def main(argv=None) -> int:
               '--reason TEXT` (permission-probe does not take the flag); no run state exists yet, so run permission-probe first')   # FIELD-10
         return 2
     if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
-            and (hint := dontask_command_hint([args.test_command, *args.reviewer_command]))):
+            and (hint := dontask_command_hint([c for c in (args.test_command, *args.reviewer_command) if c]))):
         print(hint)
     if not restores_run(args) and (issue := gate_surface_issue(args)):
         print('REFUSED: ' + issue)
@@ -9897,14 +10027,14 @@ def main(argv=None) -> int:
             print('REFUSED: --run-dir must not contain glob metacharacters used by Claude Edit deny rules')
             return 2
         try:
-            resolve_test_executable(workspace, args.test_command)
+            if args.test_command is not None: resolve_test_executable(workspace, args.test_command)   # LG2-b2: null = no test
         except ValueError as exc:
             print('REFUSED: ' + str(exc))
             return 2
         try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text())
         except (OSError, ValueError): workitem_commands = []                    # the coordinator reports an unreadable work item itself
         saved = _saved_configured_commands(run_dir) if args.action in ('run', 'resume') and restores_run(args) else []   # they dispatch turns
-        if issue := configured_command_issue(workspace, run_dir, [args.test_command, *args.reviewer_command, *workitem_commands, *saved]):
+        if issue := configured_command_issue(workspace, run_dir, [c for c in (args.test_command, *args.reviewer_command, *workitem_commands, *saved) if c]):
             print('REFUSED: ' + issue)                                           # v297-eg-wire: before any model turn
             return 2
     if args.action == 'status' and args.brief is not None:

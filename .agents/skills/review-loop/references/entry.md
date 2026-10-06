@@ -37,7 +37,7 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
   exists, a re-detection or user override never hands off.
 
 Deprecation notice (the explicit legacy request and `entry: legacy` only; once, before the UUID and lock; it changes
-no routing): `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
+no routing): `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that`
 
 Stage A checks (before the first `bin/paired-session` command), read-only. The host, CLI,
 outside-sandbox and Codex-home rows run here before the handoff; the Questions row runs in

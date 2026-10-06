@@ -210,8 +210,10 @@ def specialist_prompt(name, body, test_command, owned, protocol, change='the unc
             'You are a report-only quality specialist (legacy review-loop Step 3.5). Review only the changed paths of '
             f'{change}, with the instructions above. Do not modify any file. Report '
             'every finding in full_review using only the schema severities: report HIGH and MEDIUM as MAJOR and LOW '
-            'as MINOR; CRITICAL and MAJOR block delivery.\n' + protocol + '\n'
-            f'Run this test command exactly as written in one Bash call: {test_command}\n' + ledger +
+            'as MINOR; CRITICAL and MAJOR block delivery.\n' + protocol + '\n' +
+            (f'Run this test command exactly as written in one Bash call: {test_command}\n' if test_command else
+             'No test command is configured for this review: do not run tests; mark any claim that needs a test run as '
+             'unverified.\n') + ledger +
             'Return only JSON matching the supplied schema.')
 
 

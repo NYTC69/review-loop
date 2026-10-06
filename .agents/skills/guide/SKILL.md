@@ -34,21 +34,29 @@ default (every sandbox, no permission-probe PASS required); `--strict` or
 `"safety_mode": "strict"` in the operator profile adds the probe gate.
 The legacy workflow is deprecated since v2.12.0. It still runs unchanged; `entry: legacy`,
 asking for "the legacy review-loop workflow", and the plan and execute skills invoked on
-their own print a one-line deprecation notice. Removal waits for the review-pr and code-quality-loop ports
-and the open owner rows of the legacy map.
+their own print a one-line deprecation notice. review-pr is ported (it follows `entry`); removal waits for
+the code-quality-loop port and the open owner rows of the legacy map.
 Details: `docs/paired-session-migration.md`.
+
+A request to review a pull request ("review PR 123", a PR URL), a branch or
+ref goes to the Codex `review-pr` skill, which follows `entry` the same way:
+the paired-session report mode reviews it in a temporary clone with no tests
+unless you confirm one, writes `review-report.md`, and fixes, commits or posts
+nothing; posting is a separate request with a secret scan and a second
+confirmation of the full body. `simplify` is not available there (Claude Code:
+`/review-loop:review-pr --legacy simplify`). For the legacy review, ask for
+"the legacy review-pr workflow".
 
 ## Stage 1 Scope
 
-Stage 1 in Codex includes only:
+Stage 1 in Codex includes:
 
-- `review-loop`
+- `review-loop`, `plan`, `execute`, `paired-session`, `review-pr`
 - `guide`
 
 It does not yet migrate:
 
 - `code-quality-loop`
-- `review-pr`
 - `reorganize`
 
 ## Reviewer Behavior
