@@ -6,7 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-_CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions'}
+# project_root_markers (HYGIENE-1, F4): it moves the project root past the first .git, where the project scan below stops
+_CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions', 'project_root_markers'}
 _REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes', 'features',
                  'allowed_permission_profiles', 'permissions'}
 
