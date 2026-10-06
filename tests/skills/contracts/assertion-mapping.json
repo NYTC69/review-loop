@@ -2339,6 +2339,10 @@
     ],
     "cql_default_entry_notice": [
       {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
+      },
+      {
         "path": "skills/code-quality-loop/SKILL.md",
         "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
       },
@@ -2359,6 +2363,36 @@
       {
         "path": "docs/protocol/paired-session-entry.md",
         "needle": "/review-loop:code-quality-loop --legacy"
+      }
+    ],
+    "cql_loss_notice": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)"
+      }
+    ],
+    "cql_set_entry_notice": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)"
+      }
+    ],
+    "cql_work_item_title": [
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "`# code-quality-loop: <one-line summary of the uncommitted change>`"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "`# code-quality-loop: <one-line summary of the uncommitted change>`"
       }
     ]
   }

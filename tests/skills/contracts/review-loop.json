@@ -4075,6 +4075,51 @@
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
       "needle": "- Default entry (a review-loop, review-pr or code-quality-loop handoff with the"
+    },
+    {
+      "id": "cql_loss_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "cql_loss_notice"
+    },
+    {
+      "id": "cql_set_entry_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "cql_set_entry_notice"
+    },
+    {
+      "id": "cql_work_item_title_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "cql_work_item_title"
+    },
+    {
+      "id": "cql_notices_owned_and_first",
+      "kind": "contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "This skill owns the notice lines of steps 1 and 3: print each verbatim as visible reply text"
+    },
+    {
+      "id": "pse_cql_notices_backstop",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "Notices: the code-quality-loop skill owns its entry line and loss notice (its Step 0). If they are not"
+    },
+    {
+      "id": "pse_work_item_title_not_generic",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "so never a generic heading such as `# Work item`."
+    },
+    {
+      "id": "pse_review_only_title_names_the_change",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "- `WORKITEM.md` starts with a title that names the change (`# <one-line summary"
+    },
+    {
+      "id": "pse_cql_advisory_fix_round_reserved",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "(working name `--advisory-fix-round`; it"
     }
   ]
 }

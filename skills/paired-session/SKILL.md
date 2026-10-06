@@ -131,7 +131,11 @@ A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:
 the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names
 (`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--auto-commit false` as handed over;
 `--max-invocations 35` unless the profile sets `max_invocations`) and the explicit `--test-command`;
-`WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`.
+`WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`. Its two
+notice lines belong to the code-quality-loop skill; only if they are not already in this conversation's visible
+output, print them verbatim (the shared contract's Code-quality-loop entry quotes them) as the first output after
+loading that contract, before any stage A check. The work item's
+first line is `# code-quality-loop: <one-line summary of the uncommitted change>`.
 
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
 key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`

@@ -22,7 +22,7 @@ warning line). Then:
   `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
 - `entry: legacy` (or an invalid entry): run the legacy loop (Initialization on), unchanged, with the same
   deprecation notice.
-- `entry` absent or `paired-session`: the paired route.
+- `entry` absent or `paired-session`: the paired route. This skill owns the notice lines of steps 1 and 3: print each verbatim as visible reply text (not only in a tool call), as the first output after resolving `entry` and before any other tool call or skill invocation, also on a headless run. The paired-session skill prints them only when they are missing.
   1. Print `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` when the
      key is set, or
      `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop`
