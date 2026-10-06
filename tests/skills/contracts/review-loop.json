@@ -3853,6 +3853,134 @@
       "kind": "contains",
       "path": ".review-loop/config.md",
       "needle": "reviewer_model: \"gpt-6.1-sol\""
+    },
+    {
+      "id": "review_pr_routes_on_entry",
+      "kind": "contains",
+      "path": "skills/review-pr/SKILL.md",
+      "needle": "## Step 0 \u2014 Entry: paired route or legacy"
+    },
+    {
+      "id": "review_pr_legacy_argument",
+      "kind": "contains",
+      "path": "skills/review-pr/SKILL.md",
+      "needle": "- `--legacy` in `$ARGUMENTS`: drop it and run the legacy review (Step 1 on), whatever `entry` says."
+    },
+    {
+      "id": "review_pr_paired_route_hands_off",
+      "kind": "contains",
+      "path": "skills/review-pr/SKILL.md",
+      "needle": "Invoke the `paired-session` skill with `--review-pr` and the remaining arguments"
+    },
+    {
+      "id": "review_pr_legacy_route_refuses_pr_input",
+      "kind": "contains",
+      "path": "skills/review-pr/SKILL.md",
+      "needle": "review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route"
+    },
+    {
+      "id": "pse_review_pr_entry_section",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "## Review-PR entry"
+    },
+    {
+      "id": "pse_review_pr_report_mode_flags",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "`run --review-only --review-report`, with no author and no writer"
+    },
+    {
+      "id": "pse_review_pr_materializer",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "`python3 <support-root>/scripts/materialize_pr.py <input> --repo <operator repo> --root <run root>`"
+    },
+    {
+      "id": "pse_review_pr_no_tests_default",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "no test command is the default for every review-pr input (Q-R3): pass `--no-test-command`"
+    },
+    {
+      "id": "pse_review_pr_simplify_refused",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "`simplify` is a writer and is not part of the paired review-pr"
+    },
+    {
+      "id": "pse_review_pr_post_never_handsfree",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "Posting (off by default): only on the user's explicit request, never under handsfree."
+    },
+    {
+      "id": "pse_review_pr_pr_input_never_falls_back",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "a failed stage A check for a PR or ref input refuses on every entry and never falls back to\n  legacy"
+    },
+    {
+      "id": "pse_review_pr_codex_read_root_residual",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "Residual, stated: report mode does not narrow the Codex read root."
+    },
+    {
+      "id": "codex_review_pr_skill_routes_on_entry",
+      "kind": "contains",
+      "path": ".agents/skills/review-pr/SKILL.md",
+      "needle": "- `entry` absent or `paired-session`: the paired route."
+    },
+    {
+      "id": "claude_paired_session_takes_review_pr_handoff",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the"
+    },
+    {
+      "id": "codex_paired_session_takes_review_pr_handoff",
+      "kind": "contains",
+      "path": ".agents/skills/paired-session/SKILL.md",
+      "needle": "A review-pr handoff (from the Codex `review-pr` skill) follows the shared contract's Review-PR entry."
+    },
+    {
+      "id": "migration_review_pr_follows_entry",
+      "kind": "contains",
+      "path": "docs/paired-session-migration.md",
+      "needle": "`/review-loop:review-pr` follows `entry`; `/review-loop:review-pr --legacy` (Claude) or"
+    },
+    {
+      "id": "codex_review_pr_skill_exists",
+      "kind": "exists",
+      "path": ".agents/skills/review-pr/SKILL.md"
+    },
+    {
+      "id": "review_pr_default_entry_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_default_entry_notice"
+    },
+    {
+      "id": "review_pr_simplify_legacy_pointer_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_simplify_legacy_pointer"
+    },
+    {
+      "id": "review_pr_codex_legacy_request_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "review_pr_codex_legacy_request"
+    },
+    {
+      "id": "pse_review_pr_cli_check_on_handoff",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "the review-pr skill checks nothing before it hands off, so run the direct-invocation CLI check"
+    },
+    {
+      "id": "pse_review_pr_pins_frozen",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "`--review-pr-pins RUN_DIR/pr-pins.json` for a materialized input"
     }
   ]
 }

@@ -91,9 +91,21 @@ Runs are `efficient` by default: every sandbox applies, but no permission-probe
 PASS is required; `--strict` or `"safety_mode": "strict"` in the operator
 profile adds the probe gate. In both modes a reviewer turn that changes the
 workspace is voided and restored, and an author commit is a HOLD.
-`/review-loop:plan`, `/review-loop:execute` and `/review-loop:review-pr` ignore
-`entry`. On Codex, ask "use paired-session for this task" or "use the legacy
-review-loop workflow". Details: `docs/paired-session-migration.md`.
+`/review-loop:plan` and `/review-loop:execute` ignore `entry`. On Codex, ask
+"use paired-session for this task" or "use the legacy review-loop workflow".
+Details: `docs/paired-session-migration.md`.
+
+`/review-loop:review-pr [PR number|PR URL|ref] [aspects]` follows `entry`:
+with the key absent or `paired-session` it runs the paired-session report mode.
+A PR or ref is reviewed in a temporary clone (the operator's checkout is never
+touched); no tests run unless you confirm a test command; the EXEC reviewer,
+shadow, gate, the selected specialists (`code errors comments types tests`) and
+the security stage report into `review-report.md` in the run directory, and
+nothing is fixed, committed or posted. Posting is a separate request with a
+secret scan and a second confirmation of the full body (`gh pr review
+--comment` only). `simplify` is a writer and is refused on this route; legacy
+review-pr keeps it (`/review-loop:review-pr --legacy simplify`). `entry: legacy`
+or `--legacy` runs the legacy review (Codex: "use the legacy review-pr workflow").
 
 ## Usage
 
@@ -205,7 +217,7 @@ Create `.review-loop/config.md` in your project to customize:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `entry` | absent (paired-session) | `legacy` \| `paired-session`; routes fresh and review-only `/review-loop` (Claude) or review-loop skill (Codex) work (see Entry above) |
+| `entry` | absent (paired-session) | `legacy` \| `paired-session`; routes fresh and review-only `/review-loop` (Claude) or review-loop skill (Codex) work, and review-pr on both hosts (see Entry above) |
 | `reviewer` | codex | `"codex"` \| `"subagent"` |
 | `reviewer_model` | "" | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | "" | Shared tier override for judgment-tier agents |

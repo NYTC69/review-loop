@@ -1747,6 +1747,22 @@ def configured_command_issue(workspace: Path, run_dir: Path, commands: list) -> 
     return None
 
 
+def review_pr_pins(path: str, workspace: Path, head: Optional[str], base: Optional[str]) -> dict:
+    """LG2-c: the JSON `scripts/materialize_pr.py --root` printed, as the report's pins (review-pr-port.md §2.5); it must
+    describe this run: the clone is the workspace, its head is HEAD and its merge base is the review base."""
+    try:
+        data = json.loads(Path(path).read_text())
+        pins = {'Target repository': data.get('repository') or data['target_url'], 'PR URL': data.get('url'),
+                'Head': data['head']['oid'], 'Base tip': data['base']['oid'], 'Merge base': data['merge_base']}
+        clone = Path(data['workspace']).resolve()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f'--review-pr-pins cannot be read: {exc}') from exc
+    if clone != workspace.resolve() or pins['Head'] != head or pins['Merge base'] != base:
+        raise ValueError('--review-pr-pins does not describe this run: the workspace, HEAD and --base must be the '
+                         'materialized clone, its head and its merge base')
+    return {label: value for label, value in pins.items() if value}
+
+
 def saved_no_test(config) -> bool:
     """LG2-b2: a report run created with --no-test-command froze test_command as null."""
     return isinstance(config, dict) and bool(config.get('review_report')) and 'test_command' in config and config['test_command'] is None
@@ -2320,6 +2336,8 @@ class Coordinator:
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
             }
+            if self._pr_pins:
+                self.state['review_pr'] = self._pr_pins   # LG2-c: review-report.md and review_post.py read them
             if self._fake_lifecycle:
                 self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
             elif args.lifecycle_mode == 'on':
@@ -5330,6 +5348,7 @@ class Coordinator:
     def _review_report_args(self, saved: Optional[dict]) -> None:
         """LG2-a1: report mode is fixed at creation; omission on resume keeps the saved entry."""
         requested = getattr(self.args, 'review_report', None)
+        self._pr_pins = None
         if saved is not None:
             if requested is not None and bool(requested) != bool(saved.get('review_report')):
                 raise ValueError('resume configuration differs: review_report (fixed when the run was created)')
@@ -5343,6 +5362,8 @@ class Coordinator:
                 raise ValueError('--aspects needs --review-report')
             if getattr(self.args, 'no_test_command', None):
                 raise ValueError('--no-test-command needs --review-report')
+            if getattr(self.args, 'review_pr_pins', None):
+                raise ValueError('--review-pr-pins needs --review-report')
             return
         if saved is None and self.args.supersedes:
             raise ValueError('--review-report starts a fresh review request; it takes no --supersedes')
@@ -5355,16 +5376,26 @@ class Coordinator:
         if self.args.no_test_command and saved is None:   # LG2-b2: frozen as test_command null at creation
             self.args.test_command = None
             if self.args.reviewer_command:
-                raise ValueError('--no-test-command refuses --reviewer-command (a no-test report run allows no command)')
+                raise ValueError('--no-test-command refuses --reviewer-command, including a reviewer_command list from the '
+                                 'workspace or operator paired-session.json (a no-test report run allows no command)')
             if workitem_reviewer_commands(self.workitem.read_text()):
                 raise ValueError('--no-test-command refuses a work item that declares reviewer-commands')
         if (saved or {}).get('adversarial_gate', self.args.adversarial_gate) == 'off':
             raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
+        if getattr(self.args, 'review_pr_pins', None):   # LG2-c: fixed at creation; a resume may repeat the same pins
+            pins = review_pr_pins(self.args.review_pr_pins, self.workspace, self._head_commit(),
+                                  saved.get('review_base') if saved is not None else self.args.review_base)
+            if saved is not None and pins != self.state.get('review_pr'):
+                raise ValueError('resume configuration differs: review_pr (fixed when the run was created)')
+            self._pr_pins = pins
         if self.args.polish:
             raise ValueError('report mode refuses resume --polish')
         requested = self.args.review_aspects   # LG2-b1: the aspect subset, fixed at creation
         if requested is not None:
             aspects = [name.strip() for name in requested.split(',') if name.strip()] if isinstance(requested, str) else list(requested)
+            if 'simplify' in aspects:   # LG2-c: a writer, dropped from the paired review-pr (review-pr-port.md §2.4, §5)
+                raise ValueError('--aspects simplify is not part of a paired review-pr (simplify is a writer that edits the '
+                                 'checkout); legacy review-pr still has it: /review-loop:review-pr --legacy simplify')
             if not aspects or any(name not in worktree_lifecycle.REPORT_ASPECTS for name in aspects):
                 raise ValueError('--aspects takes a comma list of ' + ','.join(worktree_lifecycle.REPORT_ASPECTS))
             aspects = [name for name in worktree_lifecycle.REPORT_ASPECTS if name in aspects]
@@ -7241,7 +7272,8 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('reviewer HOLD')
             return
-        if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and self.args.test_command is not None:
+        if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and not (
+                self.args.test_command is None and self.state['config'].get('review_report')):   # LG2-b2: a static approval
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
             return
@@ -9470,6 +9502,8 @@ def parser() -> argparse.ArgumentParser:
                    help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
     p.add_argument('--review-report', action='store_true', default=None,
                    help='report on a --review-only change without writers; fixed at run creation')
+    p.add_argument('--review-pr-pins', metavar='FILE', default=None,
+                   help='report mode: the JSON scripts/materialize_pr.py --root printed, frozen as the report\'s PR pins')
     p.add_argument('--no-test-command', action='store_true', default=None,
                    help='report mode: run no test command (frozen as test_command null); approvals are static and untested')
     p.add_argument('--aspects', dest='review_aspects', metavar='LIST', default=None,

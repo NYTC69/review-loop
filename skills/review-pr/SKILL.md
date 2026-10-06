@@ -1,7 +1,7 @@
 ---
 name: review-pr
-description: "Comprehensive code review using specialized agents. Each agent focuses on a different quality aspect (code, errors, comments, types, tests, simplify). Runs sequentially by default or in parallel on request."
-argument-hint: "[aspects: code|errors|comments|types|tests|simplify|all] [parallel]"
+description: "Comprehensive code review using specialized agents. Each agent focuses on a different quality aspect (code, errors, comments, types, tests, simplify). With `entry` absent or `paired-session` it runs the paired-session report mode (a PR, a ref or the local change; no writer, nothing posted); `entry: legacy` or `--legacy` runs the legacy review, sequential by default or in parallel on request."
+argument-hint: "[PR number|PR URL|ref] [aspects: code|errors|comments|types|tests|simplify|all] [parallel] [--legacy]"
 ---
 
 # Comprehensive Code Review
@@ -15,6 +15,32 @@ Its launcher, permission, completion, and accounting requirements apply to every
 report-only dispatch below. A general-purpose Agent is not a read-only boundary.
 
 **Review Aspects (optional):** "$ARGUMENTS"
+
+---
+
+## Step 0 — Entry: paired route or legacy
+
+Resolve `entry` in `.review-loop/config.md` as the review-loop entry does (exact values `legacy` and
+`paired-session`; an invalid value, a duplicate key or an unreadable config is legacy, with that entry's
+warning line). Then:
+- `--legacy` in `$ARGUMENTS`: drop it and run the legacy review (Step 1 on), whatever `entry` says.
+- `entry: legacy` (or an invalid entry): run the legacy review (Step 1 on), unchanged.
+- `entry` absent or `paired-session`: the paired route. Print
+  `review-pr: paired-session report mode (entry set in .review-loop/config.md)` when the key is set, or
+  `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy review`
+  when it is absent. Invoke the `paired-session` skill with `--review-pr` and the remaining arguments
+  (input and aspects), and end this skill. It follows the shared contract's Review-PR entry: a PR or ref
+  is reviewed in a temporary clone, no tests run unless you confirm a test command, the result is
+  `review-report.md`, and nothing is posted unless you ask.
+  - `simplify` is refused there before any coordinator command, with the pointer
+    `use /review-loop:review-pr --legacy simplify`.
+  - The no-argument request with the key absent: if the paired-session skill reports
+    `stage A failure: <reason>`, print
+    `review-pr: paired-session default entry unavailable (<reason>); using the legacy review` and
+    continue with Step 1, without `simplify` unless the user named it. With the key set, or for a PR or
+    ref input, report the failure and stop (never fall back).
+- A PR number, PR URL or ref on the legacy route: refuse with
+  `review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route (without --legacy)`.
 
 ---
 

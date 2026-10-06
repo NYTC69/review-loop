@@ -120,8 +120,8 @@ The plugin is cached under `$CODEX_HOME/plugins/cache/` (default
 version from `codex plugin list --json` rather than assuming a fixed versioned
 path.
 
-Once enabled, the five Stage 1 skills under `.agents/skills/` (`review-loop`,
-`plan`, `execute`, `guide`, `paired-session`) are exposed to the Codex agent and respond to
+Once enabled, the six Stage 1 skills under `.agents/skills/` (`review-loop`,
+`plan`, `execute`, `guide`, `paired-session`, `review-pr`) are exposed to the Codex agent and respond to
 natural-language triggers like "run review-loop on this branch" or
 "plan this task with review-loop". Codex matches plugin skills by their
 `SKILL.md` `description`, not by literal slash commands —

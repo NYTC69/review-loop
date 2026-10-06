@@ -1,14 +1,15 @@
 ---
 name: paired-session
-argument-hint: "<work item> [--plan-only | --review-only [--base REF]]"
+argument-hint: "<work item> [--plan-only | --review-only [--base REF] | --review-pr [INPUT] [ASPECTS]]"
 description: >
   Drive an implementation through the paired-session coordinator: independent
   PLAN review, EXEC implementation/review, adversarial gate, then finish,
   quality polish, docs and security up to operator acceptance.
-  Trigger in exactly three cases: (1) the user explicitly asks for paired-session
+  Trigger in exactly four cases: (1) the user explicitly asks for paired-session
   or names this explicit coordinator entry; (2) the review-loop entry hands off
   because .review-loop/config.md sets `entry: paired-session`; (3) the review-loop
-  entry hands off because that key is absent (the default entry). Do not trigger on
+  entry hands off because that key is absent (the default entry); (4)
+  /review-loop:review-pr hands off on its paired route (`--review-pr`). Do not trigger on
   a bare review-loop request in any other case (key invalid, `legacy`, or
   /review-loop:legacy).
 ---
@@ -111,6 +112,18 @@ TEST_COMMAND='the verified project command'
 A review-only request (`--review-only`, or the review-loop handoff of code already implemented)
 follows the shared contract's review-only entry: add `--review-only` (and `--base "$BASE"`
 only when the user named a base) to both blocks.
+
+A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the
+shared contract's Review-PR entry. Host rules: the run root above is the materializer's `--root`, and
+the materializer runs as its own foreground Bash call before the blocks. In both blocks set
+`WORKSPACE` to the clone it printed (no input: the current worktree), replace
+`--test-command "$TEST_COMMAND"` with `--no-test-command` unless the user confirmed a test command, and
+add `--review-only --review-report --auto-commit false`, `--base "$BASE"` (the printed `merge_base`;
+no input: only a base the user named), `--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized
+input (write the printed JSON there with the work item) and `--aspects "$ASPECTS"` when aspects were
+given. Legacy
+review-pr pointer: `use /review-loop:review-pr --legacy simplify` (for `simplify`) or
+`use /review-loop:review-pr --legacy`.
 
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
 key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`

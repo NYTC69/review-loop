@@ -534,6 +534,9 @@ def main():
         if 'Role: docs reviewer,' in prompt and no_test and not Path(no_test).exists():
             Path(no_test).write_text('no test\n')
             answer['self_run_evidence'] = []   # a docs review without the retest
+        if phase == 'EXEC' and os.environ.get('FAKE_EXEC_NO_EVIDENCE'):   # an approval that lists no self-run evidence
+            extra_observed_commands = [*answer['self_run_evidence'], *(extra_observed_commands or [])]
+            answer['self_run_evidence'] = []
         if 'Phase: POLISH' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
             if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):

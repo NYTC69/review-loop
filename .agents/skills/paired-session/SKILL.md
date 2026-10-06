@@ -1,6 +1,6 @@
 ---
 name: paired-session
-description: Use in exactly three cases - the user explicitly asks for paired-session, the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`, or the review-loop entry hands off because that key is absent (the default entry); this is the plan, implementation, independent-review, finish, polish, docs, security and acceptance workflow. Generic review-loop requests in every other case (key invalid, `legacy`, or explicit legacy) use the legacy entry.
+description: Use in exactly four cases - the user explicitly asks for paired-session, the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`, the review-loop entry hands off because that key is absent (the default entry), or the review-pr skill hands off on its paired route; this is the plan, implementation, independent-review, finish, polish, docs, security and acceptance workflow. Generic review-loop requests in every other case (key invalid, `legacy`, or explicit legacy) use the legacy entry.
 ---
 
 # Paired-session workflow (Codex)
@@ -110,6 +110,20 @@ run was not started.
 A review-only request (the user asks to review an existing change, or the review-loop handoff of
 a code target) follows the shared contract's review-only entry: add `--review-only` (and
 `--base "$BASE"` only when the user named a base) to both invocations.
+
+A review-pr handoff (from the Codex `review-pr` skill) follows the shared contract's Review-PR entry.
+Host rules: the run root is `$CODEX_HOME/state/paired-session` (the materializer's `--root`); the
+materializer reads through `gh` and the network, so run it as its own invocation outside the sandbox,
+with `PLUGIN_ROOT` resolved as in the first invocation, before the first invocation. In both
+invocations set `WORKSPACE` to the clone it printed (no input: the current worktree) and skip the
+dedicated-worktree question, replace `--test-command "$TEST_COMMAND"` with `--no-test-command` unless
+the user confirmed a test command, and add `--review-only --review-report --auto-commit false`,
+`--base "$BASE"` (the printed `merge_base`; no input: only a base the user named),
+`--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized input (the first invocation writes the
+printed JSON there with a second quoted heredoc, like the work item) and `--aspects "$ASPECTS"` when
+aspects were given. Legacy review-pr pointer: ask for
+"the legacy review-pr workflow" (it has no `simplify` on Codex: that writer is
+`/review-loop:review-pr --legacy simplify` in Claude Code).
 
 This skill is the explicit
 paired-session entry and the review-loop handoff target only when the config

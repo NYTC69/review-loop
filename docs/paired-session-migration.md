@@ -6,7 +6,7 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 ## Status in v2.10.0
 - **paired-session is the default entry.** A fresh `/review-loop <work item>` (Claude) or a fresh review-loop request (Codex) with no `entry` key in `.review-loop/config.md` hands off to the `paired-session` skill, which runs the coordinator with `--lifecycle-mode on`.
 - A request to review code that already exists (code-exists) hands off as `run --review-only` (D-LG1): no PLAN phase; the EXEC review of the change against `HEAD`, or `--base <ref>` when you name a base, is round 1. Unrelated dirty work is not a code-exists signal.
-- Plan-exists and existing-session states stay legacy, as do `/review-loop:plan`, `execute` and `review-pr`. Legacy `/review-loop:execute --review-only` stays legacy until its retirement; its paired-session equivalent is `run --review-only`, and its `--stop-after exec-round` maps to the operator CLI options `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route).
+- Plan-exists and existing-session states stay legacy, as do `/review-loop:plan` and `execute`. `/review-loop:review-pr` follows `entry` (see Review-pr below). Legacy `/review-loop:execute --review-only` stays legacy until its retirement; its paired-session equivalent is `run --review-only`, and its `--stop-after exec-round` maps to the operator CLI options `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route).
 - Nothing is removed: the legacy workflow stays available through `entry: legacy`, `/review-loop:legacy`, or (Codex) "use the legacy review-loop workflow".
 - New runs are `efficient` by default and need no permission probe (see Safety modes). In strict mode the probe PASS is bound to the plugin version: after upgrading, a strict run directory needs a new `permission-probe`. Finish a run with the version that started it. If a v2.9.x run is nevertheless continued under v2.10.0, it resumes strict, needs a new probe, keeps `lifecycle_mode=off` and ends at DONE.
 
@@ -19,7 +19,7 @@ The legacy code is removed only after every precondition below holds, so that no
 
 | Removal precondition | Status (2026-10-05) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
 |---|---|---|
-| `review-pr` ported to paired-session (D-LG2) | design round 4 authorized; Q-R1..Q-R10 answered (D-OWNER-1005 D03) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
+| `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); the closing check, one real PR review through the default entry with no post, is pending | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
 | `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | decided: D09 = A, the retirement itself still to be done; capability 1 (the writers) is to be ported, which is the same question as L117 and provisional with it (re-confirmed with the owner before implementation); capability 3 (the analyzers) goes with D-LG2; capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
 | Every "keep (provisional)" row has a paired-session equivalent, or the owner re-confirms it as retire | 13 rows; removal work items below | the "keep (provisional)" rows |
 | Every "retire (provisional)" row is re-confirmed | 5 rows | the "retire (provisional)" rows |
@@ -61,7 +61,8 @@ entry: legacy
 `entry: legacy` is also valid on v2.9.x, so you can set it before upgrading. The key is workspace-committed, so anyone who clones the repository is routed the same way. Other ways to the legacy workflow:
 - Claude: `/review-loop:legacy <work item>` runs the legacy workflow and ignores `entry` (it does not read or validate it and prints none of its notices).
 - Codex has no slash commands. Ask in natural language: "use the legacy review-loop workflow".
-- `/review-loop:plan`, `execute` and `review-pr` stay legacy and are not affected by `entry`.
+- `/review-loop:plan` and `execute` stay legacy and are not affected by `entry`.
+- `/review-loop:review-pr` follows `entry`; `/review-loop:review-pr --legacy` (Claude) or "use the legacy review-pr workflow" (Codex) runs legacy review-pr once.
 
 `entry: paired-session` routes the same way as the missing key but prints the explicit-entry notice; a failed check before the coordinator starts then refuses instead of falling back (unavailable background or outside-sandbox execution is reported as HOLD). The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, runs with `--lifecycle-mode on`. `--plan-only` on it maps to `run --stop-after-plan`.
 
@@ -73,6 +74,8 @@ entry: legacy
 | Plan already exists | legacy |
 | Code already implemented (task-relevant changes; unrelated dirty work does not count) | paired-session `run --review-only` |
 | Existing legacy session / explicit resume | legacy |
+| `/review-loop:review-pr` (Claude) or a PR review request (Codex), `entry` absent or `paired-session` | paired-session report mode (Review-pr below) |
+| review-pr with `entry: legacy`, `--legacy` or "the legacy review-pr workflow" | legacy review-pr (local diff only) |
 
 Before the handoff the entry checks the host (macOS, key absent only), the CLIs the roles need, background or outside-sandbox execution and the Codex home; the paired-session skill then establishes a dedicated worktree and a test command, asking only when it cannot. With the key absent, a failed check before the first `bin/paired-session` command falls back to legacy with a notice; with `entry: paired-session` it refuses. From the first `bin/paired-session` command on, a refusal or HOLD is reported and never falls back to legacy. Legacy sessions and plans cannot be imported into paired-session. A paired run is resumed only with `paired-session resume` and its original options; the two workflows never cross.
 
@@ -86,6 +89,19 @@ Printed by the `/review-loop` skill text (Claude wording; Codex names "the legac
 - A failed check before the coordinator starts, key absent: `review-loop: paired-session default entry ...; using legacy workflow` (the reason names the host, the missing CLI, the unanswered question or the unavailable execution)
 - A failed check before the coordinator starts, `entry: paired-session`: `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or use /review-loop:legacy`
 - An explicit legacy choice (v2.12.0): the deprecation notice above (Deprecation status)
+- review-pr, no `entry` key: `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy review`
+- review-pr, `entry: paired-session`: `review-pr: paired-session report mode (entry set in .review-loop/config.md)`
+
+## Review-pr
+`/review-loop:review-pr` (Claude) and the Codex `review-pr` skill follow `entry` (owner answer Q-R8, which supersedes E-8 for
+review-pr only). The paired route is report mode (`run --review-only --review-report`): a PR, a ref or the local change is
+reviewed by the EXEC reviewer, the shadow, the gate, the selected specialists and the security stage, and the result is
+`review-report.md` in the run directory. No role writes; nothing is fixed, committed or pushed. A PR or ref is reviewed in a
+temporary clone under the run root, removed only when you agree. No tests run unless you confirm a test command for the
+review. Posting the report as one `gh pr review --comment` is a separate request, after a secret scan and a second
+confirmation of the full body. Differences from legacy review-pr: `simplify` (a writer) is refused with a pointer to
+`--legacy`; `parallel` does not apply; findings arrive in the report at the end, not after each agent. The contract is the
+Review-PR entry in `docs/protocol/paired-session-entry.md`; the design is `paired_session/docs/review-pr-port.md`.
 
 ## Author and reviewer roles are inverted
 Legacy: Claude executes, Codex reviews. paired-session defaults to the reverse: Codex is the author and Claude is the reviewer. Roles come from an operator-owned profile outside the workspace: the one you name, otherwise `~/.config/review-loop/paired-session.json` when it exists (it then replaces `.review-loop/paired-session.json`); not from `reviewer` or `executor_model`; without one the defaults above apply. `.review-loop/paired-session.json` may hold non-program limits only (role/vendor/program keys there are refused), and `--config` replaces it rather than layering. Models are operator-set (ADR-9); a role without one gets its vendor's default (Claude `claude-opus-5-5`, Codex `gpt-6.1-sol`, ADR-12), and the Step 3.4 gate defaults to the author's vendor (ADR-10), so the default gate is Codex.
@@ -123,7 +139,7 @@ Status values:
 | `--stop-after before-delivery` | DONE = acceptance pending | covered |
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
 | Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
-| `/review-loop:review-pr` | a report mode on a materialized PR copy (D-LG2; design round 4 authorized; nothing is posted unless the operator opts in) | planned (D-LG2) |
+| `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` only through `--legacy` | covered (LG2); closing real-PR check pending |
 | `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A); the writers follow L117, the analyzers D-LG2 | planned (D09) |
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
@@ -157,7 +173,7 @@ Status values:
 |---|---|---|
 | Plan drafting and review; implementation and execution review; stuck detection; terminal adversarial gate (3.4); quality-polish specialists (3.5: language reviewers, code-reviewer, silent-failure-hunter, pr-test-analyzer); docs (3.6); security (3.7); delivery gate and `auto_commit`; evidence and usage | PLAN / EXEC with shadow, FIELD-5 structural HOLD, gate, POLISH-Q, DOCS, SECURITY, accept, receipts and `usage.json` | covered |
 | code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | none | keep (provisional): keep legacy / port (L117; D09 capability 1) |
-| comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | planned (D-LG2) |
+| comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | covered for review-pr (LG2); code-quality-loop follows D09 |
 | Dispute / triage of a finding | owner-only disposition; operator `note` | keep (provisional): keep legacy; give paired-session a dispute flow (L119) |
 | Chinese delivery report with findings, rounds and token totals | a shorter report, only at ACCEPTED | keep (provisional): keep legacy; bring paired-session up to it (L120) |
 | Push / PR | none in either workflow; `accept` refuses external delivery | covered |
