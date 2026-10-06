@@ -1,5 +1,36 @@
 # Changelog
 
+### v2.12.2：Claude 周额度或会话额度用完时，run 进入限额暂停并显示重置时间，不扣调用次数（RL-WEEKLY）；efficient 模式下，回合进行中插件正常升级不再作废这个回合（FIELD-24）；review-pr 移植的后续内部批次
+
+- **fix（RL-WEEKLY，poker-news-bot WI-109 现场）**：Claude author 回合撞上周额度，run 以笼统的 "CLI exit 1" HOLD，扣掉了一次调用，也没有重置时间。原因是 `classify_rate_limit_failure` 不认识 stream-json 里的限额形态。现在以下任一信号都确认为额度限制：
+  - `rate_limit_event` 的 `status` 为 `rejected`，`resetsAt` 转成 "resets at <本地时间> (<窗口> window)"；
+  - CLI 合成的 assistant 错误消息（`is_api_error_message`，`error` 属于 rate_limit 一类）；
+  - `api_error_status` 为 429 的错误 result；
+  - "You've hit your <usage|weekly|session|5-hour|opus|…> limit"，文中的 "resets <时间>" 作为提示。
+  - 只看最后一个 `rate_limit_event`：在 extra usage（overage）上运行时，`rejected` 不算额度用完，后续出现 `allowed` 或 `allowed_warning` 也会取消之前的 `rejected`。
+  - 普通 CLI 错误照旧计费，退出码 0 永远不算额度限制。测试夹具是 WI-109 那个回合真实的最后三行 stdout。
+- **fix（FIELD-24，poker-news-bot WI-109 现场）**：v2.12.1 发版时 lane 重启改写了 `installed_plugins.json`，FIELD-21 的 efficient 规则因此作废了一个跑了 78 分钟的 EXEC author 回合并重派。现在：
+  - efficient 模式下，回合中出现 FIELD-21 认定的正常插件升级（只改 version、installPath、gitCommitSha、lastUpdated，且新路径是真实存在的规范 cache 目录）时，记录为 `global_config_changes.plugin_update`，回合保留、不重派。正在运行的 CLI 启动时已加载插件，旧版本 cache 目录也还在，所以回合的工作不受影响。
+  - receipt 里写明 `next_turn_registry`，下一个回合用新的插件注册表。
+  - strict 模式不变（HOLD，带 `PLUGIN_UPDATE_HINT`）。其他注册表改动，或同一回合还触发了别的检查，照旧是硬错。
+- **review-pr 移植（D-LG2），内部实现，尚未接入任何 skill**：
+  - LG2-a3：report run 在 POLISH-Q 之后进入 report 版 SECURITY，以新的终态 REPORTED 结束（退出码 0）。
+    - 敏感路径和 secret 预检只产出 finding，不拦截。只有本次改动带进、且仍在候选树中的才算 CRITICAL；仓库原有的或被本次改动删除的降为 MINOR。
+    - 每次 HOLD 都把报告标为不完整，并写明原因和未完成的阶段。
+    - 调用预算是角色数的 2 倍，在候选树上冻结。
+  - LG2-b1：在 REPORTED 和每次 HOLD 时，从 state 和 ledger 渲染 `review-report.md`，不经过模型。新增两个只出报告的 specialist：comment-analyzer 和 type-design-analyzer。新增 `--aspects`（仅 report 模式，默认 all），创建时冻结。
+  - LG2-d：`scripts/materialize_pr.py` 解析并钉住审查输入（PR 编号或 URL、本地或远程 ref），在临时 clone 中检出钉住的 PR head。
+    - 所有 git 调用都限定协议（`GIT_ALLOW_PROTOCOL=https:ssh:file`）。
+    - 用 URL 寻址的调用（`ls-remote`、`clone`）在空的临时目录里运行，仓库本地配置无法借此执行命令。
+    - PR 里的符号链接按普通文件检出。
+  - 这些开关仍未写进文档，请勿使用。
+- **审查**：都走 ABA 审查链，Opus 写、Codex 逐轮审、fresh Opus 终审。按 owner 10-06 的新原则，审查只拦现实中会发生的误用和正常使用下的误报；刻意绕过、刻意构造的本地状态和最坏情况记为残余。
+  - RL-WEEKLY：Codex 1 轮 APPROVE；Opus 终审打回 1 条（overage 误判），修完后修复审查轮 APPROVE。
+  - FIELD-24：Codex 1 轮 APPROVE，Opus 终审 APPROVE。
+  - LG2-a3：Codex 2 轮；Opus 终审打回 2 MAJOR 和 1 MINOR，已修；修复审查轮又打回 1 条，按 owner 选 (a) 再修一轮，剩下的"含 secret 的路径换成空目录或符号链接"按新原则记为残余。
+  - LG2-b1：Codex 3 轮，Opus 终审 APPROVE；3 条 MINOR 并入 LG2-b2。
+  - LG2-d：Codex 2 轮；Opus 终审打回 1 HIGH，修完后修复审查轮 APPROVE。
+
 ### v2.12.1：用独立 CODEX_HOME 的 run 不再因默认 ~/.codex/config.toml 里别人的 trust 条目而 HOLD（owner P0）；fresh shadow/gate 不再把仓库原有文字当成泄漏的审查记录（FIELD-23）；EXEC 等待 reviewer 时可以 note；smoke runner 被杀后不留残局；owner 决策单落档；review-pr 移植的设计与前两批内部实现
 
 - **fix（owner P0，poker-news-bot 现场）**：run 用独立 `CODEX_HOME` 时，也会对默认 `~/.codex/config.toml` 做快照，用来发现无视 `CODEX_HOME` 的 Codex 子进程。原先这个文件有任何变化，都会作废已完成的回合并 HOLD。而另一个项目在默认 home 上跑 Codex（或有人还原备份）时，Codex 会自动追加 `[projects."<dir>"] trust_level = "trusted"`，于是 WI-108 丢了 19 分钟和 13 分钟的 author 回合。现在：
