@@ -98,7 +98,9 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   with `--base` also `git diff --name-status <ref>`). Route only a task-related
   change: if a path is unrelated to the request, ask whether to review it too (a
   declined question is a failed stage A check). With `auto_commit`, every
-  reviewed path is delivered. `--plan-only` does not apply: refuse it in stage A.
+  reviewed path is delivered. A review-only run defaults to `auto_commit: true`
+  (owner 2026-10-06); an explicit `--auto-commit false` or operator-profile
+  `auto_commit: false` wins, and `accept` then lists the uncommitted files. `--plan-only` does not apply: refuse it in stage A.
 - `WORKITEM.md` states the review goal (one line such as "Review the change for
   correctness" is enough) and carries no review history (ledger ids or earlier
   findings).

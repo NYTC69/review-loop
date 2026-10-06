@@ -84,14 +84,46 @@ class Field25Tests(unittest.TestCase):
     def test_a_review_only_w_accept_without_auto_commit_lists_the_uncommitted_files(self):   # item 2, lifecycle on
         roe.ReviewOnlyEntryTests.w_ready(self)
         self.change()
-        w = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        w = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60', '--auto-commit', 'false')   # explicit off wins
         done = self.run_coordinator(*w)
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        self.assertIs(self.state()['config']['auto_commit'], False)
         accepted = self.run_operator_action('accept', *w)
         self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
         self.assertIn('commit these yourself: tracked.txt, untracked: sum_ints.py', accepted.stdout)
         self.assertIn('未提交的文件（请自行提交）：tracked.txt、untracked: sum_ints.py',
                       (self.run_dir / 'delivery-report.md').read_text())
+
+    def test_a_review_only_w_run_commits_by_default_and_names_the_commit(self):   # owner decision (a), 2026-10-06
+        roe.ReviewOnlyEntryTests.w_ready(self)
+        self.change()
+        parent = self.git('rev-parse', 'HEAD')
+        w = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60')   # no --auto-commit
+        done = self.run_coordinator(*w)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        self.assertIs(self.state()['config']['auto_commit'], True)
+        accepted = self.run_operator_action('accept', *w)
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        commit = self.git('rev-parse', 'HEAD')
+        self.assertEqual(self.git('rev-parse', 'HEAD~1'), parent)
+        self.assertIn(f'COMMIT: {commit} (auto_commit, parent {parent[:12]}); not pushed', accepted.stdout)
+        self.assertNotIn('UNCOMMITTED', accepted.stdout)
+
+    def test_the_auto_commit_default_by_entry(self):   # owner decision (a): explicit values win; other runs unchanged
+        self.change()
+        profile = self.root / 'operator-profile.json'
+        profile.write_text(json.dumps({'auto_commit': False}))
+        cases = [(('--review-only', '--lifecycle-mode', 'on'), True),
+                 (('--review-only', '--lifecycle-mode', 'on', '--auto-commit', 'false'), False),
+                 (('--review-only', '--lifecycle-mode', 'on', '--config', str(profile)), False),
+                 (('--review-only',), False),   # lifecycle off never commits (the uncommitted list covers it)
+                 (('--lifecycle-mode', 'on'), False), ((), False), (('--auto-commit', 'true', '--lifecycle-mode', 'on'), True)]
+        for index, (extra, expected) in enumerate(cases):
+            with self.subTest(extra=extra):
+                argv = self.command(*extra)[2:]
+                argv[argv.index('--run-dir') + 1] = str(self.root / f'run-{index}')
+                args = rc.configure_parser(rc.parser(), argv).parse_args(argv)
+                self.assertIs(rc.Coordinator(args).state['config']['auto_commit'], expected)
 
 
 if __name__ == '__main__':

@@ -293,5 +293,6 @@ entry; never edit history.
       independent session).
     - Fixes from the final review go back to the round reviewer under (a).
     - This applies to lane units as well as to paired-session runs.
+    - Owner 2026-10-06: ABA/BAB is the recommended default, not a requirement; per-role vendors stay freely configurable (e.g. AAB or BBA when quota is short).
   - (d) The D11 rows stay provisional and are re-confirmed with the owner per work item, as recorded under Consequences
     above (cross-reference only; nothing changes).

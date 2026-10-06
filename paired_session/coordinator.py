@@ -4389,7 +4389,7 @@ class Coordinator:
 
     def _worktree_accept(self) -> str:
         """W3b DELIVERY (doc 6, D-1): the operator accepts a W DONE with --expect over an intent that also binds the
-        stage receipts. auto_commit (frozen; default false) decides whether a local commit is made; external
+        stage receipts. auto_commit (frozen; default false, true for review-only) decides whether a local commit is made; external
         delivery is refused (D8), and no held tree is accepted (no --override-rejection)."""
         if self.state.get('status') == 'ACCEPTED':
             return 'ACCEPTED'
@@ -5439,6 +5439,9 @@ class Coordinator:
             raise ValueError('--base needs --review-only')
         else:
             args.review_only, args.review_base = False, None
+        if getattr(args, 'auto_commit', None) is None:   # owner 2026-10-06: a review-only W run commits by default; an
+            args.auto_commit = (bool(saved.get('auto_commit')) if saved is not None else   # explicit value (CLI, profile) wins
+                                bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
 
     def _refuse_review_only_start(self) -> dict:
         """The refusals of a review-only run, before any state; returns the review scope to freeze."""
@@ -9463,8 +9466,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
-    p.add_argument('--auto-commit', type=config_bool, default=False,
-                   help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree')
+    p.add_argument('--auto-commit', type=config_bool, default=None,
+                   help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree '
+                        '(default: true for a --review-only run with --lifecycle-mode on, else false)')
     p.add_argument('--external-delivery', type=config_bool, default=False,
                    help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
@@ -9807,6 +9811,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.accept()
         for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
             print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
+        if (delivery := (co.state.get('acceptance') or {}).get('delivery') or {}).get('commit'):   # FIELD-25 (a)
+            print(f"COMMIT: {delivery['commit']} (auto_commit, parent {str(delivery.get('head'))[:12]}); not pushed")
         if rows := (co.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
             print('UNCOMMITTED: no commit was made (auto_commit off); commit these yourself: ' + ', '.join(rows))
         print(status)

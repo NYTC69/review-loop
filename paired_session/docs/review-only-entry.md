@@ -156,6 +156,9 @@ and resumes, or aborts.
 - The accept intent binds the frozen values through `state_sha256` (C:3982), plus `head_ref`, the receipts and the tree.
 - auto_commit commits exactly the accepted manifest on `head_at_start`, never on the review base, so branch history stays
   as it is. The commit message names the review base.
+- Default (owner 2026-10-06, FIELD-25): a review-only run with lifecycle on defaults to `auto_commit: true`; an explicit
+  CLI or operator-profile `false` wins and is kept on resume. `accept` prints the commit (`COMMIT:`); without a commit
+  it lists the uncommitted and untracked files (`UNCOMMITTED:`, also in the reports). Lifecycle-off runs commit nothing.
 - The delivery report lists the review base, the reviewed `base..head_at_start` commits and the new commit.
 - External delivery stays refused (D8).
 

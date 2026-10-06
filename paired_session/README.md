@@ -188,7 +188,9 @@ write gets a fresh docs review that must run the test) and the SECURITY scans
 security reviewer (any hit or finding HOLDs), then reaches DONE (acceptance
 pending). `accept --expect` on a W DONE accepts it without touching refs or
 the index, or with an operator `auto_commit: true` makes one hook-free local
-commit of exactly the accepted tree (never a push), and writes a Chinese
+commit of exactly the accepted tree (never a push; `auto_commit` defaults to
+true for a `--review-only` W run and to false otherwise, and an explicit CLI or
+operator-profile value wins), and writes a Chinese
 delivery report; `reject` reopens EXEC; a
 workspace profile can neither enable it nor set its docs/skip/polish keys, and
 a strict run refuses
