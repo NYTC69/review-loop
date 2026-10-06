@@ -60,6 +60,14 @@ allowed places.
 - heredocs;
 - `cd` to a known place.
 
+Added in step 2 from the construct census (§6), because benign transcripts use them often:
+- `while`/`until` and `case`: each condition, body or branch is checked once, then the union is taken (as for `if`).
+- A `for` over a generated list: the variable is opaque and the body is checked once.
+- `${NAME:-word}` and its variants: the variable's value or the word's. Any other `${…}` operator is opaque.
+- `$((…))` is a segment.
+- The `time` and `!` prefixes.
+- Braces are a pattern only with a comma, as in bash, so `find … -exec … {} \;` is literal.
+
 Everything else fails closed (rule `fail-closed`, which excludes the case as in v1).
 
 **Fails closed.**
