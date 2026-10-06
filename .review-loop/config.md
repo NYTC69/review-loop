@@ -1,3 +1,3 @@
 reviewer_model: "gpt-6.1-sol"
-# This repository is not developed through paired-session (see CLAUDE.md "This repository pins entry: legacy").
-entry: legacy
+# Owner 2026-10-06: this repository uses paired-session (see CLAUDE.md "This repository uses the paired-session entry").
+entry: paired-session

@@ -20,11 +20,11 @@
 
 **Rule**: do not trim or restructure README.md without first updating both the `guide` skill and the lint contract to point their needles at the new SSOT (e.g. the migrated blocks in CLAUDE.md). The `## Migrated —` blocks are intentional duplication, not a cleanup target.
 
-### This repository pins `entry: legacy`
+### This repository uses the paired-session entry
 
-`.review-loop/config.md` sets `entry: legacy`. Owner rule (2026-10-03): review-loop itself is not developed through paired-session; a paired-session run on this repository uses only a pinned copy (`~/paired-runs/review-loop-v<version>`) with an external `--config` and a separate clone. v2.10.0 is planned to route a fresh `/review-loop` (Claude) or review-loop request (Codex) with no `entry` key to paired-session (`paired_session/docs/v2.10-entry-switch.md`, E-10), so the key keeps this repository on legacy.
+`.review-loop/config.md` sets `entry: paired-session` (owner 2026-10-06). From 2026-10-03 until then it pinned `entry: legacy`, under the owner rule that review-loop itself was not developed through paired-session; that rule is lifted.
 
-**Rule**: do not remove the key or set it to `paired-session` in this repository.
+**Rule**: a paired-session run on this repository runs the coordinator from a released copy (the plugin cache or a pinned clone `~/paired-runs/review-loop-v<version>`), never from this working tree or a lane worktree, because the run may edit the coordinator it is executing. The supervisor's lane workflow (detached Opus executors, Codex review rounds, Opus gate) is separate from this key.
 
 ### Plugin cache & version bump
 

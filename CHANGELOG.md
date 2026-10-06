@@ -1,5 +1,25 @@
 # Changelog
 
+### v2.12.6：code-quality-loop 退役到 review-only 入口；fresh shadow 的三个现场误 HOLD（FIELD-29/30/31）修复；写入步骤按真实 run 的结果改进（D09-F）
+
+- **code-quality-loop 退役到 review-only 入口（CQL-RETIRE，owner 决定 D09 选项 A）**：
+  - `/review-loop:code-quality-loop` 现在跟随 `entry`：默认把未提交的改动交给 paired-session 跑一次 review-only（审查、修复、simplifier、测试整合、DOCS、SECURITY；写入步骤默认开启；profile 没设调用上限时提到 35）。`accept` 只做一次本地提交，从不 push；`.review-loop/config.md` 里写了 `auto_commit: false` 则不提交。
+  - 参数：`[max-rounds]`（至少 2，映射为 `--max-exec-rounds`，优先于 `soft_limit_exec`）；`--skip-reorganize` 不起作用；`--reorganize` 被拒绝，并提示改用 `/review-loop:reorganize` 或 `--legacy`；`judgment_model`、`cheap_model` 不生效，只打印警告；`quality_focus`、`review_style` 写进工作项的 "Review priorities"。
+  - 不再执行：reorganize、静态分析产物、自动加载设计文档、全项目文档清查（启动时打印一行说明）。
+  - `--legacy` 或 `entry: legacy` 保留旧循环并打印废弃提示，直到 legacy 删除。默认入口在 Stage A 失败时回退到旧循环。Codex 不新增 skill：让 review-loop 审查已有改动就是同一条路。
+  - 废弃提示句更新：默认入口现在覆盖新工作、审查已有改动、review-pr 和 code-quality-loop；legacy 的删除只等 legacy map 里剩下的 owner 条目。三个入口的 Stage A 回退和拒绝消息前缀现在一致。
+- **fix（FIELD-29）**：仓库或工具路径里带厂商名（如 `~/claude-tools/`），而配置的测试命令写的是这个绝对路径时，fresh shadow 不再误判 HOLD。配置的命令文本按词边界屏蔽，不会改坏 patch 头（`pytest` 不会误伤 `tests/pytest_helpers.py`）。
+- **fix（FIELD-30，poker-tools 现场）**：用户自己写的工作项里出现工具名（如 "found by Codex"）不再算审查历史。仍然拦的内容（评审叙述、裁决词、finding 编号、"Codex approved" 之类）改在建 run 时就检查，被拦时还没花任何 token。
+- **fix（FIELD-31，poker-tools 现场）**：作者把 finding 编号（如 F010）写进代码、测试标题或注释时，不再直接 HOLD，而是变成一条交给作者修改的 MAJOR finding，列出所有位置，作者一轮就能改完；最后一轮时仍然 HOLD。作者 prompt 也明确禁止往代码里写 finding 编号、评审引用和工具名。
+- **D09-F（ws25/ws26 真实 run 的发现，owner 决定 2026-10-06）**：
+  - test-writer 不得删除测试用例：整理前后数一次用例数，变少就回滚（`rolled-back:tests`）。
+  - 写入步骤的回放轮和修复轮单独计数，不占 `--max-exec-rounds`，所以 EXEC 用满上限的 run 也能跑写入步骤；调用次数上限仍然生效。
+  - 回放重审失败时，如果两个写入步骤改的文件不重叠，只回滚出问题的那个；保留的改动再完整重审一遍才进 DOCS。
+  - 按文件回滚时保留原文件权限；回放期间如果普通轮次还有剩余，仍可使用。
+- **本仓库切到 paired-session 入口**（owner 2026-10-06）：`.review-loop/config.md` 改为 `entry: paired-session`；CLAUDE.md 相应更新。
+- **其他**：插件描述里的 skill 数量更正为 9。
+- **审查**：FIELD-30、FIELD-31、D09-F、CQL-R1 都过了 Opus 终审（APPROVE）；FIELD-29 终审抓到一个 MEDIUM（子串替换改坏 patch 头），已修复；FIELD-31b、D09-F2、CQL-R2 由监工逐行核对。D09-F2 按授权修改了两条尚未发布的临时测试断言。
+
 ### v2.12.5：review-only 运行在 POLISH-Q 里会跑 simplifier 和测试整合两个写入步骤，写出的改动先过本地测试和完整重审才保留（D09 能力 1，code-quality-loop 的核心能力移植完成）；run 目录在 git 仓库里时警告（FIELD-28）；override 记录保留历史
 
 - **D09 能力 1：simplifier 和测试整合（code-quality-loop 退役的前提 ②）**：
