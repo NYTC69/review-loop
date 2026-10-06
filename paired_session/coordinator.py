@@ -5162,11 +5162,15 @@ class Coordinator:
 
     def open_findings_prompt(self) -> str:
         findings = self._reviewer_open_findings()
+        owned = ('Other roles own further open findings that are not listed here; do not report their issues again as new '
+                 'findings.\n' if len(findings) < len(self.open_findings()) else '')   # HYGIENE-2 (B4): only a W run hides some
         if not findings:
-            return 'Open finding ledger: none. Return an empty prior_findings array.\n' + APPROVE_CONVERSION_NOTE
+            return 'Open finding ledger: none. Return an empty prior_findings array.\n' + owned + APPROVE_CONVERSION_NOTE
         rows = '\n'.join(f"- {finding['id']}: {finding['summary']}" for finding in findings)
         return ('Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
-                'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n' + APPROVE_CONVERSION_NOTE)
+                'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n'
+                'Never report a listed finding again as a new one; its disposition above is its report.\n'
+                + owned + APPROVE_CONVERSION_NOTE)
 
     def _plan_ref(self, default: str) -> str:
         """LG1-b: how review roles are pointed at plan.md; a review-only run has a coordinator-written scope, no plan."""
