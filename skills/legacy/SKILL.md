@@ -28,5 +28,5 @@ invoked `/review-loop`, with two differences: ignore the `entry` key in
 validate `entry`, and print none of its notices. All other config keys apply as usual.
 
 Print only the one-line deprecation notice, once, before the session file is created:
-`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that`
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
 It changes nothing else: routing and the workflow stay as described above.

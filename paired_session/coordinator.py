@@ -171,6 +171,10 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
+AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
+                       '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
+                       'them: the independent shadow and gate refuse such text.')
 # FIELD-23: delta.stat names every path in full (git shortens long ones to ".../tail"), so a path that exists at the base
 # commit is recognised as repository text by the fresh scan.
 STAT_FULL_PATHS = ('--stat=100000,100000', '--no-renames')   # a rename lists both full paths, not dir/{a => b}
@@ -2349,6 +2353,10 @@ class Coordinator:
             self._review_only_args(None, self._parent_spec() if args.supersedes else None)
             self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
+            if 'on' in (self.args.shadow, self.args.adversarial_gate):   # FIELD-30: what the fresh scan would hold on, before any turn
+                if markers := self._introduced_history('original-workitem', self.workitem.read_text(), self._head_commit() or ''):
+                    raise ValueError(f'independence check rejected history in original-workitem: {markers[0]}; the fresh '
+                                     'shadow and gate would hold on it, so reword the work item before starting the run')
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -5011,6 +5019,7 @@ class Coordinator:
                 f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
                 contract,
                 'Delivered advisory findings:\n' + prior,
+                AUTHOR_HISTORY_RULE,
                 'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
                 'Return only JSON matching the supplied schema.',
             ])
@@ -5050,6 +5059,7 @@ class Coordinator:
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
+            AUTHOR_HISTORY_RULE,
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
@@ -5291,14 +5301,28 @@ class Coordinator:
                                           cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return proc.stdout.decode('utf-8', 'replace') if proc.returncode == 0 and b'\0' not in proc.stdout else None
 
+    def _configured_command_texts(self) -> list[str]:
+        """FIELD-29: the operator's configured commands (the test command, --reviewer-command and the work item's frozen
+        reviewer-commands block), longest first. An absolute path in one may name a vendor or a review word."""
+        frozen = ((getattr(self, 'state', None) or {}).get('config') or {}).get('workitem_reviewer_commands')
+        if frozen is None:
+            try: frozen = workitem_reviewer_commands(self.workitem.read_text())
+            except (OSError, ValueError): frozen = []
+        commands = {c.strip() for c in (self.args.test_command, *(self.args.reviewer_command or ()), *frozen) if c and c.strip()}
+        return sorted(commands, key=len, reverse=True)
+
     def _fresh_history_text(self, name: str, content: str, base: Optional[str] = None) -> str:
         """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
+        record = (getattr(self, 'state', None) or {}).get('review_only') or {}
+        frozen_scope = name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256')
+        for command in self._configured_command_texts():   # FIELD-29: operator configuration, wherever it is quoted (prompts too);
+            # on token boundaries only, so a path that merely contains it (tests/pytest_helpers.py in a patch header) keeps its name
+            content = re.sub(r'(?<![\w./-])' + re.escape(command) + r'(?![\w/-])', '<configured-command>', content)
         base = base if base is not None else self.state.get('base_commit')
         if not base or name in ('prompt', 'gate-template'):
             return content
-        record = (getattr(self, 'state', None) or {}).get('review_only') or {}
-        if name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256'):
-            content = mask_initial_change(content)   # FIELD-27: this run's frozen review scope
+        if frozen_scope:
+            content = mask_initial_change(content)   # FIELD-27: this run's frozen review scope (checked on the text as written)
 
         def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
@@ -5434,8 +5458,54 @@ class Coordinator:
         return {str((Path(top) / name).relative_to(root)) for top, dirs, files in os.walk(root) for name in (*files, *dirs)
                 if (Path(top) / name).is_symlink() or name in files}
 
-    def _introduced_history(self, name: str, content: str) -> list[str]:
-        return self._history_markers(name, self._fresh_history_text(name, content))
+    # FIELD-30: the operator's work item may name the tools its issue was found with ("found by Codex during the
+    # investigation"); a bare tool name or a tool-named directory there is operator input, not this run's review history.
+    # Review narratives, verdict words, ledger ids and "<tool> approved/said/requested" attributions stay scanned.
+    WORKITEM_SOURCES = ('original-workitem', 'context/workitem.md')
+    OPERATOR_TOOL_NAME_RE = re.compile(r'(?i:claude|codex|opus|astra|gpt-6-astra)|/.*/')
+
+    def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
+        matches = self._history_matches(name, self._fresh_history_text(name, content, base))
+        if name in self.WORKITEM_SOURCES:
+            matches = [(shown, whole) for shown, whole in matches if not self.OPERATOR_TOOL_NAME_RE.fullmatch(whole)]
+        return [shown for shown, _ in matches]
+
+    def _author_delta_history(self, phase: str, sequence: int, replaying: bool) -> list[dict]:
+        """FIELD-31: review history the run's own change adds to the code (a finding id in a test title or a comment) is a
+        blocking finding for the author, at the cost of a normal EXEC round, instead of the fresh shadow/gate HOLD. Only added
+        lines of context/delta.patch count; every other input, report mode and the last EXEC round keep that HOLD."""
+        fresh = 'on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject') or replaying
+        if (phase != 'EXEC' or not fresh or self.state['config'].get('review_report')
+                or self.state['exec_rounds'] >= self.exec_round_limit() or self._recorded_shadow_result(phase, sequence)):
+            return []
+        self.materialize_review_context()
+        path = self.context / 'delta.patch'
+        hits = []   # FIELD-31b: every hit of every file in ONE finding, so one round can fix them all
+        for section in re.split(r'(?m)^(?=diff --git )', path.read_text() if path.is_file() else ''):
+            if not (markers := list(dict.fromkeys(self._introduced_history('context/delta.patch', section)))):
+                continue
+            name = next((line[6:] for line in section.splitlines() if line.startswith('+++ b/')), 'a changed file')
+            number, found = 0, set()
+            for line in section[len(section.split('\n@@', 1)[0]):].splitlines():
+                if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):
+                    number = int(hunk.group(1)) - 1
+                elif line.startswith(('+', ' ')):
+                    number += 1
+                    for marker in markers if line.startswith('+') else ():
+                        if marker.lower() in line.lower():
+                            hits.append((f'{name}:{number}', marker))
+                            found.add(marker)
+            hits += [(name, marker) for marker in markers if marker not in found]   # a match that spans lines
+        if not hits:
+            return []
+        shown = ', '.join(f'{marker!r} at {where}' for where, marker in hits[:10])
+        return self.record_findings('independence-scan', phase, sequence, [{
+            'severity': 'MAJOR', 'file': hits[0][0],
+            'summary': (f'the change writes review history into the code ({shown}'
+                        + (f', +{len(hits) - 10} more' if len(hits) > 10 else '') + ')'),
+            'failure_scenario': ('the independent shadow and gate refuse inputs that carry review history, so the run '
+                                 'cannot reach them; reword every listed place without finding ids, review narrative or '
+                                 'reviewer names')}])
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
@@ -7753,8 +7823,12 @@ class Coordinator:
         self.render(result, 'supervisor', phase)
         shadow = None
         writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: a writer replay always has one
-        if phase == 'EXEC' and (self.args.shadow == 'on' or
-                                (writer_replay and writer_replay['epoch'] == self.state['lifecycle'].get('epoch'))):
+        replaying = bool(writer_replay) and writer_replay['epoch'] == (self.state.get('lifecycle') or {}).get('epoch')
+        if leak := self._author_delta_history(phase, result['sequence'], replaying):   # FIELD-31: before the fresh roles see it
+            answer['full_review'].extend(leak)
+            if answer['status'] == 'APPROVE':
+                answer['status'] = 'REVISE'
+        if not leak and phase == 'EXEC' and (self.args.shadow == 'on' or replaying):
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])

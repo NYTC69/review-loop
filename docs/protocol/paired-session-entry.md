@@ -14,21 +14,25 @@ dispatch and limits.
 
 How this skill was entered decides failure handling (stage A = everything before
 the first command that runs `bin/paired-session`):
-- Default entry (review-loop handoff with the `entry` key absent): a failed
-  stage A check is reported back as `stage A failure: <reason>`; the review-loop
-  entry then prints its fallback notice and runs legacy.
-- Explicit entry (`entry: paired-session` handoff, or the user asked for
-  paired-session): a failed stage A check refuses with the reason, except the
-  host skill's long-command execution failure, which is reported as HOLD with
-  the reason. On an `entry: paired-session` handoff, print other refusals as
-  `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
+- Default entry (a review-loop, review-pr or code-quality-loop handoff with the
+  `entry` key absent): a failed stage A check is reported back as
+  `stage A failure: <reason>`; the entry that handed off then prints its fallback
+  notice and runs legacy (review-pr only for its no-argument request; see the
+  Review-PR entry).
+- Explicit entry (an `entry: paired-session` handoff from any of those entries,
+  or the user asked for paired-session): a failed stage A check refuses with the
+  reason, except the host skill's long-command execution failure, which is
+  reported as HOLD with the reason. On an `entry: paired-session` handoff, print
+  other refusals with the handing-off entry's own name (`review-loop`,
+  `review-pr` or `code-quality-loop`) as
+  `<entry>: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
 - Every host setup step before the first coordinator command (loading this
   contract, creating the run directory, writing `WORKITEM.md`, resolving the
   plugin) belongs to stage A. If one fails or is denied, stop and report
   `stage A failure: <reason>`. Do not retry in another location or improvise,
   and never start or continue another workflow from this skill (no legacy
-  session file, lock or evidence snapshot): only the review-loop or review-pr
-  entry falls back, and only through its documented notice.
+  session file, lock or evidence snapshot): only the review-loop, review-pr or
+  code-quality-loop entry falls back, and only through its documented notice.
 - From the first `bin/paired-session` command on, every refusal or HOLD is
   reported verbatim and never falls back to legacy.
 
@@ -140,6 +144,31 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   fix round adds are scanned as before. A changed path shaped like a ledger id
   or a verdict (`docs/F001.md`, `APPROVE.txt`) is still refused: tell the user
   to review that change with the legacy workflow.
+
+## Code-quality-loop entry
+
+A code-quality-loop handoff (`/review-loop:code-quality-loop` on its paired route,
+`paired_session/docs/cql-retirement.md`) is a review-only run: everything in the review-only entry
+above applies (the change is the whole non-ignored worktree against `HEAD`, the same stage A listing
+and refusals). code-quality-loop takes no base, so no `--base` is passed.
+- CLIs: the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI
+  check of Stage A checks here; a missing CLI is a failed stage A check.
+- Test command: as for any review-only run (profile `test_command`, else the verified project command).
+  Pass it as `--test-command`: the quality writers need an explicit one (`skipped:no-test-command`).
+- Quality writers: the review-only default `both`; do not pass `--quality-writers` (a profile value wins).
+- Budget: pass `--max-invocations 35` unless the operator profile sets `max_invocations` (under the
+  default 25 the writers are usually `skipped:budget`). Rounds: a handed-over N wins over `soft_limit_exec`;
+  pass one `--max-exec-rounds` value, the same to `permission-probe` and `run`.
+- Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass
+  it. Otherwise the review-only default applies (`auto_commit: true` unless the profile says false; no
+  warning for `auto_commit` on this handoff): `accept` makes one local commit and never pushes.
+- `WORKITEM.md`: the goal "Review and improve the quality of the uncommitted change: correctness, error
+  handling, tests and simplicity; fix what the reviews find." When `quality_focus` or `review_style` is
+  set in `.review-loop/config.md`, add a "Review priorities" section with each value verbatim. No review
+  history.
+- Result: DONE (or HOLD) as for any review-only run; show the delivery report (one line per quality
+  writer) and accept or reject only on the user's explicit decision. Legacy pointer:
+  `use /review-loop:code-quality-loop --legacy`.
 
 ## Review-PR entry
 

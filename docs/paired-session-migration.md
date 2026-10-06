@@ -13,14 +13,14 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 ## Deprecation status (v2.12.0)
 The legacy workflow is deprecated since v2.12.0: the owner ruled the ADR-6 replacement gate met on field evidence (ADR-6 amendment D-READY, 2026-10-05, in `DECISIONS.md`). Nothing is removed and no routing changes. When you explicitly choose legacy (`entry: legacy`, `/review-loop:legacy`, the Codex "legacy review-loop workflow" request, or `/review-loop:plan` / `execute` invoked on their own), the entry prints one line:
 
-`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that`
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
 
 The legacy code is removed only after every precondition below holds, so that nothing only legacy can do is lost:
 
 | Removal precondition | Status (2026-10-06) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
 |---|---|---|
 | `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); closing check passed 2026-10-06 (PR NYTC69/review-loop#6: one real PR review through the default entry, REPORTED complete, no post) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
-| `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | decided: D09 = A, the retirement itself still to be done; capability 1 (the writers) is to be ported, which is the same question as L117 and provisional with it (re-confirmed with the owner before implementation); capability 3 (the analyzers) goes with D-LG2; capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
+| `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | retired onto the review-only entry (CQL-RETIRE: `/review-loop:code-quality-loop` follows `entry`; `--legacy` keeps the legacy loop until legacy is deleted); capability 1 (the writers) shipped in v2.12.5, capability 3 (the analyzers) went with D-LG2, capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
 | Every "keep (provisional)" row has a paired-session equivalent, or the owner re-confirms it as retire | 13 rows; removal work items below | the "keep (provisional)" rows |
 | Every "retire (provisional)" row is re-confirmed | 5 rows | the "retire (provisional)" rows |
 | L133 Linux: a real Linux paired-session run, then the host check is opened | not run; the owner's retire answer names it as the condition | `Linux (legacy works today)` |
@@ -91,6 +91,8 @@ Printed by the `/review-loop` skill text (Claude wording; Codex names "the legac
 - An explicit legacy choice (v2.12.0): the deprecation notice above (Deprecation status)
 - review-pr, no `entry` key: `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy review`
 - review-pr, `entry: paired-session`: `review-pr: paired-session report mode (entry set in .review-loop/config.md)`
+- code-quality-loop, no `entry` key: `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop`
+- code-quality-loop, `entry: paired-session`: `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)`
 
 ## Review-pr
 `/review-loop:review-pr` (Claude) and the Codex `review-pr` skill follow `entry` (owner answer Q-R8, which supersedes E-8 for
@@ -140,7 +142,7 @@ Status values:
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
 | Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
 | `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` only through `--legacy` | covered (LG2); closing check passed 2026-10-06 (PR NYTC69/review-loop#6) |
-| `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A); the writers follow L117, the analyzers D-LG2 | planned (D09) |
+| `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A; `paired_session/docs/cql-retirement.md`) | covered (CQL-RETIRE); `--legacy` keeps the legacy loop until legacy is deleted |
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
 | `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
@@ -172,8 +174,8 @@ Status values:
 | Legacy step | paired-session equivalent | Status |
 |---|---|---|
 | Plan drafting and review; implementation and execution review; stuck detection; terminal adversarial gate (3.4); quality-polish specialists (3.5: language reviewers, code-reviewer, silent-failure-hunter, pr-test-analyzer); docs (3.6); security (3.7); delivery gate and `auto_commit`; evidence and usage | PLAN / EXEC with shadow, FIELD-5 structural HOLD, gate, POLISH-Q, DOCS, SECURITY, accept, receipts and `usage.json` | covered |
-| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | none | keep (provisional): keep legacy / port (L117; D09 capability 1) |
-| comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | covered for review-pr (LG2); code-quality-loop follows D09 |
+| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | POLISH-Q quality writers (D09 capability 1, v2.12.5) | covered |
+| comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | covered for review-pr (LG2); code-quality-loop: dropped from the fixing route under D09 (report mode keeps them) |
 | Dispute / triage of a finding | owner-only disposition; operator `note` | keep (provisional): keep legacy; give paired-session a dispute flow (L119) |
 | Chinese delivery report with findings, rounds and token totals | a shorter report, only at ACCEPTED | keep (provisional): keep legacy; bring paired-session up to it (L120) |
 | Push / PR | none in either workflow; `accept` refuses external delivery | covered |
