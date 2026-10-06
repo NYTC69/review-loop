@@ -1535,6 +1535,10 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+class DefaultTestCommand(str):
+    """D09 §3: the parser's `npm test` default, told apart from a test command the CLI or a profile set explicitly."""
+
+
 def next_intent_command(raw_argv: list, digest: str) -> str:
     """FIELD-25: the operator's accept/reject command with --intent-only dropped and --expect DIGEST added, ready to run;
     the two steps and the digest binding stay."""
@@ -2325,6 +2329,7 @@ class Coordinator:
                 'acceptance_state': 'IN_PROGRESS', 'approved_snapshot': None, 'rejected_digests': [],
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
+                'test_command_explicit': not isinstance(args.test_command, DefaultTestCommand),   # D09 §3
             }
             if self._fake_lifecycle:
                 self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
@@ -2364,7 +2369,10 @@ class Coordinator:
                                   effective_task_sha256=task_hash,
                                   item_uuid=old.get('item_uuid') or str(uuid.uuid5(uuid.NAMESPACE_URL, str(parent))),
                                   item_blockers=copy.deepcopy(spec.get('item_blockers', [])),
-                                  item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')))
+                                  item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')),
+                                  test_command_explicit=bool(spec.get('test_command_explicit', self.state['test_command_explicit'])))
+                if spec.get('quality_writers') and worktree_lifecycle.is_worktree(self.state):   # D09 §3
+                    self.state['lifecycle']['quality_writers'] = copy.deepcopy(spec['quality_writers'])
             if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any probe or turn
                 self.state['lifecycle']['security_baseline'] = (
                     self._inherited_security_baseline(Path(args.supersedes).resolve()) if args.supersedes else
@@ -2518,7 +2526,7 @@ class Coordinator:
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
                 'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
-                'safety_mode')
+                'safety_mode', 'quality_writers')
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
@@ -4258,7 +4266,8 @@ class Coordinator:
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
-        atomic_json(config_path, {k: v for k, v in self._saved_config().items() if k in CONFIGURABLE_DESTS and v is not None and
+        atomic_json(config_path, {k: v for k, v in {'quality_writers': 'off', **self._saved_config()}.items()   # D09: a run saved
+                    if k in CONFIGURABLE_DESTS and v is not None and   # before the key is off, and so is its successor
                     not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:'))})
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
                 'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
@@ -4268,6 +4277,9 @@ class Coordinator:
                 'item_uuid': self.state['item_uuid'],
                 'item_blockers': pending_item_blockers(self.state, self.run_dir),
                 'item_blockers_complete': bool(self.state.get('item_blockers_complete'))}
+        spec['test_command_explicit'] = bool(self.state.get('test_command_explicit'))   # D09 §3: the successor config names it
+        if marker := (self.state.get('lifecycle') or {}).get('quality_writers'):   # D09 §3: one pass per item, like item_blockers
+            spec['quality_writers'] = marker
         if self.state.get('review_only'):   # LG1-a2: the successor keeps the entry and base and freezes its own scope
             spec['review_only'] = {'review_base': self.state['config']['review_base'],
                                    'review_scope_sha256': self.state['review_only']['review_scope_sha256']}
@@ -5442,6 +5454,11 @@ class Coordinator:
         if getattr(args, 'auto_commit', None) is None:   # owner 2026-10-06: a review-only W run commits by default; an
             args.auto_commit = (bool(saved.get('auto_commit')) if saved is not None else   # explicit value (CLI, profile) wins
                                 bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
+        if saved is not None and getattr(args, 'quality_writers', None) not in (None, saved.get('quality_writers') or 'off'):
+            raise ValueError('resume configuration differs: quality_writers')   # also a run saved before the key: off
+        if getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
+            args.quality_writers = ((saved.get('quality_writers') or 'off') if saved is not None else
+                                    'both' if args.review_only else 'off')
 
     def _refuse_review_only_start(self) -> dict:
         """The refusals of a review-only run, before any state; returns the review scope to freeze."""
@@ -7003,9 +7020,64 @@ class Coordinator:
         elif tree != request['candidate_oid']:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
         else:
+            self._quality_writers_tail(paths, len(names), request)
             self.state['lifecycle']['stage'] = 'DOCS'
             self.state['next'] = 'docs'
         self.save()
+
+    def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> None:
+        """D09 C1-a (d09-cap1-writer-passes.md §3): at a clean POLISH-Q exit, check each writer without a state against
+        the skip rules and record a skip once per item. The writer legs land in C1-b1; until then a writer that passes
+        every rule is not reached, and nothing writes."""
+        life, config = self.state['lifecycle'], self.state['config']
+        marker = life.setdefault('quality_writers', {'base_oid': request['candidate_oid']})
+        wanted = worktree_lifecycle.QUALITY_WRITERS[config.get('quality_writers') or 'off']
+        reasons = {}
+        for writer in (w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if w not in marker):
+            reasons[writer] = ('skip-quality-polish' if config.get('skip_quality_polish') else 'off' if writer not in wanted else
+                               'no-test-command' if not self.state.get('test_command_explicit') else
+                               'small' if writer == 'simplifier' and self._code_lines_changed() < 20 else
+                               'no-test-file' if writer == 'test-writer' and not any(map(worktree_lifecycle.is_test_path, paths))
+                               else None)
+        left = [writer for writer, reason in reasons.items() if reason is None]
+        detail = self._quality_writer_shortfall(len(left), specialists) if left else None
+        for writer, reason in reasons.items():
+            if reason is None and not detail:
+                self.progress('quality-writer', writer=writer, state='not reached (writer legs land in C1-b1)')
+                continue
+            row = {'state': 'skipped:' + (reason or 'budget'), **({'detail': detail} if reason is None else {}),
+                   'receipt': request['request_id'], 'digest': marker['base_oid']}
+            row['evidence'] = str(self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.json")
+            atomic_json(Path(row['evidence']), {'writer': writer, **row})
+            marker[writer] = row
+            self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
+
+    def _quality_writer_shortfall(self, writers: int, specialists: int) -> Optional[str]:
+        """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists), the replay round plus
+        one fix round, and POLISH-Q room for the last specialist's two dispatches. None when it all fits."""
+        room = self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']
+        if (need := writers + 4 + specialists) > room:
+            return f'需要 {need} 次调用，剩余 {room} 次（约需再加 {need - room}）'
+        if self.state['exec_rounds'] + 2 > self.exec_round_limit():
+            return f"EXEC 轮次 {self.state['exec_rounds']}/{self.exec_round_limit()}，回放加修复需要 2 轮"
+        if (used := self.state['lifecycle'].get('polish_calls', 0)) + writers + specialists + 1 > self._worktree_run_cap('POLISH-Q'):
+            return f"POLISH-Q 调用 {used}/{self._worktree_run_cap('POLISH-Q')}，需要 {writers + specialists + 1}"
+        return None
+
+    def _code_lines_changed(self) -> int:
+        """D09 §3 small change: added plus deleted lines in code files on the live tree, untracked files included."""
+        base = self.state['config'].get('review_base') or 'HEAD'
+        total = 0
+        for field in self._git(['diff', '--numstat', '-z', '--no-renames', base, '--']).split('\0'):
+            added, deleted, path = (field.split('\t', 2) + ['', '', ''])[:3]
+            if added.isdigit() and deleted.isdigit() and worktree_lifecycle.is_code_path(path):
+                total += int(added) + int(deleted)
+        for name in self._git_names(['ls-files', '-z', '--others', '--exclude-standard']):
+            if worktree_lifecycle.is_code_path(name) and (self.workspace / name).is_file() and not (self.workspace / name).is_symlink():
+                data = (self.workspace / name).read_bytes()
+                if b'\0' not in data[:8000]:   # binary is not code
+                    total += len(data.splitlines())
+        return total
 
     def _blocker_owners(self) -> list[str]:
         return sorted({row['owner_role'].split(':', 1)[1] for row in self.blocking_open_findings()
@@ -9466,6 +9538,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
+    p.add_argument('--quality-writers', choices=tuple(worktree_lifecycle.QUALITY_WRITERS), default=None,
+                   help='worktree lifecycle POLISH-Q writer passes (default: both for --review-only, else off)')
     p.add_argument('--auto-commit', type=config_bool, default=None,
                    help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree '
                         '(default: true for a --review-only run with --lifecycle-mode on, else false)')
@@ -9487,7 +9561,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--wi-deadline', type=int, default=None, metavar='SECONDS',
                    help='optional whole work-item wall-clock deadline from the run start (off by default); once it has '
                         'passed the run HOLDs at the next dispatch, never mid-turn; fixed at run, kept across HOLD, resume and restart')
-    p.add_argument('--test-command', default='npm test')
+    p.add_argument('--test-command', default=DefaultTestCommand('npm test'))   # D09: a default is not an explicit command
     p.add_argument('--reviewer-command', action='append', default=[],
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
     p.add_argument('--codex-bin', default='codex')
@@ -9550,7 +9624,7 @@ CONFIGURABLE_DESTS = {
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
-    'safety_mode',
+    'safety_mode', 'quality_writers',
 }
 
 
