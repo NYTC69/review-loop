@@ -10,6 +10,7 @@ import datetime
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,13 +20,37 @@ from scripts.run_skill_smoke_lib import (
     claude_plugin_source,
     cleanup_stale_review_loop_runtime,
     cleanup_timed_out_process,
+    acquire_runner_lock,
+    clear_runner_marker,
+    config_backup,
+    INTERRUPT_SIGNALS,
     finalize_stream_capture_artifact,
+    interrupt_backstop,
     last_round_direct_noop,
     load_gate,
+    load_scaled_timeout,
+    note_runner_child,
     protocol_stages_loaded,
+    recover_stale_runner,
+    restore_config,
     select_primary_session_path,
+    signals_deferred,
+    stop_case_group,
     triage_report_fields,
+    unblock_interrupt_signals,
+    write_runner_marker,
 )
+
+
+CURRENT_CASE = {"process": None}   # the running case's Popen, for the top-level interrupt backstop
+
+
+class RunnerInterrupted(BaseException):
+    """SMOKE-RUNNER-KILL: SIGTERM/SIGINT/SIGHUP become this, so the case's finally (child group stop, temp_config restore,
+    marker removal) runs instead of the process dying mid-case."""
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
 
 
 class RunnerError(Exception):
@@ -798,17 +823,15 @@ def declared_runtime_profile(case_data) -> str:
 
 
 def config_manager(root: Path, desired_text):
+    """Call inside signals_deferred(): the marker, the change and the returned restore form one step."""
     config_path = root / ".review-loop/config.md"
-    backup_text = None
-    had_existing = config_path.exists()
-    if had_existing:
-        backup_text = config_path.read_text(encoding="utf-8")
+    backup = None if desired_text is None else config_backup(root)   # the raw bytes
+    write_runner_marker(root, backup)   # before the change: a SIGKILLed runner's next run restores from it
 
     def restore():
-        if backup_text is not None:
-            write_text(config_path, backup_text)
-        elif config_path.exists():
-            config_path.unlink()
+        if backup is not None:
+            restore_config(root, backup)
+        clear_runner_marker(root)
 
     if desired_text is None:
         return config_path, restore
@@ -911,16 +934,21 @@ exit "$status"
 
 
 def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
-    process = subprocess.Popen(
-        command,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-        start_new_session=True,
-    )
+    process = None
     try:
+        with signals_deferred():   # SMOKE-RUNNER-KILL: no signal between the start and the record of the case's group
+            process = subprocess.Popen(
+                command,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                start_new_session=True,
+                preexec_fn=unblock_interrupt_signals,   # the deferred mask must not reach the case
+            )
+            CURRENT_CASE["process"] = process   # for the top-level interrupt backstop
+            note_runner_child(cwd, process.pid)   # the group this runner started (start_new_session: pgid == pid)
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         partial_stdout, partial_stderr = cleanup_timed_out_process(process, exc)
@@ -931,6 +959,11 @@ def execute_command(command, cwd: Path, timeout_seconds: int, env=None):
             partial_stderr=partial_stderr,
             returncode=process.returncode,
         ) from exc
+    finally:   # SMOKE-RUNNER-KILL: every exit stops the case's own group (a finished case's background children too)
+        if process is not None:
+            with signals_deferred():
+                stop_case_group(process, grace_seconds=2)
+                CURRENT_CASE["process"] = None
     return process.returncode, stdout, stderr
 
 
@@ -1027,6 +1060,8 @@ def run_case(case_data, mapping_data):
             raise RunnerError(case_id, f"plugin under test: {exc}") from exc
     meta["expected_artifacts"] = definition["artifacts"]["required"]
     meta["timeout_seconds"] = definition["timeout_seconds"]
+    effective_timeout, meta["timeout_scale"] = load_scaled_timeout(definition["timeout_seconds"])
+    meta["effective_timeout_seconds"] = effective_timeout
     meta["execution_policy"] = execution_policy
     cleanup_stale_review_loop_runtime(ROOT)
     before_sessions = list_files(ROOT / ".review-loop/sessions", "*.md")
@@ -1045,7 +1080,8 @@ def run_case(case_data, mapping_data):
     restore = None
     wrapper_tmp = None
     try:
-        _, restore = config_manager(ROOT, definition["config_text"])
+        with signals_deferred():
+            _, restore = config_manager(ROOT, definition["config_text"])
         wrapper_capture_keys = {"reviewer_prompt", "reviewer_result", "tool_use_events"}
         if wrapper_capture_keys & set(capture_modes):
             wrapper_tmp = tempfile.TemporaryDirectory(prefix="run-skill-smoke-claude-")
@@ -1060,7 +1096,7 @@ def run_case(case_data, mapping_data):
             env["PATH"] = f"{wrapper_dir.as_posix()}:{env.get('PATH', '')}"
 
         try:
-            returncode, stdout, stderr = execute_command(command, ROOT, definition["timeout_seconds"], env=env)
+            returncode, stdout, stderr = execute_command(command, ROOT, effective_timeout, env=env)
         except RunnerError as exc:
             if "tool_use_events" in capture_modes:
                 finalize_stream_capture_artifact(tool_events_artifact, stdout_artifact)
@@ -1160,10 +1196,11 @@ def run_case(case_data, mapping_data):
                 return case_record(case_id, "smoke", target, runtime_profile, final_status, final_reason, artifacts, started_at, finished_at)
             raise
     finally:
-        if restore is not None:
-            restore()
-        if wrapper_tmp is not None:
-            wrapper_tmp.cleanup()
+        with signals_deferred():   # a signal here cannot cut the restore short
+            if restore is not None:
+                restore()
+            if wrapper_tmp is not None:
+                wrapper_tmp.cleanup()
 
     finished_at = now_iso()
     if "tool_use_events" in capture_modes:
@@ -1400,9 +1437,35 @@ def main():
     raise SystemExit(1 if had_failures else 0)
 
 
+def _interrupt(signum, _frame):
+    for other in INTERRUPT_SIGNALS:   # the first signal wins: the runner is shutting down, and a further signal (or one
+        signal.signal(other, signal.SIG_IGN)   # already pending) must not cut its cleanup and restore short
+    raise RunnerInterrupted(signum)
+
+
+RUNNER_LOCK_FD = None   # set only once this runner holds the lock; the backstop touches the marker only then
+for _signum in INTERRUPT_SIGNALS:
+    if signal.getsignal(_signum) is not signal.SIG_IGN:   # nohup / a background job: an inherited SIG_IGN stays ignored
+        signal.signal(_signum, _interrupt)
 try:
+    try:
+        with signals_deferred():
+            RUNNER_LOCK_FD = acquire_runner_lock(ROOT)   # held until this process ends, SIGKILL included
+            for note in recover_stale_runner(ROOT):
+                print(f"NOTE {note}", flush=True)
+    except RuntimeError as exc:
+        print(f"FAIL runner-lock - {exc}", flush=True)
+        raise SystemExit(1)
     main()
 except RunnerError as exc:
     print(f"FAIL {exc.label} - {exc.message}", flush=True)
     raise SystemExit(1)
+except RunnerInterrupted as exc:   # every interrupt signal is SIG_IGN now: the backstop runs to the end
+    for note in interrupt_backstop(ROOT, CURRENT_CASE["process"], RUNNER_LOCK_FD is not None):
+        print(f"NOTE {note} (interrupt backstop)", flush=True)
+    done = ["the running case's process group was stopped"] if CURRENT_CASE["process"] is not None else []
+    done.append("this runner left no temp_config or marker behind" if RUNNER_LOCK_FD is not None
+                else "the runner lock was not taken, so nothing was changed")
+    print(f"INTERRUPTED - signal {exc.signum}: {'; '.join(done)}", flush=True)
+    raise SystemExit(128 + exc.signum)
 PY

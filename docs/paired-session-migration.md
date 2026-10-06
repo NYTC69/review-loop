@@ -19,9 +19,32 @@ The legacy code is removed only after every precondition below holds, so that no
 
 | Removal precondition | Status (2026-10-05) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
 |---|---|---|
-| `review-pr` ported to paired-session (D-LG2) | design parked for the owner's round 4 | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
-| `code-quality-loop` decided and ported or retired (Q6) | owner decision on the Q6 memo | `/review-loop:code-quality-loop` |
-| Every row with status "owner decision" | 18 rows, owner list (1)–(15) | all "owner decision" rows |
+| `review-pr` ported to paired-session (D-LG2) | design round 4 authorized; Q-R1..Q-R10 answered (D-OWNER-1005 D03) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
+| `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | decided: D09 = A, the retirement itself still to be done; capability 1 (the writers) is to be ported, which is the same question as L117 and provisional with it (re-confirmed with the owner before implementation); capability 3 (the analyzers) goes with D-LG2; capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
+| Every "keep (provisional)" row has a paired-session equivalent, or the owner re-confirms it as retire | 13 rows; removal work items below | the "keep (provisional)" rows |
+| Every "retire (provisional)" row is re-confirmed | 5 rows | the "retire (provisional)" rows |
+| L133 Linux: a real Linux paired-session run, then the host check is opened | not run; the owner's retire answer names it as the condition | `Linux (legacy works today)` |
+
+The owner answered the 18 legacy-map rows on 2026-10-05 (`DECISIONS.md` ADR-13, D-OWNER-1005). Every keep/retire
+answer is **provisional**: the owner asked that each be confirmed again when its work item starts. No row is
+implemented before that confirmation.
+
+Removal work items (the "keep (provisional)" rows; each needs its paired-session equivalent, or a re-confirmed retire,
+before legacy is removed):
+1. L75 plan-exists auto-route and L78 `execute --plan`: a paired-session path for an existing plan (E-8).
+2. L80 `--stop-after before-polish` / `before-docs` / `before-security`: intermediate stops.
+3. L89 the stage A fallback when the key is absent. The owner's keep conflicts with removal itself: the sheet called
+   a refusal with new wording mandatory once legacy is gone, and the owner chose "keep legacy". This is resolved at
+   re-confirmation, not here.
+4. L90 handsfree reviewer decisions (`DECISION:`): a decision path that does not HOLD every author question.
+5. L99 `judgment_model`, `cheap_model`: a mapping.
+6. L100 `soft_limit_plan`, `soft_limit_exec`: a continue path at the cap.
+7. L102 `commit_message_prefix`: a mapping.
+8. L108 `cross_vendor_review`: a same-vendor check.
+9. L117 the code-simplifier and test-consolidation writers: a port (D09 capability 1).
+10. L119 finding dispute / triage: a dispute flow.
+11. L120 the Chinese delivery report: brought up to the legacy content.
+12. L135 CI and off-macOS tests (see also D08: `tests/` joins CI).
 
 M7, the seeded-defect comparison, no longer gates removal; it stays an optional cost and quality study.
 
@@ -79,7 +102,10 @@ How close legacy is to retirement: every legacy entry, flag, skill, config key a
 Status values:
 - **covered**: an equivalent exists, or none is needed once legacy is gone (marked "none needed").
 - **planned**: designed or scheduled, under the named decision. M7 is the seeded-defect comparison.
-- **owner decision**: the owner must decide; the number is the item of the owner list at the end of this section.
+- **keep (provisional)** / **retire (provisional)**: the owner's answer of 2026-10-05 (D-OWNER-1005), to be confirmed
+  again when the row's work item starts. Keep: paired-session needs an equivalent before legacy is removed. Retire:
+  the capability is not carried over as a legacy path; any follow-up named in the row still applies (L105 warn or drop,
+  L107 delete `skip_globs`, L133 open paired-session to Linux after a real Linux run). `Lnn` is the row's line at `57cb6cf`, from which the decision sheet was built.
 
 **Entries and skills**
 
@@ -88,22 +114,22 @@ Status values:
 | `/review-loop` with fresh work (Claude), a fresh review-loop request (Codex) | the paired-session skill runs `run --lifecycle-mode on` | covered |
 | Code-exists auto-route (review an existing change) | `run --review-only [--base <ref>]` (D-LG1) | covered |
 | `/review-loop:execute --review-only` | `run --review-only`; the legacy command stays until E-8 is revisited, and M7 needs it from a pinned copy | covered |
-| Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | owner decision (1) |
+| Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | keep (provisional): keep legacy (L75) |
 | `/review-loop:plan` (both hosts) | `run --stop-after-plan`: `/review-loop:paired-session <work item> --plan-only` (Claude), or a request to stop after the plan (Codex, PSE) | covered |
 | `/review-loop:execute --session <uuid>` | `resume` of a paired run (after `--stop-after-plan`) | covered |
-| `/review-loop:execute --plan <text\|path>` | plan text in `WORKITEM.md`, then drafted and reviewed again (no `plan_source` import) | owner decision (1) |
+| `/review-loop:execute --plan <text\|path>` | plan text in `WORKITEM.md`, then drafted and reviewed again (no `plan_source` import) | keep (provisional): keep legacy (L78) |
 | `--stop-after exec-round` | operator CLI `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route) | planned (M7) |
-| `--stop-after before-polish` / `before-docs` / `before-security` | none; a HOLD plus `resume` partly substitutes | owner decision (7) |
+| `--stop-after before-polish` / `before-docs` / `before-security` | none; a HOLD plus `resume` partly substitutes | keep (provisional): keep legacy (L80) |
 | `--stop-after before-delivery` | DONE = acceptance pending | covered |
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
 | Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
-| `/review-loop:review-pr` | a report mode on a materialized PR copy (D-LG2 design under review; nothing is posted or committed) | planned (D-LG2) |
-| `/review-loop:code-quality-loop` | none yet | planned (D-LG2, after the first real LG1 run, Q6) |
+| `/review-loop:review-pr` | a report mode on a materialized PR copy (D-LG2; design round 4 authorized; nothing is posted unless the operator opts in) | planned (D-LG2) |
+| `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A); the writers follow L117, the analyzers D-LG2 | planned (D09) |
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
 | `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
-| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | owner decision (15) |
-| Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | owner decision (5) |
+| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | keep (provisional): keep legacy (L89); conflicts with removal itself, resolved at re-confirmation |
+| Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | keep (provisional): keep legacy (L90) |
 
 **Config keys** (`.review-loop/config.md`)
 
@@ -112,16 +138,16 @@ Status values:
 | `reviewer`, `codex_reviewer_backend` | role vendors from the operator profile or `--reviewer-vendor` | covered |
 | `reviewer_model`, `executor_model` | `--reviewer-model` / `--author-model` or the operator profile; warned when set to anything other than empty or `inherit`, not applied | covered |
 | `codex_reviewer_model`, `codex_executor_model` | `--reviewer-model` / `--author-model` or the operator profile; silently ignored | covered |
-| `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | owner decision (8) |
-| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a hard HOLD, not a prompt; exec default 4 (legacy 3) | owner decision (6) |
+| `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | keep (provisional): keep legacy; give paired-session a mapping (L99) |
+| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a hard HOLD, not a prompt; exec default 4 (legacy 3) | keep (provisional): keep legacy; give paired-session a continue path (L100) |
 | `auto_commit` | operator-profile `auto_commit`: one hook-free local commit on accept | covered |
-| `commit_message_prefix` | none: the commit message is fixed | owner decision (8) |
+| `commit_message_prefix` | none: the commit message is fixed | keep (provisional): keep legacy; give paired-session a mapping (L102) |
 | `docs_file` | `--docs-file` | covered |
-| `handsfree` | stage A questions fail; `accept` / `reject` are never run | owner decision (5) |
-| `review_focus`, `review_style`, `quality_focus` | none (ignored) | owner decision (8) |
+| `handsfree` | stage A questions fail; `accept` / `reject` are never run | retire (provisional) (L104) |
+| `review_focus`, `review_style`, `quality_focus` | none (ignored) | retire (provisional): warn or drop (L105) |
 | `skip_quality_polish` | `--skip-quality-polish` | covered |
-| `adversarial_gate_skip_paths` | none: `skip_globs` is frozen but not read, and the lifecycle refuses `--adversarial-gate off` | owner decision (8) |
-| `cross_vendor_review` | the default roles are cross-vendor; no same-vendor detection | owner decision (8) |
+| `adversarial_gate_skip_paths` | none: `skip_globs` is frozen but not read, and the lifecycle refuses `--adversarial-gate off` | retire (provisional): delete `skip_globs` (L107) |
+| `cross_vendor_review` | the default roles are cross-vendor; no same-vendor detection | keep (provisional): keep legacy; give paired-session a same-vendor check (L108) |
 | `context_persist_threshold` | none needed: state lives in the run directory | covered |
 | `entry` | none needed: goes away with legacy | covered |
 
@@ -130,13 +156,13 @@ Status values:
 | Legacy step | paired-session equivalent | Status |
 |---|---|---|
 | Plan drafting and review; implementation and execution review; stuck detection; terminal adversarial gate (3.4); quality-polish specialists (3.5: language reviewers, code-reviewer, silent-failure-hunter, pr-test-analyzer); docs (3.6); security (3.7); delivery gate and `auto_commit`; evidence and usage | PLAN / EXEC with shadow, FIELD-5 structural HOLD, gate, POLISH-Q, DOCS, SECURITY, accept, receipts and `usage.json` | covered |
-| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | none | owner decision (4) |
+| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | none | keep (provisional): keep legacy / port (L117; D09 capability 1) |
 | comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | planned (D-LG2) |
-| Dispute / triage of a finding | owner-only disposition; operator `note` | owner decision (9) |
-| Chinese delivery report with findings, rounds and token totals | a shorter report, only at ACCEPTED | owner decision (14) |
+| Dispute / triage of a finding | owner-only disposition; operator `note` | keep (provisional): keep legacy; give paired-session a dispute flow (L119) |
+| Chinese delivery report with findings, rounds and token totals | a shorter report, only at ACCEPTED | keep (provisional): keep legacy; bring paired-session up to it (L120) |
 | Push / PR | none in either workflow; `accept` refuses external delivery | covered |
 | Compass BACKLOG close | none needed: legacy never closed items either; no close stage (D-3) | covered |
-| Compass checkpoint injection, MemPalace historical context | none | owner decision (10) |
+| Compass checkpoint injection, MemPalace historical context | none | retire (provisional): drop; MemPalace is no longer used (L123) |
 
 **Runtimes and platforms**
 
@@ -146,23 +172,12 @@ Status values:
 | `reviewer: codex \| subagent`, `.codex/agents/*.toml`, `scripts/run_claude_reviewer.py` | the coordinator launches its own role CLIs | covered |
 | Parallel reviewer fan-out | none needed: roles run in sequence (wall time only) | covered |
 | macOS | the full path | covered |
-| Linux (legacy works today) | with the `entry` key absent, a non-macOS host falls back to legacy; with `entry: paired-session` there is no host check; no real Linux run recorded | owner decision (12) |
+| Linux (legacy works today) | with the `entry` key absent, a non-macOS host falls back to legacy; with `entry: paired-session` there is no host check; no real Linux run recorded | retire (provisional): open paired-session to Linux after a real Linux run (L133) |
 | Windows | unsupported in both | covered |
-| CI and off-macOS tests | the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`); the workflow location is to be confirmed | owner decision (13) |
+| CI and off-macOS tests | the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`); the workflow location is to be confirmed | keep (provisional): keep legacy (L135) |
 
-**Owner decisions referenced above:**
-- (1) map or remove `plan` and `execute` (E-8);
-- (4) port or formally drop the simplifier and test-consolidation writers;
-- (5) handsfree: a reviewer decision path, or HOLD to a human;
-- (6) soft limits: keep hard caps or add a continue path, and align the exec default;
-- (7) intermediate `--stop-after` stops;
-- (8) the unmapped keys: map, warn or drop;
-- (9) the dispute flow;
-- (10) Compass and MemPalace injection;
-- (12) Linux and Windows;
-- (13) CI;
-- (14) the delivery report;
-- (15) the stage A fallback after retirement.
+**Owner answers:** the 18 rows above were answered on 2026-10-05 (D-OWNER-1005): 13 keep, 5 retire, all
+provisional. The owner's note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
 
 Push and PR delivery stays an owner decision (D8).
 

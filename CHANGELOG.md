@@ -1,5 +1,78 @@
 # Changelog
 
+### v2.12.2：Claude 周额度或会话额度用完时，run 进入限额暂停并显示重置时间，不扣调用次数（RL-WEEKLY）；efficient 模式下，回合进行中插件正常升级不再作废这个回合（FIELD-24）；review-pr 移植的后续内部批次
+
+- **fix（RL-WEEKLY，poker-news-bot WI-109 现场）**：Claude author 回合撞上周额度，run 以笼统的 "CLI exit 1" HOLD，扣掉了一次调用，也没有重置时间。原因是 `classify_rate_limit_failure` 不认识 stream-json 里的限额形态。现在以下任一信号都确认为额度限制：
+  - `rate_limit_event` 的 `status` 为 `rejected`，`resetsAt` 转成 "resets at <本地时间> (<窗口> window)"；
+  - CLI 合成的 assistant 错误消息（`is_api_error_message`，`error` 属于 rate_limit 一类）；
+  - `api_error_status` 为 429 的错误 result；
+  - "You've hit your <usage|weekly|session|5-hour|opus|…> limit"，文中的 "resets <时间>" 作为提示。
+  - 只看最后一个 `rate_limit_event`：在 extra usage（overage）上运行时，`rejected` 不算额度用完，后续出现 `allowed` 或 `allowed_warning` 也会取消之前的 `rejected`。
+  - 普通 CLI 错误照旧计费，退出码 0 永远不算额度限制。测试夹具是 WI-109 那个回合真实的最后三行 stdout。
+- **fix（FIELD-24，poker-news-bot WI-109 现场）**：v2.12.1 发版时 lane 重启改写了 `installed_plugins.json`，FIELD-21 的 efficient 规则因此作废了一个跑了 78 分钟的 EXEC author 回合并重派。现在：
+  - efficient 模式下，回合中出现 FIELD-21 认定的正常插件升级（只改 version、installPath、gitCommitSha、lastUpdated，且新路径是真实存在的规范 cache 目录）时，记录为 `global_config_changes.plugin_update`，回合保留、不重派。正在运行的 CLI 启动时已加载插件，旧版本 cache 目录也还在，所以回合的工作不受影响。
+  - receipt 里写明 `next_turn_registry`，下一个回合用新的插件注册表。
+  - strict 模式不变（HOLD，带 `PLUGIN_UPDATE_HINT`）。其他注册表改动，或同一回合还触发了别的检查，照旧是硬错。
+- **review-pr 移植（D-LG2），内部实现，尚未接入任何 skill**：
+  - LG2-a3：report run 在 POLISH-Q 之后进入 report 版 SECURITY，以新的终态 REPORTED 结束（退出码 0）。
+    - 敏感路径和 secret 预检只产出 finding，不拦截。只有本次改动带进、且仍在候选树中的才算 CRITICAL；仓库原有的或被本次改动删除的降为 MINOR。
+    - 每次 HOLD 都把报告标为不完整，并写明原因和未完成的阶段。
+    - 调用预算是角色数的 2 倍，在候选树上冻结。
+  - LG2-b1：在 REPORTED 和每次 HOLD 时，从 state 和 ledger 渲染 `review-report.md`，不经过模型。新增两个只出报告的 specialist：comment-analyzer 和 type-design-analyzer。新增 `--aspects`（仅 report 模式，默认 all），创建时冻结。
+  - LG2-d：`scripts/materialize_pr.py` 解析并钉住审查输入（PR 编号或 URL、本地或远程 ref），在临时 clone 中检出钉住的 PR head。
+    - 所有 git 调用都限定协议（`GIT_ALLOW_PROTOCOL=https:ssh:file`）。
+    - 用 URL 寻址的调用（`ls-remote`、`clone`）在空的临时目录里运行，仓库本地配置无法借此执行命令。
+    - PR 里的符号链接按普通文件检出。
+  - 这些开关仍未写进文档，请勿使用。
+- **审查**：都走 ABA 审查链，Opus 写、Codex 逐轮审、fresh Opus 终审。按 owner 10-06 的新原则，审查只拦现实中会发生的误用和正常使用下的误报；刻意绕过、刻意构造的本地状态和最坏情况记为残余。
+  - RL-WEEKLY：Codex 1 轮 APPROVE；Opus 终审打回 1 条（overage 误判），修完后修复审查轮 APPROVE。
+  - FIELD-24：Codex 1 轮 APPROVE，Opus 终审 APPROVE。
+  - LG2-a3：Codex 2 轮；Opus 终审打回 2 MAJOR 和 1 MINOR，已修；修复审查轮又打回 1 条，按 owner 选 (a) 再修一轮，剩下的"含 secret 的路径换成空目录或符号链接"按新原则记为残余。
+  - LG2-b1：Codex 3 轮，Opus 终审 APPROVE；3 条 MINOR 并入 LG2-b2。
+  - LG2-d：Codex 2 轮；Opus 终审打回 1 HIGH，修完后修复审查轮 APPROVE。
+
+### v2.12.1：用独立 CODEX_HOME 的 run 不再因默认 ~/.codex/config.toml 里别人的 trust 条目而 HOLD（owner P0）；fresh shadow/gate 不再把仓库原有文字当成泄漏的审查记录（FIELD-23）；EXEC 等待 reviewer 时可以 note；smoke runner 被杀后不留残局；owner 决策单落档；review-pr 移植的设计与前两批内部实现
+
+- **fix（owner P0，poker-news-bot 现场）**：run 用独立 `CODEX_HOME` 时，也会对默认 `~/.codex/config.toml` 做快照，用来发现无视 `CODEX_HOME` 的 Codex 子进程。原先这个文件有任何变化，都会作废已完成的回合并 HOLD。而另一个项目在默认 home 上跑 Codex（或有人还原备份）时，Codex 会自动追加 `[projects."<dir>"] trust_level = "trusted"`，于是 WI-108 丢了 19 分钟和 13 分钟的 author 回合。现在：
+  - 默认配置的变化如果只是增删整张外来 trust 表，即路径不是本 run 自己的 workspace、clone 或 worktree 主根，就记为 `foreign-default-home-trust-entry {added, removed}`，不作废回合。Codex 回合和 permission probe（包括 probe 正常结束的路径）都适用。
+  - 其他变化照旧 HOLD。下列情况也照旧 HOLD：
+    - 本 run 自己路径的 trust 条目（比较前先做 realpath、去掉尾部斜杠，macOS 上不区分大小写）；
+    - 无法按 UTF-8 解码的内容；
+    - 超过 1 MiB 或结构有歧义的文件。
+  - 扫描只过一遍：已有 3000 张表时也在 1 秒内完成。
+  - 不变的部分：`$CODEX_HOME/config.toml` 本身的检查、在默认 home 上跑的 run、uncertain 回合，行为都不变。
+  - 建议：每个 run（包括验收 run 和监工 run）都使用独立的绝对路径 `CODEX_HOME`。实测 codex-cli 0.160.0 在 git 目录里以 workspace-write 运行时一定会写 trust 条目，`-c` 和 `--ignore-user-config` 都挡不住。
+- **fix（FIELD-23，poker-tools 现场）**：仓库里本来就有的注释（例如 "gate finding"）被作者改动后，出现在 delta patch 的 -/+ 行里，fresh shadow 的独立性检查把它当成泄漏的审查记录，run 因此 HOLD；改写注释也没用，因为旧文字留在 "-" 行里。owner 选了简单规则：
+  - 有 `base_commit` 时，patch 只扫描 "+" 行；"-" 行和上下文行都不扫。
+  - "+" 行里的命中，如果整段命中文字按整词在 base 中同一文件（或重命名前的文件）里出现过，就豁免；新文件和二进制文件不豁免。
+  - delta.stat 和 status.txt：命中落在 base 已有路径里就豁免；stat 改为完整路径，并且不合并重命名。
+  - plan.md 和 workitem.md：只豁免用反引号或代码块引用的 base 原文。
+  - prompt 和 gate 模板永远不豁免。fresh shadow、gate、PLAN 批准和 review-only 创建共用同一个 helper。
+  - 威胁模型：只防无意中带入审查记录，不防作者刻意绕过。已知残余：base 中已有的标记词在同一文件里任何位置都豁免；不用 `git mv` 的移动按新文件处理（偏严）。
+- **note**：EXEC 在等 reviewer（或它的 shadow）而 HOLD 时，现在接受 `note`，只交给下一个 EXEC author 回合，不会进任何审查角色。PLAN 阶段等 reviewer 时仍然拒绝，并提示替代做法。
+- **smoke runner（SMOKE-RUNNER-KILL / SMOKE-TIMEOUT）**：
+  - runner 被杀后会停掉 case 进程组并恢复临时配置，不留残局。
+  - 以 nohup 方式或在后台作业中启动时，继承下来的 SIGHUP 忽略状态会被保留。
+  - case 超时只在机器有负载时放宽，最多 6 倍；空闲时不变。SMOKE-TIMEOUT 的根因没有查清，详见 smoke README 和 ADR-4 的修订。
+  - 已知残余：marker 不校验 temp_config 的 sha，孤儿进程组还活着时也不拒绝运行。
+- **review-pr 移植（D-LG2），内部实现，尚未接入任何 skill**：
+  - 设计文档 `paired_session/docs/review-pr-port.md` 已经 owner 答复并通过终审。
+  - 前两批是 coordinator 里的 report mode，入口是 `run --review-only --review-report`：
+    - 创建、resume 和反馈时的拒绝规则；
+    - 不论 EXEC 和 gate 给出什么结论，都依次走到 gate 和 POLISH-Q，全程没有任何 writer 回合；
+    - 每次派发前都核对冻结的树；
+    - report run 上的 permission-probe 不跑 author probe（标为 NOT-APPLICABLE）。
+  - 目前 report run 在 POLISH-Q 之后停在临时 HOLD，SECURITY、REPORTED 和报告文件由后续批次补齐。这个开关还没有写进文档，请勿使用。
+- **决策记录**：ADR-13 D-OWNER-1005（owner 对 2026-10-05 决策单的 59 项答复；D11 各行为暂定）及其补充条款：终审后的修复审查、D12（review-only 的 max_exec_rounds 保持 4）、ABA/BAB 审查链。
+- **测试**：`tests/evidence_ledger_test.py` 的一条断言不再依赖 git 自己的 hook 报错原文（新版 git 措辞不同）。
+- **CI（D08）**：GitHub Actions 新增 tests/ 的 pytest job，Linux 和 macOS 都跑。
+- **审查**：采用 ABA/BAB 审查链。
+  - FIELD-23：Codex 2 轮，加 Opus 终审和终审后的修复审查轮。
+  - LG2-a2：Codex 1 轮，加 Opus 终审和修复审查轮。
+  - LG2-a1：BAB，Codex 写、Opus 2 轮、Codex 终审，加修复审查轮。
+  - smokefix 的修复审查轮没过，按 owner 裁定由监工复核后收下。
+  - P0：Codex 2 轮，加 Opus 终审（1 HIGH、1 MEDIUM、2 LOW）和终审后的修复审查轮（APPROVE）。
+
 ### v2.12.0：legacy 工作流正式弃用（owner 裁定 D-READY）；同一台机器上的并发 run 不再因对方的 Codex trust 条目而 HOLD（FIELD-22）；M7 评分与冻结工具
 
 - **弃用（D-READY，owner 2026-10-05）**：

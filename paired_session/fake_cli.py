@@ -199,6 +199,12 @@ def main():
         if documents:
             (Path.home() / '.claude' / 'plugins' / 'installed_plugins.json').write_text(json.dumps(documents.pop(0), indent=2))
             queue.write_text(json.dumps(documents))
+    foreign = os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG')   # P0: another process rewrites the DEFAULT ~/.codex/config.toml
+    marker = {'author': 'implementer. Phase: EXEC.', 'probe': 'Role: permission-system probe'}[
+        os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG_ON', 'author')]
+    if foreign and marker in prompt and not Path(foreign + '.done').exists():   # once, during that turn
+        (Path(os.environ['HOME']) / '.codex' / 'config.toml').write_text(Path(foreign).read_text())
+        Path(foreign + '.done').write_text('done')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)

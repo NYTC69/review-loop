@@ -1,8 +1,9 @@
 """FIELD-21 (poker-news-bot WI-102, v2.10.0, 2026-10-05): a Claude author EXEC turn held "claude turn changed global config:
 claude_plugins" because a NEW Claude Code session outside the run materialized review-loop 2.10.1 and rewrote that plugin's entry
 in installed_plugins.json (version, installPath, gitCommitSha and lastUpdated together). RF-4 recognized only version/lastUpdated.
-A normal plugin update is now recognized precisely (normal_plugin_update); efficient mode voids such a turn and re-dispatches it
-once on a fresh global-config baseline, strict mode holds with the hint; anything else stays a hard finding."""
+A normal plugin update is now recognized precisely (normal_plugin_update). Efficient mode keeps the turn and records the update
+(FIELD-24, supervisor 2026-10-06, replacing FIELD-21's void and re-dispatch); strict mode holds with the hint; anything else
+stays a hard finding."""
 import copy
 import json
 import os
@@ -112,24 +113,25 @@ class Field21Tests(unittest.TestCase):
         turns = [t for t in state['turns'] if t.get('role') == role and t.get('phase') == 'EXEC']
         return result, state, turns
 
-    def test_efficient_voids_and_re_dispatches_a_turn_hit_by_a_normal_update_once(self):
+    def test_efficient_keeps_a_turn_hit_by_a_normal_update_and_records_it(self):   # FIELD-24 (supervisor 2026-10-06)
         result, state, authors = self.launch(self.updated())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(state['status'], 'DONE')
-        self.assertIn('re-dispatching the author turn once on a fresh global-config baseline', result.stdout)
-        void, again = authors[0], authors[1]
-        self.assertIn('a normal plugin update outside the run: ' + KEY + ' 2.10.0 -> 2.10.1', void['error'])
-        self.assertEqual(void['global_config_changes']['plugin_update'][0]['version'], ['2.10.0', '2.10.1'])
-        self.assertNotIn('error', again)
-        self.assertIn('recognized as a normal plugin update',
-                      (self.h.run_dir / 'evidence' / f"{again['sequence']:03d}-exec-author.prompt.txt").read_text())
+        self.assertNotIn('re-dispatching', result.stdout)
+        self.assertIn('the next turn starts on the updated registry', result.stdout)
+        [turn] = authors   # one turn: kept, not voided, not re-dispatched
+        self.assertNotIn('error', turn)
+        changes = turn['global_config_changes']
+        self.assertEqual((changes['status'], changes['findings']), ('PASS', []))
+        self.assertEqual(changes['plugin_update'][0]['version'], ['2.10.0', '2.10.1'])
+        self.assertEqual(changes['next_turn_registry'],
+                         'the next turn starts on the updated plugin registry: ' + KEY + ' 2.10.0 -> 2.10.1')
 
     def test_another_check_of_the_same_turn_still_leads(self):
         co = self.h.coordinator('--author-vendor', 'claude')   # the model identity check comes after the global-config check
         with patch.dict(os.environ, {'FAKE_PLUGIN_UPDATES': str(self.queue([self.updated()])), 'FAKE_CLAUDE_MODEL': 'claude-other-9'}):
             with self.assertRaisesRegex(RuntimeError, 'model identity mismatch') as raised:
                 co._invoke_once('author', 'EXEC', 'Role: persistent claude implementer. Phase: EXEC.', {})
-        self.assertNotIsInstance(raised.exception.__cause__, rc.PluginUpdateTurnVoided)
         self.assertEqual(co.state['turns'][-1]['global_config_changes']['plugin_update'][0]['plugin'], KEY)
         self.h.run_dir = self.h.root / 'approval'   # an EXEC approval without the observed test, in a reviewer turn hit by an update
         (self.plugins / 'installed_plugins.json').write_text(json.dumps(self.base, indent=2))
@@ -140,12 +142,13 @@ class Field21Tests(unittest.TestCase):
         self.assertNotIn('re-dispatching', result.stdout)
         self.assertEqual(reviews[0]['global_config_changes']['plugin_update'][0]['plugin'], KEY)
 
-    def test_a_second_update_in_the_same_slot_holds_with_the_hint(self):
-        result, state, authors = self.launch(self.updated(), self.updated('2.10.2', gitCommitSha='next', lastUpdated='t2'))
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('again after one re-dispatch', state['hold_reason'])
-        self.assertIn(rc.PLUGIN_UPDATE_HINT, state['hold_reason'])
-        self.assertEqual(len(authors), 2)
+    def test_efficient_records_an_update_in_each_turn_and_never_holds(self):   # FIELD-24: no second-update HOLD
+        result, state, authors = self.launch(self.updated(), self.updated('2.10.2', gitCommitSha='next', lastUpdated='t2'),
+                                             extra=('--exercise-revisions',))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual([turn['global_config_changes']['plugin_update'][0]['version'] for turn in authors[:2]],
+                         [['2.10.0', '2.10.1'], ['2.10.1', '2.10.2']])
 
     def test_strict_holds_with_the_hint_and_records_the_update(self):
         result, state, authors = self.launch(self.updated(), strict=True)

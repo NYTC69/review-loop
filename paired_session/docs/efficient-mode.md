@@ -148,7 +148,10 @@ turn's processes, then restores the workspace by hand.
   - a changed entry differs only in the scalar values of `version`, `installPath`, `gitCommitSha` and `lastUpdated`;
   - a changed `installPath` is the canonical cache directory `<plugins>/cache/<marketplace>/<plugin>/<new version>`, present on disk as a real directory.
 
-  The update is recorded in both modes as `global_config_changes.plugin_update`. In efficient mode the turn is void and is re-dispatched once on a fresh global-config baseline, with the same accounting as a read-only void (`_redispatch_budget`; the void turn stays counted in `invocations_used`). A second update in the same slot holds with `PLUGIN_UPDATE_HINT`. Strict mode holds with that hint, and `resume` re-runs the turn. Any other change, or a turn that also tripped another check, is a hard finding as before. RF-4's version/lastUpdated bump is one case of a normal update.
+  The update is recorded in both modes as `global_config_changes.plugin_update`.
+  - Efficient mode (FIELD-24, supervisor 2026-10-06; it replaces FIELD-21's void and re-dispatch): the turn is kept. The running CLI loaded its plugins at start, and the old versioned cache directory stays on disk, so the turn's work is unaffected. The finding is cleared, and the receipt adds `next_turn_registry` ("the next turn starts on the updated plugin registry: <plugin> <old> -> <new>"), so a reader sees the version change between turns. Nothing is voided or re-dispatched, and a later update in another turn is recorded the same way; there is no second-update HOLD. FIELD-24 came from poker-news-bot WI-109, where a release relaunch voided a 78-minute author turn.
+  - Strict mode holds with `PLUGIN_UPDATE_HINT`, and `resume` re-runs the turn (unchanged).
+  - Any other change, or a turn that also tripped another check (a workspace void, a run-dir touch, or a later check of the same turn), is a hard finding as before. RF-4's version/lastUpdated bump is one case of a normal update.
 
 ## 5. Docs
 

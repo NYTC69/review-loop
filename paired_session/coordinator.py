@@ -51,6 +51,7 @@ try:
     from paired_session import sensitive_policy
     from paired_session import security_repair_policy
     from paired_session import worktree_lifecycle
+    from paired_session import review_report
     from paired_session import timeout_scale
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
@@ -72,6 +73,7 @@ except ModuleNotFoundError:
     import sensitive_policy
     import security_repair_policy
     import worktree_lifecycle
+    import review_report
     import timeout_scale
     from program_binding import snapshot as program_snapshot, safe_path
 
@@ -279,19 +281,30 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
         r'\btoo many requests\b|\brate[_ -]limit(?:_exceeded|_error| exceeded| error)\b|'
         r'\brate limit(?: has been| was)? (?:reached|exceeded)\b|'
         r'\b(?:subscription|usage|quota) (?:rate )?limit (?:has been )?(?:reached|exceeded)\b|'
-        r"\byou(?:'| a)?ve hit (?:your )?usage limit\b|\binsufficient_quota\b)"
+        r"\byou(?:'| a)?ve hit (?:your )?(?:(?:usage|weekly|daily|monthly|session|opus|sonnet|\d+-hour|five-hour|"
+        r"seven-day|7-day) )?limit\b|\binsufficient_quota\b)"
     )
     confirmed = bool(strong_message.search(stderr))
     if confirmed:
         reset_sources.append(stderr)
     known_codes = {'rate_limit', 'rate_limit_error', 'rate_limit_exceeded',
                    'insufficient_quota', 'usage_limit_exceeded', 'quota_exceeded'}
+    epoch_hint, last_window = None, None
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if not isinstance(event, dict):
+            continue
+        info = event.get('rate_limit_info')   # RL-WEEKLY: Claude stream-json announces its limit window state
+        if event.get('type') == 'rate_limit_event' and isinstance(info, dict):
+            last_window = info   # only the LAST event counts: a later allowed/allowed_warning cancels an earlier rejection
+            continue
+        if event.get('is_api_error_message') is True and str(event.get('error', '')).strip().lower() in known_codes:
+            confirmed = True   # the synthetic assistant message that carries the limit text
+            content = (event.get('message') or {}).get('content') if isinstance(event.get('message'), dict) else None
+            reset_sources += [str(part.get('text', '')) for part in content or [] if isinstance(part, dict)]
             continue
         is_error = event.get('type') in ('error', 'turn.failed') or event.get('is_error') is True
         if not is_error:
@@ -302,19 +315,25 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
                  for key in ('code', 'error_code', 'error_type') if obj.get(key) not in (None, '')}
         if isinstance(error, dict) and error.get('type') not in (None, ''):
             codes.add(str(error['type']).strip().lower())
-        statuses = [obj.get(key) for obj in objects for key in ('status', 'status_code', 'http_status')]
-        message = error.get('message', '') if isinstance(error, dict) else event.get('message', '')
+        statuses = [obj.get(key) for obj in objects for key in ('status', 'status_code', 'http_status', 'api_error_status')]
+        message = error.get('message', '') if isinstance(error, dict) else event.get('message', '') or event.get('result', '')
         message = str(message)
         if (codes & known_codes or any(str(value) == '429' for value in statuses)
                 or (not codes and strong_message.search(message))):
             confirmed = True
-            reset_sources.append(json.dumps(event, ensure_ascii=False))
+            reset_sources += [message, json.dumps(event, ensure_ascii=False)]   # the plain text first, for a clean hint
+    if (last_window and last_window.get('status') == 'rejected' and last_window.get('isUsingOverage') is not True
+            and last_window.get('overageStatus') not in ('allowed', 'allowed_warning')):   # gate B1: overage keeps running
+        confirmed = True
+        if isinstance(last_window.get('resetsAt'), (int, float)) and last_window['resetsAt'] > 0:
+            epoch_hint = ('resets at ' + time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(last_window['resetsAt'])) +
+                          f" ({last_window.get('rateLimitType') or 'limit'} window)")
     if not confirmed:
         return None
-    reset_hint = None
-    reset_cues = ('try again at', 'reset at', 'resets at', 'reset time',
+    reset_hint = epoch_hint   # an exact resetsAt beats a parsed phrase
+    reset_cues = ('try again at', 'reset at', 'resets at', 'resets ', 'reset time',
                   'available again at', 'available at', 'retry after', 'retry-after', 'retry_after')
-    for source in reset_sources:
+    for source in ([] if reset_hint else reset_sources):
         for line in source.splitlines():
             lowered = line.lower()
             positions = [lowered.find(cue) for cue in reset_cues if lowered.find(cue) >= 0]
@@ -633,6 +652,161 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         size = source.tell()
         source.seek(max(0, size - max_bytes), os.SEEK_SET)
         return source.read(max_bytes).decode('utf-8', 'replace')
+
+
+TRUST_HEADER_RE = re.compile(r'^\[projects\.("(?:[^"\\\n]|\\.)*")\]\s*$', re.M)
+FOREIGN_TRUST_MAX_PATHS = 256   # bounds the work; a larger change stays a finding
+FOREIGN_TRUST_MAX_BYTES = 1 << 20   # a default config over 1 MiB is not inspected; its change stays a finding
+
+
+def _toml_top_level_line_starts(text: str) -> Optional[set]:
+    """One pass: the offsets that start a line at TOML top level (outside strings, comments and brackets), the
+    _toml_top_level_at rule for every line at once. Anything ambiguous (an unterminated string, four or five closing
+    quotes, an unbalanced bracket) returns None, so the caller stays conservative."""
+    starts, i, depth, n, line_start = set(), 0, 0, len(text), True
+    while i < n:
+        if line_start and depth == 0:
+            starts.add(i)
+        line_start = False
+        c = text[i]
+        if c == '\n':
+            line_start, i = True, i + 1
+            continue
+        if c == '#':
+            i = text.find('\n', i)
+            if i < 0:
+                break
+            continue
+        if c in '"\'':
+            triple = text.startswith(c * 3, i)
+            j = i + (3 if triple else 1)
+            while True:
+                if j >= n or (not triple and text[j] == '\n'):
+                    return None
+                if c == '"' and text[j] == '\\':
+                    j += 2
+                    continue
+                if text.startswith(c * 3, j) if triple else text[j] == c:
+                    j += 3 if triple else 1
+                    break
+                j += 1
+            if triple and text[j:j + 1] == c:
+                return None
+            i = j
+            continue
+        if c in '[{':
+            depth += 1
+        elif c in ']}':
+            depth -= 1
+            if depth < 0:
+                return None
+        i += 1
+    return starts
+
+
+def _top_level_trust_headers(raw: str, starts: set) -> Optional[set]:
+    """The paths of real top-level `[projects."<path>"]` headers (a match inside a multi-line string is not at a
+    top-level line start); a top-level header whose quoted path does not decode returns None (stay conservative)."""
+    paths = set()
+    for match in TRUST_HEADER_RE.finditer(raw):
+        if match.start() not in starts:
+            continue
+        try:
+            path = json.loads(match.group(1))
+        except ValueError:
+            return None
+        if not isinstance(path, str):
+            return None
+        paths.add(path)
+    return paths
+
+
+def _strip_trust_entries(raw: str, starts: set, paths) -> Optional[str]:
+    """Remove one exact `[projects."<path>"]` + `trust_level = "trusted"` entry per path, each at a top-level line start
+    and followed by another table header or the end (so it cannot adopt keys). Positions come from the one-pass scan of
+    this same text; returns the rest, or None when an entry is missing or not at such a boundary."""
+    cuts = []
+    for path in paths:
+        entry = '[projects.' + json.dumps(path) + ']\ntrust_level = "trusted"\n'
+        at = raw.find(entry)
+        while at >= 0 and at not in starts:
+            at = raw.find(entry, at + 1)
+        if at < 0:
+            return None
+        tail = next((line.strip() for line in raw[at + len(entry):].splitlines() if line.strip()), '[')
+        if not tail.startswith('['):
+            return None
+        cuts.append((at, at + len(entry)))
+    rest, last = [], 0
+    for begin, finish in sorted(cuts):
+        if begin < last:
+            return None
+        rest.append(raw[last:begin])
+        last = finish
+    return ''.join(rest) + raw[last:]
+
+
+def _trust_path_key(path: str) -> str:
+    """Compare paths as the file system would: resolved, no trailing slash, case-folded on macOS (case-insensitive by
+    default). A path that cannot be resolved (a NUL byte, for example) raises ValueError."""
+    key = os.path.realpath(path.rstrip('/') or '/')
+    return key.casefold() if sys.platform == 'darwin' else key
+
+
+def _blank_runs_normalized(text: str) -> str:
+    """Removing a table leaves its separating blank lines; runs of blank lines (and the file's leading and trailing
+    blank lines) do not change a TOML setting outside a multi-line string, so they are normalized before comparing."""
+    return re.sub(r'\n(?:[ \t]*\n)+', '\n\n', '\n' + text.strip('\n') + '\n')
+
+
+def default_home_foreign_trust_only(before: dict, after: dict, workspaces) -> Optional[dict]:
+    """P0 (owner 2026-10-06): under an isolated CODEX_HOME the default ~/.codex/config.toml is not the config the run uses.
+    A change there that only adds or removes whole `[projects."<path>"] trust_level = "trusted"` tables, for paths that are
+    not this run's own trust paths (workspace, clone, linked-worktree main root), is another process: a Codex on the
+    default home, or an operator restore. Returns {'added': [...], 'removed': [...]}; anything else returns None and stays
+    a finding. A trust entry for this run's OWN path in the default home is not foreign: it would mean the turn's Codex
+    wrote the default home despite CODEX_HOME, which is what the default-config snapshot exists to catch (R20-0a).
+    Accepted residual of the comparison: only blank-line runs are normalized, so a change that adds or removes blank
+    lines alone inside a multi-line string would also pass (it sets nothing the run uses)."""
+    old, new = before.get('raw'), after.get('raw')
+    if old is None or new is None or '\ufffd' in old or '\ufffd' in new:   # an undecodable file fails closed
+        return None
+    if max(len(old.encode('utf-8')), len(new.encode('utf-8'))) > FOREIGN_TRUST_MAX_BYTES:
+        return None
+    old_starts, new_starts = _toml_top_level_line_starts(old), _toml_top_level_line_starts(new)
+    if old_starts is None or new_starts is None:
+        return None
+    old_heads, new_heads = _top_level_trust_headers(old, old_starts), _top_level_trust_headers(new, new_starts)
+    if old_heads is None or new_heads is None:
+        return None
+    added, removed = sorted(new_heads - old_heads), sorted(old_heads - new_heads)
+    if (not added and not removed) or len(added) + len(removed) > FOREIGN_TRUST_MAX_PATHS:
+        return None
+    try:
+        own = {_trust_path_key(path) for workspace in workspaces for path in _codex_trust_paths(workspace)}
+        if own & {_trust_path_key(path) for path in (*added, *removed)}:
+            return None
+    except ValueError:
+        return None
+    new_rest, old_rest = _strip_trust_entries(new, new_starts, added), _strip_trust_entries(old, old_starts, removed)
+    if new_rest is None or old_rest is None or _blank_runs_normalized(new_rest) != _blank_runs_normalized(old_rest):
+        return None
+    return {'added': added, 'removed': removed}
+
+
+def reclassify_default_home_trust(changes: dict, before: dict, after: dict, workspaces) -> dict:
+    """P0: in place, a codex_default_config finding that is only foreign trust tables becomes the expected change
+    `foreign-default-home-trust-entry` (recorded in the receipt, never voiding the turn). Only runs whose Codex home is
+    not the default have that snapshot (global_config_snapshot), so a run on the default home is unchanged. Any other
+    change to the default config stays a finding (decision (a): the run cannot tell it from its own escape)."""
+    for row in [row for row in changes['findings'] if row['file'] == 'codex_default_config'
+                and row.get('reason') == 'unexpected-content-change']:
+        if (delta := default_home_foreign_trust_only(before['codex_default_config'], after['codex_default_config'], workspaces)):
+            changes['findings'].remove(row)
+            changes['expected_changes'].append({'file': 'codex_default_config', 'change': 'foreign-default-home-trust-entry',
+                                                **delta})
+    changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
+    return changes
 
 
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex read-only roles get a per-dispatch temp root
@@ -1961,11 +2135,6 @@ class ReadOnlyTurnVoided(ValueError):
         self.restored = restored
 
 
-class PluginUpdateTurnVoided(ValueError):
-    """field21: in efficient mode, a turn during which only a normal plugin update outside the run rewrote installed_plugins.json;
-    its result is never used and invoke() re-dispatches the turn once on a fresh global-config baseline."""
-
-
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -2004,6 +2173,9 @@ class Coordinator:
         upgraded = None
         if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
             saved_state = json.loads(self.state_path.read_text())
+            self.state = saved_state
+            self._review_report_args(saved_state['config'])
+            if args.action in ('note', 'reject'): self._refuse_report_feedback()
             args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
             if requested and requested != args.safety_mode:
                 probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
@@ -2110,6 +2282,7 @@ class Coordinator:
                                         self.args.claude_bin, self.args.gate_prompt, self.args.config)
             if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
             self._review_only_args(None, self._parent_spec() if args.supersedes else None)
+            self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -2338,6 +2511,8 @@ class Coordinator:
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
+        if getattr(self.args, 'review_report', None):   # LG2-a1, as F2
+            config.update(review_report=True, review_aspects=list(self.args.review_aspects))   # LG2-b1
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -2773,8 +2948,10 @@ class Coordinator:
         if report.get('author_flags_digest') != self.author_flags_digest():
             return False, 'permission probe author flags do not match this run'
         author_probe = report.get('author_permission_probe', {})
-        expected_author_status = report['status'] if self.args.author_vendor == 'codex' else 'PASS'
-        if self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
+        report_mode = self.state['config'].get('review_report')
+        expected_author_status = ('NOT-APPLICABLE' if report_mode else
+                                  report['status'] if self.args.author_vendor == 'codex' else 'PASS')
+        if not report_mode and self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
             return False, 'permission probe Claude author rules do not match this run'
         if (not waived and author_probe.get('status') != expected_author_status) or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
             return False, 'permission probe author permission status is not current'
@@ -2809,7 +2986,8 @@ class Coordinator:
         if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
         versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
         if 'UNAVAILABLE' in versions: return None
-        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions}
+        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions,
+                  **({'review_report': True} if self.state['config'].get('review_report') else {})}   # LG2-a2: report and ordinary entries never share a key
         return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
 
     def _probe_cache_put(self, keyed: Optional[tuple[str, dict]], body: dict) -> None:   # the one private-dir + symlink-checked write path of an entry or a tombstone
@@ -3917,7 +4095,7 @@ class Coordinator:
 
     def hold(self, reason: str, terminal_kind: Optional[str] = None, rate_limited: bool = False) -> str:
         self._publication_guard()
-        if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED'):
+        if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED', 'REPORTED'):
             return self.state['status']
         if reason == 'rejected-tree':
             author = next((r for r in reversed(self.state['turns']) if r.get('role') == 'author'), {})
@@ -3945,6 +4123,9 @@ class Coordinator:
             self.state['rate_limit'] = {key: last.get(key) for key in ('role', 'phase', 'sequence', 'reset_hint')}
         else:
             self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
+        if (self.state.get('config') or {}).get('review_report'):
+            self._report_mark(False, reason)
+            self._write_review_report()
         if terminal_kind:
             self.state['terminal_hold_kind'] = terminal_kind
         elif not keep_rejection_limit:
@@ -3999,6 +4180,7 @@ class Coordinator:
         return self.hold('rejected-tree', terminal_kind='rejection_limit') if self.rejected_tree() else 'HOLD'
 
     def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
+        self._refuse_report_feedback()
         self._publication_guard()
         intent = self.state.get('scope_change_intent')
         target = self.run_dir.with_name(self.run_dir.name + '-successor')
@@ -4072,6 +4254,7 @@ class Coordinator:
                     '\nSuccessor: ' + str(spec_path) + '\n')
 
     def note(self, text: Optional[str], file: Optional[str]) -> str:
+        self._refuse_report_feedback()
         self._publication_guard()
         if self.state['status'] != 'HOLD':
             raise ValueError('note requires a HOLD run; DONE uses reject')
@@ -4130,6 +4313,7 @@ class Coordinator:
         return note_id
 
     def accept(self) -> str:
+        self._refuse_report_accept()
         self._publication_guard()
         if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
                 and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
@@ -4388,6 +4572,7 @@ class Coordinator:
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
+        self._refuse_report_feedback()
         self._publication_guard()
         if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
             raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
@@ -4587,6 +4772,7 @@ class Coordinator:
         self.write_ledger()
 
     def resume_polish(self) -> str:
+        if self.state['config'].get('review_report'): raise ValueError('report mode refuses resume --polish')
         self._publication_guard()
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
@@ -5136,6 +5322,53 @@ class Coordinator:
         try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text())
         except (OSError, ValueError): return {}
 
+    def _review_report_args(self, saved: Optional[dict]) -> None:
+        """LG2-a1: report mode is fixed at creation; omission on resume keeps the saved entry."""
+        requested = getattr(self.args, 'review_report', None)
+        if saved is not None:
+            if requested is not None and bool(requested) != bool(saved.get('review_report')):
+                raise ValueError('resume configuration differs: review_report (fixed when the run was created)')
+            self.args.review_report = bool(saved.get('review_report'))
+        if not self.args.review_report:
+            if getattr(self.args, 'review_aspects', None) is not None:
+                raise ValueError('--aspects needs --review-report')
+            return
+        if saved is None and self.args.supersedes:
+            raise ValueError('--review-report starts a fresh review request; it takes no --supersedes')
+        if not (saved or {}).get('review_only', self.args.review_only):
+            raise ValueError('--review-report needs --review-only')
+        if self.args.auto_commit or (saved or {}).get('auto_commit'):
+            raise ValueError('--review-report refuses --auto-commit true')
+        if self.args.stop_after_plan:
+            raise ValueError('--review-report refuses --stop-after-plan')
+        if (saved or {}).get('adversarial_gate', self.args.adversarial_gate) == 'off':
+            raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
+        if self.args.polish:
+            raise ValueError('report mode refuses resume --polish')
+        requested = self.args.review_aspects   # LG2-b1: the aspect subset, fixed at creation
+        if requested is not None:
+            aspects = [name.strip() for name in requested.split(',') if name.strip()] if isinstance(requested, str) else list(requested)
+            if not aspects or any(name not in worktree_lifecycle.REPORT_ASPECTS for name in aspects):
+                raise ValueError('--aspects takes a comma list of ' + ','.join(worktree_lifecycle.REPORT_ASPECTS))
+            aspects = [name for name in worktree_lifecycle.REPORT_ASPECTS if name in aspects]
+            if saved is not None and aspects != saved.get('review_aspects', list(worktree_lifecycle.REPORT_ASPECTS)):
+                raise ValueError('resume configuration differs: review_aspects (fixed when the run was created)')
+        self.args.review_aspects = (saved.get('review_aspects', list(worktree_lifecycle.REPORT_ASPECTS)) if saved is not None
+                                    else aspects if requested is not None else list(worktree_lifecycle.REPORT_ASPECTS))
+
+    def dispatched_vendors(self) -> tuple:
+        """The vendors a run can dispatch; a report run never dispatches the author (LG2-a2)."""
+        roles = (self.args.reviewer_vendor, self.args.gate_vendor)
+        return roles if self.state['config'].get('review_report') else (self.args.author_vendor, *roles)
+
+    def _refuse_report_accept(self) -> None:
+        if self.state['config'].get('review_report'):
+            raise ValueError('report mode has nothing to accept: a report run ends at REPORTED')
+
+    def _refuse_report_feedback(self) -> None:
+        if self.state['config'].get('review_report'):
+            raise ValueError('report mode refuses note and reject, including --scope-change; start a new review request')
+
     def _review_only_args(self, saved: Optional[dict], parent: Optional[dict] = None) -> None:
         """--review-only/--base: a new run resolves the base once; a later command keeps the frozen values unless it names
         them, and a different value is refused like any other configuration change. A scope-change successor (parent = its
@@ -5548,8 +5781,9 @@ class Coordinator:
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None) -> dict:
+        if role == 'author' and self.state['config'].get('review_report'):
+            raise RuntimeError('report mode refuses every author dispatch')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
-        plugin_redispatched = False                                      # field21: one re-dispatch per invoke after a plugin update
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
@@ -5568,15 +5802,6 @@ class Coordinator:
                                 self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
                                 self._drop_scratch(scratch)
                             except RuntimeError: pass
-                        if isinstance(exc, RuntimeError) and isinstance(exc.__cause__, PluginUpdateTurnVoided):   # field21
-                            if plugin_redispatched: raise RuntimeError(f'{exc}; again after one re-dispatch{PLUGIN_UPDATE_HINT}') from exc
-                            self._redispatch_budget(phase, exc)
-                            plugin_redispatched = True
-                            turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request was discarded because the '
-                                            'global plugin registry changed while it ran (recognized as a normal plugin update). Answer '
-                                            'the request again on the current tree.')
-                            print(f'NOTE: {exc}; re-dispatching the {role} turn once on a fresh global-config baseline')
-                            continue
                         if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
                                 and exc.__cause__.restored): raise
                         if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
@@ -5672,8 +5897,11 @@ class Coordinator:
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
-        if self.state['invocations_used'] >= self.args.max_invocations - self.state.get('q_reserved', 0):
-            raise RuntimeError('invocation limit reached')
+        limit = self.args.max_invocations - self.state.get('q_reserved', 0)
+        if self.state['config'].get('review_report'):
+            limit = min(limit, self._report_budget())
+        if self.state['invocations_used'] >= limit:
+            raise RuntimeError('invocation limit reached' + (f' (report budget {limit})' if self.state['config'].get('review_report') else ''))
         if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
         timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
                            else self.args.timeout)
@@ -5862,7 +6090,6 @@ class Coordinator:
                 self._record_ignored_config(receipt, config_before, ignored_config.inventory(
                     snapshot_workspace, lambda names: self._ignored_paths(snapshot_workspace, names)))
         voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
-        plugin_void = None   # field21: set below when only a normal plugin update changed the global config (efficient mode)
         try:
             if control_problem: raise ValueError(control_problem)
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
@@ -5889,6 +6116,7 @@ class Coordinator:
                 changes['other_vendor_changes'] = [key for key in changes['before'] if not key.startswith(vendor_prefix) and changes['before'][key]['sha256'] != changes['after'][key]['sha256']]
                 changes['findings'] = [row for row in changes['findings'] if row['file'].startswith(vendor_prefix)]
                 changes['expected_changes'] = [row for row in changes['expected_changes'] if row['file'].startswith(vendor_prefix)]
+                reclassify_default_home_trust(changes, vendor_config_before, config_after, [active_workspace, self.workspace])   # P0
                 changes['warnings'] = changes['warnings'] if receipt['vendor'] == 'codex' else []
                 changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
                 receipt['global_config_changes'] = changes
@@ -5899,8 +6127,14 @@ class Coordinator:
                         changes['plugin_update'] = update   # field21: recorded in both modes
                     if not update or self.strict or voided is not None or touched:
                         raise ValueError(message + (PLUGIN_UPDATE_HINT if update else ''))
-                    plugin_void = PluginUpdateTurnVoided(message + ' (a normal plugin update outside the run: ' + ', '.join(
-                        f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update) + '); the turn is void')
+                    # FIELD-24 (efficient): the running CLI loaded its plugins at start and the old versioned cache stays on
+                    # disk, so the turn's work stands; the next turn starts on the new registry. Recorded, never voided.
+                    versions = ', '.join(f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update)
+                    changes['findings'] = [row for row in changes['findings'] if row['file'] != 'claude_plugins']
+                    changes['status'] = 'PASS'
+                    changes['next_turn_registry'] = 'the next turn starts on the updated plugin registry: ' + versions
+                    print(f'NOTE: a normal plugin update outside the run during the {role} turn ({versions}); the turn '
+                          'is kept and the next turn starts on the updated registry')
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -5984,8 +6218,6 @@ class Coordinator:
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
-            if plugin_void is not None:   # field21: after every check of this turn, so any of them still leads; before the session update
-                raise plugin_void
             if not fresh:
                 if session:
                     self.state['sessions'][role] = session
@@ -6315,6 +6547,8 @@ class Coordinator:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
         (legacy Step 3.7) run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
         hit or finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
+        if self.state['config'].get('review_report'):
+            return self._report_security_turn()
         life = self.state['lifecycle']
         request = worktree_lifecycle.stage_request(life, 'security')
         tree = git_snapshot(self.workspace)[0]
@@ -6360,6 +6594,124 @@ class Coordinator:
             self.hold('; '.join(reasons))
         else:   # acceptance pending: accept --expect (W3b) delivers it
             self.done(expected=after, lifecycle_stage='DONE')
+
+    def _report_security_turn(self) -> None:
+        """LG2-a3, report mode: the sensitive path scan and the preflight results become security findings, the
+        security reviewer always runs, and the run ends at REPORTED. A preflight that could not scan, a failed security
+        review or a tree change stays a HOLD (marking the report incomplete); nothing here blocks on a finding."""
+        life = self.state['lifecycle']
+        request = worktree_lifecycle.stage_request(life, 'security')
+        tree = git_snapshot(self.workspace)[0]
+        if tree != life['candidate_oid']:
+            raise RuntimeError('SECURITY tree differs from the reviewed report tree; restore it and resume, or abort')
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.save()
+        sensitive = self._sensitive_paths()
+        preflight = self._security_preflight(request['request_id'])
+        if preflight.get('status') not in ('clean', 'blocked', 'review-required'):   # it could not scan: a HOLD class
+            raise RuntimeError(preflight.get('reason') or 'security preflight did not complete')
+        changed = set(self._changed_paths(deleted=True))   # spec §2.3: "a secret or a sensitive path in the PR"
+
+        def row_for(kind: str, path: str, summary: str, what: str) -> dict:
+            if path in changed and os.path.lexists(self.workspace / path):   # carried: in the change AND in the tree
+                return {'severity': 'CRITICAL', 'security': True, 'file': path, 'summary': f'[class: {kind}] {summary}',
+                        'body': f'The change carries {what}.', 'failure_scenario': 'Merging the change publishes it.'}
+            if path in changed:   # deleted or renamed away, staged or not: downgraded, not dropped (it stays in history)
+                return {'severity': 'MINOR', 'security': True, 'file': path, 'summary': f'[class: {kind}-removed] {summary}',
+                        'body': f'{what[0].upper() + what[1:]} is removed by this change; it stays in the repository history.',
+                        'failure_scenario': 'None from this change; the history still holds it.'}
+            return {'severity': 'MINOR', 'security': True, 'file': path,   # gate a3: downgraded, not dropped
+                    'summary': f'[class: {kind}-preexisting] {summary}',
+                    'body': f'{what[0].upper() + what[1:]} is already in the repository, not introduced by this change.',
+                    'failure_scenario': 'None from this change; the repository already carries it.'}
+        rows = [row_for('sensitive-path', row['path'], f"{row['path']} ({row['category']})",
+                        f"a sensitive path: {row['path']} ({row['category']})") for row in sensitive]
+        seen = set()   # gate a3: preflight reports a committed file twice (worktree and index); one finding each
+        for row in preflight.get('findings', []):
+            if (key := (row['rule'], row['path'], row['line'])) in seen:
+                continue
+            seen.add(key)
+            where = f"{row['path']}" + (f":{row['line']}" if row['line'] else '')
+            rows.append(row_for('secret', row['path'], f"{row['rule']} in {where}",
+                                f"a secret matching security preflight rule {row['rule']} in {where} (value not shown)"))
+        if any(Path(path).name == '.gitignore' for path in changed):   # repository-wide coverage, reported only then
+            rows += [{'severity': 'MINOR', 'security': True, 'file': '.gitignore',
+                      'summary': f'.gitignore does not cover {category}', 'body': f'.gitignore does not cover {category}.',
+                      'failure_scenario': 'Such files could be committed later.'} for category in preflight.get('uncovered_ignore', [])]
+        self.record_findings('security-preflight', 'SECURITY', life['epoch'], rows)
+        self.write_ledger()
+        review = self._security_review_turn(tree, request['request_id'])
+        reason = review['reason'] if review['status'] == 'HOLD' else None   # findings are report content; a failed role HOLDs
+        if (after := git_snapshot(self.workspace)[0]) != tree:
+            reason = 'SECURITY tree changed during the stage; restore it and resume, or abort'
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
+            **request, 'status': 'HOLD' if reason else 'READY', 'output_oid': after,
+            'route': 'HOLD' if reason else 'REPORTED', 'sensitive_paths': sensitive, 'preflight': preflight, 'review': review})
+        for key in ('security_turn', 'security_review'):
+            self.state['lifecycle'].pop(key, None)
+        if reason:
+            self.hold(reason)
+        else:
+            self.reported()
+
+    def reported(self) -> str:
+        """LG2-a3: the terminal of a report run. Nothing is delivered, so nothing is accepted; findings stay findings."""
+        self.state['lifecycle']['stage'] = 'REPORTED'
+        self.state.update(status='REPORTED', next='reported', completed_at=time.time())
+        self._report_mark(True)
+        self.save()
+        self._write_review_report()
+        self.write_ledger()
+        self.write_comparison()
+        self.write_open_findings()
+        self.write_usage()
+        self._progress_terminal('REPORTED')
+        return 'REPORTED'
+
+    def _polish_specialists(self, paths: list[str]) -> tuple:
+        """POLISH-Q's specialists; a report run uses its aspect subset and the two report-only analyzers (LG2-b1)."""
+        config = self.state['config']
+        if config.get('skip_quality_polish'):
+            return ()
+        if not config.get('review_report'):
+            return worktree_lifecycle.specialists(paths)
+        base = config.get('review_base') or 'HEAD'
+        diff = self._git(['diff', '--no-ext-diff', '--no-textconv', '-U0', base, '--'])
+        untracked = [path for path in self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0') if path]
+        added = ''.join('+' + line + '\n' for path in untracked if (self.workspace / path).is_file()
+                        for line in (self.workspace / path).read_text(errors='replace').splitlines())
+        return worktree_lifecycle.report_specialists(paths, config.get('review_aspects') or worktree_lifecycle.REPORT_ASPECTS,
+                                                     worktree_lifecycle.touches_comment_lines(diff + added))
+
+    def _write_review_report(self) -> None:
+        """LG2-b1: review-report.md in the run directory, at REPORTED and at every HOLD (marked incomplete)."""
+        atomic_text(self.run_dir / 'review-report.md', review_report.render(self.state))
+
+    def _report_mark(self, complete: bool, reason: Optional[str] = None) -> None:
+        """LG2-a3: the report's completeness, for the report file (b2). A HOLD marks it incomplete and names the stages
+        that did not complete."""
+        receipts = (self.state.get('lifecycle') or {}).get('receipts', [])
+        progress = self.state.get('report_progress') or {}   # set only when a stage's result moved the run on
+        missing = [name for name, ran in (
+            ('EXEC reviewer and shadow', bool(progress.get('exec_review'))),
+            ('adversarial gate', bool(progress.get('gate'))),
+            ('POLISH-Q specialists', any(r.get('stage') == 'POLISH-Q' and r.get('status') == 'READY' for r in receipts)),
+            ('SECURITY', any(r.get('stage') == 'SECURITY' and r.get('route') == 'REPORTED' for r in receipts))) if not ran]
+        self.state['report'] = {'complete': complete, 'hold_reason': reason, 'not_completed': [] if complete else missing}
+
+    def _report_budget(self) -> int:
+        """LG2-a3: a report run's invocation budget, set by its role count (reviewer, shadow, gate, the selected
+        specialists, the security reviewer) plus the permission-probe turns a2 kept (the reviewer probe, and the gate
+        probe when the gate vendor differs), each with one retry. Frozen at first use; the --max-invocations cap still applies."""
+        if (budget := self.state.get('report_budget')) is None:
+            if git_snapshot(self.workspace)[0] != (self.state.get('review_only') or {}).get('candidate_tree_sha256'):
+                raise RuntimeError('the report tree changed since the run was created; restore it and resume, or abort')
+            names = self._polish_specialists(self._changed_paths())
+            roles = 1 + (self.args.shadow == 'on') + 1 + len(names) + 1
+            probes = 1 + (self.args.gate_vendor != self.args.reviewer_vendor)
+            budget = self.state['report_budget'] = 2 * (roles + probes)
+            self.save()
+        return budget
 
     def _security_review_turn(self, tree: str, request_id: str) -> dict:
         """Fresh security reviewer over the clean scan: any open finding of its own HOLDs (no repair); on the new
@@ -6555,7 +6907,8 @@ class Coordinator:
             raise RuntimeError('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
         last = next((row for row in reversed(life['receipts']) if row['stage'] == 'POLISH-Q'), {})
         blockers = [row['id'] for row in self.blocking_open_findings() if row.get('owner_role', '').startswith('specialist:')]
-        if blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
+        report_mode = self.state['config'].get('review_report')
+        if not report_mode and blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
             raise RuntimeError('POLISH-Q blockers need a fix on a new tree, not a re-review: ' + ', '.join(blockers))
         request = worktree_lifecycle.stage_request(life, 'specialists')
         if life['pending'] != request:   # a new attempt; a replay keeps the specialists it already completed
@@ -6563,7 +6916,7 @@ class Coordinator:
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
         paths = self._changed_paths()
-        names = () if self.state['config'].get('skip_quality_polish') else worktree_lifecycle.specialists(paths)
+        names = self._polish_specialists(paths)
         done = self.state['lifecycle']['specialist_done']
         if (need := len([name for name in names if name not in done])) > (
                 self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
@@ -6576,12 +6929,18 @@ class Coordinator:
                 self.save()
         blocking = self.blocking_open_findings()
         tree = git_snapshot(self.workspace)[0]
-        receipt = {**request, 'status': 'HOLD' if blocking or tree != request['candidate_oid'] else 'READY',
+        receipt = {**request, 'status': 'HOLD' if (blocking and not report_mode) or tree != request['candidate_oid'] else 'READY',
                    'output_oid': tree, 'specialists': list(names), 'specialist_turns': [done[name] for name in names],
                    'skipped': not names}   # skip_quality_polish: a no-op receipt
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
         self.state['lifecycle'].pop('specialist_done', None)
-        if blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
+        if report_mode:   # LG2-a2: specialists only report; no fix leg, no blocker gate
+            if tree != request['candidate_oid']:
+                self.hold('POLISH-Q tree differs from the reviewed report tree; inspect, then abort')
+            else:   # LG2-a3: on to the report SECURITY stage
+                self.state['lifecycle']['stage'] = 'SECURITY'
+                self.state['next'] = 'security'
+        elif blocking and all(row.get('owner_role', '').startswith('specialist:') for row in blocking):
             self.state['lifecycle']['fix_base'] = tree
             self.state.update(phase='EXEC', next='polish-fix',
                               delivered_review=worktree_lifecycle.delivered_findings('polish-q', blocking))
@@ -6633,6 +6992,9 @@ class Coordinator:
             try:
                 result = self.invoke('reviewer', 'POLISH-Q', prompt, review_schema(), fresh=True)
             finally:   # reconcile the reservation: protocol retries add, refused or refunded launches give back
+                if self.state['config'].get('review_report'):   # LG2-b1: every sequence of this dispatch is this specialist's
+                    life.setdefault('specialist_sequences', {}).update(
+                        {str(seq): name for seq in range(before + 1, self.state['sequence'] + 1)})
                 refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
                                if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
                 if delta := self.state['sequence'] - before - refunded - 1:
@@ -6789,6 +7151,10 @@ class Coordinator:
                 if answer['status'] == 'APPROVE':
                     answer['status'] = 'REVISE'
             self.render(shadow, 'shadow', phase)
+            if self.state['config'].get('review_report') and shadow['answer']['status'] == 'HOLD':
+                self.state['pending_reviewer_result_sequence'] = None
+                self.hold('shadow HOLD')
+                return
         limit = self.args.max_plan_rounds if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
         advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
@@ -6861,6 +7227,12 @@ class Coordinator:
             rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history='PLAN reviewer REVISE', hold_reason=reason)
             self.state['pending_reviewer_result_sequence'] = None
             self.hold(reason)
+            return
+        if phase == 'EXEC' and self.state['config'].get('review_report'):
+            self.state['pending_reviewer_result_sequence'] = None
+            self.state.setdefault('report_progress', {})['exec_review'] = True   # LG2-a3: a verdict that reached the gate route
+            self.state['next'] = 'gate'
+            self.save()
             return
         if answer['status'] == 'REVISE':
             rounds = self.state[f'{phase.lower()}_rounds']
@@ -7089,6 +7461,13 @@ class Coordinator:
         if self.state['exec_comparisons']:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
+        if self.state['config'].get('review_report'):
+            self.state.setdefault('report_progress', {})['gate'] = True
+            self.state['next'] = 'polish-q'
+            if worktree_lifecycle.is_worktree(self.state):
+                self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
+            self.save()
+            return
         structural = self._structural_block_hold('gate', result['sequence'], valid)
         if valid:
             if self.state['config'].get('lifecycle_mode') == 'on':
@@ -7811,7 +8190,7 @@ class Coordinator:
                        'author_flags': self.author_flags(),
                        'author_flags_digest': self.author_flags_digest(),
                        'author_permission_probe': {
-                           'status': 'NOT-APPLICABLE' if self.args.author_vendor != 'codex' else 'NOT-ATTEMPTED'},
+                           'status': 'NOT-APPLICABLE' if self.state['config'].get('review_report') or self.args.author_vendor != 'codex' else 'NOT-ATTEMPTED'},
                        'claude_flag_semantics': 'UNVERIFIED until this probe runs with the real CLI'}
         probe_sequence = self.state['sequence'] + 1
         try:
@@ -7858,8 +8237,8 @@ class Coordinator:
                       } if sandbox_probe_paths else None),
                       'claude_sandbox_write_denied': False if sandbox_probe_paths else None}
             global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-            report['global_config_changes'] = attribute_global_config_changes(
-                global_before, global_after, [self.workspace])
+            report['global_config_changes'] = reclassify_default_home_trust(attribute_global_config_changes(   # P0
+                global_before, global_after, [self.workspace]), global_before, global_after, [self.workspace])
             if report['global_config_changes']['status'] != 'PASS':
                 report['failure_reasons'].append('unexpected-global-config-change')
             if escaped_probe_targets:
@@ -7881,7 +8260,8 @@ class Coordinator:
         failures += (escapes := self._codex_escape_failures(codex, result) + (tracked_escape := self._tracked_file_escape(tracked)))
         miss = miss or ', '.join(escapes)
         try:
-            author_probe = self._author_permission_probe()
+            author_probe = ({'status': 'NOT-APPLICABLE', 'reason': 'report mode has no author sandbox'}
+                            if self.state['config'].get('review_report') else self._author_permission_probe())
         except Exception as exc:
             author_probe = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc)}
         report = {**base_report, 'status': probe_turn_status(allowed, outcomes, unchanged, miss),
@@ -7915,14 +8295,14 @@ class Coordinator:
                 report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
                 report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'
         global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-        if 'codex' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) and (after_guard := self.codex_capabilities())['status'] != 'PASS':   # CG-3: a Codex probe turn can add capabilities, so a PASS must predict the pre-dispatch guard
+        if 'codex' in self.dispatched_vendors() and (after_guard := self.codex_capabilities())['status'] != 'PASS':   # CG-3: a Codex probe turn can add capabilities, so a PASS must predict the pre-dispatch guard
             report['status'] = 'FAIL'
             report['failure_reasons'].append('codex-capability-guard-after-probe: ' + '; '.join(after_guard['issues']))
         expected_trust_paths = [self.workspace]
         if author_probe.get('workspace'):
             expected_trust_paths.append(Path(author_probe['workspace']))
-        report['global_config_changes'] = attribute_global_config_changes(
-            global_before, global_after, expected_trust_paths)
+        report['global_config_changes'] = reclassify_default_home_trust(attribute_global_config_changes(   # P0
+            global_before, global_after, expected_trust_paths), global_before, global_after, expected_trust_paths)
         if report['global_config_changes']['status'] != 'PASS':
             report['status'] = 'FAIL'
             report['failure_reasons'].append('unexpected-global-config-change')
@@ -7955,10 +8335,10 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.strict and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
-        if self.strict and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.claude_author_verified())[0]:
             raise ValueError(ok[1])
         return self._drive_loop()
@@ -8734,6 +9114,15 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         while self.state['status'] == 'ACTIVE':
+            if self.state['config'].get('review_report'):
+                record = self.state.get('review_only') or {}   # no writer: the frozen tree holds before EVERY dispatch
+                if git_snapshot(self.workspace)[0] != record.get('candidate_tree_sha256'):
+                    return self.hold('the report tree changed since the run was created; restore it from '
+                                     + str(record.get('mirror')) + ' and resume, or abort')
+                if self.state['next'] not in ('reviewer', 'gate', 'polish-q', 'security') or self.state['phase'] != 'EXEC':
+                    return self.hold('report mode refuses a writer or unsupported phase')
+                if self.state['next'] in ('polish-q', 'security') and not worktree_lifecycle.is_worktree(self.state):
+                    return self.hold('report POLISH-Q requires --lifecycle-mode on; start a new run')
             if self.state['next'] != 'author': self.refuse_rejected_tree(stale_done=True)
             if (self.state['next'] == 'reviewer' and worktree_lifecycle.is_worktree(self.state) and
                     self.state['lifecycle']['stage'] == 'POLISH-Q'):   # the fix author saved before polish-recheck
@@ -8769,6 +9158,7 @@ class Coordinator:
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
+        if self.state['status'] == 'REPORTED': return 'REPORTED'   # LG2-a3: terminal
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
                                   bool(self.state.get('uncertain_active') or self.state.get('active')))
         if self.args.acknowledge_codex_trust:
@@ -9052,6 +9442,10 @@ def parser() -> argparse.ArgumentParser:
                    help='HOLD once right after PLAN approval; a later resume enters EXEC')
     p.add_argument('--review-only', action='store_true', default=None,
                    help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
+    p.add_argument('--review-report', action='store_true', default=None,
+                   help='report on a --review-only change without writers; fixed at run creation')
+    p.add_argument('--aspects', dest='review_aspects', metavar='LIST', default=None,
+                   help='report mode: the specialist aspects, a comma list of code,errors,comments,types,tests (default all)')
     p.add_argument('--base', dest='review_base_ref', metavar='REF',
                    help=f'the review base of --review-only, an ancestor of HEAD (default {REVIEW_ONLY_DEFAULT_BASE})')
     p.add_argument('--author-subagents', choices=['on', 'off'], default='on',
@@ -9317,13 +9711,14 @@ def _execute_locked(args: argparse.Namespace) -> int:
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
         return co.refused(issue)
+    if args.action == 'accept': co._refuse_report_accept()   # LG2-a3: before an intent too
     if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
-            and 'codex' in (args.author_vendor, args.reviewer_vendor, args.gate_vendor)):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
+            and 'codex' in co.dispatched_vendors()):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
-    if (co.strict and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
+    if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
             co.state['claude_author_override'] = {
@@ -9360,7 +9755,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (co.strict and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
@@ -9385,7 +9780,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             status = co.drive()
         print(status + (' (acceptance pending)' if status == 'DONE' else
                         ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
-        return 0 if status in ('DONE', 'ACCEPTED') else 2
+        return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
     pending = co.state.get('uncertain_active') or {}
     before_config = pending.get('global_codex_before', {}).get('codex_config')
     changed_codex = (args.action == 'resume' and args.retry_uncertain and not args.polish
@@ -9399,7 +9794,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return co.refused(reason + '; run permission-probe before continuing')
     co._probe_gate_required = co.strict and not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
-        if co.state.get('status') in ('ACCEPTED', 'CLOSED'):
+        if co.state.get('status') in ('ACCEPTED', 'CLOSED', 'REPORTED'):   # LG2-a3: REPORTED is terminal too
             print(co.state['status'])
             return 0
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
@@ -9412,7 +9807,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
     print(status + (' (acceptance pending)' if status == 'DONE' else
                     ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
-    return 0 if status in ('DONE', 'ACCEPTED') else 2
+    return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
 
 
 def main(argv=None) -> int:
@@ -9466,6 +9861,7 @@ def main(argv=None) -> int:
         return 2
     if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
             and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
+            and not args.review_report \
             and not restores_run(args) and (args.safety_mode or DEFAULT_SAFETY_MODE) == 'strict':   # D-EFF: a new run's probe gate (C)
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
               'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '

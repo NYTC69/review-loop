@@ -80,6 +80,7 @@ entry; never edit history.
 
   `plan.fresh.smoke.claude` is unchanged (control fixture; already passes B3 with implicit shared `min: 1`). Each fixture's `_comment` is refreshed to `min: 1 enforced at <Ns> per ADR-4`.
 - **Consequences**: Worst-case CI wall time per the active Branch B is approximately 41 minutes (plan-quoted figure). Branch A figure (29 min) and Branch C figure (10.5 min) are recorded for completeness but do not apply. The B3 shared-mapping default (`min: 1`) is unchanged (AC-5). AC-6 is mechanically pinned via JSON-parse verification: shared `min: 1`, every per-fixture B3 override has `min: 1`, NO fixture retains `min: 0`. Per Round-1 reviewer MINOR #2 explicit framing: 240s and 480s values are extrapolated from the spike's event-rate model, validated empirically only at the NEAR_DISPATCH tier (180s probe at v2.6.31, falsified; 240s probe at v2.6.31, confirmed). The IN_DOC_RECON 360s and full-pipeline 600s values (Branch B linear scale-up) remain best-guess until a future re-measurement falsifies them; this is recorded as an explicit consequence of single-probe scoping per HANDOFF Codex-hang practice. ADR-2 is NOT mutated (append-only).
+- **Amendments**: (2026-10-05, smokefix SMOKE-TIMEOUT, commit 6af06ef) The smoke runner multiplies every case's `setup.timeout_seconds` by the paired-session test load factor `clamp(load1 / ncpu, 1, 6)` (`paired_session/timeout_scale.py`; `PAIRED_SESSION_TEST_TIMEOUT_SCALE` overrides it) and records `meta.effective_timeout_seconds`. The fixture values above are unchanged and still apply on an idle machine (factor 1). Under load, the worst-case wall time above grows by up to 6x (about 41 minutes becomes at most about 4 hours). It does not establish why `review-loop.regression.smoke.claude` SKIPped at 600 s on 2026-10-05; that cause is unknown.
 
 ---
 
@@ -182,3 +183,115 @@ entry; never edit history.
 - **Decision**: 采用 (B)。(M1) 未显式指定模型的 Codex 角色（author、reviewer、gate）默认取 `gpt-6.1-sol`；Claude 默认不变（claude-opus-5-5）。(M2) 只要有 Codex 角色取了这个默认值，就在创建 run state 之前读取 `codex --version`；低于 0.159.2 或读不出版本时拒绝，消息写明 `upgrade the Codex CLI, or pass --author-model/--reviewer-model/--gate-model gpt-6-luna`（只列取了默认值的角色）。显式指定模型的角色不受此检查。(M3) 已保存的 run 恢复时沿用冻结在 state 里的模型（ADR-9 M5），不迁移，也不做版本检查。(M4) `VERIFIED_CODEX_CLI_VERSIONS` 增加 `codex-cli 0.160.0`，依据是上述真实 probe 的 PASS 记录（`.compass/results/2026-10-04_daily-report.md` T1）。owner 2026-10-04 决定，监督者 2026-10-04 16:00 记录 harness 决定。
 - **Consequences**: 取代 ADR-9 (M1) 中 Codex 默认模型的取值，以及 ADR-10 (M1) 中 “codex→gpt-6-luna” 的默认值；ADR-9 的运营者配置、allowlist、身份检查和冻结规则（M2–M5）以及 ADR-10 的 gate 厂商规则不变。用 0.157.0 等旧 CLI 且依赖默认 Codex 模型的调用方，需要升级 CLI 或显式传 `gpt-6-luna`。permission-probe 绑定 author 模型，所以依赖默认值的运营者在升级后需要重跑一次 `permission-probe`（旧 PASS 和 probe 缓存不再命中）。版本检查只对已通过程序绑定（program_binding）的 codex 路径执行，绝不执行 workspace 指定的程序；只对会创建 state 的 run、resume、permission-probe 执行。默认改变前后的 run 成本与评审质量不能直接比较。示例配置、README 和 skills 中写死的旧默认值由 models-b 处理。
 - **Supersedes**: ADR-9 (M1) Codex default value; ADR-10 (M1) Codex default value
+
+---
+
+### ADR-13: D-OWNER-1005 — owner answers to the 2026-10-05 decision sheet
+- **Date**: 2026-10-05
+- **Status**: Accepted. The D11 keep/retire answers are provisional; see Consequences.
+- **Context**: After D-READY (ADR-6 Amendments), the supervisor put the open owner questions on one decision sheet:
+  - 11 items, 59 radio questions;
+  - input `decisions_input.json`, sha256 `6e003a6e…`, in the main checkout's `.compass/results/2026-10-05_owner-decisions/`.
+
+  The owner answered all 59 (`owner_answers_v1.json`, received about 20:20 JST, `complete: true`). The owner's caveat,
+  verbatim: "但是有一些是 keep legacy 还是 retire 的问题, 我其实不太确定. 我建议先按这个结论记下. 但是真到相关工作项的时候, 再单独和我确认一下. 反正每个 workitem 也不小. 但那个时候上下文更清晰. 我更能理解是什么问题."
+- **Options considered**: Per question, the sheet's options. Every answer below is the owner's choice.
+- **Decision**: The answers, by item.
+  - **D01** (D-LG1 review-only entry, Q1–Q9): all nine confirmed. Q1–Q3, Q5 and Q7–Q9 are implemented in v2.11.0;
+    Q4 is a documented mapping only (no code); Q6 defers to D09.
+    - Q1 `run --review-only`; Q2 default base `HEAD`; Q3 full W lifecycle through the skill, lifecycle off only for
+      CLI/harness.
+    - Q4 `--stop-after exec-round` maps to `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off`.
+    - Q5 refuse a base that is not an ancestor of `HEAD`; Q6 code-quality-loop decided in D09.
+    - Q7 the unrelated-dirty-work rule; Q8 pre-owned docs; Q9 the existing change is EXEC round 1.
+  - **D02** (smokefix): Codex review round 4 authorized ("r4"); commit after APPROVE/APPROVE_WITH_FINDINGS.
+  - **D03** (lg2-design, the review-pr port): round 4 authorized ("r4"). Q-R1..Q-R10 as recommended:
+    - Q-R1 C: report mode only in v1.
+    - Q-R2: GitHub PRs through read-only `gh`, plus any local or remote ref.
+    - Q-R3: no test command unless the operator confirms one for the review.
+    - Q-R4: off by default; one opt-in `gh pr review --comment` after a second confirmation; never approve or request
+      changes; no inline comments in v1.
+    - Q-R5: comment-analyzer and type-design-analyzer only in review-pr.
+    - Q-R6: map the ledger severities to Critical/Security/Important/Suggestions.
+    - Q-R7: a temporary self-contained clone (`--reference-if-able --dissociate`).
+    - Q-R8: `/review-loop:review-pr` follows `entry` after LG2-c (supersedes E-8 for review-pr only).
+    - Q-R10: pin the base tip and report it; ask the operator above about 100 files or 5,000 changed lines.
+    - Q-R9: the owner chose "after_lg1" (decide code-quality-loop after the first real LG1 run). D09 = A now resolves
+      it: code-quality-loop retires onto the review-only entry.
+  - **D04** (m7-s3, the D-b1 transcript scanner): redesign. The redesign has three parts:
+    - (a) bounded resolution of simple assignments and heredocs within one command, or a split between pinned-protocol
+      commands and free model commands;
+    - (b) the known tools `Skill` and `StructuredOutput`;
+    - (c) m7-s4 real transcripts as a zero-false-positive regression corpus, plus the R3 wildcard fix.
+
+    The new design then gets three review rounds.
+  - **D05** (M7 arm login isolation): `claude setup-token`, one OAuth token for every arm's config directory; verify it
+    in a rehearsal first. Pilot leftovers: clean. The supervisor removed the 4 m7-pilot directories under
+    `~/.claude/projects` at 20:25 JST.
+  - **D06** (M7 scored runs): authorize them after D04 and D05 are done. The provisional corpus decision is confirmed:
+    keep the 4 zero-hit document cases and add cases from other repositories.
+  - **D07** (F6, another vendor's global-config change): record only, accepted as a residual.
+  - **D08**: add the `tests/` pytest suite to GitHub CI; the owner authorizes the workflow change.
+  - **D09** (Q6, code-quality-loop): option A, retire onto `run --review-only` + POLISH-Q.
+    - Capability 1 (the simplifier and test-consolidation writers): keep and port. The sheet recommended defer. This is
+      the same question as D11 L117 and is provisional with it.
+    - Capability 3 (comment-analyzer, type-design-analyzer): defer to D-LG2.
+    - Capabilities 2 (reorganize), 4 (static analysis with artifacts), 5 (auto-loading design docs) and 6 (whole-project
+      docs scan): drop.
+  - **D10** (ADR-6 criteria (2) and (4), E-12). Recorded as given; D-READY already treats the gate as met, so these
+    answers do not gate retirement:
+    - criterion (2) is counted on the gate-run series;
+    - supervisor-driven toy runs with the Codex trust cleanup do not count;
+    - the driver-session overseer-cost measurement is accepted;
+    - (4b) uses the proposed size floor (a real item, default entry, lifecycle on, ACCEPTED, at least 6 files and 400
+      lines), and the owner names the next qualifying item;
+    - (4c): amend ADR-6 to accept the offline evidence;
+    - E-12: run one evidence-complete normal-shell run.
+  - **D11** (the 18 owner rows of the legacy map in `docs/paired-session-migration.md`; `Lnn` = the row's line when the
+    sheet was built). All answers are **provisional**.
+    - Keep legacy (13): L75 plan-exists auto-route; L78 `execute --plan`; L80 intermediate `--stop-after` stops; L89
+      the stage A fallback; L90 handsfree reviewer decisions; L99 `judgment_model`/`cheap_model` (add a mapping); L100
+      soft limits (add a continue path); L102 `commit_message_prefix` (add a mapping); L108 `cross_vendor_review` (add
+      a check); L117 the simplifier and test-consolidation writers (port); L119 dispute/triage (add a dispute flow);
+      L120 the Chinese delivery report (bring paired-session up to it); L135 CI and off-macOS tests.
+    - Retire (5): L104 `handsfree`; L105 `review_focus`/`review_style`/`quality_focus` (warn or drop); L107
+      `adversarial_gate_skip_paths` (delete `skip_globs`); L123 Compass checkpoint and MemPalace injection; L133 Linux
+      (open paired-session after a real Linux run).
+    - Owner note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
+- **Amends**: ADR-6 criterion (4c): it accepts the offline test evidence (D10 `amend_offline`). D-READY had already
+  treated the gate as met; this records the owner's choice for (4c).
+- **Consequences**:
+  - The D11 answers are recorded, not implemented. Before any work item implements a D11 row, the supervisor confirms
+    that row with the owner again.
+  - Until then the migration guide lists the 13 keep rows as removal work items, each needing a paired-session
+    equivalent or a re-confirmed retire, and the 5 retire rows as pending re-confirmation.
+  - D02 and D03 lift the 3-round review cap for those two units only, to one round 4. The supervisor's rule: if round
+    4 still finds problems, stop and report; there is no round 5.
+  - M7 stays optional (D-READY); D04–D06 order its preparation if it runs.
+  - Removal preconditions: `docs/paired-session-migration.md` "Deprecation status".
+- **Addendum (2026-10-05, owner answers in chat after the decision sheet)**:
+  - (a) **Post-gate repair round = A.** The rule as the supervisor put it to the owner (the owner answered "A"),
+    verbatim: "终审打回后，修复再过一轮审查，不占 3 轮上限，每次终审只给这一轮；这一轮还不过，就停下来问你".
+    - After a failed final gate, the fixes get exactly one more review round by the per-round reviewer.
+    - That round is outside the 3-round cap. It also follows an owner-authorized round 4. The basis is the
+      supervisor's question to the owner, which the owner answered "A", verbatim:
+      "smokefix 和 lg2-design 走这轮终审后的修复审查。审查工具现在最多只放行第 4 轮，会顺带改成允许这一轮。"
+    - The review ledger numbers that round after the last one (`r5-postgate` for smokefix and lg2-design). It is not a
+      general round 5: the "no round 5" rule under Consequences above still limits ordinary rounds.
+    - There is one such round per final gate. If it does not approve, the unit stops and the owner is asked; there are
+      no further rounds.
+    - 2026-10-05: smokefix's post-gate round did not pass (REQUEST_CHANGES). The owner then ruled "监工复核后收下"
+      (21:17 JST): the fix f9388b5 is accepted on supervisor review.
+    - Supervisor-local tooling (untracked): `.compass/results/2026-09-23_self-audit-roadmap/review_round.py
+      --post-gate-repair`; not part of the decision.
+  - (b) **D12 = A:** the review-only `max_exec_rounds` stays 4; there is no code change. It answers the question from
+    the ws12 run (`paired_session/docs/legacy-deprecation-readiness.md` §3.2b).
+  - (c) **Review chain ABA/BAB, as in ADR-10.** The owner, verbatim:
+    "如果 A 写, B review, 最后就 A 加自己做对抗性审查, 全新独立的 session, 不带作者上下文, 反之, 就是 BAB."
+    - The other vendor reviews the rounds.
+    - After its approval, the author's vendor runs an adversarial final review with no author context (a fresh,
+      independent session).
+    - Fixes from the final review go back to the round reviewer under (a).
+    - This applies to lane units as well as to paired-session runs.
+  - (d) The D11 rows stay provisional and are re-confirmed with the owner per work item, as recorded under Consequences
+    above (cross-reference only; nothing changes).

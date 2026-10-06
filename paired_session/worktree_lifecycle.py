@@ -115,6 +115,30 @@ def docs_denied(path, value):
     return str(value).startswith('link:') or bool(DOCS_HOLD_PARTS & set(parts)) or parts[:2] == ('docs', 'protocol')
 
 
+REPORT_ASPECTS = ('code', 'errors', 'comments', 'types', 'tests')   # LG2-b1: legacy review-pr's aspect names
+TYPE_SUFFIXES = ('.ts', '.tsx', '.py', '.rs', '.go', '.java', '.kt', '.swift')
+COMMENT_MARKERS = ('#', '//', '/*', '*', '"""', "'''", '<!--', '--')
+
+
+def report_specialists(paths, aspects=REPORT_ASPECTS, comment_lines=False):
+    """LG2-b1 (review-pr-port.md §2.4): a report run's specialists. Language reviewers by suffix always run; the
+    aspects select code-reviewer, silent-failure-hunter and pr-test-analyzer, and the two report-only analyzers:
+    comment-analyzer when a changed path is docs-like or the change touches comment lines, type-design-analyzer when
+    a changed path has a type-bearing suffix (deterministic, no model judgment)."""
+    languages = sorted({LANGUAGE_AGENTS[ext] for ext in (Path(path).suffix for path in paths) if ext in LANGUAGE_AGENTS})
+    docs_like = any(path.endswith('.md') or path.startswith('docs/') or '/docs/' in path for path in paths)
+    chosen = {'code': 'code-reviewer', 'errors': 'silent-failure-hunter', 'tests': 'pr-test-analyzer',
+              'comments': 'comment-analyzer' if docs_like or comment_lines else None,
+              'types': 'type-design-analyzer' if any(Path(path).suffix in TYPE_SUFFIXES for path in paths) else None}
+    return (*languages, *(chosen[aspect] for aspect in REPORT_ASPECTS if aspect in aspects and chosen[aspect]))
+
+
+def touches_comment_lines(diff_text):
+    """True when an added or removed line of a unified diff is a comment line (by its leading marker)."""
+    return any(line[:1] in '+-' and not line.startswith(('+++', '---')) and line[1:].lstrip().startswith(COMMENT_MARKERS)
+               for line in diff_text.splitlines())
+
+
 def specialists(paths):
     """Language reviewers for the changed paths (legacy 3.5.1 map), then the code and test quality reviewers."""
     languages = sorted({LANGUAGE_AGENTS[ext] for ext in (Path(path).suffix for path in paths) if ext in LANGUAGE_AGENTS})
