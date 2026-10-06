@@ -106,6 +106,41 @@ class GateRecheckTests(unittest.TestCase):
         self.assertIn('no invocation is left for the final gate pass', co.state['hold_reason'])
         self.assertEqual(co.state['next'], 'gate')                         # resume runs that gate pass
 
+    def polish_author_edits(self, co):   # the real fake-CLI polish author, plus the fix it makes to the tree
+        real = co.invoke
+
+        def invoke(role, phase, *args, **kwargs):
+            result = real(role, phase, *args, **kwargs)
+            if role == 'author' and co.state['polish']['active']:
+                (self.h.workspace / 'tracked.txt').write_text('simplified helper\n')
+            return result
+        return patch.object(co, 'invoke', side_effect=invoke)
+
+    def done_with_a_gate_medium(self, *extra):   # a DONE legacy run whose gate left a MEDIUM (polish off)
+        co = self.coordinator('--polish-round', 'off', *extra)
+        self.gate(co, FAKE_GATE_MINOR='1')
+        self.assertEqual((co.state['status'], co.state['acceptance_state']), ('DONE', 'PENDING'))
+        return co
+
+    def test_resume_polish_of_a_done_run_regates_its_fix_and_reaches_done(self):   # FIELD-32 gate HIGH
+        co = self.done_with_a_gate_medium()
+        with self.polish_author_edits(co):
+            self.assertEqual(co.resume_polish(), 'DONE')
+        self.assertEqual(self.gates(co), 2)                                # the fix was gated on the final tree
+        self.assertEqual(len(co.state['gate_rechecks']), 1)
+        self.assertEqual(co.state['approved_snapshot'], rc.git_snapshot(self.h.workspace)[0])
+
+    def test_a_budget_hold_resumes_into_the_gate_pass(self):   # FIELD-32 gate residual: verified by running it
+        co = self.done_with_a_gate_medium()
+        co.args.max_invocations = co.state['invocations_used'] + 2         # the polish author and reviewer, no gate
+        with self.polish_author_edits(co):
+            self.assertEqual(co.resume_polish(), 'HOLD')
+        self.assertIn('no invocation is left for the final gate pass', co.state['hold_reason'])
+        self.assertEqual((co.state['next'], co.state['acceptance_state']), ('gate', 'IN_PROGRESS'))
+        co.args.max_invocations += 5                                       # the operator raises the cap
+        self.assertEqual(co.resume(), 'DONE')
+        self.assertEqual(self.gates(co), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

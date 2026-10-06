@@ -4860,6 +4860,8 @@ class Coordinator:
             return None
         self.state.setdefault('gate_rechecks', []).append({'after_gate_sequence': sequence, 'tree': tree, 'findings': pending})
         self.state.update(next='gate', gate_ran=False)
+        if self.state.get('acceptance_state') == 'PENDING':   # resume --polish of a DONE run: not the approved tree any more,
+            self.state['acceptance_state'] = 'IN_PROGRESS'    # as author_turn does, so the stale-DONE guard lets the gate run
         limit = self.args.max_invocations - self.state.get('q_reserved', 0)
         if self.state['invocations_used'] >= limit:
             return self.hold(f"the tree changed after the last gate pass while its findings {', '.join(pending)} were open, "
