@@ -1535,6 +1535,27 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+def uncommitted_cause(state: dict) -> str:
+    """FIELD-25: why an accept left files uncommitted: auto_commit off, or a defaulted auto_commit its checks refused."""
+    reason = ((state.get('acceptance') or {}).get('delivery') or {}).get('commit_skipped')
+    return f'auto_commit skipped: {reason}' if reason else 'auto_commit off'
+
+
+class DefaultTestCommand(str):
+    """D09 §3: the parser's `npm test` default, told apart from a test command the CLI or a profile set explicitly."""
+
+
+def next_intent_command(raw_argv: list, digest: str) -> str:
+    """FIELD-25: the operator's accept/reject command with --intent-only dropped and --expect DIGEST added, ready to run;
+    the two steps and the digest binding stay."""
+    rest, skip = [], False
+    for arg in raw_argv:
+        if skip: skip = False
+        elif arg == '--expect': skip = True
+        elif arg != '--intent-only' and not arg.startswith('--expect='): rest.append(arg)
+    return shlex.join([str(Path(__file__).resolve().parents[1] / 'bin' / 'paired-session'), *rest, '--expect', digest])
+
+
 INITIAL_CHANGE_HEADING = '## Initial change (as the run was created; later fixes make it stale)\n\n'
 
 
@@ -2352,6 +2373,7 @@ class Coordinator:
                 'acceptance_state': 'IN_PROGRESS', 'approved_snapshot': None, 'rejected_digests': [],
                 'polish': {'active': False, 'completed': False, 'author_turns': 0,
                            'reviewer_turns': 0, 'fix_used': False},
+                'test_command_explicit': not isinstance(args.test_command, DefaultTestCommand),   # D09 §3
             }
             if self._pr_pins:
                 self.state['review_pr'] = self._pr_pins   # LG2-c: review-report.md and review_post.py read them
@@ -2393,7 +2415,10 @@ class Coordinator:
                                   effective_task_sha256=task_hash,
                                   item_uuid=old.get('item_uuid') or str(uuid.uuid5(uuid.NAMESPACE_URL, str(parent))),
                                   item_blockers=copy.deepcopy(spec.get('item_blockers', [])),
-                                  item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')))
+                                  item_blockers_complete=bool(spec.get('item_uuid') and spec.get('item_blockers_complete')),
+                                  test_command_explicit=bool(spec.get('test_command_explicit', self.state['test_command_explicit'])))
+                if spec.get('quality_writers') and worktree_lifecycle.is_worktree(self.state):   # D09 §3
+                    self.state['lifecycle']['quality_writers'] = copy.deepcopy(spec['quality_writers'])
             if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any probe or turn
                 self.state['lifecycle']['security_baseline'] = (
                     self._inherited_security_baseline(Path(args.supersedes).resolve()) if args.supersedes else
@@ -2547,10 +2572,11 @@ class Coordinator:
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
                 'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
-                'safety_mode')
+                'safety_mode', 'quality_writers')
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
+        if getattr(self.args, 'auto_commit_source', None): config['auto_commit_source'] = self.args.auto_commit_source   # as F2
         if getattr(self.args, 'review_report', None):   # LG2-a1, as F2
             config.update(review_report=True, review_aspects=list(self.args.review_aspects))   # LG2-b1
         gate_prompt = Path(self.args.gate_prompt).expanduser()
@@ -3111,6 +3137,8 @@ class Coordinator:
     def _validate_resume_args(self) -> None:
         if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
             raise ValueError('resume workspace/workitem differs from state')
+        if getattr(self.args, 'quality_writers_requested', None) not in (None, self.args.quality_writers):   # D09 §4
+            raise ValueError('resume configuration differs: quality_writers')
         if getattr(self.args, 'resume_timeout', None) is not None and self.args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         exec_timeout_override = getattr(self.args, 'exec_turn_timeout_explicit', False)
@@ -3863,6 +3891,12 @@ class Coordinator:
             if prior:
                 recorded.append({'id': prior['id'], **finding})
                 continue
+            if source != 'adversarial-gate' and (same := self._open_duplicate(source, finding)):   # FIELD-25: a re-report
+                same['status_history'].append({'round': origin_round, 'status': same['status'],
+                                               'evidence': f're-reported by {source} in {phase}; not a new finding'})
+                recorded.append({'id': same['id'], **finding})
+                changed = True
+                continue
             finding_id = f"F{self.state['next_finding_id']:03d}"
             self.state['next_finding_id'] += 1
             severity = str(finding['severity']).upper()
@@ -3888,6 +3922,17 @@ class Coordinator:
         if changed:
             self.write_ledger()
         return recorded
+
+    def _open_duplicate(self, source: str, finding: dict) -> Optional[dict]:
+        """FIELD-25: an open finding of the same owner, file, severity and security flag that this one re-reports: its
+        summary opens with that id ("F003 (still open) ...", a class label, case and spacing aside). Equal claims from
+        two reviewers stay two rows (two Q reviewer proofs raise the same advisory)."""
+        owner = source if source.startswith('specialist:') or source == 'security-reviewer' else None
+        claim = ' '.join(CLASS_LABEL_RE.sub('', str(finding.get('summary') or ''), count=1).lower().split())
+        return next((row for row in self.open_findings()
+                     if claim.startswith(row['id'].lower()) and not claim[len(row['id']):][:1].isalnum() and
+                     row.get('owner_role') == owner and row['file'] == finding.get('file', '') and
+                     row['severity'] == str(finding['severity']).upper() and bool(row.get('security')) == bool(finding.get('security'))), None)
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
@@ -4114,6 +4159,8 @@ class Coordinator:
                          for row in self.state['review_verdicts'])
         lines += ['', f"Final coordinator status: **{self.state['status']}**"]
         lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
+        if rows := (self.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
+            lines.append(f'Uncommitted after acceptance ({uncommitted_cause(self.state)}): ' + ', '.join(rows))
         if self.state.get('residual_risk'): lines.append('Residual risk: ' + self.state['residual_risk'])
         if self.state.get('pending_operator_note_id'):
             lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
@@ -4267,8 +4314,10 @@ class Coordinator:
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
-        atomic_json(config_path, {k: v for k, v in self._saved_config().items() if k in CONFIGURABLE_DESTS and v is not None and
-                    not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:'))})
+        atomic_json(config_path, {k: v for k, v in {'quality_writers': 'off', **self._saved_config()}.items()   # D09: a run saved
+                    if k in CONFIGURABLE_DESTS and v is not None and   # before the key is off, and so is its successor
+                    not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:')) and
+                    not (k == 'auto_commit' and self.state['config'].get('auto_commit_source'))})   # FIELD-25 gate: re-derived
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
                 'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
                 'task_sha256': hashlib.sha256(task.encode()).hexdigest(), 'base_commit': self.state['base_commit'],
@@ -4277,6 +4326,9 @@ class Coordinator:
                 'item_uuid': self.state['item_uuid'],
                 'item_blockers': pending_item_blockers(self.state, self.run_dir),
                 'item_blockers_complete': bool(self.state.get('item_blockers_complete'))}
+        spec['test_command_explicit'] = bool(self.state.get('test_command_explicit'))   # D09 §3: the successor config names it
+        if marker := (self.state.get('lifecycle') or {}).get('quality_writers'):   # D09 §3: one pass per item, like item_blockers
+            spec['quality_writers'] = marker
         if self.state.get('review_only'):   # LG1-a2: the successor keeps the entry and base and freezes its own scope
             spec['review_only'] = {'review_base': self.state['config']['review_base'],
                                    'review_scope_sha256': self.state['review_only']['review_scope_sha256']}
@@ -4381,6 +4433,7 @@ class Coordinator:
                                           'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
         if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
             record['operator_verifications'] = verified
+        if self.state.get('review_only'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25: no commit here
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -4397,7 +4450,7 @@ class Coordinator:
 
     def _worktree_accept(self) -> str:
         """W3b DELIVERY (doc 6, D-1): the operator accepts a W DONE with --expect over an intent that also binds the
-        stage receipts. auto_commit (frozen; default false) decides whether a local commit is made; external
+        stage receipts. auto_commit (frozen; default false, true for review-only) decides whether a local commit is made; external
         delivery is refused (D8), and no held tree is accepted (no --override-rejection)."""
         if self.state.get('status') == 'ACCEPTED':
             return 'ACCEPTED'
@@ -4428,9 +4481,12 @@ class Coordinator:
                                  'HEAD and the approved tree and resume (SECURITY runs again), or abort')
             intent = self.operator_intent('accept', None, None, self.args.expect, True)
             journal = None
+        untracked = self._git_names(['ls-files', '-z', '--others', '--exclude-standard']) if config.get('auto_commit') else []
         try:
             delivery = (self._worktree_commit(intent, journal) if config.get('auto_commit') else
                         {'auto_commit': False, 'commit': None, 'head': life['parent'], 'external_delivery': False})
+            if delivery.get('commit') and untracked:   # FIELD-25 gate MINOR: name the untracked files the commit took in
+                delivery['committed_untracked'] = [review_scope_path(name) for name in untracked]
         except WorktreeDeliveryHold as exc:   # resume is refused; only accept with the journaled digest finishes it
             self.state['delivery_pending'] = intent['digest']
             return self.hold(f"{exc}; accept --expect {intent['digest']}")
@@ -4442,6 +4498,7 @@ class Coordinator:
                   'override_rejection': False, 'delivery': delivery}
         if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
             record['operator_verifications'] = verified
+        if self.state.get('review_only') and not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -4454,6 +4511,11 @@ class Coordinator:
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
         return 'ACCEPTED'
+
+    def _uncommitted_files(self) -> list[str]:
+        """FIELD-25: what an accept without a commit leaves for the operator: paths changed against HEAD, then untracked ones."""
+        return [*map(review_scope_path, self._git_names(['diff', '--name-only', '--no-renames', '-z', 'HEAD', '--'])),
+                *('untracked: ' + review_scope_path(name) for name in self._git_names(['ls-files', '-z', '--others', '--exclude-standard']))]
 
     def _worktree_run_cap(self, stage: str) -> int:
         """A run-wide stage budget; each W reject reruns FINISH..SECURITY, so it adds one more allowance."""
@@ -4518,8 +4580,13 @@ class Coordinator:
         CAS on HEAD and an index sync. A journal written before the ref moves makes a replay finish the same commit."""
         parent = self.state['lifecycle']['parent']
         if journal is None:
-            self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
-            tree = self._manifest_tree(intent['tree_snapshot'])
+            try:
+                self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
+                tree = self._manifest_tree(intent['tree_snapshot'])
+            except ValueError as exc:   # FIELD-25 gate: a defaulted auto_commit delivers uncommitted; an explicit one refuses
+                if self.state['config'].get('auto_commit_source') != 'review-only-default':
+                    raise
+                return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc)}
             if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                 raise ValueError('the tree changed during the accept; restore the approved tree or abort')
             title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
@@ -4594,8 +4661,15 @@ class Coordinator:
                 tree_sha != self._override_tree()):
             raise ValueError('override requires HOLD rejected-tree or a round-limit HOLD, unchanged held tree, and non-empty --reason')
         if not override: self.refuse_rejected_tree(stale_done=True)
-        if required and (not expected or expected != data['digest']): raise ValueError('intent is stale or missing')
+        if required and not expected:   # FIELD-25: name the full next command, digest filled in
+            raise ValueError(f'intent is stale or missing: {action} needs --expect with the digest of {action} --intent-only; '
+                             f'to {action} the run as it is now, run: {self.next_intent_command(data["digest"], action)}')
+        if required and expected != data['digest']: raise ValueError('intent is stale or missing')
         return {**data, 'tree_snapshot': tree_snapshot}
+    def next_intent_command(self, digest: str, action: str) -> str:
+        raw = getattr(self.args, 'raw_argv', None) or [action, '--workspace', str(self.workspace), '--workitem',
+                                                        str(self.workitem), '--run-dir', str(self.run_dir)]
+        return next_intent_command(raw, digest)
     def rejected_tree(self, digest: Optional[str] = None) -> bool:
         return (git_snapshot(self.workspace)[0] if digest is None else digest) in self.state['rejected_digests']
     def refuse_rejected_tree(self, stale_done: bool = False, allow_author: bool = False) -> None:
@@ -5499,6 +5573,17 @@ class Coordinator:
             raise ValueError('--base needs --review-only')
         else:
             args.review_only, args.review_base = False, None
+        args.auto_commit_source = (saved or {}).get('auto_commit_source')   # FIELD-25 gate: frozen with the value
+        if getattr(args, 'auto_commit', None) is None:   # owner 2026-10-06: a review-only W run commits by default; an
+            args.auto_commit = (bool(saved.get('auto_commit')) if saved is not None else   # explicit value (CLI, profile) wins
+                                bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
+            if saved is None and args.auto_commit:
+                args.auto_commit_source = 'review-only-default'   # an accept the commit checks refuse delivers uncommitted
+        if saved is not None:   # D09 §4: frozen (a run saved before the key: off); only resume refuses a different
+            args.quality_writers_requested = getattr(args, 'quality_writers', None)   # value (_validate_resume_args),
+            args.quality_writers = saved.get('quality_writers') or 'off'   # operator actions keep the saved one
+        elif getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
+            args.quality_writers = 'both' if args.review_only else 'off'
 
     def _refuse_review_only_start(self) -> dict:
         """The refusals of a review-only run, before any state; returns the review scope to freeze."""
@@ -5534,7 +5619,7 @@ class Coordinator:
         if issue := self._plan_history_issue({'work item': workitem, 'plan': mask_initial_change(scope)}, base):   # FIELD-11; FIELD-27
             issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
-        return {'text': scope, 'head': head,
+        return {'text': scope, 'head': head, 'untracked': untracked,
                 'parent_scope_sha256': (self._parent_spec().get('review_only') or {}).get('review_scope_sha256') if args.supersedes else None}
 
     def _start_review_only(self, scope: dict) -> None:
@@ -5550,7 +5635,13 @@ class Coordinator:
                               'index_at_start': index, 'mirror': str(mirror),
                               'history_mirror': self._parent_history_mirror() or str(mirror),   # FIELD-27
                               'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest(),
+                              'untracked_at_start': scope['untracked'],   # FIELD-25: reviewed and delivered with the change
                               **({'parent_review_scope_sha256': scope['parent_scope_sha256']} if scope['parent_scope_sha256'] else {})})
+        if names := [review_scope_path(name) for name in scope['untracked']]:
+            self.progress('scope', untracked=f'{len(names)} untracked file(s) in the review scope: ' + ', '.join(names[:20])
+                          + (f' (+{len(names) - 20} more; all in context/plan.md)' if len(names) > 20 else ''),
+                          exclude='they are reviewed and delivered with the change; to leave one out, add it to '
+                                  '.gitignore or remove it, then start a new run')
         if 'lifecycle' in self.state:   # LG1-a2: the W parent (HEAD-moved checks, auto_commit CAS) is HEAD, never the base
             self.state['lifecycle']['parent'] = scope['head']
             if REVIEW_ONLY_DOCS_PRE_OWNED and (pre := sorted(set(self._changed_paths(deleted=True)) & set(self._docs_allowlist()))):
@@ -7066,9 +7157,66 @@ class Coordinator:
         elif tree != request['candidate_oid']:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
         else:
+            self._quality_writers_tail(paths, len(names), request)
             self.state['lifecycle']['stage'] = 'DOCS'
             self.state['next'] = 'docs'
         self.save()
+
+    def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> None:
+        """D09 C1-a (d09-cap1-writer-passes.md §3): at a clean POLISH-Q exit, check each writer without a state against
+        the skip rules and record a skip once per item. The writer legs land in C1-b1; until then a writer that passes
+        every rule is not reached, and nothing writes."""
+        life, config = self.state['lifecycle'], self.state['config']
+        marker = life.setdefault('quality_writers', {})
+        if not any(writer in marker for writer in worktree_lifecycle.QUALITY_WRITERS['both']):   # §2: this exit's tree
+            marker['base_oid'] = request['candidate_oid']
+        wanted = worktree_lifecycle.QUALITY_WRITERS[config.get('quality_writers') or 'off']
+        reasons = {}
+        for writer in (w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if w not in marker):
+            reasons[writer] = ('skip-quality-polish' if config.get('skip_quality_polish') else 'off' if writer not in wanted else
+                               'no-test-command' if not self.state.get('test_command_explicit') else
+                               'small' if writer == 'simplifier' and self._code_lines_changed() < 20 else
+                               'no-test-file' if writer == 'test-writer' and not any(map(worktree_lifecycle.is_test_path, paths))
+                               else None)
+        left = [writer for writer, reason in reasons.items() if reason is None]
+        detail = self._quality_writer_shortfall(len(left), specialists) if left else None
+        for writer, reason in reasons.items():
+            if reason is None and not detail:
+                self.progress('quality-writer', writer=writer, state='not reached (writer legs land in C1-b1)')
+                continue
+            row = {'state': 'skipped:' + (reason or 'budget'), **({'detail': detail} if reason is None else {}),
+                   'receipt': request['request_id'], 'digest': marker['base_oid']}
+            row['evidence'] = str(self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.json")
+            atomic_json(Path(row['evidence']), {'writer': writer, **row})
+            marker[writer] = row
+            self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
+
+    def _quality_writer_shortfall(self, writers: int, specialists: int) -> Optional[str]:
+        """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists), the replay round plus
+        one fix round, and POLISH-Q room for the last specialist's two dispatches. None when it all fits."""
+        room = self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']
+        if (need := writers + 4 + specialists) > room:
+            return f'需要 {need} 次调用，剩余 {room} 次（约需再加 {need - room}）'
+        if self.state['exec_rounds'] + 2 > self.exec_round_limit():
+            return f"EXEC 轮次 {self.state['exec_rounds']}/{self.exec_round_limit()}，回放加修复需要 2 轮"
+        if (used := self.state['lifecycle'].get('polish_calls', 0)) + writers + specialists + 1 > self._worktree_run_cap('POLISH-Q'):
+            return f"POLISH-Q 调用 {used}/{self._worktree_run_cap('POLISH-Q')}，需要 {writers + specialists + 1}"
+        return None
+
+    def _code_lines_changed(self) -> int:
+        """D09 §3 small change: added plus deleted lines in code files on the live tree, untracked files included."""
+        base = self.state['config'].get('review_base') or 'HEAD'
+        total = 0
+        for field in self._git(['diff', '--numstat', '-z', '--no-renames', base, '--']).split('\0'):
+            added, deleted, path = (field.split('\t', 2) + ['', '', ''])[:3]
+            if added.isdigit() and deleted.isdigit() and worktree_lifecycle.is_code_path(path):
+                total += int(added) + int(deleted)
+        for name in self._git_names(['ls-files', '-z', '--others', '--exclude-standard']):
+            if worktree_lifecycle.is_code_path(name) and (self.workspace / name).is_file() and not (self.workspace / name).is_symlink():
+                data = (self.workspace / name).read_bytes()
+                if b'\0' not in data[:8000]:   # binary is not code
+                    total += len(data.splitlines())
+        return total
 
     def _blocker_owners(self) -> list[str]:
         return sorted({row['owner_role'].split(':', 1)[1] for row in self.blocking_open_findings()
@@ -9530,8 +9678,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
-    p.add_argument('--auto-commit', type=config_bool, default=False,
-                   help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree')
+    p.add_argument('--quality-writers', choices=tuple(worktree_lifecycle.QUALITY_WRITERS), default=None,
+                   help='worktree lifecycle POLISH-Q writer passes (default: both for --review-only, else off)')
+    p.add_argument('--auto-commit', type=config_bool, default=None,
+                   help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree '
+                        '(default: true for a --review-only run with --lifecycle-mode on, else false)')
     p.add_argument('--external-delivery', type=config_bool, default=False,
                    help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
@@ -9550,7 +9701,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--wi-deadline', type=int, default=None, metavar='SECONDS',
                    help='optional whole work-item wall-clock deadline from the run start (off by default); once it has '
                         'passed the run HOLDs at the next dispatch, never mid-turn; fixed at run, kept across HOLD, resume and restart')
-    p.add_argument('--test-command', default='npm test')
+    p.add_argument('--test-command', default=DefaultTestCommand('npm test'))   # D09: a default is not an explicit command
     p.add_argument('--reviewer-command', action='append', default=[],
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
     p.add_argument('--codex-bin', default='codex')
@@ -9617,7 +9768,7 @@ CONFIGURABLE_DESTS = {
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
-    'safety_mode',
+    'safety_mode', 'quality_writers',
 }
 
 
@@ -9840,7 +9991,12 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
         return co.refused(issue)
     if args.action == 'accept': co._refuse_report_accept()   # LG2-a3: before an intent too
-    if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
+    if args.intent_only:
+        intent = co.operator_intent(args.action, args.text, args.file)
+        intent['next_command'] = co.next_intent_command(intent['digest'], args.action)   # FIELD-25: not part of the digest
+        print(json.dumps(intent))
+        sys.stderr.write('NEXT: ' + intent['next_command'] + '\n')
+        return 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
             and 'codex' in co.dispatched_vendors()):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
@@ -9883,6 +10039,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.accept()
         for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
             print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
+        if (delivery := (co.state.get('acceptance') or {}).get('delivery') or {}).get('commit'):   # FIELD-25 (a)
+            print(f"COMMIT: {delivery['commit']} (auto_commit, parent {str(delivery.get('head'))[:12]}); not pushed"
+                  + (f"; untracked files committed: {', '.join(delivery['committed_untracked'])}" if delivery.get('committed_untracked') else ''))
+        if rows := (co.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
+            print(f'UNCOMMITTED: no commit was made ({uncommitted_cause(co.state)}); commit these yourself: ' + ', '.join(rows))
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
@@ -9954,6 +10115,7 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
     if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
         try: return stop_detached(args.run_dir)
         except ValueError as exc: print('REFUSED: ' + str(exc)); return 2

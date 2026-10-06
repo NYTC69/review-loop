@@ -139,6 +139,39 @@ def touches_comment_lines(diff_text):
                for line in diff_text.splitlines())
 
 
+QUALITY_WRITERS = {'both': ('simplifier', 'test-writer'), 'simplify': ('simplifier',), 'tests': ('test-writer',), 'off': ()}
+WRITER_HINT = '`--quality-writers both` enables the simplifier and test consolidation (about +10 invocations)'
+DOC_SUFFIXES, CONFIG_SUFFIXES = ('.md', '.rst', '.adoc', '.txt'), ('.json', '.toml', '.yaml', '.yml', '.ini', '.cfg', '.conf', '.lock', '.xml', '.env')
+
+
+def is_test_path(path):
+    """D09 §3: a test file by its directory (tests/, __tests__/, spec/) or name (test_x.py, x_test.go, x.test.ts, x.spec.js)."""
+    parts = path.lower().split('/')
+    return (any(part in ('test', 'tests', '__tests__', 'spec', 'specs') for part in parts[:-1]) or parts[-1].startswith('test_')
+            or any(parts[-1].rsplit('.', 1)[0].endswith(mark) for mark in ('_test', '.test', '_spec', '.spec')))
+
+
+def is_code_path(path):
+    """D09 §3 small-change count: code = not docs, tests, config or dot files (binary is left out by the caller)."""
+    lower = path.lower()
+    return not (is_test_path(path) or lower.endswith(DOC_SUFFIXES + CONFIG_SUFFIXES) or lower.startswith('docs/')
+                or '/docs/' in lower or lower.rsplit('/', 1)[-1].startswith('.'))
+
+
+def writer_report_lines(state):
+    """D09 §4: one delivery-report line per writer, or the hint when the writers are off."""
+    config, marker = state['config'], state['lifecycle'].get('quality_writers') or {}
+    if (config.get('quality_writers') or 'off') == 'off' and not config.get('skip_quality_polish'):
+        return ['- 质量 writer：未开启；' + WRITER_HINT]
+    lines = []
+    for name in QUALITY_WRITERS['both']:
+        row = marker.get(name) or {'state': '未执行'}
+        reason = row['state'].split(':', 1)[1] if row['state'].startswith('skipped:') else None
+        lines.append(f'- 质量 writer {name}：' + (f"已跳过（{reason}{'，' + row['detail'] if row.get('detail') else ''}）"
+                                                  if reason else row['state']))
+    return lines
+
+
 def specialists(paths):
     """Language reviewers for the changed paths (legacy 3.5.1 map), then the code and test quality reviewers."""
     languages = sorted({LANGUAGE_AGENTS[ext] for ext in (Path(path).suffix for path in paths) if ext in LANGUAGE_AGENTS})
@@ -176,7 +209,12 @@ def delivery_report(state, run_id, workitem, delivery):
              f'- 运行：`{run_id}`；工作项：{title}',
              f"- 结论：已接受（ACCEPTED），{state.get('accepted_at', '')}",
              ('- 交付：auto_commit 开启，本地提交 `' + str(delivery.get('commit')) + '`（父提交 `' + str(delivery.get('head'))
-              + '`），未推送。' if delivery.get('auto_commit') else '- 交付：auto_commit 关闭，没有改动任何 ref 或 index。'),
+              + '`），未推送。' if delivery.get('auto_commit') else
+              f"- 交付：auto_commit 已跳过（{delivery['commit_skipped']}），没有改动任何 ref 或 index。" if delivery.get('commit_skipped')
+              else '- 交付：auto_commit 关闭，没有改动任何 ref 或 index。'),
+             *(['- auto_commit 一并提交的未跟踪文件：' + '、'.join(delivery['committed_untracked'])]
+               if delivery.get('committed_untracked') else []),   # FIELD-25 gate MINOR
+             *(['- 未提交的文件（请自行提交）：' + '、'.join(rows)] if (rows := (state.get('acceptance') or {}).get('uncommitted')) else []),   # FIELD-25
              *([f"- review-only：review base `{state['config']['review_base']}`，开始时 HEAD `{state['review_only']['head_at_start']}`；"
                 f"审查的已有提交：{', '.join(delivery.get('reviewed_commits') or []) or '无（只有未提交的改动）'}"]
                if state.get('review_only') else []),
@@ -186,6 +224,7 @@ def delivery_report(state, run_id, workitem, delivery):
                  for stage, row in last.items()),
              f"- SECURITY：敏感路径 {len(security.get('sensitive_paths') or [])} 个；preflight {preflight.get('status')}，"
              f"扫描 {preflight.get('scanned_files')} 个文件；安全评审 {review.get('status')}",
+             *writer_report_lines(state),   # D09 C1-a
              f"- 未关闭的发现：{len(open_ids)} 条" + (f"（{', '.join(open_ids)}）" if open_ids else ''),
              f"- 用量：调用 {state.get('invocations_used')} 次，epoch {life.get('epoch')}，用时约 {minutes / 60:.0f} 分钟", '']
     if written := state.get('ignored_config_written'):   # F3: outside the review snapshot, so no reviewer saw them
