@@ -66,21 +66,21 @@ class Field25Tests(unittest.TestCase):
         [first] = co.record_findings('fresh-shadow', 'EXEC', 2, [finding])
         self.assertEqual(first['id'], 'F001')
         again = {**finding, 'summary': 'F001 (still open, advisory): numberHandsByTimestamp breaks ties by code-unit order.'}
-        verbatim = {**finding, 'summary': '[class: ordering] ' + F003.upper().replace(' ', '  ')}
-        recorded = co.record_findings('persistent-reviewer', 'POLISH', 5, [again, verbatim])
-        self.assertEqual([row['id'] for row in recorded], ['F001', 'F001'])
+        recorded = co.record_findings('persistent-reviewer', 'POLISH', 5, [again])
+        self.assertEqual([row['id'] for row in recorded], ['F001'])
         [row] = co.state['finding_ledger']
         self.assertEqual((row['status'], co.state['next_finding_id']), ('open', 2))
         self.assertIn('re-reported by persistent-reviewer in POLISH', row['status_history'][-1]['evidence'])
-        others = [{**again, 'file': 'shared/js/other.js'}, {**again, 'severity': 'MEDIUM'},
+        verbatim = {**finding, 'summary': '[class: ordering] ' + F003.upper().replace(' ', '  ')}   # the same claim, no id
+        others = [verbatim, {**again, 'file': 'shared/js/other.js'}, {**again, 'severity': 'MEDIUM'},
                   {**again, 'summary': 'F0010 is a different claim.'}, {**again, 'security': True},
                   {**again, 'summary': 'Unlike F001, hands without a timestamp are left unnumbered.'}]
         self.assertEqual([r['id'] for r in co.record_findings('persistent-reviewer', 'POLISH', 6, others)],
-                         ['F002', 'F003', 'F004', 'F005', 'F006'])   # a cross-reference or a security escalation is new
-        self.assertEqual(co.record_findings('specialist:code-reviewer', 'POLISH-Q', 7, [again])[0]['id'], 'F007')
-        self.assertEqual(co.record_findings('adversarial-gate', 'EXEC', 8, [verbatim])[0]['id'], 'F008')
+                         ['F002', 'F003', 'F004', 'F005', 'F006', 'F007'])   # only an id-led re-report merges (FIELD-25 regression:
+        self.assertEqual(co.record_findings('specialist:code-reviewer', 'POLISH-Q', 7, [again])[0]['id'], 'F008')   # two Q
+        self.assertEqual(co.record_findings('adversarial-gate', 'EXEC', 8, [again])[0]['id'], 'F009')   # proofs keep 2 rows)
         row['status'] = 'fixed'
-        self.assertEqual(co.record_findings('persistent-reviewer', 'POLISH', 9, [again])[0]['id'], 'F009')
+        self.assertEqual(co.record_findings('persistent-reviewer', 'POLISH', 9, [again])[0]['id'], 'F010')
 
     def test_a_review_only_w_accept_without_auto_commit_lists_the_uncommitted_files(self):   # item 2, lifecycle on
         roe.ReviewOnlyEntryTests.w_ready(self)

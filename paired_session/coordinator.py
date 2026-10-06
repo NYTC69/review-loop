@@ -3883,15 +3883,14 @@ class Coordinator:
 
     def _open_duplicate(self, source: str, finding: dict) -> Optional[dict]:
         """FIELD-25: an open finding of the same owner, file, severity and security flag that this one re-reports: its
-        summary opens with that id ("F003 (still open) ...") or repeats it word for word (case, spacing, class label aside)."""
+        summary opens with that id ("F003 (still open) ...", a class label, case and spacing aside). Equal claims from
+        two reviewers stay two rows (two Q reviewer proofs raise the same advisory)."""
         owner = source if source.startswith('specialist:') or source == 'security-reviewer' else None
-        def claim(text): return ' '.join(CLASS_LABEL_RE.sub('', str(text), count=1).lower().split())
-        summary = str(finding.get('summary') or '')
+        claim = ' '.join(CLASS_LABEL_RE.sub('', str(finding.get('summary') or ''), count=1).lower().split())
         return next((row for row in self.open_findings()
-                     if summary and row.get('owner_role') == owner and row['file'] == finding.get('file', '') and
-                     row['severity'] == str(finding['severity']).upper() and bool(row.get('security')) == bool(finding.get('security')) and
-                     (claim(summary).startswith(row['id'].lower()) and not claim(summary)[len(row['id']):][:1].isalnum()
-                      or claim(row['summary']) == claim(summary))), None)
+                     if claim.startswith(row['id'].lower()) and not claim[len(row['id']):][:1].isalnum() and
+                     row.get('owner_role') == owner and row['file'] == finding.get('file', '') and
+                     row['severity'] == str(finding['severity']).upper() and bool(row.get('security')) == bool(finding.get('security'))), None)
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
