@@ -4816,6 +4816,8 @@ class Coordinator:
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
+        if lifecycle_stage is None and (routed := self._gate_recheck()):   # FIELD-32
+            return routed
         snapshot, manifest = git_snapshot(self.workspace)
         if expected is not None and snapshot != expected:
             return self.hold('the tree changed before DONE; resume replays EXEC review and gate')
@@ -4834,6 +4836,35 @@ class Coordinator:
         self.write_usage()
         self._progress_terminal('DONE')
         return 'DONE'
+
+    def _gate_recheck(self) -> Optional[str]:
+        """FIELD-32: the legacy-format route never reaches DONE with a tree the gate did not see while gate findings at
+        MEDIUM or above were open after its last pass (a fix made in polish, or in the last EXEC round): one more gate pass
+        on the final tree first. Its blockers follow the normal flow, and on the last round the round-limit HOLD. The worktree
+        lifecycle replays the gate after every write already; report mode has no writer."""
+        if self.state['config'].get('review_report') or worktree_lifecycle.is_worktree(self.state):
+            return None
+        _, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
+        if not gate:
+            return None
+        sequence = gate['sequence']
+        pending = [row['id'] for row in self.state['finding_ledger']   # open right after that pass, whatever happened since
+                   if row.get('source') == 'adversarial-gate' and row['severity'] in ('CRITICAL', 'HIGH', 'MEDIUM')
+                   and row['origin_round'] <= sequence and not any(item.get('status') in ('fixed', 'withdrawn')
+                                                                   and item.get('round', 0) <= sequence
+                                                                   for item in row['status_history'])]
+        tree = git_snapshot(self.workspace)[0]
+        if not pending or tree == gate.get('snapshot_before'):
+            return None
+        self.state.setdefault('gate_rechecks', []).append({'after_gate_sequence': sequence, 'tree': tree, 'findings': pending})
+        self.state.update(next='gate', gate_ran=False)
+        limit = self.args.max_invocations - self.state.get('q_reserved', 0)
+        if self.state['invocations_used'] >= limit:
+            return self.hold(f"the tree changed after the last gate pass while its findings {', '.join(pending)} were open, "
+                             f"and no invocation is left for the final gate pass ({self.state['invocations_used']} of {limit} "
+                             'used); raise --max-invocations and resume')
+        self.save()
+        return 'ACTIVE'
 
     def set_effective_verdict(self, verdict: str) -> None:
         if self.state.get('exec_comparisons'):
