@@ -21,6 +21,8 @@
 <!-- 迁移自 README.md:292-317 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:292-317
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 ## Key Design Features
 
 **Live Reports** — After every review round, the Orchestrator shows you what

@@ -92,7 +92,7 @@ The shared `reviewer` and `executor_model` keys do not actively control
 Stage 1 Codex reviewer/backend selection. In Codex Stage 1,
 `executor_model` is ignored and `codex_executor_model` remains reserved.
 
-Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
+Stage 1 does not yet migrate `code-quality-loop` or `reorganize`.
 
 ### Install in Codex CLI
 

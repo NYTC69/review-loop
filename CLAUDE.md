@@ -156,12 +156,16 @@ Even with `general-purpose`, agents may not use tools and fabricate output. Two 
 <!-- 迁移自 README.md:1-4 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
 ## Migrated — README.md:1-4
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 # review-loop
 
 A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
 
 <!-- 迁移自 README.md:5-25 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
 ## Migrated — README.md:5-25
+
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
 
 ## Quick Start
 
@@ -187,6 +191,8 @@ cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loo
 <!-- 迁移自 README.md:43-56 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
 ## Migrated — README.md:43-56
 
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+
 ## Skill Tests
 
 The repository includes a first-version skill testing framework for
@@ -203,6 +209,8 @@ Test output uses `PASS`, `FAIL`, and `SKIP`.
 
 <!-- 迁移自 README.md:224-261 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:224-261
+
+Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
 
 ## Configuration
 

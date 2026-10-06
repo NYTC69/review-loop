@@ -67,8 +67,9 @@ session already exists. Two explicit entry commands sit beside it:
 
 The legacy workflow is deprecated since v2.12.0. It still runs unchanged; `entry: legacy`,
 `/review-loop:legacy`, `/review-loop:plan` and `/review-loop:execute` print a one-line
-deprecation notice. Removal waits for the review-pr and code-quality-loop ports and the
-open owner rows of the legacy map in `docs/paired-session-migration.md`.
+deprecation notice. review-pr is ported (it follows `entry`); removal waits for the
+code-quality-loop port and the open owner rows of the legacy map in
+`docs/paired-session-migration.md`.
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).
 With the key absent or `paired-session`, fresh work and a review-only request on

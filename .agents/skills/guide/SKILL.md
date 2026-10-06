@@ -34,8 +34,8 @@ default (every sandbox, no permission-probe PASS required); `--strict` or
 `"safety_mode": "strict"` in the operator profile adds the probe gate.
 The legacy workflow is deprecated since v2.12.0. It still runs unchanged; `entry: legacy`,
 asking for "the legacy review-loop workflow", and the plan and execute skills invoked on
-their own print a one-line deprecation notice. Removal waits for the review-pr and code-quality-loop ports
-and the open owner rows of the legacy map.
+their own print a one-line deprecation notice. review-pr is ported (it follows `entry`); removal waits for
+the code-quality-loop port and the open owner rows of the legacy map.
 Details: `docs/paired-session-migration.md`.
 
 A request to review a pull request ("review PR 123", a PR URL), a branch or

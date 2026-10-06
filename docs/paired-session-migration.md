@@ -13,13 +13,13 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 ## Deprecation status (v2.12.0)
 The legacy workflow is deprecated since v2.12.0: the owner ruled the ADR-6 replacement gate met on field evidence (ADR-6 amendment D-READY, 2026-10-05, in `DECISIONS.md`). Nothing is removed and no routing changes. When you explicitly choose legacy (`entry: legacy`, `/review-loop:legacy`, the Codex "legacy review-loop workflow" request, or `/review-loop:plan` / `execute` invoked on their own), the entry prints one line:
 
-`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that`
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that`
 
 The legacy code is removed only after every precondition below holds, so that nothing only legacy can do is lost:
 
-| Removal precondition | Status (2026-10-05) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
+| Removal precondition | Status (2026-10-06) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
 |---|---|---|
-| `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); the closing check, one real PR review through the default entry with no post, is pending | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
+| `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); closing check passed 2026-10-06 (PR NYTC69/review-loop#6: one real PR review through the default entry, REPORTED complete, no post) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
 | `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | decided: D09 = A, the retirement itself still to be done; capability 1 (the writers) is to be ported, which is the same question as L117 and provisional with it (re-confirmed with the owner before implementation); capability 3 (the analyzers) goes with D-LG2; capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
 | Every "keep (provisional)" row has a paired-session equivalent, or the owner re-confirms it as retire | 13 rows; removal work items below | the "keep (provisional)" rows |
 | Every "retire (provisional)" row is re-confirmed | 5 rows | the "retire (provisional)" rows |
@@ -139,7 +139,7 @@ Status values:
 | `--stop-after before-delivery` | DONE = acceptance pending | covered |
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
 | Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
-| `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` only through `--legacy` | covered (LG2); closing real-PR check pending |
+| `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` only through `--legacy` | covered (LG2); closing check passed 2026-10-06 (PR NYTC69/review-loop#6) |
 | `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A); the writers follow L117, the analyzers D-LG2 | planned (D09) |
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
