@@ -169,6 +169,10 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
+AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
+                       '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
+                       'them: the independent shadow and gate refuse such text.')
 # FIELD-23: delta.stat names every path in full (git shortens long ones to ".../tail"), so a path that exists at the base
 # commit is recognised as repository text by the fresh scan.
 STAT_FULL_PATHS = ('--stat=100000,100000', '--no-renames')   # a rename lists both full paths, not dir/{a => b}
@@ -5013,6 +5017,7 @@ class Coordinator:
                 f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
                 contract,
                 'Delivered advisory findings:\n' + prior,
+                AUTHOR_HISTORY_RULE,
                 'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
                 'Return only JSON matching the supplied schema.',
             ])
@@ -5052,6 +5057,7 @@ class Coordinator:
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
+            AUTHOR_HISTORY_RULE,
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
@@ -5461,6 +5467,36 @@ class Coordinator:
         if name in self.WORKITEM_SOURCES:
             matches = [(shown, whole) for shown, whole in matches if not self.OPERATOR_TOOL_NAME_RE.fullmatch(whole)]
         return [shown for shown, _ in matches]
+
+    def _author_delta_history(self, phase: str, sequence: int, replaying: bool) -> list[dict]:
+        """FIELD-31: review history the run's own change adds to the code (a finding id in a test title or a comment) is a
+        blocking finding for the author, at the cost of a normal EXEC round, instead of the fresh shadow/gate HOLD. Only added
+        lines of context/delta.patch count; every other input, report mode and the last EXEC round keep that HOLD."""
+        fresh = 'on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject') or replaying
+        if (phase != 'EXEC' or not fresh or self.state['config'].get('review_report')
+                or self.state['exec_rounds'] >= self.exec_round_limit() or self._recorded_shadow_result(phase, sequence)):
+            return []
+        self.materialize_review_context()
+        path = self.context / 'delta.patch'
+        for section in re.split(r'(?m)^(?=diff --git )', path.read_text() if path.is_file() else ''):
+            if not (markers := self._introduced_history('context/delta.patch', section)):
+                continue
+            name = next((line[6:] for line in section.splitlines() if line.startswith('+++ b/')), 'a changed file')
+            number, lines = 0, []
+            for line in section[len(section.split('\n@@', 1)[0]):].splitlines():
+                if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):
+                    number = int(hunk.group(1)) - 1
+                elif line.startswith(('+', ' ')):
+                    number += 1
+                    if line.startswith('+') and markers[0].lower() in line.lower():
+                        lines.append(number)
+            where = f'{name}:{lines[0]}' if lines else name
+            return self.record_findings('independence-scan', phase, sequence, [{
+                'severity': 'MAJOR', 'file': where,
+                'summary': f'the change writes review history into the code ({markers[0]!r} at {where})',
+                'failure_scenario': ('the independent shadow and gate refuse inputs that carry review history, so the run '
+                                     'cannot reach them; reword it without finding ids, review narrative or reviewer names')}])
+        return []
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
@@ -7669,8 +7705,12 @@ class Coordinator:
         self.render(result, 'supervisor', phase)
         shadow = None
         writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: a writer replay always has one
-        if phase == 'EXEC' and (self.args.shadow == 'on' or
-                                (writer_replay and writer_replay['epoch'] == self.state['lifecycle'].get('epoch'))):
+        replaying = bool(writer_replay) and writer_replay['epoch'] == (self.state.get('lifecycle') or {}).get('epoch')
+        if leak := self._author_delta_history(phase, result['sequence'], replaying):   # FIELD-31: before the fresh roles see it
+            answer['full_review'].extend(leak)
+            if answer['status'] == 'APPROVE':
+                answer['status'] = 'REVISE'
+        if not leak and phase == 'EXEC' and (self.args.shadow == 'on' or replaying):
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
