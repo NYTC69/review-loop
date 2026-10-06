@@ -141,7 +141,7 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
   PR's test code then runs on this machine. Never ask about tests under handsfree; a declined or
   unanswered offer leaves the run without tests and never refuses the request.
 - `WORKITEM.md` states the review goal and the pins (target repository, PR URL and number, head OID,
-  base tip OID, merge base), and no review history. Write the materializer's JSON object, unchanged, to
+  pinned base OID, merge base), and no review history. Write the materializer's JSON object, unchanged, to
   `RUN_DIR/pr-pins.json`.
 - `run` (and in strict mode `permission-probe`) gets `--review-only --review-report --lifecycle-mode on
   --auto-commit false`, `--workspace` the clone (or the current worktree), `--base <merge_base>` and

@@ -1753,7 +1753,7 @@ def review_pr_pins(path: str, workspace: Path, head: Optional[str], base: Option
     try:
         data = json.loads(Path(path).read_text())
         pins = {'Target repository': data.get('repository') or data['target_url'], 'PR URL': data.get('url'),
-                'Head': data['head']['oid'], 'Base tip': data['base']['oid'], 'Merge base': data['merge_base']}
+                'Head': data['head']['oid'], 'Base (pinned)': data['base']['oid'], 'Merge base': data['merge_base']}
         clone = Path(data['workspace']).resolve()
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(f'--review-pr-pins cannot be read: {exc}') from exc
@@ -5248,7 +5248,7 @@ class Coordinator:
                 paths = (new, old) if 'rename from ' in header or new in renames else (new,)
                 blobs = [self._base_blob(base, rel) for rel in dict.fromkeys(paths) if rel] if old and not (
                     'GIT binary patch' in section or 'Binary files ' in section) else []
-                repository = '\n'.join(blob for blob in blobs if blob is not None)
+                repository = '\n'.join([*(blob for blob in blobs if blob is not None), self._review_start_text(new)])
                 for line in section[len(header):].splitlines():
                     if line.startswith('+'):
                         result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository))))
@@ -5302,6 +5302,22 @@ class Coordinator:
                     prose.append(line)
             return ''.join(result) + inline(''.join(prose)) + mask(''.join(block), exists)
         return content
+
+    def _review_start_text(self, rel: Optional[str]) -> str:
+        """FIELD-26: a review-only run's change as created is the user's code, not this run's review history: the file at
+        `rel` in the creation mirror ('' for an ordinary run, a missing or binary file, or a symlink). Text a later fix
+        round adds is not in it, so the scan still catches that."""
+        mirror = (self.state.get('review_only') or {}).get('mirror')
+        if not rel or not mirror:
+            return ''
+        root, path = Path(mirror).resolve(), Path(mirror) / rel
+        try:
+            if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
+                return ''
+            data = path.read_bytes()
+        except OSError:
+            return ''
+        return '' if b'\0' in data else data.decode('utf-8', 'replace')
 
     def _introduced_history(self, name: str, content: str) -> list[str]:
         return self._history_markers(name, self._fresh_history_text(name, content))

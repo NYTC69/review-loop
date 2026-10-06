@@ -6,6 +6,9 @@ the roles that ran with their tool-use counts and the stages that did not comple
 Recommended Actions list. "Strengths" is not invented: the ledger has none.
 """
 SECTIONS = (('CRITICAL', 'Critical'), ('SECURITY', 'Security'), ('MAJOR', 'Important'), ('MINOR', 'Suggestions'))
+# FIELD-26: as WL normalizes specialist severities (HIGH/MEDIUM -> MAJOR, LOW -> MINOR); the EXEC reviewer and the gate keep
+# theirs in the ledger. Anything else goes to "Other", so no open finding is dropped.
+ALIASES = {'HIGH': 'MAJOR', 'MEDIUM': 'MAJOR', 'LOW': 'MINOR'}
 ROLE_NAMES = {'persistent-reviewer': 'EXEC reviewer', 'fresh-shadow': 'shadow', 'adversarial-gate': 'gate',
               'security-reviewer': 'security reviewer', 'security-preflight': 'security preflight'}
 RECOMMENDED = ('Fix every Critical and Security finding first.', 'Then fix the Important findings.',
@@ -74,10 +77,16 @@ def render(state: dict) -> str:
                   if receipt.get('stage') == 'SECURITY')]
     lines += ['', '## Verdicts', *(f'- {who}: {verdict}' for who, verdict in verdicts if verdict)]
     rows = [row for row in state.get('finding_ledger', []) if row.get('status') not in ('withdrawn', 'fixed')]
-    for severity, title in SECTIONS:
-        found = [row for row in rows if str(row.get('severity')).upper() == severity]
+    def section(row):
+        severity = str(row.get('severity')).upper()
+        return ALIASES.get(severity, severity if severity in dict(SECTIONS) else 'OTHER')
+    for severity, title in (*SECTIONS, ('OTHER', 'Other')):
+        found = [row for row in rows if section(row) == severity]
+        if severity == 'OTHER' and not found:
+            continue
         lines += ['', f'## {title} ({len(found)})']
-        lines += [f"- **{row['id']}** [{_role(row)}, {row.get('phase')}] `{row.get('file') or '-'}`: {row.get('summary', '')}"
-                  for row in found] or ['- none']
+        lines += [f"- **{row['id']}** [{_role(row)}, {row.get('phase')}"
+                  f"{'' if str(row.get('severity')).upper() == severity else ', ' + str(row.get('severity')).upper()}] "
+                  f"`{row.get('file') or '-'}`: {row.get('summary', '')}" for row in found] or ['- none']
     lines += ['', '## Recommended Actions', *(f'{index}. {text}' for index, text in enumerate(RECOMMENDED, 1)), '']
     return '\n'.join(lines)

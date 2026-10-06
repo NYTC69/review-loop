@@ -77,7 +77,11 @@ The exempt text is the whole match ("Claude approved", not "Claude") and must
 occur at the base as a whole word ("APPROVE" is not in "approved"). Another
 known residual, on the strict side: a file moved without `git mv` (`mv`, or `rm`
 plus a new file) appears as a new untracked file and gets no exemption, so a
-base marker in it holds; use `git mv`.
+base marker in it holds; use `git mv`. In a review-only run (FIELD-26) the change
+as created is the user's code, not review history: a match is also exempt when
+the same file in the run's creation mirror (`internal/review-start`) contains
+it, new files included, so a PR that names a vendor passes. Text a later fix
+round adds is not in that mirror and is scanned as before.
 In `delta.stat` and `status.txt`, matches inside paths that exist at the base
 commit are exempt. In `plan.md` and `workitem.md`, a match is exempt only inside
 backticks or a fenced code block and only if its matched text occurs in a file

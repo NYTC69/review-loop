@@ -79,7 +79,7 @@ class ReviewPrEntryTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['review_pr'], {'Target repository': 'owner/target', 'PR URL': 'https://github.com/owner/target/pull/7',
-                                              'Head': result['head']['oid'], 'Base tip': result['base']['oid'],
+                                              'Head': result['head']['oid'], 'Base (pinned)': result['base']['oid'],
                                               'Merge base': result['merge_base']})
         text = (self.run_dir / 'review-report.md').read_text()
         self.assertIn('Status: REPORTED (complete)', text)
