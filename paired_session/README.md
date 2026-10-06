@@ -118,7 +118,10 @@ For simultaneous lanes, read [Concurrent runs and isolated Codex homes](docs/con
 Use a dedicated Git worktree for each product task and keep run artifacts in a
 sibling directory outside the workspace. Never put `--run-dir` inside the
 workspace: the author can write to the workspace and must not be able to alter
-coordinator state. The workspace must be a Git worktree and the work item must
+coordinator state. Keep the run root outside any git repository too: the role
+TMPDIRs live under the run directory, and a project that refuses scratch space
+inside a repository then falls back to /tmp, which the Codex read-only sandbox
+denies (FIELD-28; `run`, `resume` and `permission-probe` warn on stderr). The workspace must be a Git worktree and the work item must
 be a file. The configured test command is checked before the coordinator starts.
 A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
 one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,

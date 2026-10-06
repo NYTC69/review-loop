@@ -9849,6 +9849,13 @@ def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: 
 CLAUDE_CLI_ALIASES = {'default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan', 'opus[1m]', 'sonnet[1m]'}
 
 
+def git_work_tree_root(path: Path) -> Optional[Path]:
+    """FIELD-28: the nearest enclosing git work tree of `path` (a `.git` directory or file), or None. The role TMPDIRs sit
+    under the run directory, so a project that refuses scratch space inside a repository falls back to /tmp there."""
+    path = Path(path).resolve()
+    return next((folder for folder in (path, *path.parents) if (folder / '.git').exists()), None)
+
+
 def replace_override(state: dict, key: str, record: dict) -> None:
     """STRICT-NITS (P0-2 b): a new operator override record keeps the one it replaces (voided or not) in <key>_history."""
     if state.get(key):
@@ -10014,6 +10021,10 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and not os.environ.get('CODEX_HOME')):   # HYGIENE-1: the 2026-10-06 P0 cause (CODEX_HOME left unset); a warning only
         print('WARNING: CODEX_HOME is unset, so Codex uses the default ~/.codex: concurrent Codex runs on the default home write '
               'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
+    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.run_dir)):   # FIELD-28, a warning only
+        print(f'WARNING: the run directory {co.run_dir} is inside the git repository {repo}; tools and test suites that refuse '
+              'scratch space inside a repository may fall back to /tmp, which the Codex read-only sandbox denies. Put the run root '
+              'outside any repository.', file=sys.stderr)
     if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
