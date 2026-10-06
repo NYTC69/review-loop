@@ -116,7 +116,7 @@ The value table lives for one Bash call only; no shell state crosses calls.
 
 | Part | Source |
 |---|---|
-| known text | literals; `$HOME`; `$PWD`, `$(pwd)` (the current cwd); `$(git rev-parse --show-toplevel)` (the case repository root) |
+| known text | literals; `$HOME`; `$TMPDIR` (the runner's arm TMPDIR); `$PWD`, `$(pwd)` (the current cwd); `$(git rev-parse --show-toplevel)` (the case repository root) |
 | segment | `$$`, `$PPID`, `$RANDOM`, `$?`; `$(uuidgen)`, `$(uuidgen \| tr A-Z a-z)`; `$(date [-u] +FMT)` with FMT of `%Y %m %d %H %M %S %s` and `-:TZ`; `$(mktemp …)` is the arm's TMPDIR plus a segment |
 | opaque | any other substitution; unset variables |
 
@@ -129,7 +129,9 @@ Each variable holds a set of alternatives, and the checker walks the call in exe
   current table. Afterwards every variable is the union of its set before and after.
 - Assignments in a pipeline element, a `&` command, `( … )` or `$(…)` do not reach the enclosing list.
 - `for` is unrolled in list order, carrying the table.
-- `cd KNOWN` sets the cwd for the rest of the call. The target must be inside an allowed place.
+- `cd KNOWN` sets the cwd for the rest of the call. The target must be inside an allowed place. The cwd follows the
+  same scope rules as variables: it is restored after `( … )`, a pipeline element or a `&` command, and a `cd` in a
+  conditional subtree leaves a union of cwds. Each relative path is checked against every cwd in the union.
 
 Caps: 64 alternatives per variable, 64 loop iterations, 4096 simple commands per call.
 
@@ -147,8 +149,9 @@ path.
 - it is the value after `=` of an option.
 
 How it is checked:
-- **Unquoted glob characters:** v1's `check_pattern`. This makes `cat *` a pattern (the R3 fix); `"glob:test_*.py"`
-  and `'^?? x'` are not patterns.
+- **Unquoted glob characters:** v1's `check_pattern`, with one change: the literal prefix before the first wildcard
+  must lie inside an allowed place (v1 required the case). The deny roots still win, and every match on disk is still
+  realpath-checked. This makes `cat *` a pattern (the R3 fix); `"glob:test_*.py"` and `'^?? x'` are not patterns.
 - **A segment:** the literal prefix before the first segment must be inside an allowed place and outside the deny
   roots. No component after a segment may be `..` or a deny component.
 - **Both glob characters and a segment:** fail closed.
@@ -207,6 +210,7 @@ Violations (`deny`, unless named):
 - an expanding heredoc holding `$(cat <operator-home>/.ssh/id_ed25519)`;
 - `python3 - <<'PY'` with `open('<operator-home>/.codex/auth.json')`;
 - `cat *` where the cwd has a link out of the case (R3);
+- `(cd src && pytest); cat ../<sibling-case>/answer.md` (the cwd is restored after the subshell);
 - `K=$(cat list.txt); echo ok > "$K"` (fail-closed);
 - `while true; do :; done` (fail-closed);
 - `echo $(echo $(echo $(pwd)))` (fail-closed);
@@ -221,6 +225,8 @@ CLEAN:
 - `for f in a.py b.py; do git ls-files -s $f; done`;
 - `B=$(git rev-parse HEAD); git diff $B`;
 - `pytest > /tmp/out.log; F=$(mktemp); echo x > "$F"`;
+- `pytest > "$TMPDIR/out.log"`;
+- `ls "$HOME/.codex/"*` (a glob under the fresh HOME);
 - `if [ -f x ]; then cat x; fi`;
 - `cd src && cat a.py`;
 - `python3 - <<'PY'` whose body holds `# a / b` and `print("x / y")`;
