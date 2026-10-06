@@ -8601,6 +8601,7 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
+        # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
         if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
                 and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
@@ -9848,6 +9849,20 @@ def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: 
 CLAUDE_CLI_ALIASES = {'default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan', 'opus[1m]', 'sonnet[1m]'}
 
 
+def git_work_tree_root(path: Path) -> Optional[Path]:
+    """FIELD-28: the nearest enclosing git work tree of `path` (a `.git` directory or file), or None. The role TMPDIRs sit
+    under the run directory, so a project that refuses scratch space inside a repository falls back to /tmp there."""
+    path = Path(path).resolve()
+    return next((folder for folder in (path, *path.parents) if (folder / '.git').exists()), None)
+
+
+def replace_override(state: dict, key: str, record: dict) -> None:
+    """STRICT-NITS (P0-2 b): a new operator override record keeps the one it replaces (voided or not) in <key>_history."""
+    if state.get(key):
+        state.setdefault(key + '_history', []).append(state[key])
+    state[key] = record
+
+
 def validate_role_models(args: argparse.Namespace) -> None:
     """ADR-9: each role needs a well-formed model id, listed in allowed_models when that key is set."""
     allowed = getattr(args, 'allowed_models', None)
@@ -10006,12 +10021,16 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and not os.environ.get('CODEX_HOME')):   # HYGIENE-1: the 2026-10-06 P0 cause (CODEX_HOME left unset); a warning only
         print('WARNING: CODEX_HOME is unset, so Codex uses the default ~/.codex: concurrent Codex runs on the default home write '
               'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
+    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.run_dir)):   # FIELD-28, a warning only
+        print(f'WARNING: the run directory {co.run_dir} is inside the git repository {repo}; tools and test suites that refuse '
+              'scratch space inside a repository may fall back to /tmp, which the Codex read-only sandbox denies. Put the run root '
+              'outside any repository.', file=sys.stderr)
     if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
-            co.state['claude_author_override'] = {
+            replace_override(co.state, 'claude_author_override', {
                 'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
-                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
             co.save()
         if not (claude_ok := co.claude_author_verified())[0]:
             return co.refused(claude_ok[1])
@@ -10052,9 +10071,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too; report runs keep skipping it (residual)
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
-            co.state['codex_cli_override'] = {
+            replace_override(co.state, 'codex_cli_override', {
                 'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
-                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
             co.save()
         if not (verified := co.codex_contract_verified())[0]:
             return co.refused(verified[1])
@@ -10063,7 +10082,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
         if not co._gate_probe_covered():
             return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
-        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}; co.save()
+        replace_override(co.state, 'probe_skip_override', {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}); co.save()
     if args.action == 'reject':
         if co.strict and not args.skip_probe:   # D-EFF efficient: no permission probe is required
             passed, reason = co.probe_gate()

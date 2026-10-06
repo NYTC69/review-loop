@@ -78,7 +78,9 @@ from the operator profile, ADR-9). Never pass `--adversarial-gate off`.
 ## Work item
 
 Write `WORKITEM.md` in the run directory the host skill names (always outside
-the product worktree) with goal, acceptance criteria, scope, and verification.
+the product worktree, and best outside any git repository: tools that refuse
+scratch space inside a repository then fall back to /tmp, which the Codex
+read-only sandbox denies; `run` warns about it) with goal, acceptance criteria, scope, and verification.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
