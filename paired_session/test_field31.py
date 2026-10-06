@@ -68,6 +68,29 @@ class AuthorDeltaHistoryTests(unittest.TestCase):
         self.assertEqual((self.co.state['status'], self.co.state['next']), ('ACTIVE', 'gate'))
         self.assertEqual(self.scan_rows()[0]['status'], 'fixed')
 
+    def test_ids_in_two_files_are_one_finding_and_one_reword_round_reaches_the_shadow(self):   # FIELD-31b
+        self.t.write(TEST, WITH_IDS)
+        self.t.write('web/range.js', 'export function keep(range) {\n  // F010: keep the range.\n  return range;\n}\n')
+        self.review(shadow_scans=True)
+        [row] = self.scan_rows()
+        self.assertEqual(row['file'], f'{TEST}:1')
+        for where in (f'{TEST}:1', f'{TEST}:2', 'web/range.js:2'):
+            self.assertIn(f"'F010' at {where}", row['summary'])
+            self.assertIn(where, self.co.state['delivered_review'])
+        self.t.write(TEST, REWORDED)                                         # one round fixes both files
+        self.t.write('web/range.js', 'export function keep(range) {\n  // Keep the range.\n  return range;\n}\n')
+        self.co.state.update(next='reviewer', exec_rounds=2)
+        self.review(dispositions=[{'id': row['id'], 'disposition': 'fixed', 'evidence': 'ids removed'}], shadow_scans=True)
+        self.assertEqual(len(self.shadows), 1)
+        self.assertEqual((self.co.state['status'], self.co.state['next']), ('ACTIVE', 'gate'))
+
+    def test_the_hit_list_is_bounded(self):   # FIELD-31b
+        self.t.write('web/many.js', ''.join(f'// F010 note {n}\n' for n in range(12)))
+        self.review(shadow_scans=True)
+        [row] = self.scan_rows()
+        self.assertEqual(row['summary'].count("'F010' at web/many.js:"), 10)
+        self.assertIn(', +2 more)', row['summary'])
+
     def test_the_last_exec_round_still_holds_at_the_shadow(self):
         self.t.write(TEST, WITH_IDS)
         self.co.state['exec_rounds'] = self.co.exec_round_limit()

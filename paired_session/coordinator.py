@@ -5478,25 +5478,32 @@ class Coordinator:
             return []
         self.materialize_review_context()
         path = self.context / 'delta.patch'
+        hits = []   # FIELD-31b: every hit of every file in ONE finding, so one round can fix them all
         for section in re.split(r'(?m)^(?=diff --git )', path.read_text() if path.is_file() else ''):
-            if not (markers := self._introduced_history('context/delta.patch', section)):
+            if not (markers := list(dict.fromkeys(self._introduced_history('context/delta.patch', section)))):
                 continue
             name = next((line[6:] for line in section.splitlines() if line.startswith('+++ b/')), 'a changed file')
-            number, lines = 0, []
+            number, found = 0, set()
             for line in section[len(section.split('\n@@', 1)[0]):].splitlines():
                 if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):
                     number = int(hunk.group(1)) - 1
                 elif line.startswith(('+', ' ')):
                     number += 1
-                    if line.startswith('+') and markers[0].lower() in line.lower():
-                        lines.append(number)
-            where = f'{name}:{lines[0]}' if lines else name
-            return self.record_findings('independence-scan', phase, sequence, [{
-                'severity': 'MAJOR', 'file': where,
-                'summary': f'the change writes review history into the code ({markers[0]!r} at {where})',
-                'failure_scenario': ('the independent shadow and gate refuse inputs that carry review history, so the run '
-                                     'cannot reach them; reword it without finding ids, review narrative or reviewer names')}])
-        return []
+                    for marker in markers if line.startswith('+') else ():
+                        if marker.lower() in line.lower():
+                            hits.append((f'{name}:{number}', marker))
+                            found.add(marker)
+            hits += [(name, marker) for marker in markers if marker not in found]   # a match that spans lines
+        if not hits:
+            return []
+        shown = ', '.join(f'{marker!r} at {where}' for where, marker in hits[:10])
+        return self.record_findings('independence-scan', phase, sequence, [{
+            'severity': 'MAJOR', 'file': hits[0][0],
+            'summary': (f'the change writes review history into the code ({shown}'
+                        + (f', +{len(hits) - 10} more' if len(hits) > 10 else '') + ')'),
+            'failure_scenario': ('the independent shadow and gate refuse inputs that carry review history, so the run '
+                                 'cannot reach them; reword every listed place without finding ids, review narrative or '
+                                 'reviewer names')}])
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
