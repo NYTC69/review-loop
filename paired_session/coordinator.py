@@ -2135,11 +2135,6 @@ class ReadOnlyTurnVoided(ValueError):
         self.restored = restored
 
 
-class PluginUpdateTurnVoided(ValueError):
-    """field21: in efficient mode, a turn during which only a normal plugin update outside the run rewrote installed_plugins.json;
-    its result is never used and invoke() re-dispatches the turn once on a fresh global-config baseline."""
-
-
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -5789,7 +5784,6 @@ class Coordinator:
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
-        plugin_redispatched = False                                      # field21: one re-dispatch per invoke after a plugin update
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
@@ -5808,15 +5802,6 @@ class Coordinator:
                                 self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
                                 self._drop_scratch(scratch)
                             except RuntimeError: pass
-                        if isinstance(exc, RuntimeError) and isinstance(exc.__cause__, PluginUpdateTurnVoided):   # field21
-                            if plugin_redispatched: raise RuntimeError(f'{exc}; again after one re-dispatch{PLUGIN_UPDATE_HINT}') from exc
-                            self._redispatch_budget(phase, exc)
-                            plugin_redispatched = True
-                            turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request was discarded because the '
-                                            'global plugin registry changed while it ran (recognized as a normal plugin update). Answer '
-                                            'the request again on the current tree.')
-                            print(f'NOTE: {exc}; re-dispatching the {role} turn once on a fresh global-config baseline')
-                            continue
                         if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
                                 and exc.__cause__.restored): raise
                         if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
@@ -6105,7 +6090,6 @@ class Coordinator:
                 self._record_ignored_config(receipt, config_before, ignored_config.inventory(
                     snapshot_workspace, lambda names: self._ignored_paths(snapshot_workspace, names)))
         voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
-        plugin_void = None   # field21: set below when only a normal plugin update changed the global config (efficient mode)
         try:
             if control_problem: raise ValueError(control_problem)
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
@@ -6143,8 +6127,14 @@ class Coordinator:
                         changes['plugin_update'] = update   # field21: recorded in both modes
                     if not update or self.strict or voided is not None or touched:
                         raise ValueError(message + (PLUGIN_UPDATE_HINT if update else ''))
-                    plugin_void = PluginUpdateTurnVoided(message + ' (a normal plugin update outside the run: ' + ', '.join(
-                        f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update) + '); the turn is void')
+                    # FIELD-24 (efficient): the running CLI loaded its plugins at start and the old versioned cache stays on
+                    # disk, so the turn's work stands; the next turn starts on the new registry. Recorded, never voided.
+                    versions = ', '.join(f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update)
+                    changes['findings'] = [row for row in changes['findings'] if row['file'] != 'claude_plugins']
+                    changes['status'] = 'PASS'
+                    changes['next_turn_registry'] = 'the next turn starts on the updated plugin registry: ' + versions
+                    print(f'NOTE: a normal plugin update outside the run during the {role} turn ({versions}); the turn '
+                          'is kept and the next turn starts on the updated registry')
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -6228,8 +6218,6 @@ class Coordinator:
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
-            if plugin_void is not None:   # field21: after every check of this turn, so any of them still leads; before the session update
-                raise plugin_void
             if not fresh:
                 if session:
                     self.state['sessions'][role] = session
