@@ -1,5 +1,14 @@
 # Changelog
 
+### v2.12.7：code-quality-loop 入口加一轮修非阻塞 finding（ADVFIX）；gate 提的问题修完后 DONE 前必须再过一次 gate（FIELD-32）；plan 里讨论模型不再误 HOLD（FIELD-33）
+
+- **ADVFIX（owner 决定 2026-10-06："加一轮修非阻塞"）**：新的 run 选项 `--advisory-fix-round`（默认关闭）。POLISH-Q 第一次干净结束后，如果还有非阻塞 finding（MINOR、LOW、gate 的 MEDIUM/LOW；不含 security），作者得到一轮修复机会：合理的修掉，不修的逐条写理由；然后 EXEC reviewer、shadow、gate、FINISH、specialists 整条链重审，再跑写入步骤。每个 run 只跑一次，单独计轮，不占 `--max-exec-rounds`；调用次数不够时跳过并写明原因；之后仍 open 的 finding 保持建议性，不会因此 HOLD。交付报告多一行说明这一轮的结果。
+  - `/review-loop:code-quality-loop` 入口默认开启它，调用上限从 35 提到 45，让修复轮和写入步骤都放得下（profile 设了 `max_invocations` 时以 profile 为准）。起因：v2.12.6 的真实 CQL run 里 14 条 finding 都是非阻塞的，结果一行代码都没改。
+- **fix（FIELD-32，poker-tools 现场）**：lifecycle 关闭的路径上，gate 提的 MEDIUM 及以上问题被修掉后，原来可能不再过 gate 就直接 DONE（polish 修完直接 DONE；最后一轮 reviewer 和 shadow 通过就 DONE）。现在 DONE 之前，只要上次 gate 之后树变了且当时还有 ≥MEDIUM 的 gate finding 没关，就在最终树上再跑一次 gate；它再拦就照常回给作者，最后一轮则 HOLD；调用次数不够时 HOLD 并写明原因，调高上限后 resume 即可。同一批改动最多多跑一次 gate。`resume --polish` 的路径也覆盖到（终审发现并修复了这条路径会卡死的问题）。
+- **fix（FIELD-33，poker-news-bot 现场）**：GG 流水线的 plan 讨论"哪个模型读哪一帧"，模型名（Claude、Codex、Opus，包括 `Opus-only`、`claude-opus-5-5` 这类写法）和以模型名命名的文件（`gg/readers/opus.py`）在 plan.md 里不再被当成审查历史；Claude Code 自己的 sandbox 临时目录 `/tmp/claude-<uid>/` 也会被遮掉，它下面以工具命名的路径仍然会被拦。评审归因（"the Codex reviewer approved"、"Claude/Sonnet signed off"）、评审叙述和 finding 编号照样拦。
+- **CQL-R3**：code-quality-loop 的两行说明改由 Step 0 在任何工具调用之前打印（headless 也打），paired-session 在缺失时补打；所有交接的工作项首行必须是有意义的标题，不再出现 "Work item" 这样的提交标题。
+- **审查**：ADVFIX 过了 Opus 终审（APPROVE）；FIELD-32 和 FIELD-33 的 Opus 终审各打回一次（FIELD-32：`resume --polish` 会卡死；FIELD-33：带连字符的模型 ID 和模型名文件路径仍误 HOLD，sandbox 根目录下的路径漏扫），各修一轮后 Codex 审查通过。CQL-R3、CQL-WIRE、CQL-WIRE2 由监工核对。FIELD-33 按监工决定替换了一个 v2.12.6 的测试（plan 里的 "found by Codex" 现在应当通过）；CQL-WIRE2 按监工决定把两条契约里的调用上限从 35 改为 45。
+
 ### v2.12.6：code-quality-loop 退役到 review-only 入口；fresh shadow 的三个现场误 HOLD（FIELD-29/30/31）修复；写入步骤按真实 run 的结果改进（D09-F）
 
 - **code-quality-loop 退役到 review-only 入口（CQL-RETIRE，owner 决定 D09 选项 A）**：
