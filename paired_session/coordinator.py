@@ -2586,7 +2586,7 @@ class Coordinator:
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
                 'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
-                'safety_mode', 'quality_writers')
+                'safety_mode', 'quality_writers', 'advisory_fix_round')
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
@@ -5050,6 +5050,12 @@ class Coordinator:
                 'Fix every delivered blocking finding, rerun relevant checks, and summarize the result in body.')
         if self.args.exercise_revisions and first:
             task += ' Exercise rule: intentionally omit bool rejection required by the toy work item on this first implementation only.'
+        advisory = self.state.get('advisory_fix') or {}
+        if (advisory.get('state') == 'ran' and advisory.get('epoch') == (self.state.get('lifecycle') or {}).get('epoch')
+                and self.state['exec_rounds'] == advisory.get('start')):   # ADVFIX: its one author turn
+            task = ('Advisory fix round: the review has converged and every delivered finding is non-blocking. Fix the ones '
+                    'that are reasonable to fix now and rerun relevant checks; for each one you do not fix, give a one-line '
+                    'reason in body (dismissed). Summarize per finding id in body.')
         prior = self.state.get('delivered_review', '')
         return '\n'.join([
             f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.',
@@ -5570,6 +5576,8 @@ class Coordinator:
             raise ValueError('--review-report starts a fresh review request; it takes no --supersedes')
         if not (saved or {}).get('review_only', self.args.review_only):
             raise ValueError('--review-report needs --review-only')
+        if self.args.advisory_fix_round or (saved or {}).get('advisory_fix_round'):   # ADVFIX: report mode never writes
+            raise ValueError('--review-report refuses --advisory-fix-round true')
         if self.args.auto_commit or (saved or {}).get('auto_commit'):
             raise ValueError('--review-report refuses --auto-commit true')
         if self.args.stop_after_plan:
@@ -7234,6 +7242,8 @@ class Coordinator:
             self.hold('POLISH-Q open blocking findings: ' + ', '.join(row['id'] for row in blocking))
         elif tree != request['candidate_oid']:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        elif self._advisory_fix_round(len(names)):   # ADVFIX: one author round for the advisory findings, before the writers
+            pass
         elif queue := self._quality_writers_tail(paths, len(names), request):   # D09 C1-b1: the writer legs, in order
             self.state['lifecycle']['writer_queue'] = queue
             self.state['next'] = 'polish-simplify' if queue[0] == 'simplifier' else 'polish-tests'
@@ -7241,6 +7251,30 @@ class Coordinator:
             self.state['lifecycle']['stage'] = 'DOCS'
             self.state['next'] = 'docs'
         self.save()
+
+    def _advisory_fix_round(self, specialists: int) -> bool:
+        """ADVFIX (owner 2026-10-06, "加一轮修非阻塞"): at the first clean POLISH-Q exit of a run with
+        --advisory-fix-round, the non-blocking findings still open (MINOR, LOW, a gate's MEDIUM/LOW; from the EXEC
+        reviewers, the gate and the specialists alike) go to the author for ONE fix round, then the normal chain (EXEC
+        reviewer, shadow, gate, FINISH, specialists) and back here, before the quality writers. Once per run; its round
+        is credited outside --max-exec-rounds; no invocation headroom (one author call plus a replay) skips it with the
+        reason. Findings still open afterwards stay advisory. True when the round was started."""
+        if not self.state['config'].get('advisory_fix_round') or self.state.get('advisory_fix'):
+            return False
+        findings = [row for row in self.nonblocking_open_findings() if not row.get('security')]
+        detail = self._quality_writer_shortfall(1, specialists) if findings else None
+        if not findings or detail:
+            self.state['advisory_fix'] = {'state': 'skipped', 'reason': detail or 'no open non-blocking findings'}
+            self.progress('advisory-fix', state='skipped', detail=self.state['advisory_fix']['reason'])
+            return False
+        life = self.state['lifecycle']
+        self.state['advisory_fix'] = {'state': 'ran', 'findings': [row['id'] for row in findings], 'epoch': life['epoch'] + 1,
+                                      'start': self.state['exec_rounds']}
+        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+        self.state.update(phase='EXEC', next='author', gate_ran=False,
+                          delivered_review=self.advisory_message(findings, 'advisory-fix-round'))
+        self.progress('advisory-fix', state='ran', detail=f'{len(findings)} non-blocking findings to the author')
+        return True
 
     def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> list[str]:
         """D09 C1-a (d09-cap1-writer-passes.md §3): at a clean POLISH-Q exit, check each writer without a state against
@@ -7755,7 +7789,8 @@ class Coordinator:
         after a partial rollback); at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
         `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
         rounds = self.state.get('writer_replay_rounds')
-        ordinary = self.args.max_exec_rounds + len(self.state.get('rejections', []))
+        ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) +
+                    ((self.state.get('advisory_fix') or {}).get('state') == 'ran'))   # ADVFIX: its own one round
         if rounds and rounds.get('used') is None:
             return max(rounds['start'] + 2, ordinary)
         return ordinary + (rounds['used'] if rounds else 0)
@@ -7855,6 +7890,9 @@ class Coordinator:
                 return
         limit = self.args.max_plan_rounds if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
+        advisory = self.state.get('advisory_fix') or {}   # ADVFIX: the round's re-review lets a pure-advisory REVISE pass,
+        if phase == 'EXEC' and advisory.get('state') == 'ran' and advisory.get('epoch') == (self.state.get('lifecycle') or {}).get('epoch'):
+            at_phase_limit = True   # as at the final round: one fix round, never a second for advisory findings
         advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
                          and self.findings_are_advisory(answer['full_review'])
                          and (phase == 'POLISH' or at_phase_limit)
@@ -10120,6 +10158,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
+    p.add_argument('--advisory-fix-round', type=config_bool, default=False,
+                   help='worktree lifecycle: one author round for the non-blocking findings left after POLISH-Q (ADVFIX)')
     p.add_argument('--quality-writers', choices=tuple(worktree_lifecycle.QUALITY_WRITERS), default=None,
                    help='worktree lifecycle POLISH-Q writer passes (default: both for --review-only, else off)')
     p.add_argument('--auto-commit', type=config_bool, default=None,
@@ -10210,7 +10250,7 @@ CONFIGURABLE_DESTS = {
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
-    'safety_mode', 'quality_writers',
+    'safety_mode', 'quality_writers', 'advisory_fix_round',
 }
 
 

@@ -229,6 +229,13 @@ the skips `no-test-command`, `small`, `no-test-file`, `budget`,
 writer calls and one replay); the state is in `lifecycle.quality_writers`, the
 outcome in the delivery report.
 
+Advisory fix round (ADVFIX, owner 2026-10-06): `--advisory-fix-round true` (default false, frozen; refused
+with `--review-report`) gives the author one fix round, at the first clean POLISH-Q exit, for the non-blocking
+findings still open (MINOR, LOW, a gate's MEDIUM/LOW), before the quality writers: fix what is reasonable,
+dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again. Once per
+run, on its own round outside `--max-exec-rounds`; without invocation headroom it is skipped with the reason.
+Findings still open afterwards stay advisory. The delivery report says ran (N of M addressed), skipped or off.
+
 The disabled E2E candidate-tree module can materialize a clean HEAD into an
 external scratch checkout with a separate scratch Git directory and index. It
 returns the baseline tree OID, frozen parent/ref, live-index hash and whether

@@ -178,6 +178,18 @@ def is_code_path(path):
                 or '/docs/' in lower or lower.rsplit('/', 1)[-1].startswith('.'))
 
 
+def advisory_report_line(state):
+    """ADVFIX: the advisory fix round's one delivery-report line: ran (N of M addressed) / skipped (reason) / off."""
+    record = state.get('advisory_fix') or {}
+    if not state['config'].get('advisory_fix_round'):
+        return '- 非阻塞修复轮（advisory fix round）：未开启'
+    if record.get('state') != 'ran':
+        return f"- 非阻塞修复轮（advisory fix round）：已跳过（{record.get('reason', '未到达')}）"
+    status = {row['id']: row.get('status') for row in state['finding_ledger']}
+    done = sum(status.get(finding_id) != 'open' for finding_id in record['findings'])
+    return f"- 非阻塞修复轮（advisory fix round）：已运行（{len(record['findings'])} 条中 {done} 条已处理）"
+
+
 def writer_report_lines(state):
     """D09 §4: one delivery-report line per writer, or the hint when the writers are off."""
     config, marker = state['config'], state['lifecycle'].get('quality_writers') or {}
@@ -247,6 +259,7 @@ def delivery_report(state, run_id, workitem, delivery):
              f"- SECURITY：敏感路径 {len(security.get('sensitive_paths') or [])} 个；preflight {preflight.get('status')}，"
              f"扫描 {preflight.get('scanned_files')} 个文件；安全评审 {review.get('status')}",
              *writer_report_lines(state),   # D09 C1-a
+             advisory_report_line(state),   # ADVFIX
              f"- 未关闭的发现：{len(open_ids)} 条" + (f"（{', '.join(open_ids)}）" if open_ids else ''),
              f"- 用量：调用 {state.get('invocations_used')} 次，epoch {life.get('epoch')}，用时约 {minutes / 60:.0f} 分钟", '']
     if written := state.get('ignored_config_written'):   # F3: outside the review snapshot, so no reviewer saw them

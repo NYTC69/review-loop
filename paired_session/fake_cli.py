@@ -297,6 +297,8 @@ def main():
                 module.write_text(module.read_text() + f'# specialist fix {ids}\n')
             body = 'Implemented sum_ints and ran fake checks.'
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
+        if 'Advisory fix round' in prompt and (mark := os.environ.get('FAKE_AUTHOR_ADVISORY_TOUCH')):   # ADVFIX
+            Path(mark).write_text('advisory round ran\n')
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
         if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
@@ -468,6 +470,13 @@ def main():
                       'failure_scenario': ('verification is absent from the plan' if phase == 'PLAN'
                                            else 'bool is accepted as int')}]
                     if revise else [])
+        if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_APPROVE_MINOR'):   # ADVFIX: approve, one MINOR
+            findings = [{'severity': 'MINOR', 'file': 'sum_ints.py', 'summary': 'advisory naming',
+                         'failure_scenario': 'the name hides the intent'}]
+        if role == 'reviewer' and phase == 'EXEC' and (flag := os.environ.get('FAKE_EXEC_MINOR_REVISE_IF_FILE')) and Path(flag).exists():
+            revise = True   # ADVFIX: a pure-advisory REVISE once the marker exists
+            findings = [{'severity': 'MINOR', 'file': 'sum_ints.py', 'summary': 'advisory wording',
+                         'failure_scenario': 'a comment reads oddly'}]
         if role == 'reviewer' and phase == 'EXEC' and (flag := os.environ.get('FAKE_EXEC_REVISE_IF_FILE')) and Path(flag).exists():
             revise = True   # D09 C1-b2: a writer replay's reviewer asks for changes while the writer's file exists
             findings = [{'severity': 'MAJOR', 'file': os.path.relpath(os.path.realpath(flag), os.path.realpath(Path.cwd())), 'summary': 'the writer change regresses behaviour',
