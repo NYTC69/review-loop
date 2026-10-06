@@ -40,12 +40,18 @@ class OperatorWorkItemTests(unittest.TestCase):
     def test_a_tool_named_directory_in_the_work_item_passes(self):
         self.scan(self.coordinator('# Toy\nThe check script lives in /opt/claude-tools/; create sum_ints.\n'))
 
-    def test_the_same_sentence_in_the_plan_is_still_caught(self):   # the exemption covers the operator's work item only
+    def test_a_review_narrative_in_the_plan_is_still_caught(self):   # FIELD-33 (supervisor decision): was the bare-name case
+        co = self.coordinator(POKER_TOOLS)
+        co.state.update(phase='EXEC', next='reviewer')
+        (co.context / 'plan.md').write_text('# Plan\n1. Keep what the Codex reviewer approved.\n')
+        with self.assertRaisesRegex(RuntimeError, 'shadow independence check rejected history in context/plan.md: '):
+            co.assert_fresh_prompt('shadow', 'Review the delta.')
+
+    def test_the_same_sentence_in_the_plan_now_passes(self):   # FIELD-33: a bare tool name in the plan is not review history
         co = self.coordinator(POKER_TOOLS)
         co.state.update(phase='EXEC', next='reviewer')
         (co.context / 'plan.md').write_text('# Plan\n1. Fix the issue found by Codex.\n')
-        with self.assertRaisesRegex(RuntimeError, 'shadow independence check rejected history in context/plan.md: Codex'):
-            co.assert_fresh_prompt('shadow', 'Review the delta.')
+        co.assert_fresh_prompt('shadow', 'Review the delta.')
 
     def test_what_still_blocks_in_the_work_item_is_refused_at_creation(self):
         for text, marker in (('# Toy\nCodex approved this approach; create sum_ints.\n', 'Codex'),

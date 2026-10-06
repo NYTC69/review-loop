@@ -5464,10 +5464,30 @@ class Coordinator:
     WORKITEM_SOURCES = ('original-workitem', 'context/workitem.md')
     OPERATOR_TOOL_NAME_RE = re.compile(r'(?i:claude|codex|opus|astra|gpt-6-astra)|/.*/')
 
+    # FIELD-33: a plan for work ABOUT models names them ("Claude <= 5 pp, Codex <= 3 pp") and may quote Claude Code's own
+    # sandbox scratch root (/tmp/claude-501/). Narrower than the work item: that scratch root is masked, and a bare tool name
+    # passes only when every use of it is a prose word (not part of a path or name such as .codex/ or claude-501) and none is
+    # an approval attribution with a model suffix ("Codex/GPT approved."); other tool-named paths stay caught.
+    SANDBOX_SCRATCH_RE = re.compile(r'(?<![\w/.-])/(?:private/)?tmp/claude-\d+/')
+
+    def _plan_tool_name(self, whole: str, text: str) -> bool:
+        if not re.fullmatch(r'(?i:claude|codex|opus|astra|gpt-6-astra)', whole):
+            return False
+        word = re.escape(whole)
+        prose = re.compile(r'(?<![\w/.-])' + word + r'(?![\w/-])', re.I)
+        attribution = re.compile(word + r'(?:/[\w.-]+)?\s+(?:approved?|signed|rejected|requested)\b', re.I)
+        return all(prose.match(text, use.start()) and not attribution.match(text, use.start())
+                   for use in re.finditer(r'\b' + word + r'\b', text, re.I))
+
     def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
-        matches = self._history_matches(name, self._fresh_history_text(name, content, base))
+        text = self._fresh_history_text(name, content, base)
+        if name == 'context/plan.md':
+            text = self.SANDBOX_SCRATCH_RE.sub('<sandbox-scratch>/', text)
+        matches = self._history_matches(name, text)
         if name in self.WORKITEM_SOURCES:
             matches = [(shown, whole) for shown, whole in matches if not self.OPERATOR_TOOL_NAME_RE.fullmatch(whole)]
+        elif name == 'context/plan.md':
+            matches = [(shown, whole) for shown, whole in matches if not self._plan_tool_name(whole, text)]
         return [shown for shown, _ in matches]
 
     def _author_delta_history(self, phase: str, sequence: int, replaying: bool) -> list[dict]:
