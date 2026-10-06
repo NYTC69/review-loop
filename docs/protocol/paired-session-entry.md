@@ -105,6 +105,7 @@ Write `WORKITEM.md` in the run directory the host skill names (always outside
 the product worktree, and best outside any git repository: tools that refuse
 scratch space inside a repository then fall back to /tmp, which the Codex
 read-only sandbox denies; `run` warns about it) with goal, acceptance criteria, scope, and verification.
+The first line is the title, `# <one-line summary of the task>`: `accept` uses it as the commit title and the delivery report names the work item with it, so never a generic heading such as `# Work item`.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
@@ -129,9 +130,10 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   reviewed path is delivered. A review-only run defaults to `auto_commit: true`
   (owner 2026-10-06); an explicit `--auto-commit false` or operator-profile
   `auto_commit: false` wins, and `accept` then lists the uncommitted files. `--plan-only` does not apply: refuse it in stage A.
-- `WORKITEM.md` states the review goal (one line such as "Review the change for
-  correctness" is enough) and carries no review history (ledger ids or earlier
-  findings).
+- `WORKITEM.md` starts with a title that names the change (`# <one-line summary
+  of the change>`, see Work item), then states the review goal (one line such as
+  "Review the change for correctness" is enough) and carries no review history
+  (ledger ids or earlier findings).
 - Pass `--review-only` (and `--base`) to `permission-probe` and `run`
   identically, with `--lifecycle-mode on` as for any new run. Later commands read
   the entry and base from the saved state; never pass a different `--base`.
@@ -151,6 +153,10 @@ A code-quality-loop handoff (`/review-loop:code-quality-loop` on its paired rout
 `paired_session/docs/cql-retirement.md`) is a review-only run: everything in the review-only entry
 above applies (the change is the whole non-ignored worktree against `HEAD`, the same stage A listing
 and refusals). code-quality-loop takes no base, so no `--base` is passed.
+- Notices: the code-quality-loop skill owns its entry line and loss notice (its Step 0). If they are not already in this conversation's visible output, print them verbatim as the first output after this contract is loaded, before any stage A check or coordinator command:
+  `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` (key set) or
+  `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop` (key absent), then
+  `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)`.
 - CLIs: the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI
   check of Stage A checks here; a missing CLI is a failed stage A check.
 - Test command: as for any review-only run (profile `test_command`, else the verified project command).
@@ -162,10 +168,12 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
 - Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass
   it. Otherwise the review-only default applies (`auto_commit: true` unless the profile says false; no
   warning for `auto_commit` on this handoff): `accept` makes one local commit and never pushes.
-- `WORKITEM.md`: the goal "Review and improve the quality of the uncommitted change: correctness, error
+- `WORKITEM.md`: the first line is `# code-quality-loop: <one-line summary of the uncommitted change>` (the commit title), then
+  the goal "Review and improve the quality of the uncommitted change: correctness, error
   handling, tests and simplicity; fix what the reviews find." When `quality_focus` or `review_style` is
   set in `.review-loop/config.md`, add a "Review priorities" section with each value verbatim. No review
   history.
+- Non-blocking fix round (prepared, not wired): the owner decided that this route gets one fix round for non-blocking findings. When the coordinator option for it ships (working name `--advisory-fix-round`; it does not exist yet), it is passed here in both blocks; until then pass nothing and never invent the flag.
 - Result: DONE (or HOLD) as for any review-only run; show the delivery report (one line per quality
   writer) and accept or reject only on the user's explicit decision. Legacy pointer:
   `use /review-loop:code-quality-loop --legacy`.

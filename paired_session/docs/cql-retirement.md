@@ -87,6 +87,11 @@ The exact command the paired-session skill runs (Claude, efficient mode; strict 
   --review-only [--max-exec-rounds N] [--max-invocations 35] [--config "$PROFILE"]
 ```
 
+CQL-R3 (after the ws28 closing run, where a headless model printed neither notice and the work item began with `# Work item`, which became the commit title):
+- **Notices:** CQL Step 0 owns the entry line and the loss notice and prints them verbatim as visible text, first after resolving `entry` and before any other tool call or skill invocation, also headless. The paired-session skill (PS handoff paragraph, PSE Code-quality-loop entry, which quotes both lines) prints them, as its first output after loading the shared contract and before any stage A check, only when they are missing from the conversation's visible output. Lint pins the three lines in CQL and PSE.
+- **Work item title:** the first line of WORKITEM.md becomes the commit title and the delivery report's work-item name (`coordinator.py` accept, `worktree_lifecycle.py` report). PSE "Work item" now requires a title `# <one-line summary of the task>` for every handoff (never `# Work item`); the review-only entry starts with a title naming the change (its old one-line goal "Review the change for correctness" would also have become the commit title); the CQL entry uses `# code-quality-loop: <one-line summary of the uncommitted change>`.
+- **Non-blocking fix round (prepared, not wired):** owner decision "加一轮修非阻塞". PSE's Code-quality-loop entry reserves the place: the coordinator option (working name `--advisory-fix-round`, lane B) is passed there in both blocks once it ships; until then nothing is passed.
+
 What the user sees, in order: the entry line (§1.1 step 1), the loss notice, the paired-session start line and
 progress (EXEC review of the change as round 1, author fixes, shadow and gate, FINISH, POLISH-Q specialists, the
 `POLISH-Q simplifier` / `POLISH-Q test-writer` legs and a `replay epoch N` line when one wrote, DOCS, SECURITY), then
