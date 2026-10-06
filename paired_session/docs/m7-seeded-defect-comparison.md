@@ -59,7 +59,7 @@ The following owner decisions define the offline tooling contract. They do not a
 - `voided` reason prefixes alone are insufficient. The bound adjudication document must also provide `exclusion_evidence[case]`: case/base/diff, reason, cause arm, and artifact contents plus their SHA-256. D-b1 requires transcript and tool-log bytes, and nonempty `violations` with cause, raw_input, resolution, policy_rule, artifact name and a 1-based matching line. Infrastructure requires an attributed cause and infrastructure-log bytes. These are inspection inputs, not a replacement for the D-b1 scanner: actual realpath resolution, completeness and scanner attribution still require the operator. The grader refuses missing bytes, mismatched hashes and nonexistent log references; it cannot authenticate a fabricated entire log/scan bundle.
 - Corpus exclusions retain D-b2 scan input bindings, location, count and matching-unit hashes; raw answer text stays outside arm workspaces. Existing exclusion caps and arm-failure-as-MISS rules are unchanged. Replacement corpora must be frozen before either arm runs.
 
-- **Hard prerequisite before any real M7 run (OQ5):** a real D-b1 transcript/tool-log scanner and producer authentication must be implemented and independently verified. Synthetic scan/vote fixtures and matching digests do not satisfy this prerequisite. This repair does not implement either component.
+- **Hard prerequisite before any real M7 run (OQ5):** a real D-b1 transcript/tool-log scanner and producer authentication must be implemented and independently verified. Synthetic scan/vote fixtures and matching digests do not satisfy this prerequisite. Both components are implemented offline (section below). The scanner is v2 ([m7-scanner-v2.md](m7-scanner-v2.md), D04), and it scans the four real m7-s4 arm transcripts with zero violations. Before a scored run, the step-5 rehearsal must still scan real transcripts of both arms, including Codex events and executor rounds.
 - Every git call on a case repo (the freeze and the grader's workspace check) runs without inherited `GIT_*` variables, system or global git config, init templates or hooks (m7-s1). Otherwise a user's `init.templateDir` could plant hooks in the case repo, and `diff.noprefix` or `apply.whitespace` could change the frozen bytes. The case repo therefore has no `.git/info/`; the harness creates it before it writes `.git/info/exclude` (plan §2).
 - The clean commit stages the archived files left after the cleanup with `git add -A --force` (m7-s1b), so
   `.gitignore` cannot filter them a second time. A file the base tracks that also matches `.gitignore` therefore stays
@@ -70,3 +70,46 @@ The following owner decisions define the offline tooling contract. They do not a
   read of such a case would void it (m7-s4 pilot).
 - A manifest frozen before this contract lacks `source_base_tree`, `base_tree`, `status`, `scan_sha256` and `worktree_sha256`. The grader refuses it, so re-freeze before any real run.
 - A result cannot add, remove or change a frozen case exclusion: status and scan digest must equal the frozen manifest. An excluded scan must also pass its existing structural and case/base/diff checks. Rewriting both the manifest and result is outside byte-binding protection; the operator must retain the independently recorded pre-run manifest hash.
+
+## Scanner, receipts and collector (m7-s3, scanner v2)
+
+Standard-library Python 3.9 scripts. No provider call; every number from them stays unscored until real runs are
+authorised.
+
+- **D-b1 scanner.** `scripts/m7_scan.py POLICY OUT` (with `scripts/m7_shell.py`) implements
+  [m7-scanner-v2.md](m7-scanner-v2.md). The threat model is in its §2, the owner rule of 2026-10-06: users and models are
+  benign, and the scan catches realistic accidental crossings without excluding normal transcripts.
+  - It extracts every tool call from Claude stream-json (subagents included) and Codex events.
+  - Bash commands are resolved boundedly within one call: known values, segments and opaque values, plus the supported
+    subset.
+  - The regression corpus `tests/fixtures/m7-scan-corpus/` (the four real m7-s4 arms) must scan CLEAN, and the §5
+    controls must hit (`paired_session/test_m7_scan_corpus.py`).
+  - `m7_scan.py --census FILE...` counts fail-closed constructs on further real transcripts. The census is ungated.
+  - `exclusion_evidence()` turns a VIOLATION into m7_grade's `exclusion_evidence[case]`. It carries the raw text and
+    file digest of every scanned transcript (re-read and checked against the scan), plus the scanner's per-call
+    `tool_log`.
+- **Producer receipts (OQ5).** `m7_collect.py keygen` writes a per-run 32-byte secret (mode 0600, outside every
+  repository, case and arm). Right after each arm run, the harness signs an HMAC-SHA256 receipt. The receipt binds the
+  case, arm, window, frozen manifest hash, base and diff to:
+  - the SHA-256 of every collected artifact;
+  - the provider session/message/thread ids found in the streams;
+  - the D-b1 scan status and digest.
+
+  `arm_receipt()` signs only when the scan covers exactly these bytes. Grader records are signed the same way and carry
+  the manifest and findings digests they graded.
+  - `findings_document()` accepts only authentic receipts of this frozen manifest, this window and each case's frozen
+    base and diff. It re-checks every signed artifact's bytes.
+  - `adjudication()` accepts only authentic grader records bound to this manifest and findings document.
+  - A receipt shows that the holder of the secret registered these bytes. It does not show that a provider produced
+    them, and it cannot catch a harness that lies when signing.
+- **Legacy source.** `legacy_first_review()` reads the launcher summaries, in order, from the orchestrator's own
+  stream-json tool results. It takes the per-invocation `result.txt` of the first summary with status `ok`.
+- **Normaliser.** Both arms become `{file, line: null, blocking, security_only, text}`, with the text
+  `<summary>\nScenario: <scenario>`.
+  - Legacy: `[CRITICAL]` is blocking. A text that breaks the reviewer schema is an arm failure, never an empty success.
+  - Paired: CRITICAL and MAJOR are blocking; SECURITY, or `security` below MAJOR, is security-only.
+- **Grader records.** One signed record per grader, case and blinded arm label. `adjudication()` maps the labels back
+  and requires exactly two initial votes plus at most one third pass per finding.
+- **Rehearsal.** `paired_session/test_m7_collect.py` runs the legacy side and the collector on the fake, end to end:
+  freeze, the real reviewer launcher with a fake `claude`, scan, sign, normalise, grade. It also checks that forged,
+  edited or replayed receipts are refused.
