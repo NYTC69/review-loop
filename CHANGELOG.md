@@ -1,5 +1,28 @@
 # Changelog
 
+### v2.12.4：review-only 的 accept 直接给出下一步命令、列出未提交文件，默认自动提交（遇到 `* text=auto` 等仓库会降级成不提交）（FIELD-25）；Codex 用默认 `~/.codex` 时警告，模型别名在启动时就拒绝（HYGIENE-1）；报告把相似的发现归组列出（REPORT-DEDUPE）；M7 扫描器 v2；D09 能力 1 的配置部分
+
+- **review-only 实地反馈（FIELD-25，poker-tools 现场）**：
+  - `accept --intent-only` 的输出，以及不带 `--expect` 的 accept 被拒时，都会直接给出带好 digest 的下一条完整命令。两步流程和 digest 绑定不变。
+  - **owner 决定：review-only（worktree lifecycle）默认 `auto_commit: true`。** 显式的 `--auto-commit false` 或 operator profile 里的 false 优先，普通 run 仍默认 false。accept 产生提交时打印 `COMMIT: <sha> …; not pushed`，并列出一并提交的 untracked 文件。
+    - 仓库的提交前检查拒绝提交时（`* text=auto`、`core.autocrlf`、LFS、submodule 等），默认得来的 true 会降级成不提交的交付，打印 `UNCOMMITTED:` 和 "auto_commit skipped: <原因>"；显式设为 true 的照旧拒绝。
+    - 没有提交时，accept 打印 `UNCOMMITTED:` 列出改动和 untracked 文件，报告里也写一行。
+  - review-only 启动时列出 scope 里零散的 untracked 文件，并说明怎么排除；只提示，不拒绝（owner 决定）。
+  - ledger 去重：以某条仍 open 的 finding 的 id 开头的重报，沿用原 id。gate 的 finding 不合并。
+  - 已知残余：accept 提交到一半中断后重放，COMMIT 行可能少列几个一并提交的文件名，提交内容本身是对的。
+- **HYGIENE-1**：
+  - 派发了 Codex 角色而 `CODEX_HOME` 未设置时，启动时打印一行 WARNING：并发的 Codex run 在默认 home 上会互相写 trust 条目，建议每个 run 用独立的绝对路径 `CODEX_HOME`。只警告，不拒绝。
+  - `opus`、`sonnet`、`haiku` 等 Claude 模型别名在创建 run 前就被拒绝，不再白跑一个回合后才 HOLD。
+  - 文档：Codex 默认模型统一为 gpt-6.1-sol；launcher 日志写到 run root 的 `logs/`。
+  - `project_root_markers` 是 Codex 的常规配置键，不当作 capability（记为残余）。
+- **REPORT-DEDUPE**：`review-report.md` 把同一文件、同一严重度里摘要相似的发现归成一组，列出所有 id 和角色，组内每条摘要逐行保留，标注 "may still be separate issues"。只改渲染，ledger 不变。现场那份 9 条 Suggestions 的报告变成 3 组。
+- **D09 能力 1（code-quality-loop 的 simplifier 和测试整合），这一版只有配置部分**：
+  - 新增 `--quality-writers`（`both`/`simplify`/`tests`/`off`），review-only 默认 `both`，主流程默认 `off`，profile 可以设置；run 开始时冻结。
+  - 跳过规则和余量检查都已实现，但写入步骤还没有接上，所以这一版里 writer 只记为跳过或未到达，不会改任何文件。主流程的交付报告会提示可以用 `--quality-writers both` 开启（约多 10 次调用）。
+- **M7 扫描器 v2（D04，内部工具）**：`scripts/m7_shell.py`、`scripts/m7_scan.py`、`--census`、语料 fixture。4 个真实 arm 0 违规（v1 有 22 条误报），正常 transcript 的排除率约 3% / 6% / 3%。
+- **文档**：DECISIONS Addendum (c) 补一句：ABA/BAB 是推荐默认，不是硬性要求，各角色厂商可以自由配置。
+- **审查**：都走 ABA，终审在临时 clone 里跑。v2.12.3 rc1 的 CI 抓到两处回归（FIELD-25 的去重合并了两个 reviewer 的同一条 advisory；D04 的一个测试依赖非 `/tmp` 的临时目录），都已修好，原测试没有改动。FIELD-25、HYGIENE-1、D09 C1-a 的终审各打回一次，都已修复；REPORT-DEDUPE 终审 APPROVE。
+
 ### v2.12.3：`/review-loop:review-pr` 默认改走 paired-session 的报告模式（review-pr 移植完成，收尾检查已通过）；review-only 运行不再把用户自己改动里的 vendor 字样当成审查记录（FIELD-26/27）；AAB 等组合在 strict 模式下也检查 codex-cli（ROLE-NITS）
 
 - **review-pr 移植完成（D-LG2，legacy 删除前提 ①）**：
