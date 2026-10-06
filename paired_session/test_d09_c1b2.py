@@ -1,8 +1,8 @@
 """D09 C1-b2 (paired_session/docs/d09-cap1-writer-passes.md §2 "Reviewer after a writer" and "One chance in review", §5):
 a kept writer change replays EXEC review, shadow, gate, FINISH and the specialists before DOCS (exec_rounds + 1, like a
 FINISH write); the replay's first non-APPROVE review or a failing gate rolls the tree back to base_oid instead of a fix
-round. A kept change needs a passing local check, whose executor is C1-b3: until then `_writer_local_check` returns None
-(the interim rollback), so these tests drive the run in process with the check patched."""
+round. A kept change needs a passing local check (C1-b3's executor, test_d09_c1b3.py); these tests drive the run in
+process with `_writer_local_check` patched, so the replay paths are tested apart from the test command."""
 import json
 import os
 from pathlib import Path

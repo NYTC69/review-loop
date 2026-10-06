@@ -208,6 +208,21 @@ efficient run needs neither and records neither). Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
 
+Quality writers (D09, `docs/d09-cap1-writer-passes.md`): after a clean POLISH-Q,
+`--quality-writers both|simplify|tests|off` (any profile may set it; frozen;
+default `both` for `--review-only`, `off` otherwise) runs a fresh author session
+that simplifies the changed code, then one that consolidates the changed tests.
+The explicit test command runs first on the reviewed tree (a red baseline skips
+both) and again after each change. A kept change (`wrote`) replays EXEC review,
+shadow, gate, FINISH and the specialists before DOCS (`exec_rounds` + 1); the
+replay's first non-approval rolls it back (`rolled-back:review`) with no fix
+round. Other outcomes: `no-op`, `rolled-back:tests`, `rolled-back:boundary`
+(reserved docs or `.review-loop/` config), `rolled-back:hold`, `exhausted`, and
+the skips `no-test-command`, `small`, `no-test-file`, `budget`,
+`no-green-baseline`. Cost: about +10 invocations for a typical change (two
+writer calls and one replay); the state is in `lifecycle.quality_writers`, the
+outcome in the delivery report.
+
 The disabled E2E candidate-tree module can materialize a clean HEAD into an
 external scratch checkout with a separate scratch Git directory and index. It
 returns the baseline tree OID, frozen parent/ref, live-index hash and whether

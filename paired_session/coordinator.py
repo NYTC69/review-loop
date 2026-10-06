@@ -7202,7 +7202,7 @@ class Coordinator:
         self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
 
     def worktree_writer_turn(self) -> None:
-        """D09 C1-b1 (d09-cap1-writer-passes.md §2): one POLISH-Q writer leg through the FINISH writer path, bound to its
+        """D09 (d09-cap1-writer-passes.md §2): one POLISH-Q writer leg through the FINISH writer path, bound to its
         input tree, judged by the tree, not the answer: a READY change that passes the local test run is kept (`wrote`,
         the replay follows), one that fails it is rolled back (`rolled-back:tests`), a HOLD with a change is rolled back
         (`rolled-back:hold`), and one that touches a reserved DOCS path or `.review-loop/` config is refused before the
@@ -7342,9 +7342,11 @@ class Coordinator:
                 try:
                     code = proc.wait(timeout=self.args.timeout)
                 except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait()
                     reason = f'timed out after {self.args.timeout}s'
+                finally:   # before the snapshot: no leftover child of the command (a test server) may change the tree later
+                    try: os.killpg(proc.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError): pass   # the group is already gone
+                    proc.wait()
         except OSError as exc:
             reason = f'could not run: {exc}'
         changed = git_snapshot(self.workspace)[0] != before

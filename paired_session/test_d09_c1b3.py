@@ -114,6 +114,15 @@ class D09C1b3Tests(unittest.TestCase):
         self.assertEqual(co._writer_boundary(leg), ['.review-loop/config.md', 'CHANGELOG.md'])
         self.assertEqual(leg['boundary'], ['.review-loop/config.md', 'CHANGELOG.md'])
 
+    def test_a_leftover_child_of_the_test_command_cannot_change_the_tree_later(self):   # C1-b3 gate LOW 1 and 2
+        (self.workspace / 'new_code.py').write_text(CODE)
+        co = rc.Coordinator(rc.parser().parse_args(self.command(*RUN)[2:]))
+        co.args.test_command = self.script('(sleep 2; echo late > late.txt) &\nexit 0')   # a background child outlives it
+        run = co._test_run('leftover')
+        self.assertEqual((run['passed'], run['exit']), (True, 0))
+        rc.time.sleep(3)
+        self.assertFalse((self.workspace / 'late.txt').exists())   # the process group was killed before the snapshot
+
     def test_the_npm_test_default_alone_skips_both_writers(self):
         argv = [arg for arg in self.command(*RUN) if arg not in ('--test-command', 'python3 -m unittest')]
         (self.workspace / 'new_code.py').write_text(CODE)

@@ -75,6 +75,22 @@ paired-session; set it in the operator profile`) and a `reviewer_model` /
 `executor_model` set to anything other than empty or `inherit` (models come
 from the operator profile, ADR-9). Never pass `--adversarial-gate off`.
 
+Quality writers (`quality_writers`: `both`, `simplify`, `tests` or `off`; set by
+`--quality-writers` or any profile, frozen at run start): after a clean POLISH-Q
+a fresh author session may simplify the changed code, then consolidate the
+changed tests. The default is `both` for a review-only run and `off` for the main
+pipeline, whose delivery report then names `--quality-writers both` (about +10
+invocations). A writer is skipped with a recorded reason: `no-test-command` (no
+explicit `--test-command` or profile `test_command`), `small` (under 20 changed
+code lines), `no-test-file`, `budget` (no room for one replay) or
+`no-green-baseline` (the test command fails before any writer). A kept change
+(`wrote`) passed the test command and is reviewed again (EXEC reviewer, shadow,
+gate, FINISH, specialists) before DOCS; otherwise the change is rolled back:
+`rolled-back:tests`, `rolled-back:boundary` (a reserved docs path or
+`.review-loop/` config), `rolled-back:review` (the replay's first review or gate
+did not approve; no fix round), `rolled-back:hold`, or `exhausted` (a failed
+attempt). Report each writer's outcome with the stage receipts.
+
 ## Work item
 
 Write `WORKITEM.md` in the run directory the host skill names (always outside
