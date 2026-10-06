@@ -104,6 +104,10 @@ and resumes, or aborts.
 - **W lifecycle.** The CLI default is `--lifecycle-mode off` (C:8236); the skill passes `on` (PSE:83). After EXEC
   approval and the gate, the run goes through FINISH → POLISH-Q → DOCS → SECURITY → DONE, unchanged.
   `--skip-quality-polish` and `--docs-file ""` keep their meaning.
+- **Quality writers (D09, owner 2026-10-06).** A review-only run defaults to `quality_writers: both` (the main pipeline:
+  `off`), the code-quality-loop simplify and test-consolidation passes: after a clean POLISH-Q, with an explicit test
+  command and a green baseline, a kept writer change replays EXEC review, shadow, gate, FINISH and the specialists before
+  DOCS. Skips, outcomes and cost: `d09-cap1-writer-passes.md` §3-§4 and PSE "Profile and settings".
 - **Reduced set: CLI and harness only.** `--lifecycle-mode off` runs only the EXEC loop and the gate. The skill cannot
   reach it: PSE:119-129 aborts any run that is not lifecycle on, PSE:70 forbids gate off, and lifecycle on refuses gate
   off (C:1664).

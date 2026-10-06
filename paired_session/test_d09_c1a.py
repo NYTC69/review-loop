@@ -1,6 +1,7 @@
 """D09 C1-a (paired_session/docs/d09-cap1-writer-passes.md §3-§5): the quality_writers key and its per-entry defaults,
 the per-item marker and its successor copy, the skip rules with their reasons, the headroom formula and the report
-lines. No writer leg exists yet (C1-b1): a writer that passes every rule is not reached, and nothing writes."""
+lines. The tail itself writes nothing: it returns the writers that pass every rule, which worktree_polish_turn queues
+for the writer legs (C1-b1, test_d09_c1b1.py)."""
 import json
 from pathlib import Path
 import unittest
@@ -109,7 +110,7 @@ class D09C1aTests(unittest.TestCase):
         (self.workspace / 'tests' / 'test_new_code.py').write_text('import new_code\n')
         co = self.created('--quality-writers', 'both', '--max-invocations', '60', name='refresh')
         paths = co._changed_paths()
-        co._quality_writers_tail(paths, 3, {'candidate_oid': 'tree-x', 'request_id': 'w-POLISH-Q-0-0'})   # not reached
+        co._quality_writers_tail(paths, 3, {'candidate_oid': 'tree-x', 'request_id': 'w-POLISH-Q-0-0'})   # queued, no state
         self.assertEqual(co.state['lifecycle']['quality_writers'], {'base_oid': 'tree-x'})
         co.state['test_command_explicit'] = False   # the next exit (after a DONE reject) records a skip on its own tree
         co._quality_writers_tail(paths, 3, {'candidate_oid': 'tree-y', 'request_id': 'w-POLISH-Q-1-0'})
@@ -137,7 +138,7 @@ class D09C1aTests(unittest.TestCase):
         (self.workspace / 'tests').mkdir()
         (self.workspace / 'tests' / 'test_new_code.py').write_text('import new_code\n')
         co = self.created(*both, name='eligible')
-        self.assertEqual(self.tail(co), {})   # both pass every rule: not reached, no state, nothing written
+        self.assertEqual(self.tail(co), {})   # both pass every rule: queued for the legs, no state, nothing written
         self.assertEqual(rc.git_snapshot(self.workspace)[0], co.state['lifecycle']['quality_writers']['base_oid'])
         self.assertEqual(self.tail(self.created('--quality-writers', 'simplify', '--max-invocations', '60', name='simplify')),
                          {'test-writer': 'skipped:off'})
