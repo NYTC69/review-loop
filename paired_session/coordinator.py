@@ -8349,7 +8349,7 @@ class Coordinator:
         if gate_probe:   # the overall status is the worse of the two turns: FAIL > UNKNOWN > PASS_RESIDUAL_RISK > PASS
             report['gate_permission_probe'] = gate_probe
             if 'message' not in report and (gone := [r for r in gate_probe['failure_reasons'] if r.startswith('probe-tracked-file-escaped: ')]): report['message'] = gone[0]
-            if gate_probe['status'] != 'PASS':
+            if gate_probe['status'] != 'PASS':   # a gate turn is PASS, UNKNOWN or FAIL (probe_turn_status); only a Codex author's synthetic check gives PASS_RESIDUAL_RISK
                 report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
                 report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'
         global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
@@ -8393,7 +8393,7 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'codex' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+        if self.strict and 'codex' in self.dispatched_vendors() and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
         if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
@@ -9521,7 +9521,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--accept-unverified-codex-cli', action='store_true',
-                   help='operator override: run a Codex author on an unverified codex-cli version (needs --reason)')
+                   help='operator override: run Codex roles (author, reviewer or gate) on an unverified codex-cli version (needs --reason)')
     p.add_argument('--accept-unverified-claude-author', action='store_true',
                    help='operator opt-in: run a Claude author with path-scoped Edit rules but no probe PASS (needs --reason; '
                         'with run, resume or reject). Persisted and re-applied on restore until the author flags change. '
@@ -9817,7 +9817,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject') and args.author_vendor == 'codex'
+    if (co.strict and args.action in ('run', 'resume', 'reject') and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
