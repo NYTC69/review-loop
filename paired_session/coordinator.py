@@ -5284,14 +5284,27 @@ class Coordinator:
                                           cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return proc.stdout.decode('utf-8', 'replace') if proc.returncode == 0 and b'\0' not in proc.stdout else None
 
+    def _configured_command_texts(self) -> list[str]:
+        """FIELD-29: the operator's configured commands (the test command, --reviewer-command and the work item's frozen
+        reviewer-commands block), longest first. An absolute path in one may name a vendor or a review word."""
+        frozen = ((getattr(self, 'state', None) or {}).get('config') or {}).get('workitem_reviewer_commands')
+        if frozen is None:
+            try: frozen = workitem_reviewer_commands(self.workitem.read_text())
+            except (OSError, ValueError): frozen = []
+        commands = {c.strip() for c in (self.args.test_command, *(self.args.reviewer_command or ()), *frozen) if c and c.strip()}
+        return sorted(commands, key=len, reverse=True)
+
     def _fresh_history_text(self, name: str, content: str, base: Optional[str] = None) -> str:
         """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
+        record = (getattr(self, 'state', None) or {}).get('review_only') or {}
+        frozen_scope = name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256')
+        for command in self._configured_command_texts():   # FIELD-29: operator configuration, wherever it is quoted (prompts too)
+            content = content.replace(command, '<configured-command>')
         base = base if base is not None else self.state.get('base_commit')
         if not base or name in ('prompt', 'gate-template'):
             return content
-        record = (getattr(self, 'state', None) or {}).get('review_only') or {}
-        if name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256'):
-            content = mask_initial_change(content)   # FIELD-27: this run's frozen review scope
+        if frozen_scope:
+            content = mask_initial_change(content)   # FIELD-27: this run's frozen review scope (checked on the text as written)
 
         def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
