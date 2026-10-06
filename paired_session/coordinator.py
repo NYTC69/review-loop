@@ -2347,6 +2347,10 @@ class Coordinator:
             self._review_only_args(None, self._parent_spec() if args.supersedes else None)
             self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
+            if 'on' in (self.args.shadow, self.args.adversarial_gate):   # FIELD-30: what the fresh scan would hold on, before any turn
+                if markers := self._introduced_history('original-workitem', self.workitem.read_text(), self._head_commit() or ''):
+                    raise ValueError(f'independence check rejected history in original-workitem: {markers[0]}; the fresh '
+                                     'shadow and gate would hold on it, so reword the work item before starting the run')
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -5446,8 +5450,17 @@ class Coordinator:
         return {str((Path(top) / name).relative_to(root)) for top, dirs, files in os.walk(root) for name in (*files, *dirs)
                 if (Path(top) / name).is_symlink() or name in files}
 
-    def _introduced_history(self, name: str, content: str) -> list[str]:
-        return self._history_markers(name, self._fresh_history_text(name, content))
+    # FIELD-30: the operator's work item may name the tools its issue was found with ("found by Codex during the
+    # investigation"); a bare tool name or a tool-named directory there is operator input, not this run's review history.
+    # Review narratives, verdict words, ledger ids and "<tool> approved/said/requested" attributions stay scanned.
+    WORKITEM_SOURCES = ('original-workitem', 'context/workitem.md')
+    OPERATOR_TOOL_NAME_RE = re.compile(r'(?i:claude|codex|opus|astra|gpt-6-astra)|/.*/')
+
+    def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
+        matches = self._history_matches(name, self._fresh_history_text(name, content, base))
+        if name in self.WORKITEM_SOURCES:
+            matches = [(shown, whole) for shown, whole in matches if not self.OPERATOR_TOOL_NAME_RE.fullmatch(whole)]
+        return [shown for shown, _ in matches]
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
