@@ -10,7 +10,10 @@ from paired_session import test_field30 as f30
 
 GG_PLAN = ('# Plan\n1. Keep the per-model gate: Claude <= 5 pp, Codex <= 3 pp.\n2. Opus primary_state reads the frame first.\n'
            '3. Write scratch frames to /tmp/claude-501/gg-run/frames/ (and /private/tmp/claude-501/gg-run/ on macOS).\n'
-           '4. Codex reads rejected frames; Claude reads accepted frames.\n')   # an approval word that is not an attribution
+           '4. Codex reads rejected frames; Claude reads accepted frames.\n'   # an approval word that is not an attribution
+           '5. Keep the Opus-only path.\n6. Switch the reader to claude-opus-5-5.\n'   # FIELD-33 gate: compounds and model ids
+           '7. Edit `gg/readers/opus.py` so Opus reads primary_state.\n'          # a file path naming the model, plus prose
+           '8. Codex is primary; the prompt lives in `prompts/codex.md`.\n')
 
 
 class PlanToolNameTests(unittest.TestCase):
@@ -40,6 +43,12 @@ class PlanToolNameTests(unittest.TestCase):
                 for role in ('shadow', 'gate'):
                     with self.assertRaisesRegex(RuntimeError, f'{role} independence check rejected history in context/plan.md: {marker}'):
                         co.assert_fresh_prompt(role, 'Review the delta.')
+
+    def test_a_tool_named_path_under_the_scratch_root_is_still_caught(self):   # FIELD-33 gate
+        co = self.plan('# Plan\n1. Read /tmp/claude-501/codex-review/notes.md first.\n')
+        for role in ('shadow', 'gate'):
+            with self.assertRaisesRegex(RuntimeError, f'{role} independence check rejected history in context/plan.md: codex'):
+                co.assert_fresh_prompt(role, 'Review the delta.')
 
     def test_ledger_ids_in_the_plan_still_hold(self):   # FIELD-11
         co = self.plan(GG_PLAN + '4. Keep the F008 and F009 fixes.\n')

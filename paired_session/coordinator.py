@@ -171,6 +171,8 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# A path with a dotted extension (gg/readers/opus.py, docs/Codex.md:7) is a file name, not prose, for the bare-name scan.
+DOTTED_PATH_RE = re.compile(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''')
 # FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
 AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
                        '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
@@ -5284,6 +5286,15 @@ class Coordinator:
         spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
+    def _run_path_prose(self, name: str, content: str) -> str:
+        """The text with coordinator-owned absolute paths masked (a token boundary after each path)."""
+        prose = content
+        # Support paths occur in generated prompts and diff headers, not user plan prose.
+        include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
+        for path in self._fresh_scan_run_paths(include_support):
+            prose = re.sub(r'(?<![\w/])' + re.escape(path) + r'(?!\w)', '<run-path>', prose)
+        return prose
+
     def _history_markers(self, name: str, content: str) -> list[str]:
         """The review-history markers the fresh shadow/gate scan finds in one input, in scan order (as reported)."""
         return [shown for shown, _ in self._history_matches(name, content)]
@@ -5296,14 +5307,7 @@ class Coordinator:
                     for match in re.finditer(pattern, text, flags)]
         # Role/rubric instructions in prompts/templates are not prior verdicts.
         matches = findall(FRESH_HISTORY_RE, content)
-        # Mask only coordinator-owned absolute paths; require a token boundary after each path.
-        prose = content
-        # Support paths occur in generated prompts and diff headers, not user plan prose.
-        include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
-        known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
-                               for path in self._fresh_scan_run_paths(include_support)]
-        for known_path in known_path_patterns:
-            prose = known_path.sub('<run-path>', prose)
+        prose = self._run_path_prose(name, content)
         # Unknown vendor-named directory paths remain subject to the scan.
         matches += findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
         matches += findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
@@ -5314,8 +5318,7 @@ class Coordinator:
             r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
         matches += findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
                            r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
-        prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
-                       '<path>', prose)
+        prose = DOTTED_PATH_RE.sub('<path>', prose)
         matches += findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
         if name not in ('prompt', 'gate-template'):
             matches += findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
@@ -5496,16 +5499,19 @@ class Coordinator:
     OPERATOR_TOOL_NAME_RE = re.compile(r'(?i:claude|codex|opus|astra|gpt-6-astra)|/.*/')
 
     # FIELD-33: a plan for work ABOUT models names them ("Claude <= 5 pp, Codex <= 3 pp") and may quote Claude Code's own
-    # sandbox scratch root (/tmp/claude-501/). Narrower than the work item: that scratch root is masked, and a bare tool name
-    # passes only when every use of it is a prose word (not part of a path or name such as .codex/ or claude-501) and none is
-    # an approval attribution with a model suffix ("Codex/GPT approved."); other tool-named paths stay caught.
+    # sandbox scratch root (/tmp/claude-501/). Narrower than the work item: that scratch root is masked (what follows it is
+    # still scanned), and a bare tool name passes only when every use of it in the text the bare-name scan reads (dotted file
+    # paths such as gg/readers/opus.py already masked) is a prose word -- a compound such as Opus-only or claude-opus-5-5
+    # counts, a directory component such as .codex/ or /claude-501/ does not -- and none is an approval attribution with a
+    # model suffix ("Codex/GPT approved."); other tool-named paths stay caught.
     SANDBOX_SCRATCH_RE = re.compile(r'(?<![\w/.-])/(?:private/)?tmp/claude-\d+/')
 
     def _plan_tool_name(self, whole: str, text: str) -> bool:
         if not re.fullmatch(r'(?i:claude|codex|opus|astra|gpt-6-astra)', whole):
             return False
+        text = DOTTED_PATH_RE.sub('<path>', self._run_path_prose('context/plan.md', text))   # as the bare-name scan reads it
         word = re.escape(whole)
-        prose = re.compile(r'(?<![\w/.-])' + word + r'(?![\w/-])', re.I)
+        prose = re.compile(r'(?<![\w/.])' + word + r'(?!\w|-?/)', re.I)
         attribution = re.compile(word + r'(?:/[\w.-]+)?\s+(?:approved?|signed|rejected|requested)\b', re.I)
         return all(prose.match(text, use.start()) and not attribution.match(text, use.start())
                    for use in re.finditer(r'\b' + word + r'\b', text, re.I))
@@ -5513,7 +5519,7 @@ class Coordinator:
     def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
         text = self._fresh_history_text(name, content, base)
         if name == 'context/plan.md':
-            text = self.SANDBOX_SCRATCH_RE.sub('<sandbox-scratch>/', text)
+            text = self.SANDBOX_SCRATCH_RE.sub('/sandbox-scratch/', text)   # no '>': a tool-named path below it is still caught
         matches = self._history_matches(name, text)
         if name in self.WORKITEM_SOURCES:
             matches = [(shown, whole) for shown, whole in matches if not self.OPERATOR_TOOL_NAME_RE.fullmatch(whole)]
