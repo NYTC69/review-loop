@@ -5298,8 +5298,9 @@ class Coordinator:
         """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
         record = (getattr(self, 'state', None) or {}).get('review_only') or {}
         frozen_scope = name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256')
-        for command in self._configured_command_texts():   # FIELD-29: operator configuration, wherever it is quoted (prompts too)
-            content = content.replace(command, '<configured-command>')
+        for command in self._configured_command_texts():   # FIELD-29: operator configuration, wherever it is quoted (prompts too);
+            # on token boundaries only, so a path that merely contains it (tests/pytest_helpers.py in a patch header) keeps its name
+            content = re.sub(r'(?<![\w./-])' + re.escape(command) + r'(?![\w/-])', '<configured-command>', content)
         base = base if base is not None else self.state.get('base_commit')
         if not base or name in ('prompt', 'gate-template'):
             return content

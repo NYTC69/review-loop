@@ -53,5 +53,27 @@ class ConfiguredCommandTextTests(unittest.TestCase):
                     co.assert_fresh_prompt('shadow', self.prompt(co))
 
 
+class ShortCommandTests(unittest.TestCase):   # FIELD-29 gate: a short command must not rewrite the paths that contain it
+    def test_a_short_command_keeps_patch_header_paths_so_the_base_exemption_still_applies(self):
+        from paired_session import test_field23_repo_text_scan as f23
+        h = f23.RepoTextScanTests('test_history_in_a_new_file_holds')
+        h.setUp()
+        self.addCleanup(h.doCleanups)
+        name, base = 'tests/pytest_helpers.py', '# Claude reads this helper.\nVALUE = 1\n'
+        h.commit({name: base})
+        args = rc.parser().parse_args(['run', '--workspace', str(h.ws), '--workitem', str(h.h.workitem),
+                                       '--run-dir', str(h.h.run_dir), '--test-command', 'pytest'])
+        co = rc.Coordinator(args)
+        co.state.update(phase='EXEC', next='reviewer')
+        (co.context / 'plan.md').write_text('# Plan\n1. Extend the helper.\n')
+        co.capture_review_baseline()
+        co.save()
+        h.write(name, base + '# Claude reads this helper.\n')   # the same base line again: FIELD-23 exempts it
+        co.materialize_review_context()
+        self.assertIn('+++ b/tests/pytest_helpers.py', (co.context / 'delta.patch').read_text())
+        for role in ('shadow', 'gate'):
+            co.assert_fresh_prompt(role, 'Review the delta.\n' + co._test_instruction())   # the prompt's "pytest" is still masked
+
+
 if __name__ == '__main__':
     unittest.main()
