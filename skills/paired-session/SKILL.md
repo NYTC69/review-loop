@@ -131,6 +131,7 @@ A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:
 the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names
 (`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--auto-commit false` as handed over;
 `--max-invocations 35` unless the profile sets `max_invocations`) and the explicit `--test-command`;
+also add `--advisory-fix-round true` (one fix round for the non-blocking findings);
 `WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`. Its two
 notice lines belong to the code-quality-loop skill; only if they are not already in this conversation's visible
 output, print them verbatim (the shared contract's Code-quality-loop entry quotes them) as the first output after

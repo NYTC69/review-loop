@@ -173,9 +173,13 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   handling, tests and simplicity; fix what the reviews find." When `quality_focus` or `review_style` is
   set in `.review-loop/config.md`, add a "Review priorities" section with each value verbatim. No review
   history.
-- Non-blocking fix round (prepared, not wired): the owner decided that this route gets one fix round for non-blocking findings. When the coordinator option for it ships (working name `--advisory-fix-round`; it does not exist yet), it is passed here in both blocks; until then pass nothing and never invent the flag.
+- Non-blocking fix round: pass `--advisory-fix-round true` in both blocks (owner decision "加一轮修非阻塞"). After the first clean
+  POLISH-Q the author gets one round for the open non-blocking findings (MINOR, LOW, a gate's MEDIUM/LOW): fix what is
+  reasonable, dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again, before
+  the quality writers. It runs once, on its own round outside `--max-exec-rounds`, and is skipped with the reason when the
+  invocation budget has no room; findings still open stay advisory.
 - Result: DONE (or HOLD) as for any review-only run; show the delivery report (one line per quality
-  writer) and accept or reject only on the user's explicit decision. Legacy pointer:
+  writer, one for the fix round) and accept or reject only on the user's explicit decision. Legacy pointer:
   `use /review-loop:code-quality-loop --legacy`.
 
 ## Review-PR entry

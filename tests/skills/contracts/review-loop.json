@@ -4116,10 +4116,22 @@
       "needle": "- `WORKITEM.md` starts with a title that names the change (`# <one-line summary"
     },
     {
-      "id": "pse_cql_advisory_fix_round_reserved",
+      "id": "pse_cql_advisory_fix_round",
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
-      "needle": "(working name `--advisory-fix-round`; it"
+      "needle": "- Non-blocking fix round: pass `--advisory-fix-round true` in both blocks"
+    },
+    {
+      "id": "pse_cql_advisory_fix_round_not_reserved",
+      "kind": "not_contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "it does not exist yet"
+    },
+    {
+      "id": "paired_session_skill_cql_advisory_fix_round",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "also add `--advisory-fix-round true` (one fix round for the non-blocking findings);"
     }
   ]
 }

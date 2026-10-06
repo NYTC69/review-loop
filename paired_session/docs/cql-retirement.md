@@ -84,13 +84,13 @@ The exact command the paired-session skill runs (Claude, efficient mode; strict 
 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run \
   --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
   --test-command "$TEST_COMMAND" --lifecycle-mode on \
-  --review-only [--max-exec-rounds N] [--max-invocations 35] [--config "$PROFILE"]
+  --review-only --advisory-fix-round true [--max-exec-rounds N] [--max-invocations 35] [--config "$PROFILE"]
 ```
 
 CQL-R3 (after the ws28 closing run, where a headless model printed neither notice and the work item began with `# Work item`, which became the commit title):
 - **Notices:** CQL Step 0 owns the entry line and the loss notice and prints them verbatim as visible text, first after resolving `entry` and before any other tool call or skill invocation, also headless. The paired-session skill (PS handoff paragraph, PSE Code-quality-loop entry, which quotes both lines) prints them, as its first output after loading the shared contract and before any stage A check, only when they are missing from the conversation's visible output. Lint pins the three lines in CQL and PSE.
 - **Work item title:** the first line of WORKITEM.md becomes the commit title and the delivery report's work-item name (`coordinator.py` accept, `worktree_lifecycle.py` report). PSE "Work item" now requires a title `# <one-line summary of the task>` for every handoff (never `# Work item`); the review-only entry starts with a title naming the change (its old one-line goal "Review the change for correctness" would also have become the commit title); the CQL entry uses `# code-quality-loop: <one-line summary of the uncommitted change>`.
-- **Non-blocking fix round (prepared, not wired):** owner decision "加一轮修非阻塞". PSE's Code-quality-loop entry reserves the place: the coordinator option (working name `--advisory-fix-round`, lane B) is passed there in both blocks once it ships; until then nothing is passed.
+- **Non-blocking fix round (wired, CQL-WIRE):** owner decision "加一轮修非阻塞". The coordinator option `--advisory-fix-round` (ADVFIX, lane B, 1ac3c1d) is passed as `--advisory-fix-round true` in both blocks (PSE Code-quality-loop entry, the PS handoff paragraph): after the first clean POLISH-Q the author gets one round for the open non-blocking findings, then the full re-review chain, before the quality writers; once, on its own round, skipped with the reason without budget room. Later commands repeat it with the run's other options (PSE "Existing runs and HOLD"). This is what the legacy loop's "fixed what it found" maps to (ws28 changed no code without it).
 
 What the user sees, in order: the entry line (§1.1 step 1), the loss notice, the paired-session start line and
 progress (EXEC review of the change as round 1, author fixes, shadow and gate, FINISH, POLISH-Q specialists, the
@@ -201,6 +201,12 @@ and `paired_session_skill_cql_explicit_test_command` (PS: `--review-only`, the o
 explicit `--test-command`), `pse_cql_explicit_test_command`, `pse_cql_auto_commit_false_honored`,
 `cql_auto_commit_false_handed_over`, and `pse_default_entry_covers_cql` (PSE "Entry and failure handling" names the
 review-pr and code-quality-loop handoffs as default entries, and a refusal carries the handing-off entry's own name).
+
+Changed in CQL-WIRE: `pse_cql_advisory_fix_round_reserved` (CQL-R3, it pinned the "does not exist yet" slot) is
+replaced by `pse_cql_advisory_fix_round` (PSE: "- Non-blocking fix round: pass `--advisory-fix-round true` in both
+blocks"), `pse_cql_advisory_fix_round_not_reserved` (not_contains "it does not exist yet") and
+`paired_session_skill_cql_advisory_fix_round` (PS: "also add `--advisory-fix-round true` (one fix round for the
+non-blocking findings);").
 
 `scripts/run-skill-lint` builds its case list from the contract files only (`:1346-1350`), so these ids are the
 whole case delta. Its all-skill scans (`:269-306`) iterate over the skill files and already see CQL; Step 0 must keep
