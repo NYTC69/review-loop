@@ -108,9 +108,12 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
 - `run` refuses before creating any state when the change is empty, the index
   has unmerged entries or partially staged paths, the base is not an ancestor of
   `HEAD`, or the work item carries review history; report the refusal verbatim.
-  A changed path named like review history (`docs/F001.md`, `APPROVE.txt`) is
-  refused too, because the fresh shadow and gate scan the review scope that
-  lists it: tell the user to review that change with the legacy workflow.
+  The change as created is the user's code (FIELD-26/27): its content and its
+  paths pass the fresh shadow and gate scan even when they name a vendor or a
+  review (`bin/codex-run`, `docs/gate-review-notes.md`); text or paths a later
+  fix round adds are scanned as before. A changed path shaped like a ledger id
+  or a verdict (`docs/F001.md`, `APPROVE.txt`) is still refused: tell the user
+  to review that change with the legacy workflow.
 
 ## Review-PR entry
 

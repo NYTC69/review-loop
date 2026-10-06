@@ -1535,6 +1535,23 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+INITIAL_CHANGE_HEADING = '## Initial change (as the run was created; later fixes make it stale)\n\n'
+
+
+def mask_initial_change(scope: str) -> str:
+    """FIELD-27: the review scope's initial-change list names the user's paths, not review history; each listed path
+    becomes <repo-path> (the list is the scope's last section; the status letters and `untracked:` stay). A ledger-id or
+    verdict shaped path (docs/F001.md, APPROVE.txt) stays visible: FIELD-11 keeps refusing it (an independence guard)."""
+    head, sep, listing = scope.rpartition(INITIAL_CHANGE_HEADING)
+    if not sep:
+        return scope
+    def mask(match):
+        kept = LEDGER_ID_RE.search(match.group(2)) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', match.group(2))
+        return match.group(0) if kept else match.group(1) + '<repo-path>'
+    return head + sep + ''.join(re.sub(r'^(untracked: |[A-Z][0-9]*\t)(.*)$', mask, line)
+                                for line in listing.splitlines(keepends=True))
+
+
 def review_scope_path(name: str) -> str:
     """LG1-e: one unambiguous line per path in the review scope. A name with a tab, newline, other control character,
     backslash, leading quote or non-UTF-8 byte (surrogateescape, shown as \\udcXX) is written as an ASCII JSON string;
@@ -5198,6 +5215,9 @@ class Coordinator:
         base = base if base is not None else self.state.get('base_commit')
         if not base or name in ('prompt', 'gate-template'):
             return content
+        record = (getattr(self, 'state', None) or {}).get('review_only') or {}
+        if name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256'):
+            content = mask_initial_change(content)   # FIELD-27: this run's frozen review scope
 
         def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
@@ -5261,7 +5281,7 @@ class Coordinator:
                                                                          cwd=self.workspace),
                                               cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if proc.returncode == 0:
-                paths = set(proc.stdout.decode('utf-8', 'replace').split('\0')) - {''}
+                paths = set(proc.stdout.decode('utf-8', 'replace').split('\0')) - {''} | self._review_start_paths()   # FIELD-27
                 def quoted(match):
                     return '<repo-path>' if self._git_unquote(match.group(0)[1:-1]) in paths else match.group(0)
                 quote = r'"(?:[^"\\\n]|\\.)*"'
@@ -5307,10 +5327,10 @@ class Coordinator:
         """FIELD-26: a review-only run's change as created is the user's code, not this run's review history: the file at
         `rel` in the creation mirror ('' for an ordinary run, a missing or binary file, or a symlink). Text a later fix
         round adds is not in it, so the scan still catches that."""
-        mirror = (self.state.get('review_only') or {}).get('mirror')
+        mirror = self._review_start_root()
         if not rel or not mirror:
             return ''
-        root, path = Path(mirror).resolve(), Path(mirror) / rel
+        root, path = mirror.resolve(), mirror / rel
         try:
             if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
                 return ''
@@ -5318,6 +5338,20 @@ class Coordinator:
         except OSError:
             return ''
         return '' if b'\0' in data else data.decode('utf-8', 'replace')
+
+    def _review_start_root(self) -> Optional[Path]:
+        """The review-only creation mirror whose content is user code (a scope-change successor keeps its parent's)."""
+        record = self.state.get('review_only') or {}
+        mirror = record.get('history_mirror') or record.get('mirror')
+        return Path(mirror) if mirror else None
+
+    def _review_start_paths(self) -> set:
+        """FIELD-27: the paths in the creation mirror (empty for an ordinary run or a missing mirror)."""
+        root = self._review_start_root()
+        if root is None or not root.is_dir():
+            return set()
+        return {str((Path(top) / name).relative_to(root)) for top, dirs, files in os.walk(root) for name in (*files, *dirs)
+                if (Path(top) / name).is_symlink() or name in files}
 
     def _introduced_history(self, name: str, content: str) -> list[str]:
         return self._history_markers(name, self._fresh_history_text(name, content))
@@ -5496,9 +5530,8 @@ class Coordinator:
                  'workspace tree against the review base.\n\n'
                  f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command or "none (no tests run in this review)"}\n\n'
                  f'## Goal (the work item, verbatim)\n\n{workitem.rstrip()}\n\n'
-                 '## Initial change (as the run was created; later fixes make it stale)\n\n'
-                 + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
-        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}, base):   # FIELD-11: no PLAN approval runs it later
+                 + INITIAL_CHANGE_HEADING + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
+        if issue := self._plan_history_issue({'work item': workitem, 'plan': mask_initial_change(scope)}, base):   # FIELD-11; FIELD-27
             issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
         return {'text': scope, 'head': head,
@@ -5515,12 +5548,23 @@ class Coordinator:
                               'plan_skipped': True, 'round1': 'the existing change; no author turn',
                               'head_at_start': scope['head'], 'candidate_tree_sha256': git_snapshot(self.workspace)[0],
                               'index_at_start': index, 'mirror': str(mirror),
+                              'history_mirror': self._parent_history_mirror() or str(mirror),   # FIELD-27
                               'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest(),
                               **({'parent_review_scope_sha256': scope['parent_scope_sha256']} if scope['parent_scope_sha256'] else {})})
         if 'lifecycle' in self.state:   # LG1-a2: the W parent (HEAD-moved checks, auto_commit CAS) is HEAD, never the base
             self.state['lifecycle']['parent'] = scope['head']
             if REVIEW_ONLY_DOCS_PRE_OWNED and (pre := sorted(set(self._changed_paths(deleted=True)) & set(self._docs_allowlist()))):
                 self.state['lifecycle']['docs_pre_owned'] = pre   # LG1-c, Q8
+
+    def _parent_history_mirror(self) -> Optional[str]:
+        """FIELD-27: a scope-change successor's user content is its parent's change as created, not the parent's fixes."""
+        if not self.args.supersedes:
+            return None
+        try:
+            record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text()).get('review_only') or {}
+        except (OSError, ValueError, AttributeError):
+            return None
+        return record.get('history_mirror') or record.get('mirror')
 
     def _review_only_start_issue(self) -> Optional[str]:
         """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""
