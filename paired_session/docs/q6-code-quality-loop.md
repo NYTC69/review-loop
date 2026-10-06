@@ -1,5 +1,7 @@
 # Q6: retire code-quality-loop onto the review-only entry? (memo for the owner)
 
+Decided: D09 = A; retired by [cql-retirement.md](cql-retirement.md).
+
 Docs only. D-LG1 Q6 (`review-only-entry.md` §10) said: "code-quality-loop: retire it onto this entry, or keep it
 standalone? Recommend deciding after one real LG1 run." That run exists. This memo maps what code-quality-loop does
 against what a review-only paired-session run already gives, and asks for the decision.

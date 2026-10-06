@@ -39,7 +39,8 @@ The shared `reviewer` and `executor_model` keys do not actively control
 Stage 1 Codex reviewer/backend selection.
 In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains reserved.
 
-Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
+Codex has no code-quality-loop or reorganize skill; ask review-loop to review an existing change (a review-only
+run, quality writers on).
 
 <!-- 迁移自 README.md:64-137 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
 ## Migrated — README.md:64-137
@@ -179,9 +180,10 @@ Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
 
 ### `/review-loop:code-quality-loop`
 
-Run quality polish independently on existing code. Same agents as Step 3.5
-but triggered on demand — useful for cleaning up code that was written
-outside the review-loop workflow.
+Follows `entry`: by default a paired-session review-only run on the uncommitted change (review, fix,
+simplify, consolidate tests, docs, security; `accept` makes one local commit unless `auto_commit: false`).
+`--legacy` or `entry: legacy` runs the legacy loop (deprecated). Arguments: `[max-rounds]`,
+`--skip-reorganize`, `--legacy`; `--reorganize` is legacy only.
 
 ### `/review-loop:reorganize <file/dir or 'diff'>`
 

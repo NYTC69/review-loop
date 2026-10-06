@@ -4039,6 +4039,42 @@
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
       "needle": "/review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`)"
+    },
+    {
+      "id": "paired_session_skill_cql_review_only_flags",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names"
+    },
+    {
+      "id": "paired_session_skill_cql_explicit_test_command",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "`--max-invocations 35` unless the profile sets `max_invocations`) and the explicit `--test-command`;"
+    },
+    {
+      "id": "pse_cql_explicit_test_command",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "Pass it as `--test-command`: the quality writers need an explicit one"
+    },
+    {
+      "id": "pse_cql_auto_commit_false_honored",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "- Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass"
+    },
+    {
+      "id": "cql_auto_commit_false_handed_over",
+      "kind": "contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "- `auto_commit: false` in `.review-loop/config.md`: hand over `--auto-commit false` (absent or `true`: the"
+    },
+    {
+      "id": "pse_default_entry_covers_cql",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "- Default entry (a review-loop, review-pr or code-quality-loop handoff with the"
     }
   ]
 }

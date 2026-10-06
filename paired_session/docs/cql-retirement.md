@@ -66,9 +66,10 @@ PSE gets a **Code-quality-loop entry** subsection after "Review-only entry" (abo
   that sets it wins, as for any review-only run).
 - **Budget:** pass `--max-invocations 35` unless the operator profile sets `max_invocations` (D09 §3: under the
   default 25 an LG1-sized run is usually `skipped:budget` at the writers, and the writers are this entry's point).
-- **Commit:** the review-only default applies (owner FIELD-25, 2026-10-06: auto_commit true, with the untracked-file
-  notice); no `--auto-commit` flag is passed. `accept` makes one local commit and never pushes; an explicit
-  `--auto-commit false` or operator-profile `auto_commit: false` wins, as for any review-only run.
+- **Commit:** an explicit `auto_commit: false` in `.review-loop/config.md` is honored: CQL hands over
+  `--auto-commit false` and the run passes it. With the key absent (or `true`) the review-only default applies
+  (owner FIELD-25, 2026-10-06: auto_commit true, with the untracked-file notice): `accept` makes one local commit and
+  never pushes; an operator-profile `auto_commit: false` also wins, as for any review-only run.
 - **WORKITEM.md:** the goal "Review and improve the quality of the uncommitted change: correctness, error handling,
   tests and simplicity; fix what the reviews find." plus a "Review priorities" section carrying `quality_focus` and
   `review_style` verbatim when they are set (§1.3). No review history.
@@ -106,6 +107,7 @@ One line each; "refused" stops before the handoff with that line.
 | any other argument | refused: `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds] [--skip-reorganize] [--legacy]` |
 | `judgment_model`, `cheap_model` (config.md) | not applied; when set, one warning line: `code-quality-loop: <key> in .review-loop/config.md is not applied by paired-session; models come from the operator profile` (the PSE warning for `reviewer_model`, same shape) |
 | `quality_focus`, `review_style` (config.md) | mapped: copied verbatim into WORKITEM.md under "Review priorities" (operator text, which every role reads; FIELD-30 keeps tool names there from holding the scan) |
+| `auto_commit` (config.md) | `false`: handed over as `--auto-commit false`; absent or `true`: the review-only default (one local commit at `accept`), no warning on this route |
 | `skip_quality_polish`, `docs_file`, `soft_limit_exec` (config.md) | as for every paired run (PSE "Profile and settings"); `skip_quality_polish: true` also turns the writers off (D09 §4) |
 
 ### 1.4 Codex
@@ -189,6 +191,12 @@ Added, mirroring LG2-c's review-pr entries (RLJ:3858-3881, 3959-3971; AM:2270-23
 | `pse_cql_cli_check` | contains | PSE | "the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI" |
 | `paired_session_skill_cql_handoff` | contains | PS | "/review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`)" |
 
+Added in CQL-R2 (the CQL-R1 gate asked to pin the handoff command, not only headings): `paired_session_skill_cql_review_only_flags`
+and `paired_session_skill_cql_explicit_test_command` (PS: `--review-only`, the options, `--max-invocations 35` and the
+explicit `--test-command`), `pse_cql_explicit_test_command`, `pse_cql_auto_commit_false_honored`,
+`cql_auto_commit_false_handed_over`, and `pse_default_entry_covers_cql` (PSE "Entry and failure handling" names the
+review-pr and code-quality-loop handoffs as default entries, and a refusal carries the handing-off entry's own name).
+
 `scripts/run-skill-lint` builds its case list from the contract files only (`:1346-1350`), so these ids are the
 whole case delta. Its all-skill scans (`:269-306`) iterate over the skill files and already see CQL; Step 0 must keep
 them green (no `subagent_type: review-loop:` line, no new `subagent_type` value).
@@ -255,8 +263,9 @@ it, not a lane.
 ## 5. Decisions taken here (for the supervisor)
 
 Supervisor rulings (2026-10-06) on the trade-offs this design proposed:
-- **Commit:** the CQL route follows the review-only default (owner FIELD-25: auto_commit true, untracked-file notice);
-  no `--auto-commit false`. The Step 0 loss notice says "accept makes one local commit (never a push)".
+- **Commit:** the CQL route follows the review-only default (owner FIELD-25: auto_commit true, untracked-file notice).
+  The Step 0 loss notice says "accept makes one local commit (never a push ...)". CQL-R1 gate ruling: an explicit
+  `auto_commit: false` in `.review-loop/config.md` is honored (handed over as `--auto-commit false`).
 - **`--max-invocations 35`** unless the profile sets it: approved (D09-F on lane B removes the EXEC-round budget
   skip; the invocation headroom still applies).
 - **`quality_focus` / `review_style` into the work item** ("Review priorities"): approved as the interim; the D11 L105

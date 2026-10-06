@@ -64,11 +64,12 @@ session already exists. Two explicit entry commands sit beside it:
 |---|---|
 | `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
 | `/review-loop:legacy <work item> [--handsfree]` | Runs the legacy workflow and ignores the `entry` key (no entry notice; it prints the deprecation notice) |
+| `/review-loop:code-quality-loop [max-rounds] [--legacy]` | A review-only paired-session run on the uncommitted change (quality writers on; `accept` commits locally unless `auto_commit: false`); `--legacy` or `entry: legacy` runs the legacy loop (deprecation notice) |
 
 The legacy workflow is deprecated since v2.12.0. It still runs unchanged; `entry: legacy`,
 `/review-loop:legacy`, `/review-loop:plan` and `/review-loop:execute` print a one-line
-deprecation notice. review-pr is ported (it follows `entry`); removal waits for the
-code-quality-loop port and the open owner rows of the legacy map in
+deprecation notice. review-pr and code-quality-loop follow `entry`; removal waits for the
+open owner rows of the legacy map in
 `docs/paired-session-migration.md`.
 
 The `entry` key in `.review-loop/config.md` takes `legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning).

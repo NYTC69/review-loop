@@ -7,7 +7,7 @@ Read selected sections through `scripts/read_protocol.py`; shared protocol rules
 
 When this skill is invoked directly (not reached from the review-loop or legacy entry, which print their own), first
 print the one-line deprecation notice once; it changes nothing else:
-`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that`
+`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
 
 1. Read `.review-loop/config.md` if present; otherwise fall back to the
    defaults documented in `docs/protocol/runtime-claude.md` §Configuration.

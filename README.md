@@ -24,8 +24,8 @@ entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
 `/review-loop:paired-session <work item>` is the explicit entry. See
 [`docs/paired-session-migration.md`](docs/paired-session-migration.md).
 The legacy workflow is deprecated since v2.12.0: it still runs unchanged and prints a
-one-line notice when you choose it, and it will be removed only after review-pr and
-code-quality-loop are ported (the removal preconditions are in the migration guide).
+one-line notice when you choose it; review-pr and code-quality-loop follow `entry` too, and
+removal waits for the open legacy-map rows (the removal preconditions are in the migration guide).
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
@@ -92,7 +92,8 @@ The shared `reviewer` and `executor_model` keys do not actively control
 Stage 1 Codex reviewer/backend selection. In Codex Stage 1,
 `executor_model` is ignored and `codex_executor_model` remains reserved.
 
-Stage 1 does not yet migrate `code-quality-loop` or `reorganize`.
+Codex has no code-quality-loop or reorganize skill; ask review-loop to review an existing change (a review-only
+run, quality writers on).
 
 ### Install in Codex CLI
 
@@ -318,9 +319,10 @@ shown. Optionally auto-commits the result.
 
 ### `/review-loop:code-quality-loop`
 
-Run quality polish independently on existing code. Same agents as Step 3.5
-but triggered on demand — useful for cleaning up code that was written
-outside the review-loop workflow.
+Follows `entry`: by default a paired-session review-only run on the uncommitted change (review, fix,
+simplify, consolidate tests, docs, security; `accept` makes one local commit unless `auto_commit: false`).
+`--legacy` or `entry: legacy` runs the legacy loop (deprecated). Arguments: `[max-rounds]`,
+`--skip-reorganize`, `--legacy`; `--reorganize` is legacy only.
 
 ### `/review-loop:reorganize <file/dir or 'diff'>`
 

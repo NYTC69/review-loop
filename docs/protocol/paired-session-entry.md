@@ -14,14 +14,18 @@ dispatch and limits.
 
 How this skill was entered decides failure handling (stage A = everything before
 the first command that runs `bin/paired-session`):
-- Default entry (review-loop handoff with the `entry` key absent): a failed
-  stage A check is reported back as `stage A failure: <reason>`; the review-loop
-  entry then prints its fallback notice and runs legacy.
-- Explicit entry (`entry: paired-session` handoff, or the user asked for
-  paired-session): a failed stage A check refuses with the reason, except the
-  host skill's long-command execution failure, which is reported as HOLD with
-  the reason. On an `entry: paired-session` handoff, print other refusals as
-  `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
+- Default entry (a review-loop, review-pr or code-quality-loop handoff with the
+  `entry` key absent): a failed stage A check is reported back as
+  `stage A failure: <reason>`; the entry that handed off then prints its fallback
+  notice and runs legacy (review-pr only for its no-argument request; see the
+  Review-PR entry).
+- Explicit entry (an `entry: paired-session` handoff from any of those entries,
+  or the user asked for paired-session): a failed stage A check refuses with the
+  reason, except the host skill's long-command execution failure, which is
+  reported as HOLD with the reason. On an `entry: paired-session` handoff, print
+  other refusals with the handing-off entry's own name (`review-loop`,
+  `review-pr` or `code-quality-loop`) as
+  `<entry>: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
 - Every host setup step before the first coordinator command (loading this
   contract, creating the run directory, writing `WORKITEM.md`, resolving the
   plugin) belongs to stage A. If one fails or is denied, stop and report
@@ -151,8 +155,9 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
 - Budget: pass `--max-invocations 35` unless the operator profile sets `max_invocations` (under the
   default 25 the writers are usually `skipped:budget`). Rounds: a handed-over N wins over `soft_limit_exec`;
   pass one `--max-exec-rounds` value, the same to `permission-probe` and `run`.
-- Commit: the review-only default applies (`auto_commit: true` unless the profile or an explicit flag
-  says false): `accept` makes one local commit and never pushes.
+- Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass
+  it. Otherwise the review-only default applies (`auto_commit: true` unless the profile says false; no
+  warning for `auto_commit` on this handoff): `accept` makes one local commit and never pushes.
 - `WORKITEM.md`: the goal "Review and improve the quality of the uncommitted change: correctness, error
   handling, tests and simplicity; fix what the reviews find." When `quality_focus` or `review_style` is
   set in `.review-loop/config.md`, add a "Review priorities" section with each value verbatim. No review

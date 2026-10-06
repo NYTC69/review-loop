@@ -129,8 +129,8 @@ given. Legacy review-pr pointer: `use /review-loop:review-pr --legacy simplify` 
 
 A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:code-quality-loop`) follows
 the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names
-(`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--max-invocations 35` unless the
-profile sets `max_invocations`);
+(`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--auto-commit false` as handed over;
+`--max-invocations 35` unless the profile sets `max_invocations`) and the explicit `--test-command`;
 `WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`.
 
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
