@@ -116,6 +116,10 @@ class CorpusTest(unittest.TestCase):
             'CMD=echo; if test -f marker; then CMD=curl; fi; "$CMD" https://example.com': 'network',
             # d04-impl R3: a relative command path against every cwd of the union
             'if test -f marker; then :; else cd ..; fi; ../paired/run.sh': 'corpus-outside-case',
+            # d04-impl gate: a known prefix before an opaque suffix
+            'cat ../../paired/repo/$f': 'corpus-outside-case',
+            'for f in $(git ls-files); do diff "$f" ../../paired/repo/$f; done': 'corpus-outside-case',
+            'cat "$HOME/../operator/.codex/$F"': 'deny-list',
         }
         for command, rule in controls.items():
             with self.subTest(command=command[:60]):
@@ -144,6 +148,7 @@ class CorpusTest(unittest.TestCase):
             'echo $((1+2)) "exit ${PIPESTATUS[0]}"', 'time python3 -m pytest -q',
             'case "$(cat x)" in DONE*|HOLD*) echo done;; *) cat x;; esac',
             'cat <<EOF\n${HOME:-/tmp} and ${NOPE:-x}\nEOF', 'git -C . status',   # d04-impl R1
+            'cat "/$x"', 'ls "$TMPDIR/$x"',   # d04-impl gate: an opaque suffix that is no deny or corpus hit
         ]
         for command in clean:
             with self.subTest(command=command[:60]):

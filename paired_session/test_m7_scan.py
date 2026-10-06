@@ -143,6 +143,32 @@ class M7ScanTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'nothing would be scanned'):
             m7_scan.scan({**self.policy([]), 'artifacts': []}, changed=[])
 
+    def test_a_glob_list_over_the_cap_counts_as_generated(self):   # d04-impl gate: a benign exclusion before
+        for n in range(70):
+            (self.repo / 'src' / ('f%02d.py' % n)).write_text('')
+        self.assertEqual(self.rules([bash('for f in src/*.py; do wc -l "$f"; done')]), [])
+        self.assertEqual(self.rules([bash('for f in src/*.py; do cat "$f" ../../c02/repo/$f; done')]),
+                         ['corpus-outside-case'])   # the body is still checked once
+
+    def test_census_never_matches_a_glob_on_disk(self):   # d04-impl gate
+        from unittest import mock
+        stream = self.tmp / 'census.jsonl'
+        stream.write_text('\n'.join([bash('ls /**/auth.json'), bash('for f in /usr/*; do wc -l "$f"; done'),
+                                     tool('Glob', pattern='/Users/someone/**/*.py')]) + '\n')
+        with mock.patch.object(m7_scan.glob, 'glob', side_effect=AssertionError('disk walk')) as walk:
+            report = m7_scan.census([str(stream)])
+        walk.assert_not_called()
+        self.assertEqual((report['transcripts'], report['excluded']), (1, 0))
+
+    def test_an_explicit_corpus_root_covers_other_cases(self):   # d04-impl gate: a <root>/<case>/<arm> layout
+        (self.corpus / 'c02' / 'legacy').mkdir(parents=True)
+        arm = self.case / 'legacy'
+        (arm / 'repo').mkdir(parents=True)
+        line = bash('cat ../../../c02/legacy/x')
+        implicit = {'case_dir': str(arm), 'tmpdir': str(self.corpus)}   # a corpus placed under an allowed root
+        self.assertEqual(self.rules([line], **implicit), [])             # the implicit parent misses the other case
+        self.assertEqual(self.rules([line], **implicit, corpus=str(self.corpus)), ['corpus-outside-case'])
+
 
 if __name__ == '__main__':
     unittest.main()

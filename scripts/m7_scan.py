@@ -3,6 +3,7 @@
 
 Usage: m7_scan.py POLICY.json OUT.json  |  m7_scan.py --census FILE...
 Policy: {"case_dir": P, "case": "cNN", "arm": A, "base": 40-hex, "diff_sha256": 64-hex, "cwd": P (default case_dir/repo),
+  "corpus": P (the root every other case and arm lies under; default the parent of case_dir),
   "repo": P (the case repository root, default the cwd), "home": the arm's HOME, "tmpdir": the arm's TMPDIR,
   "operator_home": P (default the account's home), "keys_dir": P, "allow": [runtime dirs], "toolchain": [dirs],
   "deny": [extra dirs], "pinned": [{"dir": P}], "skill_namespaces": [...] (default ["review-loop"]),
@@ -121,7 +122,9 @@ class Scanner:
     def __init__(self, policy, changed):
         real = lambda p: os.path.realpath(os.path.expanduser(str(p)))
         self.case_dir = real(policy["case_dir"])
-        self.corpus = os.path.dirname(self.case_dir)
+        # the corpus root: every other case and arm lies under it (checked before the allowed places, so it wins over
+        # /tmp or TMPDIR); explicit for layouts such as <root>/<case>/<arm>, else the case directory's parent (gate)
+        self.corpus = real(policy["corpus"]) if policy.get("corpus") else os.path.dirname(self.case_dir)
         self.cwd = real(policy.get("cwd") or os.path.join(self.case_dir, "repo"))
         self.repo = real(policy.get("repo") or self.cwd)
         self.home = real(policy.get("home") or self.cwd)
@@ -201,23 +204,28 @@ class Scanner:
             if rule or ".." in parts[cut:]:
                 self.flag("glob or brace pattern that can expand outside the allowed places", pattern, path,
                           rule or "fail-closed", where); continue
-            for match in glob.glob(os.path.join(path, *parts[cut:]), recursive=True):
+            for match in self.disk_matches(os.path.join(path, *parts[cut:])):
                 real = os.path.realpath(match)
                 if self.verdict(real):
                     self.flag("glob match resolves outside the allowed places", pattern, real, self.verdict(real), where); break
 
-    def check_segment(self, text, where, cwd):
+    @staticmethod
+    def disk_matches(pattern):   # the one place that matches a glob on disk (census mode overrides it: no disk walk)
+        return glob.glob(pattern, recursive=True)
+
+    def check_segment(self, text, where, cwd, only=None):
         """A path with segments (§3.4): the literal prefix before the first segment must be in an allowed place; no
-        component after it may be '..' or a deny component."""
+        component after it may be '..' or a deny component. With `only`, report only those rules."""
         parts = text.split("/")
         cut = next(i for i, part in enumerate(parts) if SEG in part)
         prefix = "/".join(parts[:cut]) or ("/" if text.startswith("/") else ".")
         path = self.resolve(prefix, cwd)
         after = tuple(p.replace(SEG, "x") for p in parts[cut:])
         rule = self.verdict(path) or ("deny-pattern" if denied_parts(tuple(Path(path).parts) + after) else None)
-        if rule or ".." in after:
+        rule = rule or ("fail-closed" if ".." in after else None)
+        if rule and (only is None or rule in only):
             self.flag("path with a generated component outside the allowed places", text.replace(SEG, "<segment>"),
-                      path, rule or "fail-closed", where)
+                      path, rule, where)
 
     def check_code(self, text, where, cwd):
         """Code and prose (§3.4): only tokens with a name component; only deny, other-case/arm and corpus hits."""
@@ -320,11 +328,11 @@ class Scanner:
                             for cwd in state.cwds:
                                 self.check_pattern(text, where, cwd)
                                 items += sorted(os.path.relpath(m, cwd) if not os.path.isabs(text) else m
-                                                for m in glob.glob(os.path.join(cwd, text)))
+                                                for m in self.disk_matches(os.path.join(cwd, text)))
                         else:
                             items.append(text)
-            if len(items) > MAX_ITERATIONS:
-                raise Unsupported("more than %d loop iterations" % MAX_ITERATIONS)
+            if len(items) > MAX_ITERATIONS:   # gate: a long list is treated as generated (each match was checked)
+                items, generated = [], True
             for item in items:
                 state.vars[cmd[1]] = [KNOWN(item)]
                 self.run_list(cmd[3], state, where, depth)
@@ -576,7 +584,12 @@ class Scanner:
                     seen_opaque = True
                 elif seen_opaque and p[0] == "k" and "/" in p[1]:
                     raise Unsupported("generated path prefix")
-            return   # a whole-word or suffix opaque value: a residual (§2)
+            first = next(i for i, p in enumerate(pieces) if p[0] == "o")
+            if "/" in self.text_of(pieces[:first]):   # gate: a known prefix with an opaque suffix (../../paired/repo/$f):
+                text = "".join(p[1] if p[0] == "k" else SEG for p in pieces)   # the opaque part as a segment; only
+                for cwd in state.cwds:                                       # deny and corpus hits (not "/$x")
+                    self.check_segment(text, where, cwd, only=CODE_RULES)
+            return   # a whole-word opaque value: a residual (§2)
         text = self.text_of(pieces)
         if re.search(r"[\s;]", text):   # code or prose: only deny, other-case and corpus hits
             for cwd in state.cwds:
@@ -791,9 +804,13 @@ def census(paths):
               "skill_namespaces": [], "ignore_tools": list(IGNORE_TOOLS) + ["Skill"], "cwd": empty, "home": empty,
               "tmpdir": empty}
     report = {"transcripts": 0, "excluded": 0, "commands": 0, "fail_closed": {}, "examples": {}}
-    class AllowAll(Scanner):   # constructs only: no place is denied
+    class AllowAll(Scanner):   # constructs only: no place is denied, and no glob is matched on disk
         def verdict(self, path):
             return None
+
+        @staticmethod
+        def disk_matches(pattern):
+            return []
     for path in paths:
         scanner = AllowAll(policy, [])
         lines = Path(path).read_text(errors="replace").splitlines()
