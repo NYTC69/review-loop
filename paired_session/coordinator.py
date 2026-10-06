@@ -10037,6 +10037,9 @@ def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: 
                      f"(this CLI: {have}); upgrade the Codex CLI, or pass {' '.join(flag + ' gpt-6-luna' for flag in flags)}")
 
 
+CLAUDE_CLI_ALIASES = {'default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan', 'opus[1m]', 'sonnet[1m]'}
+
+
 def validate_role_models(args: argparse.Namespace) -> None:
     """ADR-9: each role needs a well-formed model id, listed in allowed_models when that key is set."""
     allowed = getattr(args, 'allowed_models', None)
@@ -10049,6 +10052,9 @@ def validate_role_models(args: argparse.Namespace) -> None:
             raise ValueError(f'{key} is not a well-formed model id: {model!r}')
         if allowed is not None and model not in allowed.get(vendor, []):
             raise ValueError(f'{key} {model} is not in allowed_models for the {vendor} role')
+        if vendor == 'claude' and model.lower() in CLAUDE_CLI_ALIASES:   # HYGIENE-1: an alias would HOLD only after a wasted turn
+            raise ValueError(f'{key} {model!r} is a Claude CLI alias, not a full model id (the run compares the id with the model '
+                             'the CLI reports, so an alias would HOLD after its first turn); give the full id, for example claude-opus-5-5')
 
 
 def gate_surface_issue(args: argparse.Namespace):
@@ -10188,6 +10194,10 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
+    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and 'codex' in co.dispatched_vendors()
+            and not os.environ.get('CODEX_HOME')):   # HYGIENE-1: the 2026-10-06 P0 cause (CODEX_HOME left unset); a warning only
+        print('WARNING: CODEX_HOME is unset, so Codex uses the default ~/.codex: concurrent Codex runs on the default home write '
+              'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
     if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:

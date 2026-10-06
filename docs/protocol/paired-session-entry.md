@@ -82,7 +82,9 @@ the product worktree) with goal, acceptance criteria, scope, and verification.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
-never interpolate user text as shell code.
+never interpolate user text as shell code. Write launcher logs under the run
+root's `logs/`, not next to the run dir (a strict probe counts a write beside
+the run dir as an author escape).
 
 ## Review-only entry
 

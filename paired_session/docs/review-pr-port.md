@@ -270,6 +270,9 @@ pattern of `review_only`):
     - MINOR → Suggestions;
     - nothing is dropped;
   - each finding with its role, `file:line` and verdict context (EXEC REVISE/BLOCK, gate, specialist, security);
+    similar reports from several roles (same file, severity and security flag, near-duplicate summary) share one row
+    listing every id and role, labelled as similar reports, not as one issue, with each other report's summary indented
+    below it (REPORT-DEDUPE, render time only; the ledger keeps every row);
   - the pinned OIDs (target repository, head, base (pinned), merge base) and the PR URL;
   - the roles that ran (with their tool-use counts) and the roles skipped or failed;
   - whether tests ran (approvals recorded as static and untested are marked), LFS pointers left unreviewed,

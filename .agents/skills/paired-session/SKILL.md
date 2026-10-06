@@ -42,7 +42,8 @@ This file adds only the Codex host rules:
   session.
 - Run directory: `$CODEX_HOME/state/paired-session/runs/<task id>`, created by
   the first invocation, which writes the work item there. Resolve `PLUGIN_ROOT`
-  again inside each invocation.
+  again inside each invocation. Write launcher logs under the run root's
+  `logs/` (`$CODEX_HOME/state/paired-session/logs/`), not next to the run dir.
 - Default (efficient): no permission probe; the first invocation below starts
   the run. Strict: replace `run` in the first invocation with
   `permission-probe` (same arguments, without `--stop-after-plan`), then start
