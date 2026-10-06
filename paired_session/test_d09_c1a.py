@@ -80,6 +80,44 @@ class D09C1aTests(unittest.TestCase):
         child = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv)).state
         self.assertEqual((child['config']['review_only'], child['config']['quality_writers']), (True, 'off'))
 
+    def test_operator_actions_keep_the_saved_value_after_a_profile_change(self):   # gate d09-c1a BLOCKER 1
+        done = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60')
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        profile = self.workspace / '.review-loop' / 'paired-session.json'   # ignored by the covering .gitignore
+        profile.parent.mkdir()
+        profile.write_text(json.dumps({'quality_writers': 'both'}))   # the operator follows the report hint mid-run
+        for run in ('new', 'saved-before-the-key'):
+            with self.subTest(run=run):
+                if run == 'saved-before-the-key':
+                    saved = self.state()
+                    del saved['config']['quality_writers']
+                    (self.run_dir / 'state.json').write_text(json.dumps(saved))
+                for action in ('note', 'attach-verification', 'reject', 'accept'):   # built: no refusal, the saved value
+                    argv = self.command('--lifecycle-mode', 'on', '--max-invocations', '60')[2:]
+                    argv[0] = action
+                    co = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
+                    self.assertEqual(co.args.quality_writers, 'off')
+                argv = ['resume', *self.command('--lifecycle-mode', 'on', '--max-invocations', '60')[3:]]
+                with self.assertRaisesRegex(ValueError, 'resume configuration differs: quality_writers'):
+                    rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
+        accepted = self.run_operator_action('accept', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+
+    def test_base_oid_follows_the_exit_until_a_writer_has_a_state(self):   # gate d09-c1a MINOR 2 (design §2)
+        (self.workspace / 'new_code.py').write_text(CODE)   # eligible: both writers pass every rule
+        (self.workspace / 'tests').mkdir()
+        (self.workspace / 'tests' / 'test_new_code.py').write_text('import new_code\n')
+        co = self.created('--quality-writers', 'both', '--max-invocations', '60', name='refresh')
+        paths = co._changed_paths()
+        co._quality_writers_tail(paths, 3, {'candidate_oid': 'tree-x', 'request_id': 'w-POLISH-Q-0-0'})   # not reached
+        self.assertEqual(co.state['lifecycle']['quality_writers'], {'base_oid': 'tree-x'})
+        co.state['test_command_explicit'] = False   # the next exit (after a DONE reject) records a skip on its own tree
+        co._quality_writers_tail(paths, 3, {'candidate_oid': 'tree-y', 'request_id': 'w-POLISH-Q-1-0'})
+        marker = co.state['lifecycle']['quality_writers']
+        self.assertEqual((marker['base_oid'], marker['simplifier']['digest']), ('tree-y', 'tree-y'))
+        co._quality_writers_tail(paths, 3, {'candidate_oid': 'tree-z', 'request_id': 'w-POLISH-Q-2-0'})
+        self.assertEqual(marker['base_oid'], 'tree-y')   # fixed once a writer has a state
+
     def test_the_report_hint_and_writer_lines(self):
         state = {'config': {'quality_writers': 'off'}, 'lifecycle': {}}
         self.assertEqual(wl.writer_report_lines(state), ['- 质量 writer：未开启；' + wl.WRITER_HINT])

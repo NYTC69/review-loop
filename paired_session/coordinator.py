@@ -3097,6 +3097,8 @@ class Coordinator:
     def _validate_resume_args(self) -> None:
         if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
             raise ValueError('resume workspace/workitem differs from state')
+        if getattr(self.args, 'quality_writers_requested', None) not in (None, self.args.quality_writers):   # D09 §4
+            raise ValueError('resume configuration differs: quality_writers')
         if getattr(self.args, 'resume_timeout', None) is not None and self.args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         exec_timeout_override = getattr(self.args, 'exec_turn_timeout_explicit', False)
@@ -5472,11 +5474,11 @@ class Coordinator:
                                 bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
             if saved is None and args.auto_commit:
                 args.auto_commit_source = 'review-only-default'   # an accept the commit checks refuse delivers uncommitted
-        if saved is not None and getattr(args, 'quality_writers', None) not in (None, saved.get('quality_writers') or 'off'):
-            raise ValueError('resume configuration differs: quality_writers')   # also a run saved before the key: off
-        if getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
-            args.quality_writers = ((saved.get('quality_writers') or 'off') if saved is not None else
-                                    'both' if args.review_only else 'off')
+        if saved is not None:   # D09 §4: frozen (a run saved before the key: off); only resume refuses a different
+            args.quality_writers_requested = getattr(args, 'quality_writers', None)   # value (_validate_resume_args),
+            args.quality_writers = saved.get('quality_writers') or 'off'   # operator actions keep the saved one
+        elif getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
+            args.quality_writers = 'both' if args.review_only else 'off'
 
     def _refuse_review_only_start(self) -> dict:
         """The refusals of a review-only run, before any state; returns the review scope to freeze."""
@@ -7048,7 +7050,9 @@ class Coordinator:
         the skip rules and record a skip once per item. The writer legs land in C1-b1; until then a writer that passes
         every rule is not reached, and nothing writes."""
         life, config = self.state['lifecycle'], self.state['config']
-        marker = life.setdefault('quality_writers', {'base_oid': request['candidate_oid']})
+        marker = life.setdefault('quality_writers', {})
+        if not any(writer in marker for writer in worktree_lifecycle.QUALITY_WRITERS['both']):   # §2: this exit's tree
+            marker['base_oid'] = request['candidate_oid']
         wanted = worktree_lifecycle.QUALITY_WRITERS[config.get('quality_writers') or 'off']
         reasons = {}
         for writer in (w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if w not in marker):
