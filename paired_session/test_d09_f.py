@@ -75,9 +75,9 @@ class D09FTests(unittest.TestCase):
         co._close_writer_replay_rounds()
         self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (2, 6))
         co.state.update(exec_rounds=3, writer_replay_rounds={'start': 1, 'used': None})   # ordinary room left (1 of 4 used)
-        self.assertEqual(co.exec_round_limit(), 3)   # the open replay still gets only its own two rounds
-        co.state['exec_rounds'] = 4   # a third replay round (say a FINISH write) is over the replay's budget
-        self.assertGreater(co.state['exec_rounds'], co.exec_round_limit())
+        self.assertEqual(co.exec_round_limit(), 4)   # D09-F2 (gate, authorized): max(1 + 2, 4), ordinary rounds stay usable
+        co.state['exec_rounds'] = 4   # a FINISH write after a partial rollback takes an ordinary round: no false HOLD
+        self.assertLessEqual(co.state['exec_rounds'], co.exec_round_limit())
         co.state['exec_rounds'] = 3
         co._close_writer_replay_rounds()
         self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (2, 6))   # 1 ordinary + 2 replay

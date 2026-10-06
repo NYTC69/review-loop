@@ -64,8 +64,9 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   polish-fix transition (C ~6547: epoch + 1, `stage = phase = EXEC`, `candidate_oid = None`, `next = reviewer`,
   `gate_ran = False`) **and counts the round** (`exec_rounds += 1`) **on its own budget** (D09-F F3, owner 2026-10-06:
   the replay round and one fix round never count against `--max-exec-rounds`; `writer_replay_rounds` records the rounds
-  used, frozen at DOCS; while the replay is open its limit is its start round + 2, so a third replay round HOLDs even
-  with ordinary rounds left). The persistent EXEC
+  used, frozen at DOCS; while the replay is open its limit is the higher of its start round + 2 and the ordinary
+  limit (D09-F2: ordinary rounds left stay usable, no false HOLD); at DOCS only the replay's own 1-2 rounds are
+  credited on top of the ordinary limit). The persistent EXEC
   reviewer reviews the writer diff, then the shadow and gate, FINISH, and POLISH-Q's specialists on the new tree. No
   writer output reaches DOCS without that chain. If the digest = `base_oid` there is no transition.
 - **One chance in review (`rolled-back:review`).** If the replay's first reviewer verdict is not APPROVE, or its gate

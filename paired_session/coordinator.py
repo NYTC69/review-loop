@@ -7321,11 +7321,22 @@ class Coordinator:
         """D09 F1: consolidation may merge or parametrize but never drop a case; a lower count is a failed local test."""
         if 'test_cases' not in leg:
             return False
-        before, after = sum(leg['test_cases'].values()), sum(self._test_case_count(tuple(leg['test_cases'])).values())
+        now = self._test_case_count(tuple(leg['test_cases']))
+        tree = json.loads((Path(leg['capture']) / 'record.json').read_text())['tree']   # the leg's input tree
+        before = sum(leg['test_cases'].values()) + sum(self._tree_test_cases(tree, path) for path in now if path not in leg['test_cases'])
+        after = sum(now.values())   # a test file the writer newly touched counts on both sides
         if after < before:
             leg['detail'] = f'test cases {before} -> {after} in the changed test files'
             self.progress('quality-writer', writer=leg['writer'], state='test cases dropped', detail=leg['detail'])
         return after < before
+
+    def _tree_test_cases(self, tree: str, path: str) -> int:
+        """D09 F1: the test cases of one path in a captured tree (0 when the path is not in it)."""
+        if not (row := self._git(['ls-tree', '-z', tree, '--', path]).rstrip('\0')):
+            return 0
+        data = subprocess.run(candidate_tree.git_command('cat-file', 'blob', row.split('\t', 1)[0].split()[2], cwd=self.workspace),
+                              cwd=self.workspace, capture_output=True, check=True).stdout
+        return len(TEST_CASE_RE.findall(data.decode(errors='replace')))
 
     def _writer_local_check(self, writer: str) -> Optional[bool]:
         """§2 local check after a changed READY turn: True keeps the write (the replay follows), False rolls it back
@@ -7471,7 +7482,8 @@ class Coordinator:
     def _revert_paths(self, paths: list[str], keep: Path, sequence: int) -> str:
         """F2: put these paths back to base_oid's content from base_capture's tree (a path absent there is deleted) and
         verify them; the other writer's files stay. The diff is kept as evidence."""
-        base_tree = json.loads((keep / 'record.json').read_text())['tree']
+        recorded = json.loads((keep / 'record.json').read_text())
+        base_tree, perms = recorded['tree'], recorded.get('perms') or {}
         diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-review-partial.workspace-change.diff"
         now = readonly_guard.state(self.workspace, keep)['tree']
         diff.write_text(self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
@@ -7487,8 +7499,8 @@ class Coordinator:
                 if mode == '120000':
                     os.symlink(os.fsdecode(data), target)
                 else:
-                    target.write_bytes(data)
-                    os.chmod(target, 0o755 if mode == '100755' else 0o644)
+                    target.write_bytes(data)   # the captured permission bits, as the full rollback restores them
+                    os.chmod(target, perms.get(path, 0o755 if mode == '100755' else 0o644))
         if left := self._git_names(['diff', '--name-only', '-z', base_tree, readonly_guard.state(self.workspace, keep)['tree'],
                                     '--', *paths]):
             raise RuntimeError(f'POLISH-Q review rollback: {", ".join(left)} could not be put back; restore by hand, see {diff}')
@@ -7669,12 +7681,14 @@ class Coordinator:
     def exec_round_limit(self) -> int:
         """D09 F3 (owner 2026-10-06, "回放单独计数"): a writer replay round and its one fix round have their own fixed
         budget, never --max-exec-rounds. While the replay is open (until DOCS) the limit is the round it started at plus
-        those 2, whatever ordinary room is left; at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
+        those 2, or the ordinary limit when that is higher (D09-F2: ordinary rounds left stay usable, e.g. a FINISH write
+        after a partial rollback); at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
         `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
         rounds = self.state.get('writer_replay_rounds')
+        ordinary = self.args.max_exec_rounds + len(self.state.get('rejections', []))
         if rounds and rounds.get('used') is None:
-            return rounds['start'] + 2
-        return self.args.max_exec_rounds + len(self.state.get('rejections', [])) + (rounds['used'] if rounds else 0)
+            return max(rounds['start'] + 2, ordinary)
+        return ordinary + (rounds['used'] if rounds else 0)
 
     def _close_writer_replay_rounds(self) -> None:
         if (rounds := self.state.get('writer_replay_rounds')) and rounds.get('used') is None:
