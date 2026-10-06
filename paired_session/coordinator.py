@@ -269,19 +269,33 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
         r'\btoo many requests\b|\brate[_ -]limit(?:_exceeded|_error| exceeded| error)\b|'
         r'\brate limit(?: has been| was)? (?:reached|exceeded)\b|'
         r'\b(?:subscription|usage|quota) (?:rate )?limit (?:has been )?(?:reached|exceeded)\b|'
-        r"\byou(?:'| a)?ve hit (?:your )?usage limit\b|\binsufficient_quota\b)"
+        r"\byou(?:'| a)?ve hit (?:your )?(?:(?:usage|weekly|daily|monthly|session|opus|sonnet|\d+-hour|five-hour|"
+        r"seven-day|7-day) )?limit\b|\binsufficient_quota\b)"
     )
     confirmed = bool(strong_message.search(stderr))
     if confirmed:
         reset_sources.append(stderr)
     known_codes = {'rate_limit', 'rate_limit_error', 'rate_limit_exceeded',
                    'insufficient_quota', 'usage_limit_exceeded', 'quota_exceeded'}
+    epoch_hint = None
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if not isinstance(event, dict):
+            continue
+        info = event.get('rate_limit_info')   # RL-WEEKLY: Claude stream-json announces a rejected limit window
+        if event.get('type') == 'rate_limit_event' and isinstance(info, dict) and info.get('status') == 'rejected':
+            confirmed = True
+            if isinstance(info.get('resetsAt'), (int, float)) and info['resetsAt'] > 0:
+                epoch_hint = ('resets at ' + time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(info['resetsAt'])) +
+                              f" ({info.get('rateLimitType') or 'limit'} window)")
+            continue
+        if event.get('is_api_error_message') is True and str(event.get('error', '')).strip().lower() in known_codes:
+            confirmed = True   # the synthetic assistant message that carries the limit text
+            content = (event.get('message') or {}).get('content') if isinstance(event.get('message'), dict) else None
+            reset_sources += [str(part.get('text', '')) for part in content or [] if isinstance(part, dict)]
             continue
         is_error = event.get('type') in ('error', 'turn.failed') or event.get('is_error') is True
         if not is_error:
@@ -292,19 +306,19 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
                  for key in ('code', 'error_code', 'error_type') if obj.get(key) not in (None, '')}
         if isinstance(error, dict) and error.get('type') not in (None, ''):
             codes.add(str(error['type']).strip().lower())
-        statuses = [obj.get(key) for obj in objects for key in ('status', 'status_code', 'http_status')]
-        message = error.get('message', '') if isinstance(error, dict) else event.get('message', '')
+        statuses = [obj.get(key) for obj in objects for key in ('status', 'status_code', 'http_status', 'api_error_status')]
+        message = error.get('message', '') if isinstance(error, dict) else event.get('message', '') or event.get('result', '')
         message = str(message)
         if (codes & known_codes or any(str(value) == '429' for value in statuses)
                 or (not codes and strong_message.search(message))):
             confirmed = True
-            reset_sources.append(json.dumps(event, ensure_ascii=False))
+            reset_sources += [message, json.dumps(event, ensure_ascii=False)]   # the plain text first, for a clean hint
     if not confirmed:
         return None
-    reset_hint = None
-    reset_cues = ('try again at', 'reset at', 'resets at', 'reset time',
+    reset_hint = epoch_hint   # an exact resetsAt beats a parsed phrase
+    reset_cues = ('try again at', 'reset at', 'resets at', 'resets ', 'reset time',
                   'available again at', 'available at', 'retry after', 'retry-after', 'retry_after')
-    for source in reset_sources:
+    for source in ([] if reset_hint else reset_sources):
         for line in source.splitlines():
             lowered = line.lower()
             positions = [lowered.find(cue) for cue in reset_cues if lowered.find(cue) >= 0]
