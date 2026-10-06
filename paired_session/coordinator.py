@@ -289,7 +289,7 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
         reset_sources.append(stderr)
     known_codes = {'rate_limit', 'rate_limit_error', 'rate_limit_exceeded',
                    'insufficient_quota', 'usage_limit_exceeded', 'quota_exceeded'}
-    epoch_hint = None
+    epoch_hint, last_window = None, None
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -297,12 +297,9 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
             continue
         if not isinstance(event, dict):
             continue
-        info = event.get('rate_limit_info')   # RL-WEEKLY: Claude stream-json announces a rejected limit window
-        if event.get('type') == 'rate_limit_event' and isinstance(info, dict) and info.get('status') == 'rejected':
-            confirmed = True
-            if isinstance(info.get('resetsAt'), (int, float)) and info['resetsAt'] > 0:
-                epoch_hint = ('resets at ' + time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(info['resetsAt'])) +
-                              f" ({info.get('rateLimitType') or 'limit'} window)")
+        info = event.get('rate_limit_info')   # RL-WEEKLY: Claude stream-json announces its limit window state
+        if event.get('type') == 'rate_limit_event' and isinstance(info, dict):
+            last_window = info   # only the LAST event counts: a later allowed/allowed_warning cancels an earlier rejection
             continue
         if event.get('is_api_error_message') is True and str(event.get('error', '')).strip().lower() in known_codes:
             confirmed = True   # the synthetic assistant message that carries the limit text
@@ -325,6 +322,12 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
                 or (not codes and strong_message.search(message))):
             confirmed = True
             reset_sources += [message, json.dumps(event, ensure_ascii=False)]   # the plain text first, for a clean hint
+    if (last_window and last_window.get('status') == 'rejected' and last_window.get('isUsingOverage') is not True
+            and last_window.get('overageStatus') not in ('allowed', 'allowed_warning')):   # gate B1: overage keeps running
+        confirmed = True
+        if isinstance(last_window.get('resetsAt'), (int, float)) and last_window['resetsAt'] > 0:
+            epoch_hint = ('resets at ' + time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(last_window['resetsAt'])) +
+                          f" ({last_window.get('rateLimitType') or 'limit'} window)")
     if not confirmed:
         return None
     reset_hint = epoch_hint   # an exact resetsAt beats a parsed phrase

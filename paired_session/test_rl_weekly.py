@@ -49,6 +49,17 @@ class ClassifierTests(unittest.TestCase):
                 self.assertIsNone(rc.classify_rate_limit_failure(1, '', stdout))
         self.assertIsNone(rc.classify_rate_limit_failure(0, '', '\n'.join(self.lines)))   # a success is never a limit
 
+    def test_an_overage_window_or_a_later_allowed_event_is_not_a_limit(self):   # gate B1
+        ordinary = '{"type":"result","is_error":true,"result":"Error: tool crashed","api_error_status":500}'
+        event = lambda **info: json.dumps({'type': 'rate_limit_event', 'rate_limit_info': info})
+        for events in ([event(status='rejected', isUsingOverage=True, resetsAt=1791612000)],
+                       [event(status='rejected', overageStatus='allowed')],
+                       [event(status='rejected', resetsAt=1791612000), event(status='allowed_warning')]):
+            with self.subTest(events=events):
+                self.assertIsNone(rc.classify_rate_limit_failure(1, '', '\n'.join([*events, ordinary])))
+        rejected_last = [event(status='allowed'), event(status='rejected', isUsingOverage=False, resetsAt=1791612000)]
+        self.assertEqual(rc.classify_rate_limit_failure(1, '', '\n'.join([*rejected_last, ordinary]))['kind'], 'rate_limited')
+
 
 class WeeklyLimitTurnTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in HELPERS})
