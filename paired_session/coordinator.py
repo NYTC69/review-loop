@@ -4623,9 +4623,6 @@ class Coordinator:
             raise ValueError('worktree lifecycle reject requires stage DONE')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
-        if (len(self.state.get('rejections', [])) < self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
-                and (issue := self._dispatch_contract_issue())):   # STRICT-NITS: it dispatches; refuse before any state change
-            raise ValueError(issue)
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
         if file:
             feedback = Path(file).expanduser().read_text()
@@ -8456,22 +8453,14 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if issue := self._dispatch_contract_issue():
-            raise ValueError(issue)
+        # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
+        if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
+                and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
+            raise ValueError(ok[1])
+        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
+                and not (ok := self.claude_author_verified())[0]:
+            raise ValueError(ok[1])
         return self._drive_loop()
-
-    def _dispatch_contract_issue(self) -> Optional[str]:
-        """drive()'s strict contract checks (codex-cli for any dispatched Codex role, the Claude author gate). resume and reject
-        also run them where they are sure to dispatch, before the run turns ACTIVE (STRICT-NITS); their no-dispatch paths are
-        unchanged. resume --polish knows only after start_polish_or_done whether it dispatches, so there drive() refuses
-        (direct calls only; the CLI checks first)."""
-        if not self.strict or self.state['config'].get('review_report') or lifecycle_spine.fake_dispatch_guard(self.args):
-            return None
-        if 'codex' in self.dispatched_vendors() and not (ok := self.codex_contract_verified())[0]:
-            return ok[1]
-        if self.args.author_vendor == 'claude' and not (ok := self.claude_author_verified())[0]:
-            return ok[1]
-        return None
 
     def fake_drive(self) -> str:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
@@ -9349,8 +9338,6 @@ class Coordinator:
         if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
             self.state['active'] = self.state['uncertain_active'] = None
             return self.hold(past_deadline)
-        if issue := self._dispatch_contract_issue():   # STRICT-NITS: the run dispatches from here on; refuse before it turns ACTIVE
-            raise ValueError(issue)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
