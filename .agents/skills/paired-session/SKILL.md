@@ -111,7 +111,8 @@ A review-only request (the user asks to review an existing change, or the review
 a code target) follows the shared contract's review-only entry: add `--review-only` (and
 `--base "$BASE"` only when the user named a base) to both invocations.
 
-A review-pr handoff (from the Codex `review-pr` skill) follows the shared contract's Review-PR entry.
+A review-pr handoff (from the Codex `review-pr` skill, or the user asks paired-session to review a PR or
+ref) follows the shared contract's Review-PR entry.
 Host rules: the run root is `$CODEX_HOME/state/paired-session` (the materializer's `--root`); the
 materializer reads through `gh` and the network, so run it as its own invocation outside the sandbox,
 with `PLUGIN_ROOT` resolved as in the first invocation, before the first invocation. In both

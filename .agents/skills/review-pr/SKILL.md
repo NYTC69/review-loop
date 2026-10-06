@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review a GitHub pull request ("review PR 123", a PR URL), a branch or ref, or the local change and write a review report, the review-loop review-pr. With `entry` absent or `paired-session` in .review-loop/config.md it runs the paired-session report mode (no writer, nothing committed or posted); with `entry: legacy`, or when the user asks for "the legacy review-pr workflow", it runs the legacy review-pr. Not for implementing a work item (review-loop).
+description: Review a GitHub pull request ("review PR 123", a PR URL) or a named branch or ref and write a review report, the review-loop review-pr; also when the user explicitly asks for review-pr. A general request to review local changes ("review my changes") is not this skill (review-loop). With `entry` absent or `paired-session` in .review-loop/config.md it runs the paired-session report mode (no writer, nothing committed or posted); with `entry: legacy`, or when the user asks for "the legacy review-pr workflow", it runs the legacy review-pr. Not for implementing a work item (review-loop).
 ---
 
 # review-pr (Codex)
@@ -15,7 +15,7 @@ warning line). `<support-root>` is this plugin, not the task workspace.
   `<support-root>/docs/protocol/reviewer-runtime.md`. `simplify` (a writer through the Claude Agent tool)
   is not available on Codex: say so and point to `/review-loop:review-pr --legacy simplify` in Claude
   Code. A PR number, PR URL or ref on the legacy route is refused:
-  `review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route`.
+  `review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route: with entry: legacy, ask paired-session to review it ("use paired-session to review PR <input>")`.
 - `entry` absent or `paired-session`: the paired route. Print
   `review-pr: paired-session report mode (entry set in .review-loop/config.md)` when the key is set, or
   `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or ask for "the legacy review-pr workflow"`

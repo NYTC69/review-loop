@@ -3942,7 +3942,7 @@
       "id": "codex_paired_session_takes_review_pr_handoff",
       "kind": "contains",
       "path": ".agents/skills/paired-session/SKILL.md",
-      "needle": "A review-pr handoff (from the Codex `review-pr` skill) follows the shared contract's Review-PR entry."
+      "needle": "A review-pr handoff (from the Codex `review-pr` skill, or the user asks paired-session to review a PR or\nref) follows the shared contract's Review-PR entry."
     },
     {
       "id": "migration_review_pr_follows_entry",

@@ -114,15 +114,16 @@ follows the shared contract's review-only entry: add `--review-only` (and `--bas
 only when the user named a base) to both blocks.
 
 A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the
-shared contract's Review-PR entry. Host rules: the run root above is the materializer's `--root`, and
-the materializer runs as its own foreground Bash call before the blocks. In both blocks set
+shared contract's Review-PR entry. Host rules: `<support-root>` in the shared contract is
+`${CLAUDE_PLUGIN_ROOT}` (for example `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/materialize_pr.py"`); the run
+root above is the materializer's `--root`; the materializer runs as its own foreground Bash call with
+`timeout: 600000` (a clone and fetch can outlast the default), before the blocks. In both blocks set
 `WORKSPACE` to the clone it printed (no input: the current worktree), replace
 `--test-command "$TEST_COMMAND"` with `--no-test-command` unless the user confirmed a test command, and
 add `--review-only --review-report --auto-commit false`, `--base "$BASE"` (the printed `merge_base`;
 no input: only a base the user named), `--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized
 input (write the printed JSON there with the work item) and `--aspects "$ASPECTS"` when aspects were
-given. Legacy
-review-pr pointer: `use /review-loop:review-pr --legacy simplify` (for `simplify`) or
+given. Legacy review-pr pointer: `use /review-loop:review-pr --legacy simplify` (for `simplify`) or
 `use /review-loop:review-pr --legacy`.
 
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config

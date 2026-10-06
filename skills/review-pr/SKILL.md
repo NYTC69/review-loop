@@ -40,7 +40,7 @@ warning line). Then:
     continue with Step 1, without `simplify` unless the user named it. With the key set, or for a PR or
     ref input, report the failure and stop (never fall back).
 - A PR number, PR URL or ref on the legacy route: refuse with
-  `review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route (without --legacy)`.
+  `review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route: drop --legacy, or with entry: legacy run /review-loop:paired-session --review-pr <input>`.
 
 ---
 
@@ -278,32 +278,43 @@ If `simplify` was run, also note:
 
 ## Usage Examples
 
+**Default route (paired-session report mode; `entry` absent or `paired-session`, see Step 0):**
+```
+/review-loop:review-pr 123
+# Reviews PR #123 of this repository in a temporary clone; writes review-report.md, posts nothing
+
+/review-loop:review-pr https://github.com/owner/repo/pull/123 code tests
+# Only the code and tests specialists (the reviewer, shadow, gate and security stage always run)
+```
+
+The examples below are the legacy route (`--legacy`, or `entry: legacy`), which reviews the local diff.
+
 **Full review (all applicable aspects, sequential):**
 ```
-/review-loop:review-pr
+/review-loop:review-pr --legacy
 ```
 
 **Specific aspects:**
 ```
-/review-loop:review-pr tests errors
+/review-loop:review-pr --legacy tests errors
 # Reviews only test coverage and error handling
 
-/review-loop:review-pr comments
+/review-loop:review-pr --legacy comments
 # Reviews only code comments
 
-/review-loop:review-pr simplify
+/review-loop:review-pr --legacy simplify
 # Simplifies changed code
 ```
 
 **Parallel review:**
 ```
-/review-loop:review-pr all parallel
+/review-loop:review-pr --legacy all parallel
 # Runs report-only aspects in parallel, then simplify last
 ```
 
 **Combine:**
 ```
-/review-loop:review-pr code errors parallel
+/review-loop:review-pr --legacy code errors parallel
 # Reviews code quality and error handling in parallel
 ```
 

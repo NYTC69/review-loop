@@ -27,8 +27,8 @@ the first command that runs `bin/paired-session`):
   plugin) belongs to stage A. If one fails or is denied, stop and report
   `stage A failure: <reason>`. Do not retry in another location or improvise,
   and never start or continue another workflow from this skill (no legacy
-  session file, lock or evidence snapshot): only the review-loop entry falls
-  back, and only through its documented notice.
+  session file, lock or evidence snapshot): only the review-loop or review-pr
+  entry falls back, and only through its documented notice.
 - From the first `bin/paired-session` command on, every refusal or HOLD is
   reported verbatim and never falls back to legacy.
 
