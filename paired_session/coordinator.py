@@ -249,6 +249,10 @@ class RateLimitError(ValueError):
     pass
 
 
+class WriterGitGuard(RuntimeError):
+    """A lifecycle writer changed HEAD, refs or the index (D8): the run HOLDs; a writer leg never treats it as a failed attempt."""
+
+
 class RateLimitedTurn(RuntimeError):
     """ratelimit: a turn the provider rejected for a rate limit, as raised by invoke(). Only this exact type makes a typed
     rate-limit hold; an error that wraps it (a W writer's git guard) is a different hold and needs its own repair."""
@@ -4844,6 +4848,7 @@ class Coordinator:
                 self.state.update(gate_ran=False, next='reviewer')   # resume re-reviews and re-gates this tree
                 return self.hold('stale EXEC approval: the reviewer and the gate did not both review the current tree')
             self.set_effective_verdict('APPROVE')
+            self.state['lifecycle'].pop('writer_replay', None)   # D09 §2: a converged writer replay has used its one chance
             self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
                 'tree': reviewed, 'reviewer_sequence': reviewer.get('sequence'), 'gate_sequence': gate.get('sequence')})
             self.state['next'] = 'finish'
@@ -6537,8 +6542,8 @@ class Coordinator:
                     if turn.get('phase') == phase and turn.get('sequence', 0) > base['sequence']:
                         turn.setdefault('discarded', 'git guard')
                 self.save()
-                raise RuntimeError(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort'
-                                   + (f' (the turn failed: {cause})' if cause else ''))
+                raise WriterGitGuard(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort'
+                                     + (f' (the turn failed: {cause})' if cause else ''))
         check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
         recorded = next((turn for turn in reversed(self.state['turns'])
                          if turn.get('role') == 'author' and turn.get('phase') == phase and not turn.get('error')
@@ -7156,16 +7161,17 @@ class Coordinator:
             self.hold('POLISH-Q open blocking findings: ' + ', '.join(row['id'] for row in blocking))
         elif tree != request['candidate_oid']:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
+        elif queue := self._quality_writers_tail(paths, len(names), request):   # D09 C1-b1: the writer legs, in order
+            self.state['lifecycle']['writer_queue'] = queue
+            self.state['next'] = 'polish-simplify' if queue[0] == 'simplifier' else 'polish-tests'
         else:
-            self._quality_writers_tail(paths, len(names), request)
             self.state['lifecycle']['stage'] = 'DOCS'
             self.state['next'] = 'docs'
         self.save()
 
-    def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> None:
+    def _quality_writers_tail(self, paths: list[str], specialists: int, request: dict) -> list[str]:
         """D09 C1-a (d09-cap1-writer-passes.md §3): at a clean POLISH-Q exit, check each writer without a state against
-        the skip rules and record a skip once per item. The writer legs land in C1-b1; until then a writer that passes
-        every rule is not reached, and nothing writes."""
+        the skip rules and record a skip once per item. Returns the writers that pass every rule, in leg order (C1-b1)."""
         life, config = self.state['lifecycle'], self.state['config']
         marker = life.setdefault('quality_writers', {})
         if not any(writer in marker for writer in worktree_lifecycle.QUALITY_WRITERS['both']):   # §2: this exit's tree
@@ -7182,14 +7188,254 @@ class Coordinator:
         detail = self._quality_writer_shortfall(len(left), specialists) if left else None
         for writer, reason in reasons.items():
             if reason is None and not detail:
-                self.progress('quality-writer', writer=writer, state='not reached (writer legs land in C1-b1)')
+                self.progress('quality-writer', writer=writer, state='queued')
                 continue
-            row = {'state': 'skipped:' + (reason or 'budget'), **({'detail': detail} if reason is None else {}),
-                   'receipt': request['request_id'], 'digest': marker['base_oid']}
-            row['evidence'] = str(self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.json")
-            atomic_json(Path(row['evidence']), {'writer': writer, **row})
-            marker[writer] = row
-            self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
+            self._writer_state(writer, {'state': 'skipped:' + (reason or 'budget'), **({'detail': detail} if reason is None else {}),
+                                        'receipt': request['request_id'], 'digest': marker['base_oid']})
+        return [] if detail else left
+
+    def _writer_state(self, writer: str, row: dict) -> None:
+        """D09 §3: a writer's state, written once per item, with one evidence record and a progress line."""
+        row['evidence'] = str(self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.json")
+        atomic_json(Path(row['evidence']), {'writer': writer, **row})
+        self.state['lifecycle']['quality_writers'][writer] = row
+        self.progress('quality-writer', writer=writer, state=row['state'], detail=row.get('detail', ''))
+
+    def worktree_writer_turn(self) -> None:
+        """D09 (d09-cap1-writer-passes.md §2): one POLISH-Q writer leg through the FINISH writer path, bound to its
+        input tree, judged by the tree, not the answer: a READY change that passes the local test run is kept (`wrote`,
+        the replay follows), one that fails it is rolled back (`rolled-back:tests`), a HOLD with a change is rolled back
+        (`rolled-back:hold`), and one that touches a reserved DOCS path or `.review-loop/` config is refused before the
+        local run (`rolled-back:boundary`). A failed attempt is rolled back as `exhausted`; only a turn without tool calls
+        is retried, once. Every rollback verifies."""
+        life = self.state['lifecycle']
+        marker, writer = life['quality_writers'], 'simplifier' if self.state['next'] == 'polish-simplify' else 'test-writer'
+        if not (leg := life.get('writer_leg')) or leg['writer'] != writer:   # a new leg: bind and capture once
+            input_oid = (marker.get('simplifier') or {}).get('output_oid') if writer == 'test-writer' else None
+            input_oid = input_oid or marker['base_oid']
+            if git_snapshot(self.workspace)[0] != input_oid:
+                raise RuntimeError(f'POLISH-Q {writer}: the tree differs from its input {input_oid[:12]}; inspect, then abort')
+            if 'base_capture' not in marker:   # §2: the restore point of a whole-group rollback, taken before the baseline
+                marker['base_capture'] = self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-base")
+            if 'baseline' not in marker and not self._green_baseline(marker):   # §3: once, before the first writer
+                return
+            leg = life['writer_leg'] = {'writer': writer, 'input_oid': input_oid, 'attempts': 0,
+                                        'capture': self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-{writer}")}
+            self.save()
+        request = worktree_lifecycle.stage_request(life, writer) if life['pending'] is None else life['pending']
+        paths = self._changed_paths()
+        paths = paths if writer == 'simplifier' else [path for path in paths if worktree_lifecycle.is_test_path(path)]
+        prompt = lambda: worktree_lifecycle.writer_prompt(writer, self._simplifier_body() if writer == 'simplifier' else '',
+                                                          paths, self.args.test_command, self._docs_reserved_note())
+        result, state = None, None
+        while state is None and result is None:
+            life = self.state['lifecycle']   # lifecycle_spine.begin replaces the dict: count on the current one
+            counts = life.setdefault('writer_counts', {})
+            if (counts.get(writer, 0) + 1 > budget_policy.BUDGET_CAPS[writer][0] or
+                    life.get('polish_calls', 0) + 1 > self._worktree_run_cap('POLISH-Q')):
+                state = 'exhausted'
+                break
+            counts[writer] = counts.get(writer, 0) + 1
+            life['polish_calls'] = life.get('polish_calls', 0) + 1   # §3: the writer cap and POLISH-Q's run cap
+            leg['attempts'] += 1
+            self.save()
+            before = self.state['sequence']
+            try:
+                result = self._lifecycle_writer(request, f'POLISH-Q {writer}', prompt)
+            except (RateLimitedTurn, WriterGitGuard):   # a rate limit and the HEAD/ref/index guard still HOLD
+                raise
+            except RuntimeError as exc:   # any other failure is a failed attempt
+                self.progress('quality-writer', writer=writer, state='failed attempt', detail=str(exc)[:120])
+                state = 'exhausted'
+            finally:   # reconcile as _specialist_turn: a refunded (rate-limited) or reused launch gives its count back
+                life = self.state['lifecycle']
+                refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
+                               if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
+                if delta := self.state['sequence'] - before - refunded - 1:
+                    life['writer_counts'][writer] += delta
+                    life['polish_calls'] += delta
+                    leg['attempts'] += delta
+                    self.save()
+            if state:
+                break
+            turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
+            if not turn.get('observed_tool_calls'):
+                turn['discarded'] = 'no tool calls'
+                result = None
+                if leg['attempts'] >= 2: state = 'exhausted'
+                elif git_snapshot(self.workspace)[0] != leg['input_oid']: state = 'exhausted'   # it wrote anyway: no retry
+        output = git_snapshot(self.workspace)[0]
+        if state is None:
+            self.render(result, writer, 'POLISH-Q')
+            state = ('no-op' if output == leg['input_oid'] else 'rolled-back:hold' if result['answer']['status'] == 'HOLD' else
+                     'rolled-back:boundary' if self._writer_boundary(leg) else
+                     'wrote' if self._writer_local_check(writer) else 'rolled-back:tests')
+        evidence = (self._writer_rollback(writer, leg, (result or {}).get('sequence'))
+                    if output != leg['input_oid'] and state != 'wrote' else None)
+        receipt = {**request, 'status': 'READY', 'output_oid': git_snapshot(self.workspace)[0], 'writer_state': state,
+                   'sequence': (result or {}).get('sequence')}
+        self.state['lifecycle'] = life = lifecycle_spine.complete(self.state['lifecycle'], receipt)
+        life.pop('writer_git', None)
+        life.pop('writer_leg', None)
+        self._writer_state(writer, {'state': state, 'input_oid': leg['input_oid'], 'output_oid': receipt['output_oid'],
+                                    'receipt': request['request_id'], 'digest': leg['input_oid'], 'sequence': receipt['sequence'],
+                                    'attempts': leg['attempts'], **({'diff': evidence} if evidence else {}),
+                                    **({'test': leg['test']} if leg.get('test') else {}),
+                                    **({'boundary': leg['boundary']} if leg.get('boundary') else {})})
+        queue = [name for name in life.get('writer_queue', []) if name not in life['quality_writers']]
+        if queue:
+            self.state['next'] = 'polish-tests'
+        elif life.pop('writer_queue', None) is not None and git_snapshot(self.workspace)[0] != life['quality_writers']['base_oid']:
+            self._writer_replay()   # §2: a kept write is reviewed before DOCS
+        else:
+            life['stage'] = 'DOCS'
+            self.state['next'] = 'docs'
+        self.save()
+
+    def _writer_boundary(self, leg: dict) -> list[str]:
+        """§2 write boundary, as for FINISH: a reserved DOCS path or `.review-loop/` config is outside the writer's grant,
+        so such a change is refused before the local check and the review (`rolled-back:boundary`)."""
+        keep = Path(leg['capture'])
+        recorded = json.loads((keep / 'record.json').read_text())
+        now = readonly_guard.state(self.workspace, keep)['tree']
+        reserved = set(self._docs_allowlist()) - set(self._docs_owned())
+        leg['boundary'] = sorted(path for path in self._git_names(['diff', '--name-only', '--no-renames', '-z', recorded['tree'], now])
+                                 if path in reserved or path.split('/', 1)[0] == '.review-loop')
+        return leg['boundary']
+
+    def _writer_local_check(self, writer: str) -> Optional[bool]:
+        """§2 local check after a changed READY turn: True keeps the write (the replay follows), False rolls it back
+        (`rolled-back:tests`). The run is recorded on the leg and in the writer's marker row."""
+        run = self.state['lifecycle']['writer_leg']['test'] = self._test_run(writer)
+        self.save()
+        return run['passed']
+
+    def _green_baseline(self, marker: dict) -> bool:
+        """§3 green baseline: the test command runs once on base_oid before the first writer. A fail, a timeout or a
+        changed tree (restored from base_capture first) skips every queued writer as `skipped:no-green-baseline`."""
+        run = marker['baseline'] = self._test_run('baseline')
+        if run['tree_changed']:
+            self._writer_rollback('baseline', {'capture': marker['base_capture'], 'input_oid': marker['base_oid']}, None)
+        if run['passed']:
+            self.save()
+            return True
+        life = self.state['lifecycle']
+        for writer in life.pop('writer_queue', []):
+            self._writer_state(writer, {'state': 'skipped:no-green-baseline', 'detail': run['reason'], 'digest': marker['base_oid'],
+                                        'receipt': (life['receipts'][-1] if life['receipts'] else {}).get('request_id')})
+        life['stage'] = 'DOCS'
+        self.state['next'] = 'docs'
+        self.save()
+        return False
+
+    def _test_run(self, label: str) -> dict:
+        """§2 local test executor (no model call, no invocation): the explicitly configured test command under /bin/sh -c
+        in the workspace, bounded by the run's --timeout, its output in evidence; only the exit code counts, and a run
+        that changes the live tree (tracked or untracked non-ignored files) fails."""
+        log = self.evidence / f"{self.state['sequence']:03d}-polish-q-{label}-test.log"
+        before, code, reason = git_snapshot(self.workspace)[0], None, ''
+        try:
+            with open(log, 'wb') as out:
+                proc = subprocess.Popen(['/bin/sh', '-c', self.args.test_command], cwd=self.workspace, stdout=out,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                                        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                try:
+                    code = proc.wait(timeout=self.args.timeout)
+                except subprocess.TimeoutExpired:
+                    reason = f'timed out after {self.args.timeout}s'
+                finally:   # before the snapshot: no leftover child of the command (a test server) may change the tree later
+                    try: os.killpg(proc.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError): pass   # the group is already gone
+                    proc.wait()
+        except OSError as exc:
+            reason = f'could not run: {exc}'
+        changed = git_snapshot(self.workspace)[0] != before
+        reason = reason or ('changed the tree' if changed else '' if code == 0 else f'exit {code}')
+        self.progress('quality-writer', writer=label, state='local test ' + ('passed' if not reason else 'failed'), detail=reason)
+        return {'command': str(self.args.test_command), 'exit': code, 'tree_changed': changed, 'passed': not reason,
+                'reason': reason, 'log': str(log)}
+
+    def _writer_replay(self) -> None:
+        """§2: kept writes start a new EXEC convergence (the polish-fix transition, counted like a FINISH write): the EXEC
+        reviewer, shadow and gate, FINISH and fresh specialists review the writer diff before DOCS."""
+        life, marker = self.state['lifecycle'], self.state['lifecycle']['quality_writers']
+        replay = {'epoch': life['epoch'] + 1, 'from_epoch': life['epoch'], 'sequence': self.state['sequence'],
+                  'writers': [w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if (marker.get(w) or {}).get('state') == 'wrote'],
+                  'statuses': {row['id']: row['status'] for row in self.state['finding_ledger']}}
+        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None, 'writer_replay': replay}
+        self.state['exec_rounds'] += 1
+        self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+        self.progress('quality-writer', writer=', '.join(replay['writers']), state=f"replay epoch {replay['epoch']}")
+        if self.state['exec_rounds'] > self.exec_round_limit():
+            self.round_limit_hold('EXEC round limit reached after a writer pass')
+
+    def _writer_review_rollback(self, source: str, sequence: int) -> bool:
+        """§2 "one chance in review": in a writer replay, the first non-APPROVE reviewer verdict or a failing gate opens no
+        fix round. The tree goes back to base_oid from base_capture (verified); the replay's findings are withdrawn and
+        the ledger rows it closed are reopened, with the evidence; the writers that wrote are `rolled-back:review`; a
+        POLISH-Q READY receipt on base_oid cites the previous epoch's receipts on that digest; then DOCS."""
+        life = self.state.get('lifecycle') or {}
+        replay = life.get('writer_replay')
+        if not replay or replay['epoch'] != life.get('epoch') or life.get('stage') != 'EXEC':
+            return False
+        marker, base = life['quality_writers'], life['quality_writers']['base_oid']
+        diff = self._writer_rollback('review', {'capture': marker['base_capture'], 'input_oid': base}, sequence)
+        note = f'the writer change was rolled back to base_oid after the replay {source} (rolled-back:review)'
+        for row in self.state['finding_ledger']:
+            before = replay['statuses'].get(row['id'])
+            if row['status'] != (before or 'withdrawn') and (before or row['status'] == 'open'):
+                row['status'] = before or 'withdrawn'
+                row['status_history'].append({'round': sequence, 'status': row['status'], 'evidence': note})
+                self._progress_finding(row)
+        self.write_ledger()
+        for writer in replay['writers']:
+            self._writer_state(writer, {**marker[writer], 'state': 'rolled-back:review', 'output_oid': base, 'review': source,
+                                        'review_diff': diff})
+        convergence = life.get('exec_convergence') or {}   # the previous epoch's EXEC approval and gate on this digest
+        cites = {**({'exec_reviewer': convergence.get('reviewer_sequence'), 'gate': convergence.get('gate_sequence')}
+                    if convergence.get('tree') == base else {}),
+                 'receipts': [row['request_id'] for row in life['receipts'] if row.get('epoch') == replay['from_epoch'] and
+                              row.get('role') in ('finisher', 'specialists') and row.get('status') == 'READY' and
+                              row.get('output_oid') == base]}   # FINISH and the clean specialists
+        life = {**{key: value for key, value in life.items() if key != 'writer_replay'}, 'stage': 'POLISH-Q', 'candidate_oid': base}
+        request = worktree_lifecycle.stage_request(life, 'writer-rollback')
+        life = lifecycle_spine.complete(lifecycle_spine.begin(life, request), {
+            **request, 'status': 'READY', 'output_oid': base, 'writer_state': 'rolled-back:review', 'cites': cites})
+        self.state['lifecycle'] = lifecycle_spine.advance(life)   # POLISH-Q -> DOCS
+        self.state.update(next='docs', delivered_review='', gate_ran=False, pending_reviewer_result_sequence=None)
+        self.save()
+        return True
+
+    def _writer_capture(self, keep: Path) -> str:
+        """§2: the verified pre-writer record (RG.capture keeps the index copy, the permissions and the ignored set)."""
+        record = readonly_guard.capture(self.workspace, keep)
+        atomic_json(keep / 'record.json', record)
+        return str(keep)
+
+    def _writer_rollback(self, writer: str, leg: dict, sequence: Optional[int]) -> str:
+        """§2: put the writer's input back from its capture and verify it; an unverified restore HOLDs through the
+        existing unrestored path (resume refuses until the workspace is back)."""
+        keep = Path(leg['capture'])
+        recorded = json.loads((keep / 'record.json').read_text())
+        diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.workspace-change.diff"
+        try:
+            readonly_guard.evidence(self.workspace, recorded, keep, diff)
+            why = readonly_guard.restore(self.workspace, recorded, keep)
+            if why is None and git_snapshot(self.workspace)[0] != leg['input_oid']: why = 'the tree still differs after the restore'
+        except Exception as exc: why = f'{type(exc).__name__}: {exc}'
+        if why:
+            self._record_unrestored({'sequence': sequence, 'role': writer, 'snapshot': leg['input_oid'],
+                                     'marks': {key: recorded[key] for key in ('head', 'branch', 'index')}},
+                                    self.workspace, recorded, reason=why, evidence=str(diff))
+            raise RuntimeError(f'POLISH-Q {writer}: its change could not be rolled back ({why}); restore it by hand, see {diff}')
+        return str(diff)
+
+    def _simplifier_body(self) -> str:
+        path = HERE.parent / 'agents' / 'code-simplifier.md'
+        raw = _read_role_source(path)
+        if hashlib.sha256(raw).hexdigest() != self.state['role_dispatch_manifest']['agent_body_sha256'].get(path.name):
+            raise RuntimeError('the code-simplifier body differs from the frozen role manifest')
+        return worktree_lifecycle.agent_body(raw)
 
     def _quality_writer_shortfall(self, writers: int, specialists: int) -> Optional[str]:
         """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists), the replay round plus
@@ -7395,7 +7641,9 @@ class Coordinator:
         persistent_findings = list(answer['full_review'])
         self.render(result, 'supervisor', phase)
         shadow = None
-        if phase == 'EXEC' and self.args.shadow == 'on':
+        writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: a writer replay always has one
+        if phase == 'EXEC' and (self.args.shadow == 'on' or
+                                (writer_replay and writer_replay['epoch'] == self.state['lifecycle'].get('epoch'))):
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
@@ -7477,6 +7725,8 @@ class Coordinator:
             self.state['exec_comparisons'].append(comparison)
         self.capture_review_baseline(result['sequence'], phase)
         if answer['status'] == 'HOLD':
+            if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: not APPROVE
+                return
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('reviewer HOLD')
             return
@@ -7501,6 +7751,8 @@ class Coordinator:
             self.save()
             return
         if answer['status'] == 'REVISE':
+            if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: no fix round
+                return
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
                 self.state['pending_reviewer_result_sequence'] = None
@@ -7733,6 +7985,8 @@ class Coordinator:
             if worktree_lifecycle.is_worktree(self.state):
                 self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
             self.save()
+            return
+        if valid and self._writer_review_rollback('gate', result['sequence']):   # D09 §2: a writer replay's gate failed
             return
         structural = self._structural_block_hold('gate', result['sequence'], valid)
         if valid:
@@ -9409,6 +9663,8 @@ class Coordinator:
                     self.worktree_polish_fix_turn()
                 elif self.state['next'] == 'polish-recheck' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_polish_recheck_turn()
+                elif self.state['next'] in ('polish-simplify', 'polish-tests') and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_writer_turn()   # D09 C1-b1
                 elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_docs_turn()
                 elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):

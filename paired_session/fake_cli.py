@@ -318,6 +318,23 @@ def main():
         if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
             print('fake author failed after writing', file=sys.stderr)
             return 1
+    elif 'Role: simplifier' in prompt or 'Role: test consolidator' in prompt:   # D09 C1-b1 POLISH-Q writer legs
+        writer = 'simplifier' if 'Role: simplifier' in prompt else 'test-writer'
+        chosen = lambda name: writer in os.environ.get(name, '').split(',')
+        once = os.environ.get('FAKE_WRITER_NO_TOOLS_ONCE')
+        no_tools = chosen('FAKE_WRITER_NO_TOOLS') or (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)
+        command_events = [] if no_tools else [{'command': 'git diff --stat', 'exit_code': 0, 'output': ''}]
+        if chosen('FAKE_WRITER_WRITE'):
+            target = Path.cwd() / os.environ.get('FAKE_WRITER_FILE', 'sum_ints.py')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text((target.read_text() if target.exists() else '') + f'# {writer} edit\n')
+        if chosen('FAKE_WRITER_STAGE'):   # a writer that stages its change: the index guard
+            __import__('subprocess').run(['git', 'add', '-A'], check=True)
+        if chosen('FAKE_WRITER_FAIL'):   # a failed attempt after a write
+            print('fake writer failed after writing', file=sys.stderr)
+            return 1
+        answer = ({'status': 'HOLD', 'body': 'Fake writer held.'} if chosen('FAKE_WRITER_HOLD') else
+                  {'status': 'READY', 'body': f'Fake {writer} done.'})
     elif 'Role: finisher' in prompt or 'Role: docs writer' in prompt:   # worktree-lifecycle fresh writers (ADR-11)
         module = Path.cwd() / 'sum_ints.py'
         if ('Phase: FINISH' in prompt and os.environ.get('FAKE_FINISH_WRITE') and
@@ -349,6 +366,8 @@ def main():
             else:
                 marker.write_text('blocked\n')
                 blocking = '1'
+        if (flag := os.environ.get('FAKE_GATE_BLOCK_IF_FILE')) and Path(flag).exists():   # D09 C1-b2: block a writer replay
+            blocking = '1'
         malformed = os.environ.get('FAKE_GATE_MALFORMED')
         findings = []
         if blocking or malformed:
@@ -445,6 +464,10 @@ def main():
                       'failure_scenario': ('verification is absent from the plan' if phase == 'PLAN'
                                            else 'bool is accepted as int')}]
                     if revise else [])
+        if role == 'reviewer' and phase == 'EXEC' and (flag := os.environ.get('FAKE_EXEC_REVISE_IF_FILE')) and Path(flag).exists():
+            revise = True   # D09 C1-b2: a writer replay's reviewer asks for changes while the writer's file exists
+            findings = [{'severity': 'MAJOR', 'file': Path(flag).name, 'summary': 'the writer change regresses behaviour',
+                         'failure_scenario': 'the simplified branch drops a case'}]
         if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MINOR_REVISE'):
             revise = True
             findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
@@ -530,6 +553,9 @@ def main():
                   'full_review': findings,
                   'self_run_evidence': ([{'command': configured_test or 'python3 -m unittest'}]
                                         if phase in ('EXEC', 'SECURITY', 'Q', 'DOCS') else [])}
+        if (role == 'reviewer' and phase == 'EXEC' and prior is not None and (flag := os.environ.get('FAKE_EXEC_HOLD_IF_FILE'))
+                and Path(flag).exists()):   # D09 C1-b2: the persistent reviewer HOLDs on a writer replay
+            answer['status'] = 'HOLD'
         no_test = os.environ.get('FAKE_DOCS_REVIEW_NO_TEST_ONCE')
         if 'Role: docs reviewer,' in prompt and no_test and not Path(no_test).exists():
             Path(no_test).write_text('no test\n')

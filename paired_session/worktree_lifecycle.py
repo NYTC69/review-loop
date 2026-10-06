@@ -94,6 +94,24 @@ def finish_prompt(plan, test_command, reserved, review_only=False):
             f'{label}:\n' + plan)
 
 
+def writer_prompt(writer, body, paths, test_command, reserved):
+    """D09 §2: the POLISH-Q writer passes. The simplifier inlines agents/code-simplifier.md; the test writer only
+    consolidates the changed tests (CQL Step 3, narrowed: no new tests for uncovered logic)."""
+    if writer == 'simplifier':
+        head, task = 'Role: simplifier, fresh. Phase: POLISH-Q.\n', (
+            body + '\n\nSimplify only the changed code in these paths, preserving its behavior: ' + ', '.join(paths) + '. ')
+    else:
+        head, task = 'Role: test consolidator, fresh. Phase: POLISH-Q.\n', (
+            'Consolidate the changed test files only: ' + ', '.join(paths) + '. Keep the critical-path tests, remove '
+            'redundant ones and make the test comments clear. Do not add tests for uncovered logic. ')
+    return (head + 'The change in this worktree has passed review. ' + task + f'You may run the test command ({test_command}). '
+            'Do not commit, stage, push or change branches, refs or the index. Do not edit outside the workspace or edit '
+            f'run state or review files. {reserved} Do not load review-loop skills and do not invoke or wait for another '
+            'model. Answer READY when your edits are complete or nothing needed changing; answer HOLD only when a '
+            'decision is missing or the environment cannot recover, with the reason. Return only JSON matching the '
+            'supplied schema.')
+
+
 def docs_prompt(docs_file, allowlist, run_id, workitem):
     return ('Role: docs writer, fresh. Phase: DOCS.\n'
             'The reviewed change in this worktree is ready for delivery. Bring the documentation in line with it '

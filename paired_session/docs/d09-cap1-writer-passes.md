@@ -39,8 +39,9 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   (= `base_oid` when it was skipped, no-op, rolled back or exhausted). The live digest must equal the input, else a
   HOLD before dispatch, as a stale POLISH-Q tree does today. After the turn the marker records `input_oid`,
   `output_oid` (the live digest), the receipt id and the state.
-- **What decides: the tree, not the answer.** Output = input: `no-op`, whatever the answer. Changed + READY: the local
-  check. Changed + HOLD (a partial write): rolled back, `rolled-back:hold`, no local check.
+- **What decides: the tree, not the answer.** Output = input: `no-op`, whatever the answer. Changed + READY: the write
+  boundary first (below), then the local check. Changed + HOLD (a partial write): rolled back, `rolled-back:hold`, no
+  local check.
 - **Capture, rollback, failed attempts.** Before the baseline run (§3) and before each writer's first attempt the
   coordinator calls `RG.capture(workspace, keep)` (keep = `internal/readonly/<seq>-<role>`; it keeps the index copy,
   permissions and ignored set) and stores the record path in the marker. The capture before the baseline run is kept
@@ -69,15 +70,16 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   citing the previous epoch's receipts on that byte-identical digest (EXEC approval, gate, FINISH, clean specialists).
   Then `advance` goes to DOCS. A later FINISH write or specialist blocker in the
   replay follows the normal rules (the headroom reserves that round).
-- **Write boundary.** As for FINISH: reserved docs paths and `.review-loop/` config are outside the grant; an attempt
-  refuses or HOLDs before review; any write invalidates EXEC under e2e-1's rule.
+- **Write boundary.** As for FINISH: reserved docs paths and `.review-loop/` config are outside the grant; a change
+  that touches them is rolled back before the local run and the review (`rolled-back:boundary`, C1-b3); any kept
+  write invalidates EXEC under e2e-1's rule.
 - **SECURITY ordering.** The writers run only in POLISH-Q, so before DOCS and SECURITY; SECURITY reviews the final
   tree. A SECURITY repair replays EXEC and later stages, but the writers stay skipped by their markers.
 
 ## 3. Budget and stop rules
 
 - **One pass per item for each writer.** The marker `state['lifecycle']['quality_writers']` holds `base_oid` and, per
-  writer, `wrote`, `no-op`, `rolled-back:<tests|hold|review>`, `skipped:<reason>` or `exhausted`. A writer with a state
+  writer, `wrote`, `no-op`, `rolled-back:<tests|hold|review|boundary>`, `skipped:<reason>` or `exhausted`. A writer with a state
   is skipped at every later POLISH-Q evaluation (replay epochs, a DONE `reject`, a resume, a scope-change successor);
   the marker is copied into the successor spec like `item_blockers`. One evidence record
   (`NNN-polish-q-<writer>.json`: state, reason, receipt id, digest) is written when the state is written, not again.
