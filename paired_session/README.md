@@ -217,9 +217,12 @@ default `both` for `--review-only`, `off` otherwise) runs a fresh author session
 that simplifies the changed code, then one that consolidates the changed tests.
 The explicit test command runs first on the reviewed tree (a red baseline skips
 both) and again after each change. A kept change (`wrote`) replays EXEC review,
-shadow, gate, FINISH and the specialists before DOCS (`exec_rounds` + 1); the
-replay's first non-approval rolls it back (`rolled-back:review`) with no fix
-round. Other outcomes: `no-op`, `rolled-back:tests`, `rolled-back:boundary`
+shadow, gate, FINISH and the specialists before DOCS, on its own budget of one
+replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`);
+the replay's first non-approval rolls it back (`rolled-back:review`), only the
+writer the findings name when the two changed different files (the other is
+reviewed again). A test writer that lowers the number of test cases is rolled
+back (`rolled-back:tests`). Other outcomes: `no-op`, `rolled-back:tests`, `rolled-back:boundary`
 (reserved docs or `.review-loop/` config), `rolled-back:hold`, `exhausted`, and
 the skips `no-test-command`, `small`, `no-test-file`, `budget`,
 `no-green-baseline`. Cost: about +10 invocations for a typical change (two

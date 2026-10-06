@@ -82,6 +82,8 @@ DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_promp
 RUBRIC = ('Trigger', 'Reachability', 'Impact', 'Likelihood', 'Fix cost', 'Cheaper response')
 # FIELD-5 (owner 2026-10-03/10-04): the finding's owner labels its class explicitly; the coordinator never infers it from text.
 CLASS_LABEL_RE = re.compile(r'\s*\[class:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*\]')
+TEST_CASE_RE = re.compile(r'^[ \t]*(?:async[ \t]+)?def[ \t]+test\w*[ \t]*\(|^[ \t]*func[ \t]+Test\w*[ \t]*\(|#\[test\]|'
+                          r'\b(?:it|test)[ \t]*\([ \t]*[\'"`]', re.M)   # D09 F1: test cases by a plain pattern
 STRUCTURAL_BLOCK_STREAK = 3
 CLASS_LABEL_GUIDANCE = ('Start the {field} of every blocking finding with a defect-class label "[class: <kebab-case-name>]" naming the '
                         'kind of defect, such as missing-input-validation or path-traversal.')   # fresh roles: no history words (independence scan)
@@ -6586,6 +6588,7 @@ class Coordinator:
     def worktree_docs_turn(self) -> None:
         """ADR-11 DOCS (legacy Step 3.6): a fresh docs writer; its allowlisted writes get a fresh docs review with an
         observed test, a protected path HOLDs, and any other write replays EXEC (reviewer, then gate)."""
+        self._close_writer_replay_rounds()   # D09 F3: the writer replay's own rounds end where DOCS begins
         life, workspace = self.state['lifecycle'], self.workspace
         allow = set(self._docs_allowlist())
         request = worktree_lifecycle.stage_request(life, 'docs-writer')
@@ -7220,7 +7223,8 @@ class Coordinator:
             if 'baseline' not in marker and not self._green_baseline(marker):   # §3: once, before the first writer
                 return
             leg = life['writer_leg'] = {'writer': writer, 'input_oid': input_oid, 'attempts': 0,
-                                        'capture': self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-{writer}")}
+                                        'capture': self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-{writer}"),
+                                        **({'test_cases': self._test_case_count()} if writer == 'test-writer' else {})}
             self.save()
         request = worktree_lifecycle.stage_request(life, writer) if life['pending'] is None else life['pending']
         paths = self._changed_paths()
@@ -7269,6 +7273,7 @@ class Coordinator:
             self.render(result, writer, 'POLISH-Q')
             state = ('no-op' if output == leg['input_oid'] else 'rolled-back:hold' if result['answer']['status'] == 'HOLD' else
                      'rolled-back:boundary' if self._writer_boundary(leg) else
+                     'rolled-back:tests' if self._test_cases_dropped(leg) else   # F1: no test case may disappear
                      'wrote' if self._writer_local_check(writer) else 'rolled-back:tests')
         evidence = (self._writer_rollback(writer, leg, (result or {}).get('sequence'))
                     if output != leg['input_oid'] and state != 'wrote' else None)
@@ -7281,7 +7286,9 @@ class Coordinator:
                                     'receipt': request['request_id'], 'digest': leg['input_oid'], 'sequence': receipt['sequence'],
                                     'attempts': leg['attempts'], **({'diff': evidence} if evidence else {}),
                                     **({'test': leg['test']} if leg.get('test') else {}),
-                                    **({'boundary': leg['boundary']} if leg.get('boundary') else {})})
+                                    **({'boundary': leg['boundary']} if leg.get('boundary') else {}),
+                                    **({'detail': leg['detail']} if leg.get('detail') else {}),
+                                    **({'files': leg['files']} if state == 'wrote' else {})})
         queue = [name for name in life.get('writer_queue', []) if name not in life['quality_writers']]
         if queue:
             self.state['next'] = 'polish-tests'
@@ -7299,9 +7306,26 @@ class Coordinator:
         recorded = json.loads((keep / 'record.json').read_text())
         now = readonly_guard.state(self.workspace, keep)['tree']
         reserved = set(self._docs_allowlist()) - set(self._docs_owned())
-        leg['boundary'] = sorted(path for path in self._git_names(['diff', '--name-only', '--no-renames', '-z', recorded['tree'], now])
-                                 if path in reserved or path.split('/', 1)[0] == '.review-loop')
+        leg['files'] = sorted(self._git_names(['diff', '--name-only', '--no-renames', '-z', recorded['tree'], now]))   # F2
+        leg['boundary'] = [path for path in leg['files'] if path in reserved or path.split('/', 1)[0] == '.review-loop']
         return leg['boundary']
+
+    def _test_case_count(self, extra: tuple = ()) -> dict:
+        """D09 F1: the test functions per changed test file (a plain pattern count, no discovery): Python `def test…`,
+        Go `func Test…`, Rust `#[test]`, JS/TS `it(…)`/`test(…)`. A deleted file counts 0."""
+        paths = sorted({*extra, *(p for p in self._changed_paths() if worktree_lifecycle.is_test_path(p))})
+        read = lambda path: (self.workspace / path).read_text(errors='replace') if (self.workspace / path).is_file() else ''
+        return {path: len(TEST_CASE_RE.findall(read(path))) for path in paths}
+
+    def _test_cases_dropped(self, leg: dict) -> bool:
+        """D09 F1: consolidation may merge or parametrize but never drop a case; a lower count is a failed local test."""
+        if 'test_cases' not in leg:
+            return False
+        before, after = sum(leg['test_cases'].values()), sum(self._test_case_count(tuple(leg['test_cases'])).values())
+        if after < before:
+            leg['detail'] = f'test cases {before} -> {after} in the changed test files'
+            self.progress('quality-writer', writer=leg['writer'], state='test cases dropped', detail=leg['detail'])
+        return after < before
 
     def _writer_local_check(self, writer: str) -> Optional[bool]:
         """§2 local check after a changed READY turn: True keeps the write (the replay follows), False rolls it back
@@ -7363,6 +7387,7 @@ class Coordinator:
                   'writers': [w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if (marker.get(w) or {}).get('state') == 'wrote'],
                   'statuses': {row['id']: row['status'] for row in self.state['finding_ledger']}}
         self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None, 'writer_replay': replay}
+        self.state['writer_replay_rounds'] = {'start': self.state['exec_rounds'], 'used': None}   # F3: its own budget
         self.state['exec_rounds'] += 1
         self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
         self.progress('quality-writer', writer=', '.join(replay['writers']), state=f"replay epoch {replay['epoch']}")
@@ -7379,15 +7404,25 @@ class Coordinator:
         if not replay or replay['epoch'] != life.get('epoch') or life.get('stage') != 'EXEC':
             return False
         marker, base = life['quality_writers'], life['quality_writers']['base_oid']
+        if targets := self._writer_review_targets(replay, marker):   # F2: disjoint files, the findings name one writer
+            diff = self._revert_paths(sorted({path for writer in targets for path in marker[writer]['files']}),
+                                      Path(marker['base_capture']), sequence)
+            self._revert_replay_findings(replay, sequence, f'the {", ".join(targets)} change was rolled back after the replay '
+                                                           f'{source} (rolled-back:review); the other writer stays')
+            for writer in targets:
+                self._writer_state(writer, {**marker[writer], 'state': 'rolled-back:review', 'review': source, 'review_diff': diff})
+            replay.update(writers=[w for w in replay['writers'] if w not in targets], partial=True, sequence=self.state['sequence'],
+                          statuses={row['id']: row['status'] for row in self.state['finding_ledger']})
+            self.state['exec_rounds'] += 1   # the replay's one fix round (F3 budget): review the kept change again
+            self.state.update(next='reviewer', gate_ran=False, delivered_review='', pending_reviewer_result_sequence=None)
+            self.progress('quality-writer', writer=', '.join(targets), state='rolled-back:review', detail='the other writer is reviewed again')
+            if self.state['exec_rounds'] > self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after a writer rollback')
+            self.save()
+            return True
         diff = self._writer_rollback('review', {'capture': marker['base_capture'], 'input_oid': base}, sequence)
-        note = f'the writer change was rolled back to base_oid after the replay {source} (rolled-back:review)'
-        for row in self.state['finding_ledger']:
-            before = replay['statuses'].get(row['id'])
-            if row['status'] != (before or 'withdrawn') and (before or row['status'] == 'open'):
-                row['status'] = before or 'withdrawn'
-                row['status_history'].append({'round': sequence, 'status': row['status'], 'evidence': note})
-                self._progress_finding(row)
-        self.write_ledger()
+        self._revert_replay_findings(replay, sequence, f'the writer change was rolled back to base_oid after the replay {source} '
+                                                       '(rolled-back:review)')
         for writer in replay['writers']:
             self._writer_state(writer, {**marker[writer], 'state': 'rolled-back:review', 'output_oid': base, 'review': source,
                                         'review_diff': diff})
@@ -7405,6 +7440,59 @@ class Coordinator:
         self.state.update(next='docs', delivered_review='', gate_ran=False, pending_reviewer_result_sequence=None)
         self.save()
         return True
+
+    def _revert_replay_findings(self, replay: dict, sequence: int, note: str) -> None:
+        """§2: rows the replay closed go back to their start status, rows it raised that are still open are withdrawn."""
+        for row in self.state['finding_ledger']:
+            before = replay['statuses'].get(row['id'])
+            if row['status'] != (before or 'withdrawn') and (before or row['status'] == 'open'):
+                row['status'] = before or 'withdrawn'
+                row['status_history'].append({'round': sequence, 'status': row['status'], 'evidence': note})
+                self._progress_finding(row)
+        self.write_ledger()
+
+    def _writer_review_targets(self, replay: dict, marker: dict) -> list[str]:
+        """D09 F2 (owner 2026-10-06, "文件不重叠时分开回滚"): on the replay's first failure, when the two writers changed
+        disjoint files and every blocking finding the replay raised names a file of exactly one of them, only that writer
+        is rolled back. Otherwise (overlap, a finding with no file or outside both sets, one writer, the second failure)
+        the answer is [] and both go back to base_oid."""
+        writers = replay['writers']
+        if replay.get('partial') or len(writers) != 2:
+            return []
+        files = {writer: set(marker[writer].get('files') or ()) for writer in writers}
+        if not all(files.values()) or files[writers[0]] & files[writers[1]]:
+            return []
+        clean = lambda name: re.sub(r':\d+.*$', '', str(name or '').strip()).removeprefix('./')
+        blocking = [row for row in self.blocking_open_findings() if row.get('origin_round', 0) > replay['sequence']]
+        owners = [{writer for writer in writers if clean(row.get('file')) in files[writer]} for row in blocking]
+        named = set().union(*owners) if owners else set()
+        return sorted(named) if blocking and all(owners) and len(named) == 1 else []
+
+    def _revert_paths(self, paths: list[str], keep: Path, sequence: int) -> str:
+        """F2: put these paths back to base_oid's content from base_capture's tree (a path absent there is deleted) and
+        verify them; the other writer's files stay. The diff is kept as evidence."""
+        base_tree = json.loads((keep / 'record.json').read_text())['tree']
+        diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-review-partial.workspace-change.diff"
+        now = readonly_guard.state(self.workspace, keep)['tree']
+        diff.write_text(self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
+        for path in paths:
+            target = self.workspace / path
+            if target.is_symlink() or target.exists():
+                target.unlink()
+            if row := self._git(['ls-tree', '-z', base_tree, '--', path]).rstrip('\0'):
+                mode, _, oid = row.split('\t', 1)[0].split()
+                data = subprocess.run(candidate_tree.git_command('cat-file', 'blob', oid, cwd=self.workspace),
+                                      cwd=self.workspace, capture_output=True, check=True).stdout
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if mode == '120000':
+                    os.symlink(os.fsdecode(data), target)
+                else:
+                    target.write_bytes(data)
+                    os.chmod(target, 0o755 if mode == '100755' else 0o644)
+        if left := self._git_names(['diff', '--name-only', '-z', base_tree, readonly_guard.state(self.workspace, keep)['tree'],
+                                    '--', *paths]):
+            raise RuntimeError(f'POLISH-Q review rollback: {", ".join(left)} could not be put back; restore by hand, see {diff}')
+        return str(diff)
 
     def _writer_capture(self, keep: Path) -> str:
         """§2: the verified pre-writer record (RG.capture keeps the index copy, the permissions and the ignored set)."""
@@ -7438,13 +7526,11 @@ class Coordinator:
         return worktree_lifecycle.agent_body(raw)
 
     def _quality_writer_shortfall(self, writers: int, specialists: int) -> Optional[str]:
-        """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists), the replay round plus
-        one fix round, and POLISH-Q room for the last specialist's two dispatches. None when it all fits."""
+        """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists) and POLISH-Q room for
+        the last specialist's two dispatches. None when it all fits. The replay's rounds have their own budget (F3)."""
         room = self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']
         if (need := writers + 4 + specialists) > room:
             return f'需要 {need} 次调用，剩余 {room} 次（约需再加 {need - room}）'
-        if self.state['exec_rounds'] + 2 > self.exec_round_limit():
-            return f"EXEC 轮次 {self.state['exec_rounds']}/{self.exec_round_limit()}，回放加修复需要 2 轮"
         if (used := self.state['lifecycle'].get('polish_calls', 0)) + writers + specialists + 1 > self._worktree_run_cap('POLISH-Q'):
             return f"POLISH-Q 调用 {used}/{self._worktree_run_cap('POLISH-Q')}，需要 {writers + specialists + 1}"
         return None
@@ -7581,7 +7667,18 @@ class Coordinator:
         self.save()
 
     def exec_round_limit(self) -> int:
-        return self.args.max_exec_rounds + len(self.state.get('rejections', []))
+        """D09 F3 (owner 2026-10-06, "回放单独计数"): a writer replay round and its one fix round have their own fixed
+        budget, never --max-exec-rounds. While the replay is open (until DOCS) the limit is the round it started at plus
+        those 2, whatever ordinary room is left; at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
+        `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
+        rounds = self.state.get('writer_replay_rounds')
+        if rounds and rounds.get('used') is None:
+            return rounds['start'] + 2
+        return self.args.max_exec_rounds + len(self.state.get('rejections', [])) + (rounds['used'] if rounds else 0)
+
+    def _close_writer_replay_rounds(self) -> None:
+        if (rounds := self.state.get('writer_replay_rounds')) and rounds.get('used') is None:
+            rounds['used'] = 1 + min(1, max(0, self.state['exec_rounds'] - rounds['start'] - 1))
 
     def reviewer_turn(self) -> None:
         if self.state['polish']['active']:

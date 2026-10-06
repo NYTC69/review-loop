@@ -168,8 +168,8 @@ class D09C1aTests(unittest.TestCase):
         self.assertEqual(self.tail(co), {'simplifier': 'skipped:budget', 'test-writer': 'skipped:budget'})
         self.assertIn('需要 9 次调用，剩余 8 次', co.state['lifecycle']['quality_writers']['simplifier']['detail'])
         co = self.created('--quality-writers', 'both', '--max-invocations', '60', name='rounds')
-        co.state['exec_rounds'] = co.exec_round_limit() - 1   # the replay round fits, the fix round does not
-        self.assertEqual(self.tail(co), {'simplifier': 'skipped:budget', 'test-writer': 'skipped:budget'})
+        co.state['exec_rounds'] = co.exec_round_limit()   # D09 F3 (owner): the replay has its own rounds; EXEC 4/4 is no skip
+        self.assertEqual(self.tail(co), {})
         cap = None
         for used, expected in ((0, {}), (1, {'simplifier': 'skipped:budget', 'test-writer': 'skipped:budget'})):
             co = self.created('--quality-writers', 'both', '--max-invocations', '60', name=f'polish-edge-{used}')

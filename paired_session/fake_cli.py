@@ -325,9 +325,13 @@ def main():
         no_tools = chosen('FAKE_WRITER_NO_TOOLS') or (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)
         command_events = [] if no_tools else [{'command': 'git diff --stat', 'exit_code': 0, 'output': ''}]
         if chosen('FAKE_WRITER_WRITE'):
-            target = Path.cwd() / os.environ.get('FAKE_WRITER_FILE', 'sum_ints.py')
+            key = writer.upper().replace('-', '_')   # D09 F2: FAKE_WRITER_FILE_SIMPLIFIER / _TEST_WRITER per writer
+            target = Path.cwd() / os.environ.get('FAKE_WRITER_FILE_' + key, os.environ.get('FAKE_WRITER_FILE', 'sum_ints.py'))
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text((target.read_text() if target.exists() else '') + f'# {writer} edit\n')
+            if (content := os.environ.get('FAKE_WRITER_CONTENT_' + key)) is not None:   # D09 F1: rewrite the file
+                target.write_text(content)
+            else:
+                target.write_text((target.read_text() if target.exists() else '') + f'# {writer} edit\n')
         if chosen('FAKE_WRITER_STAGE'):   # a writer that stages its change: the index guard
             __import__('subprocess').run(['git', 'add', '-A'], check=True)
         if chosen('FAKE_WRITER_FAIL'):   # a failed attempt after a write
@@ -466,7 +470,7 @@ def main():
                     if revise else [])
         if role == 'reviewer' and phase == 'EXEC' and (flag := os.environ.get('FAKE_EXEC_REVISE_IF_FILE')) and Path(flag).exists():
             revise = True   # D09 C1-b2: a writer replay's reviewer asks for changes while the writer's file exists
-            findings = [{'severity': 'MAJOR', 'file': Path(flag).name, 'summary': 'the writer change regresses behaviour',
+            findings = [{'severity': 'MAJOR', 'file': os.path.relpath(os.path.realpath(flag), os.path.realpath(Path.cwd())), 'summary': 'the writer change regresses behaviour',
                          'failure_scenario': 'the simplified branch drops a case'}]
         if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MINOR_REVISE'):
             revise = True

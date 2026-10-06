@@ -28,8 +28,10 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   ignored-config record; the author sandbox flags; no ledger, verdict or review history in the prompt. Prompts in `WL`,
   beside `finish_prompt`, each with the changed paths:
   - simplifier: the `agents/code-simplifier.md` body, inlined;
-  - test writer: consolidate the changed test files only: keep critical-path tests, remove redundant ones, clear test
-    comments. It adds no tests for uncovered logic (pr-test-analyzer reports that, and polish-fix handles it).
+  - test writer: consolidate the changed test files only: merge duplicated setup, share helpers, clear test comments,
+    but keep every test case and assertion (D09-F F1, owner 2026-10-06: a lower count of test functions in the changed
+    test files is a failed local check, `rolled-back:tests`). It adds no tests for uncovered logic (pr-test-analyzer
+    reports that, and polish-fix handles it).
 
   Each writer answers READY or HOLD, as FINISH does.
 - **Tree binding, per writer.** All OIDs here are `git_snapshot` digests (C:1339), the kind `candidate_oid` and
@@ -60,7 +62,10 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   - After a changed READY turn: pass → `wrote`; fail → rollback, `rolled-back:tests`.
 - **Reviewer after a writer, and the gate.** After both legs, if the live digest ≠ `base_oid`, the run takes the
   polish-fix transition (C ~6547: epoch + 1, `stage = phase = EXEC`, `candidate_oid = None`, `next = reviewer`,
-  `gate_ran = False`) **and counts the round like a FINISH write** (`exec_rounds += 1`, C:6133). The persistent EXEC
+  `gate_ran = False`) **and counts the round** (`exec_rounds += 1`) **on its own budget** (D09-F F3, owner 2026-10-06:
+  the replay round and one fix round never count against `--max-exec-rounds`; `writer_replay_rounds` records the rounds
+  used, frozen at DOCS; while the replay is open its limit is its start round + 2, so a third replay round HOLDs even
+  with ordinary rounds left). The persistent EXEC
   reviewer reviews the writer diff, then the shadow and gate, FINISH, and POLISH-Q's specialists on the new tree. No
   writer output reaches DOCS without that chain. If the digest = `base_oid` there is no transition.
 - **One chance in review (`rolled-back:review`).** If the replay's first reviewer verdict is not APPROVE, or its gate
@@ -69,7 +74,13 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   `candidate_oid = base_oid` (the epoch stays) and signs a POLISH-Q READY spine receipt with `output_oid = base_oid`,
   citing the previous epoch's receipts on that byte-identical digest (EXEC approval, gate, FINISH, clean specialists).
   Then `advance` goes to DOCS. A later FINISH write or specialist blocker in the
-  replay follows the normal rules (the headroom reserves that round).
+  replay follows the normal rules (the replay's own fix round covers it).
+  **Per writer when files are disjoint** (D09-F F2, owner 2026-10-06): if both writers wrote, their changed file sets
+  are disjoint, and every blocking finding the replay raised names a file of exactly one writer, only that writer's
+  files go back to their `base_oid` content (`rolled-back:review`); the other stays `wrote`, the replay's findings are
+  reverted as above, and the kept change is reviewed again in the replay's one fix round (reviewer, shadow, gate,
+  FINISH, specialists). Overlapping files, a finding with no file or outside both sets, or a second failure roll both
+  back to `base_oid`.
 - **Write boundary.** As for FINISH: reserved docs paths and `.review-loop/` config are outside the grant; a change
   that touches them is rolled back before the local run and the review (`rolled-back:boundary`, C1-b3); any kept
   write invalidates EXEC under e2e-1's rule.
@@ -102,7 +113,6 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   used): before each leg, with W = writers still to run, R = `reviewer + shadow + gate + finisher` = 4 and S =
   `len(specialists(paths))`:
   - `max_invocations − q_reserved − invocations_used ≥ W + R + S` (one replay);
-  - `exec_rounds + 2 ≤ exec_round_limit()` (the replay round plus one fix round);
   - `polish_calls + W + S + 1 ≤` the POLISH-Q run cap (the last specialist needs room for two dispatches,
     `_specialist_budget`, C:6607).
 - **Cost (gate estimate, LG1 configuration).** A typical change (≥ 20 code lines, tests changed, a command set): 2

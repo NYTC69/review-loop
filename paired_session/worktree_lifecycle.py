@@ -102,8 +102,10 @@ def writer_prompt(writer, body, paths, test_command, reserved):
             body + '\n\nSimplify only the changed code in these paths, preserving its behavior: ' + ', '.join(paths) + '. ')
     else:
         head, task = 'Role: test consolidator, fresh. Phase: POLISH-Q.\n', (
-            'Consolidate the changed test files only: ' + ', '.join(paths) + '. Keep the critical-path tests, remove '
-            'redundant ones and make the test comments clear. Do not add tests for uncovered logic. ')
+            'Consolidate the changed test files only: ' + ', '.join(paths) + '. Keep every test case and every assertion: '
+            'you may merge duplicated setup, share helpers and make the test comments clear, but never delete, skip or '
+            'fold away a distinct test, and keep the number of test functions (a lower count is rolled back). Do not add '
+            'tests for uncovered logic. ')
     return (head + 'The change in this worktree has passed review. ' + task + f'You may run the test command ({test_command}). '
             'Do not commit, stage, push or change branches, refs or the index. Do not edit outside the workspace or edit '
             f'run state or review files. {reserved} Do not load review-loop skills and do not invoke or wait for another '
@@ -187,6 +189,8 @@ def writer_report_lines(state):
         reason = row['state'].split(':', 1)[1] if row['state'].startswith('skipped:') else None
         lines.append(f'- 质量 writer {name}：' + (f"已跳过（{reason}{'，' + row['detail'] if row.get('detail') else ''}）"
                                                   if reason else row['state']))
+    if rounds := state.get('writer_replay_rounds'):   # D09 F3: the replay's own rounds, outside --max-exec-rounds
+        lines.append(f"- 质量 writer 回放：{rounds.get('used') or '进行中'} 轮（单独计数，不占 --max-exec-rounds）")
     return lines
 
 
