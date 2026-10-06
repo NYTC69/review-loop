@@ -1535,6 +1535,17 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+def next_intent_command(raw_argv: list, digest: str) -> str:
+    """FIELD-25: the operator's accept/reject command with --intent-only dropped and --expect DIGEST added, ready to run;
+    the two steps and the digest binding stay."""
+    rest, skip = [], False
+    for arg in raw_argv:
+        if skip: skip = False
+        elif arg == '--expect': skip = True
+        elif arg != '--intent-only' and not arg.startswith('--expect='): rest.append(arg)
+    return shlex.join([str(Path(__file__).resolve().parents[1] / 'bin' / 'paired-session'), *rest, '--expect', digest])
+
+
 def review_scope_path(name: str) -> str:
     """LG1-e: one unambiguous line per path in the review scope. A name with a tab, newline, other control character,
     backslash, leading quote or non-UTF-8 byte (surrogateescape, shown as \\udcXX) is written as an ASCII JSON string;
@@ -3823,6 +3834,12 @@ class Coordinator:
             if prior:
                 recorded.append({'id': prior['id'], **finding})
                 continue
+            if source != 'adversarial-gate' and (same := self._open_duplicate(source, finding)):   # FIELD-25: a re-report
+                same['status_history'].append({'round': origin_round, 'status': same['status'],
+                                               'evidence': f're-reported by {source} in {phase}; not a new finding'})
+                recorded.append({'id': same['id'], **finding})
+                changed = True
+                continue
             finding_id = f"F{self.state['next_finding_id']:03d}"
             self.state['next_finding_id'] += 1
             severity = str(finding['severity']).upper()
@@ -3848,6 +3865,18 @@ class Coordinator:
         if changed:
             self.write_ledger()
         return recorded
+
+    def _open_duplicate(self, source: str, finding: dict) -> Optional[dict]:
+        """FIELD-25: an open finding of the same owner, file, severity and security flag that this one re-reports: its
+        summary opens with that id ("F003 (still open) ...") or repeats it word for word (case, spacing, class label aside)."""
+        owner = source if source.startswith('specialist:') or source == 'security-reviewer' else None
+        def claim(text): return ' '.join(CLASS_LABEL_RE.sub('', str(text), count=1).lower().split())
+        summary = str(finding.get('summary') or '')
+        return next((row for row in self.open_findings()
+                     if summary and row.get('owner_role') == owner and row['file'] == finding.get('file', '') and
+                     row['severity'] == str(finding['severity']).upper() and bool(row.get('security')) == bool(finding.get('security')) and
+                     (claim(summary).startswith(row['id'].lower()) and not claim(summary)[len(row['id']):][:1].isalnum()
+                      or claim(row['summary']) == claim(summary))), None)
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
@@ -4074,6 +4103,8 @@ class Coordinator:
                          for row in self.state['review_verdicts'])
         lines += ['', f"Final coordinator status: **{self.state['status']}**"]
         lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
+        if rows := (self.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
+            lines.append('Uncommitted after acceptance (auto_commit off): ' + ', '.join(rows))
         if self.state.get('residual_risk'): lines.append('Residual risk: ' + self.state['residual_risk'])
         if self.state.get('pending_operator_note_id'):
             lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
@@ -4341,6 +4372,7 @@ class Coordinator:
                                           'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
         if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
             record['operator_verifications'] = verified
+        if self.state.get('review_only'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25: no commit here
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -4402,6 +4434,7 @@ class Coordinator:
                   'override_rejection': False, 'delivery': delivery}
         if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
             record['operator_verifications'] = verified
+        if self.state.get('review_only') and not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -4414,6 +4447,11 @@ class Coordinator:
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
         return 'ACCEPTED'
+
+    def _uncommitted_files(self) -> list[str]:
+        """FIELD-25: what an accept without a commit leaves for the operator: paths changed against HEAD, then untracked ones."""
+        return [*map(review_scope_path, self._git_names(['diff', '--name-only', '--no-renames', '-z', 'HEAD', '--'])),
+                *('untracked: ' + review_scope_path(name) for name in self._git_names(['ls-files', '-z', '--others', '--exclude-standard']))]
 
     def _worktree_run_cap(self, stage: str) -> int:
         """A run-wide stage budget; each W reject reruns FINISH..SECURITY, so it adds one more allowance."""
@@ -4554,8 +4592,15 @@ class Coordinator:
                 tree_sha != self._override_tree()):
             raise ValueError('override requires HOLD rejected-tree or a round-limit HOLD, unchanged held tree, and non-empty --reason')
         if not override: self.refuse_rejected_tree(stale_done=True)
-        if required and (not expected or expected != data['digest']): raise ValueError('intent is stale or missing')
+        if required and not expected:   # FIELD-25: name the full next command, digest filled in
+            raise ValueError(f'intent is stale or missing: {action} needs --expect with the digest of {action} --intent-only; '
+                             f'to {action} the run as it is now, run: {self.next_intent_command(data["digest"], action)}')
+        if required and expected != data['digest']: raise ValueError('intent is stale or missing')
         return {**data, 'tree_snapshot': tree_snapshot}
+    def next_intent_command(self, digest: str, action: str) -> str:
+        raw = getattr(self.args, 'raw_argv', None) or [action, '--workspace', str(self.workspace), '--workitem',
+                                                        str(self.workitem), '--run-dir', str(self.run_dir)]
+        return next_intent_command(raw, digest)
     def rejected_tree(self, digest: Optional[str] = None) -> bool:
         return (git_snapshot(self.workspace)[0] if digest is None else digest) in self.state['rejected_digests']
     def refuse_rejected_tree(self, stale_done: bool = False, allow_author: bool = False) -> None:
@@ -5430,7 +5475,7 @@ class Coordinator:
         if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}, base):   # FIELD-11: no PLAN approval runs it later
             issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
-        return {'text': scope, 'head': head,
+        return {'text': scope, 'head': head, 'untracked': untracked,
                 'parent_scope_sha256': (self._parent_spec().get('review_only') or {}).get('review_scope_sha256') if args.supersedes else None}
 
     def _start_review_only(self, scope: dict) -> None:
@@ -5445,7 +5490,13 @@ class Coordinator:
                               'head_at_start': scope['head'], 'candidate_tree_sha256': git_snapshot(self.workspace)[0],
                               'index_at_start': index, 'mirror': str(mirror),
                               'review_scope_sha256': hashlib.sha256(scope['text'].encode()).hexdigest(),
+                              'untracked_at_start': scope['untracked'],   # FIELD-25: reviewed and delivered with the change
                               **({'parent_review_scope_sha256': scope['parent_scope_sha256']} if scope['parent_scope_sha256'] else {})})
+        if names := [review_scope_path(name) for name in scope['untracked']]:
+            self.progress('scope', untracked=f'{len(names)} untracked file(s) in the review scope: ' + ', '.join(names[:20])
+                          + (f' (+{len(names) - 20} more; all in context/plan.md)' if len(names) > 20 else ''),
+                          exclude='they are reviewed and delivered with the change; to leave one out, add it to '
+                                  '.gitignore or remove it, then start a new run')
         if 'lifecycle' in self.state:   # LG1-a2: the W parent (HEAD-moved checks, auto_commit CAS) is HEAD, never the base
             self.state['lifecycle']['parent'] = scope['head']
             if REVIEW_ONLY_DOCS_PRE_OWNED and (pre := sorted(set(self._changed_paths(deleted=True)) & set(self._docs_allowlist()))):
@@ -9712,7 +9763,12 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
         return co.refused(issue)
     if args.action == 'accept': co._refuse_report_accept()   # LG2-a3: before an intent too
-    if args.intent_only: return print(json.dumps(co.operator_intent(args.action, args.text, args.file))) or 0
+    if args.intent_only:
+        intent = co.operator_intent(args.action, args.text, args.file)
+        intent['next_command'] = co.next_intent_command(intent['digest'], args.action)   # FIELD-25: not part of the digest
+        print(json.dumps(intent))
+        sys.stderr.write('NEXT: ' + intent['next_command'] + '\n')
+        return 0
     if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
             and 'codex' in co.dispatched_vendors()):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
@@ -9751,6 +9807,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.accept()
         for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
             print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
+        if rows := (co.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
+            print('UNCOMMITTED: no commit was made (auto_commit off); commit these yourself: ' + ', '.join(rows))
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
@@ -9821,6 +9879,7 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
     if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
         try: return stop_detached(args.run_dir)
         except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
