@@ -3,8 +3,12 @@
 Sections follow review-pr-port.md §2.5: one per ledger severity (CRITICAL -> Critical, SECURITY -> Security,
 MAJOR -> Important, MINOR -> Suggestions), each finding with its role, file and phase; the pinned review inputs;
 the roles that ran with their tool-use counts and the stages that did not complete; whether tests ran; and a fixed
-Recommended Actions list. "Strengths" is not invented: the ledger has none.
+Recommended Actions list. "Strengths" is not invented: the ledger has none. REPORT-DEDUPE: similar reports from several
+roles (same file, severity and security flag, near-duplicate summary) share one row with every id and role, labelled as
+similar reports (not claimed to be one issue); every other report's summary stays listed below it.
 """
+import re
+
 SECTIONS = (('CRITICAL', 'Critical'), ('SECURITY', 'Security'), ('MAJOR', 'Important'), ('MINOR', 'Suggestions'))
 # FIELD-26: as WL normalizes specialist severities (HIGH/MEDIUM -> MAJOR, LOW -> MINOR); the EXEC reviewer and the gate keep
 # theirs in the ledger. Anything else goes to "Other", so no open finding is dropped.
@@ -13,6 +17,45 @@ ROLE_NAMES = {'persistent-reviewer': 'EXEC reviewer', 'fresh-shadow': 'shadow', 
               'security-reviewer': 'security reviewer', 'security-preflight': 'security preflight'}
 RECOMMENDED = ('Fix every Critical and Security finding first.', 'Then fix the Important findings.',
                'Re-run review-pr on the updated change.')
+
+
+STOP = frozenset({'the', 'and', 'but', 'not', 'for', 'its', 'this', 'that', 'with', 'are', 'was', 'has', 'only', 'own', 'any',
+                   'all', 'under', 'from', 'into', 'than', 'then', 'there', 'which', 'what', 'does', 'new', 'still', 'also', 'even'})
+
+
+def _words(text) -> set:
+    """A summary's words for near-duplicate detection: lower case, without the [class: ...] label, ledger ids and stopwords."""
+    text = re.sub(r'\bf\d{3,}\b', ' ', re.sub(r'\[class:[^\]]*\]', ' ', str(text).lower()))
+    return {word for word in re.findall(r'[a-z0-9]+', text) if word not in STOP and (len(word) > 2 or word.isdigit())}
+
+
+def _same_issue(a: set, b: set) -> bool:
+    """Conservative: most of the shorter summary's words and a quarter of all words are shared (PR #6: the same issue
+    scored >= 0.65 / 0.31 against its first report, the closest different issue 0.52 / 0.28)."""
+    shared = len(a & b)
+    return bool(a and b) and shared / min(len(a), len(b)) >= 0.6 and shared / len(a | b) >= 0.25
+
+
+def _merged(rows: list) -> list:
+    """REPORT-DEDUPE: one section's rows, grouped when several roles file similar reports: the same file, severity and
+    security flag, and a summary close to the group's first row (never by chaining). Every id is kept; the ledger is not changed."""
+    groups = []
+    for row in rows:
+        key, words = (row.get('file'), str(row.get('severity')).upper(), bool(row.get('security'))), _words(row.get('summary', ''))
+        group = next((g for g in groups if g[0] == key and _same_issue(g[1], words)), None)
+        group[2].append(row) if group else groups.append((key, words, [row]))
+    return [group[2] for group in groups]
+
+
+def _line(group: list, section: str) -> str:
+    """One report row: every id and role of a merged group and the first report's file and summary; every other report's
+    summary stays visible, indented below it, so a wrong merge hides nothing."""
+    first, own = group[0], str(group[0].get('severity')).upper()
+    roles = '; '.join(dict.fromkeys(f"{_role(row)}, {row.get('phase')}" for row in group))
+    more = f' ({len(group)} similar reports, each listed; they may still be separate issues)' if len(group) > 1 else ''
+    return '\n'.join([f"- **{', '.join(row['id'] for row in group)}** [{roles}{'' if own == section else ', ' + own}] "
+                      f"`{first.get('file') or '-'}`: {first.get('summary', '')}{more}",
+                      *(f"  - {row['id']} [{_role(row)}, {row.get('phase')}]: {row.get('summary', '')}" for row in group[1:])])
 
 
 def _role(row: dict) -> str:
@@ -85,8 +128,6 @@ def render(state: dict) -> str:
         if severity == 'OTHER' and not found:
             continue
         lines += ['', f'## {title} ({len(found)})']
-        lines += [f"- **{row['id']}** [{_role(row)}, {row.get('phase')}"
-                  f"{'' if str(row.get('severity')).upper() == severity else ', ' + str(row.get('severity')).upper()}] "
-                  f"`{row.get('file') or '-'}`: {row.get('summary', '')}" for row in found] or ['- none']
+        lines += [_line(group, severity) for group in _merged(found)] or ['- none']
     lines += ['', '## Recommended Actions', *(f'{index}. {text}' for index, text in enumerate(RECOMMENDED, 1)), '']
     return '\n'.join(lines)
