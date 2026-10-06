@@ -6,8 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-# project_root_markers (HYGIENE-1, F4): it moves the project root past the first .git, where the project scan below stops
-_CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions', 'project_root_markers'}
+# project_root_markers is a regular Codex key (default [".git"]; Mercurial, Sapling and monorepo setups set it), not a
+# capability: refusing it would HOLD every Codex dispatch for those users (HYGIENE-1 gate). Accepted residual, 1c row 13.
+_CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions'}
 _REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes', 'features',
                  'allowed_permission_profiles', 'permissions'}
 

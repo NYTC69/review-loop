@@ -58,7 +58,7 @@ class HygieneTests(unittest.TestCase):
 
 
 class ProjectRootMarkersTests(unittest.TestCase):
-    def test_project_root_markers_in_a_user_config_is_a_capability_issue(self):
+    def test_project_root_markers_is_a_regular_key_not_a_capability_issue(self):   # HYGIENE-1 gate: refusing it was a false HOLD
         root = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, root, True)
         home, workspace = root / 'codex-home', root / 'ws'
@@ -68,8 +68,9 @@ class ProjectRootMarkersTests(unittest.TestCase):
         clean = guard.inspect(home, workspace, platform='linux')
         (home / 'config.toml').write_text('model = "gpt-6.1-sol"\nproject_root_markers = [".hg"]\n')
         marked = guard.inspect(home, workspace, platform='linux')
-        self.assertFalse([i for i in clean['issues'] if 'project_root_markers' in i])
-        self.assertIn(f"project_root_markers configured in {home / 'config.toml'}", marked['issues'])
+        self.assertEqual(marked['issues'], clean['issues'])
+        self.assertEqual(marked['status'], clean['status'])
+        self.assertFalse([i for i in marked['issues'] if 'project_root_markers' in i])
 
 
 if __name__ == '__main__':
