@@ -585,9 +585,12 @@ class Scanner:
                 elif seen_opaque and p[0] == "k" and "/" in p[1]:
                     raise Unsupported("generated path prefix")
             first = next(i for i, p in enumerate(pieces) if p[0] == "o")
-            if "/" in self.text_of(pieces[:first]):   # gate: a known prefix with an opaque suffix (../../paired/repo/$f):
-                text = "".join(p[1] if p[0] == "k" else SEG for p in pieces)   # the opaque part as a segment; only
-                for cwd in state.cwds:                                       # deny and corpus hits (not "/$x")
+            known = self.text_of(pieces[:first])
+            text = "".join(p[1] if p[0] == "k" else SEG for p in pieces)
+            if known.startswith("-") and "=" in known:   # --output=../x/$f: the value after "=" is the path (owner)
+                known, text = known.split("=", 1)[1], text.split("=", 1)[1]
+            if "/" in known:   # gate: a known prefix with an opaque suffix (../../paired/repo/$f):
+                for cwd in state.cwds:   # the opaque part as a segment; only deny and corpus hits (not "/$x")
                     self.check_segment(text, where, cwd, only=CODE_RULES)
             return   # a whole-word opaque value: a residual (§2)
         text = self.text_of(pieces)

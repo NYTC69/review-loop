@@ -120,6 +120,7 @@ class CorpusTest(unittest.TestCase):
             'cat ../../paired/repo/$f': 'corpus-outside-case',
             'for f in $(git ls-files); do diff "$f" ../../paired/repo/$f; done': 'corpus-outside-case',
             'cat "$HOME/../operator/.codex/$F"': 'deny-list',
+            'git diff --output=../../paired/repo/$f': 'corpus-outside-case',   # owner 2026-10-06: an --option= value
         }
         for command, rule in controls.items():
             with self.subTest(command=command[:60]):
@@ -149,6 +150,7 @@ class CorpusTest(unittest.TestCase):
             'case "$(cat x)" in DONE*|HOLD*) echo done;; *) cat x;; esac',
             'cat <<EOF\n${HOME:-/tmp} and ${NOPE:-x}\nEOF', 'git -C . status',   # d04-impl R1
             'cat "/$x"', 'ls "$TMPDIR/$x"',   # d04-impl gate: an opaque suffix that is no deny or corpus hit
+            'git diff --output=out/$f',   # owner 2026-10-06: an --option= value inside the case
         ]
         for command in clean:
             with self.subTest(command=command[:60]):
