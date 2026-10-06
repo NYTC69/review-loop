@@ -1,15 +1,16 @@
 ---
 name: paired-session
-argument-hint: "<work item> [--plan-only | --review-only [--base REF] | --review-pr [INPUT] [ASPECTS]]"
+argument-hint: "<work item> [--plan-only | --review-only [--base REF] | --review-pr [INPUT] [ASPECTS] | --code-quality-loop [OPTIONS]]"
 description: >
   Drive an implementation through the paired-session coordinator: independent
   PLAN review, EXEC implementation/review, adversarial gate, then finish,
   quality polish, docs and security up to operator acceptance.
-  Trigger in exactly four cases: (1) the user explicitly asks for paired-session
+  Trigger in exactly five cases: (1) the user explicitly asks for paired-session
   or names this explicit coordinator entry; (2) the review-loop entry hands off
   because .review-loop/config.md sets `entry: paired-session`; (3) the review-loop
   entry hands off because that key is absent (the default entry); (4)
-  /review-loop:review-pr hands off on its paired route (`--review-pr`). Do not trigger on
+  /review-loop:review-pr hands off on its paired route (`--review-pr`); (5)
+  /review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`). Do not trigger on
   a bare review-loop request in any other case (key invalid, `legacy`, or
   /review-loop:legacy).
 ---
@@ -125,6 +126,12 @@ no input: only a base the user named), `--review-pr-pins "$RUN_DIR/pr-pins.json"
 input (write the printed JSON there with the work item) and `--aspects "$ASPECTS"` when aspects were
 given. Legacy review-pr pointer: `use /review-loop:review-pr --legacy simplify` (for `simplify`) or
 `use /review-loop:review-pr --legacy`.
+
+A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:code-quality-loop`) follows
+the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names
+(`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--max-invocations 35` unless the
+profile sets `max_invocations`);
+`WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`.
 
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
 key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`

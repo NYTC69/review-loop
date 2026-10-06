@@ -35,7 +35,7 @@ line). Then:
      when it is absent.
   2. Map the arguments (§1.3). A refused argument stops here with its one line, before any handoff.
   3. Print the one-line loss notice:
-     `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests; it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)`.
+     `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)`.
   4. Invoke the `paired-session` skill with `--code-quality-loop` and the mapped options, and end this skill.
   5. The no-argument-equivalent fallback, as review-pr: with the key **absent**, if the paired-session skill reports
      `stage A failure: <reason>`, print
@@ -49,7 +49,7 @@ line). Then:
 PS (host rules) gets one paragraph beside the review-pr paragraph (PS:116-127):
 
 > A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:code-quality-loop`) follows the
-> shared contract's Code-quality-loop entry. In both blocks add `--review-only --auto-commit false` and the mapped
+> shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the mapped
 > options; `WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`.
 
 PSE gets a **Code-quality-loop entry** subsection after "Review-only entry" (about 12 lines):
@@ -66,8 +66,9 @@ PSE gets a **Code-quality-loop entry** subsection after "Review-only entry" (abo
   that sets it wins, as for any review-only run).
 - **Budget:** pass `--max-invocations 35` unless the operator profile sets `max_invocations` (D09 §3: under the
   default 25 an LG1-sized run is usually `skipped:budget` at the writers, and the writers are this entry's point).
-- **Commit:** pass `--auto-commit false`. code-quality-loop never committed; `accept` then lists the uncommitted files
-  (FIELD-25). A user who wants the commit uses the plain review-only request.
+- **Commit:** the review-only default applies (owner FIELD-25, 2026-10-06: auto_commit true, with the untracked-file
+  notice); no `--auto-commit` flag is passed. `accept` makes one local commit and never pushes; an explicit
+  `--auto-commit false` or operator-profile `auto_commit: false` wins, as for any review-only run.
 - **WORKITEM.md:** the goal "Review and improve the quality of the uncommitted change: correctness, error handling,
   tests and simplicity; fix what the reviews find." plus a "Review priorities" section carrying `quality_focus` and
   `review_style` verbatim when they are set (§1.3). No review history.
@@ -82,7 +83,7 @@ The exact command the paired-session skill runs (Claude, efficient mode; strict 
 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run \
   --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
   --test-command "$TEST_COMMAND" --lifecycle-mode on \
-  --review-only --auto-commit false [--max-exec-rounds N] [--max-invocations 35] [--config "$PROFILE"]
+  --review-only [--max-exec-rounds N] [--max-invocations 35] [--config "$PROFILE"]
 ```
 
 What the user sees, in order: the entry line (§1.1 step 1), the loss notice, the paired-session start line and
@@ -98,7 +99,7 @@ One line each; "refused" stops before the handoff with that line.
 
 | CQL input | Paired route |
 |---|---|
-| `[max-rounds]` N (default 5) | `--max-exec-rounds N` when N ≥ 2 (round 1 is the review of the existing change; the cap is a HOLD). Absent: the coordinator default 4. N < 2 or not an integer: refused, `code-quality-loop: max-rounds must be an integer of at least 2 on the paired route (round 1 reviews the existing change)`. |
+| `[max-rounds]` N (default 5) | `--max-exec-rounds N` when N ≥ 2 (round 1 is the review of the existing change; the cap is a HOLD). It wins over `soft_limit_exec`. Absent: the usual mapping (`soft_limit_exec`, else the coordinator default 4); one value goes to probe and run. N < 2 or not an integer: refused, `code-quality-loop: max-rounds must be an integer of at least 2 on the paired route (round 1 reviews the existing change)`. |
 | `--skip-reorganize` | accepted as a no-op: `code-quality-loop: --skip-reorganize has no effect; the paired route never reorganizes` |
 | `--reorganize` | refused: `code-quality-loop: reorganize is not part of the paired route; run /review-loop:reorganize after the run, or /review-loop:code-quality-loop --legacy --reorganize` |
 | `--legacy` | the legacy route (§1.1) |
@@ -184,9 +185,9 @@ Added, mirroring LG2-c's review-pr entries (RLJ:3858-3881, 3959-3971; AM:2270-23
 | `cql_default_entry_notice_consistent` | consistent_with → AM `cql_default_entry_notice` | CQL, `docs/paired-session-migration.md` | "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\"" |
 | `cql_legacy_pointer_consistent` | consistent_with → AM `cql_legacy_pointer` | CQL, PS, PSE | "/review-loop:code-quality-loop --legacy" |
 | `pse_cql_entry_section` | contains | PSE | `## Code-quality-loop entry` |
-| `pse_cql_no_commit` | contains | PSE | "pass `--auto-commit false`. code-quality-loop never committed" |
-| `pse_cql_cli_check` | contains | PSE | "the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI check" |
-| `paired_session_skill_cql_handoff` | contains | PS | "(5) /review-loop:code-quality-loop hands off on its paired route" |
+| `pse_cql_budget` | contains | PSE | "pass `--max-invocations 35` unless the operator profile sets `max_invocations`" |
+| `pse_cql_cli_check` | contains | PSE | "the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI" |
+| `paired_session_skill_cql_handoff` | contains | PS | "/review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`)" |
 
 `scripts/run-skill-lint` builds its case list from the contract files only (`:1346-1350`), so these ids are the
 whole case delta. Its all-skill scans (`:269-306`) iterate over the skill files and already see CQL; Step 0 must keep
@@ -206,10 +207,10 @@ citing CQL Step 3; lane B's file) stay.
 |---|---|
 | README.md:26-28 | keep line 26's needle "The legacy workflow is deprecated since v2.12.0" (AM:2162-2165, `guide.json:151-155`); "it will be removed only after review-pr and code-quality-loop are ported" → "review-pr and code-quality-loop follow `entry` too; removal waits for the open legacy-map rows" |
 | README.md:95 | "Stage 1 does not yet migrate `code-quality-loop` or `reorganize`." → "Codex has no code-quality-loop or reorganize skill; ask review-loop to review an existing change (a review-only run, quality writers on)." |
-| README.md:319-323 | the section body: "Follows `entry`: by default a paired-session review-only run (review, fix, simplify, consolidate tests, docs, security; no commit). `--legacy` or `entry: legacy` runs the legacy loop (deprecated). Arguments: `[max-rounds]`, `--skip-reorganize`, `--legacy`; `--reorganize` is legacy only." |
+| README.md:319-323 | the section body: "Follows `entry`: by default a paired-session review-only run (review, fix, simplify, consolidate tests, docs, security; accept makes one local commit). `--legacy` or `entry: legacy` runs the legacy loop (deprecated). Arguments: `[max-rounds]`, `--skip-reorganize`, `--legacy`; `--reorganize` is legacy only." |
 | README.md:485-486 | unchanged (the directory stays) |
 | `skills/guide/SKILL.md:68-71` | keep line 68's needle; "review-pr is ported (it follows `entry`); removal waits for the code-quality-loop port and the open owner rows" → "review-pr and code-quality-loop follow `entry`; removal waits for the open owner rows" |
-| `skills/guide/SKILL.md:66→67` | a **new** third row in the entry-command table, after the existing paired-session (:65) and legacy (:66) rows, which stay: `` | `/review-loop:code-quality-loop [max-rounds] [--legacy]` | A review-only paired-session run on the uncommitted change (quality writers on, no commit); `--legacy` or `entry: legacy` runs the legacy loop (deprecation notice) | `` |
+| `skills/guide/SKILL.md:66→67` | a **new** third row in the entry-command table, after the existing paired-session (:65) and legacy (:66) rows, which stay: `` | `/review-loop:code-quality-loop [max-rounds] [--legacy]` | A review-only paired-session run on the uncommitted change (quality writers on; accept commits locally); `--legacy` or `entry: legacy` runs the legacy loop (deprecation notice) | `` |
 | `.agents/skills/guide/SKILL.md:35-38` | keep line 35's needle; same wording change as the Claude guide |
 | `.agents/skills/guide/SKILL.md:57-60` | "It does not yet migrate: code-quality-loop, reorganize" → "Not on Codex: code-quality-loop (ask review-loop to review an existing change instead) and reorganize" |
 | `review-loop-config.example.md:23-24` | keep "legacy workflow is deprecated since v2.12.0" (AM:2180-2181); "(removal after code-quality-loop is ported and the open legacy-map rows are decided; review-pr is ported)" → "(removal after the open legacy-map rows are decided; review-pr and code-quality-loop are ported)" |
@@ -219,7 +220,7 @@ citing CQL Step 3; lane B's file) stay.
 
 | File:line | Planned edit |
 |---|---|
-| `docs/paired-session-migration.md:93→94` | two new lines in "Notices and warnings you will see", after the review-pr lines (:92-93): `` - code-quality-loop, no `entry` key: `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop` `` and `` - code-quality-loop, `entry: paired-session`: `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` `` (the first carries the `cql_default_entry_notice` needle, §3.3) |
+| `docs/paired-session-migration.md:93→94` | (done in CQL-R1: the `cql_default_entry_notice` mapping needs it) two new lines in "Notices and warnings you will see", after the review-pr lines (:92-93): `` - code-quality-loop, no `entry` key: `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop` `` and `` - code-quality-loop, `entry: paired-session`: `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` `` (the first carries the `cql_default_entry_notice` needle, §3.3) |
 | `docs/paired-session-migration.md:23` | status → "retired onto the review-only entry (CQL-RETIRE, vX.Y.Z); capability 1 shipped v2.12.5, 3 with D-LG2, 2/4/5/6 dropped" |
 | `docs/paired-session-migration.md:143` | "planned (D09)" → "covered (CQL-RETIRE); `--legacy` keeps the legacy loop until legacy is deleted" |
 | `docs/paired-session-migration.md:175` | stale since v2.12.5: "none / keep (provisional)" → "POLISH-Q quality writers (D09 capability 1, v2.12.5) / covered" |
@@ -253,10 +254,11 @@ it, not a lane.
 
 ## 5. Decisions taken here (for the supervisor)
 
-- **No commit on the CQL route** (`--auto-commit false`), unlike the review-only default `true`: CQL never committed,
-  and its users run it on work they have not finished.
-- **`--max-invocations 35`** unless the profile sets it: otherwise the writers, the point of this entry, are usually
-  `skipped:budget` (D09 §3).
-- **`quality_focus` / `review_style` go into the work item** rather than being dropped: operator text, no new code.
-- **`--reorganize` is refused** (not silently ignored), with a pointer to the standalone tool and `--legacy`.
-- **No Codex skill**: Codex users already reach the same run by asking review-loop to review an existing change.
+Supervisor rulings (2026-10-06) on the trade-offs this design proposed:
+- **Commit:** the CQL route follows the review-only default (owner FIELD-25: auto_commit true, untracked-file notice);
+  no `--auto-commit false`. The Step 0 loss notice says "accept makes one local commit (never a push)".
+- **`--max-invocations 35`** unless the profile sets it: approved (D09-F on lane B removes the EXEC-round budget
+  skip; the invocation headroom still applies).
+- **`quality_focus` / `review_style` into the work item** ("Review priorities"): approved as the interim; the D11 L105
+  port may replace it.
+- **`--reorganize` refused** with a pointer to the standalone tool and `--legacy`; **no Codex skill**: approved.

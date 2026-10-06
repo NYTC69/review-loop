@@ -91,6 +91,8 @@ Printed by the `/review-loop` skill text (Claude wording; Codex names "the legac
 - An explicit legacy choice (v2.12.0): the deprecation notice above (Deprecation status)
 - review-pr, no `entry` key: `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy review`
 - review-pr, `entry: paired-session`: `review-pr: paired-session report mode (entry set in .review-loop/config.md)`
+- code-quality-loop, no `entry` key: `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop`
+- code-quality-loop, `entry: paired-session`: `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)`
 
 ## Review-pr
 `/review-loop:review-pr` (Claude) and the Codex `review-pr` skill follow `entry` (owner answer Q-R8, which supersedes E-8 for

@@ -2332,6 +2332,30 @@
         "path": "docs/paired-session-migration.md",
         "needle": "the legacy review-pr workflow"
       }
+    ],
+    "cql_default_entry_notice": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
+      }
+    ],
+    "cql_legacy_pointer": [
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "/review-loop:code-quality-loop --legacy"
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "/review-loop:code-quality-loop --legacy"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "/review-loop:code-quality-loop --legacy"
+      }
     ]
   }
 }

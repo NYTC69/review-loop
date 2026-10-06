@@ -3981,6 +3981,64 @@
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
       "needle": "`--review-pr-pins RUN_DIR/pr-pins.json` for a materialized input"
+    },
+    {
+      "id": "cql_routes_on_entry",
+      "kind": "contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "## Step 0 \u2014 Entry: paired route or legacy"
+    },
+    {
+      "id": "cql_legacy_argument",
+      "kind": "contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "- `--legacy` in `$ARGUMENTS`: drop it and run the legacy loop (Initialization on), whatever `entry` says."
+    },
+    {
+      "id": "cql_paired_route_hands_off",
+      "kind": "contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "Invoke the `paired-session` skill with `--code-quality-loop`"
+    },
+    {
+      "id": "cql_reorganize_refused",
+      "kind": "contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "code-quality-loop: reorganize is not part of the paired route"
+    },
+    {
+      "id": "cql_default_entry_notice_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "cql_default_entry_notice"
+    },
+    {
+      "id": "cql_legacy_pointer_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "cql_legacy_pointer"
+    },
+    {
+      "id": "pse_cql_entry_section",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "## Code-quality-loop entry"
+    },
+    {
+      "id": "pse_cql_budget",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "pass `--max-invocations 35` unless the operator profile sets `max_invocations`"
+    },
+    {
+      "id": "pse_cql_cli_check",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI"
+    },
+    {
+      "id": "paired_session_skill_cql_handoff",
+      "kind": "contains",
+      "path": "skills/paired-session/SKILL.md",
+      "needle": "/review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`)"
     }
   ]
 }
