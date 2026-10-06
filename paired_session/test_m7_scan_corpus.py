@@ -29,7 +29,8 @@ def tool(name, **data):
 
 class CorpusTest(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
+        tmp = tempfile.TemporaryDirectory(dir='/var/tmp')   # not /tmp: the scanner allows /tmp, so a Linux default
+        # temp root would make the operator-home controls CLEAN (macOS temp is under /var/folders, also not allowed)
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
         self.manifest = json.loads((FIXTURE / 'MANIFEST.json').read_text())
