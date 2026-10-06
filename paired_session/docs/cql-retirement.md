@@ -64,8 +64,9 @@ PSE gets a **Code-quality-loop entry** subsection after "Review-only entry" (abo
   quality writers need (`skipped:no-test-command` otherwise).
 - **Quality writers:** the review-only default `both` applies; do not pass `--quality-writers` (an operator profile
   that sets it wins, as for any review-only run).
-- **Budget:** pass `--max-invocations 35` unless the operator profile sets `max_invocations` (D09 §3: under the
-  default 25 an LG1-sized run is usually `skipped:budget` at the writers, and the writers are this entry's point).
+- **Budget:** pass `--max-invocations 45` unless the operator profile sets `max_invocations` (D09 §3: under the
+  default 25 an LG1-sized run is usually `skipped:budget` at the writers, and the writers are this entry's point;
+  CQL-WIRE2 raised it from 35 so the non-blocking fix round, about 9 calls, and the writers, about 10, both fit).
 - **Commit:** an explicit `auto_commit: false` in `.review-loop/config.md` is honored: CQL hands over
   `--auto-commit false` and the run passes it. With the key absent (or `true`) the review-only default applies
   (owner FIELD-25, 2026-10-06: auto_commit true, with the untracked-file notice): `accept` makes one local commit and
@@ -84,7 +85,7 @@ The exact command the paired-session skill runs (Claude, efficient mode; strict 
 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run \
   --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
   --test-command "$TEST_COMMAND" --lifecycle-mode on \
-  --review-only --advisory-fix-round true [--max-exec-rounds N] [--max-invocations 35] [--config "$PROFILE"]
+  --review-only --advisory-fix-round true [--max-exec-rounds N] [--max-invocations 45] [--config "$PROFILE"]
 ```
 
 CQL-R3 (after the ws28 closing run, where a headless model printed neither notice and the work item began with `# Work item`, which became the commit title):
@@ -192,12 +193,12 @@ Added, mirroring LG2-c's review-pr entries (RLJ:3858-3881, 3959-3971; AM:2270-23
 | `cql_default_entry_notice_consistent` | consistent_with → AM `cql_default_entry_notice` | CQL, `docs/paired-session-migration.md` | "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\"" |
 | `cql_legacy_pointer_consistent` | consistent_with → AM `cql_legacy_pointer` | CQL, PS, PSE | "/review-loop:code-quality-loop --legacy" |
 | `pse_cql_entry_section` | contains | PSE | `## Code-quality-loop entry` |
-| `pse_cql_budget` | contains | PSE | "pass `--max-invocations 35` unless the operator profile sets `max_invocations`" |
+| `pse_cql_budget` | contains | PSE | "pass `--max-invocations 45` unless the operator profile sets `max_invocations`" (35 until CQL-WIRE2) |
 | `pse_cql_cli_check` | contains | PSE | "the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI" |
 | `paired_session_skill_cql_handoff` | contains | PS | "/review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`)" |
 
 Added in CQL-R2 (the CQL-R1 gate asked to pin the handoff command, not only headings): `paired_session_skill_cql_review_only_flags`
-and `paired_session_skill_cql_explicit_test_command` (PS: `--review-only`, the options, `--max-invocations 35` and the
+and `paired_session_skill_cql_explicit_test_command` (PS: `--review-only`, the options, `--max-invocations 45` (35 until CQL-WIRE2) and the
 explicit `--test-command`), `pse_cql_explicit_test_command`, `pse_cql_auto_commit_false_honored`,
 `cql_auto_commit_false_handed_over`, and `pse_default_entry_covers_cql` (PSE "Entry and failure handling" names the
 review-pr and code-quality-loop handoffs as default entries, and a refusal carries the handing-off entry's own name).
@@ -277,8 +278,9 @@ Supervisor rulings (2026-10-06) on the trade-offs this design proposed:
 - **Commit:** the CQL route follows the review-only default (owner FIELD-25: auto_commit true, untracked-file notice).
   The Step 0 loss notice says "accept makes one local commit (never a push ...)". CQL-R1 gate ruling: an explicit
   `auto_commit: false` in `.review-loop/config.md` is honored (handed over as `--auto-commit false`).
-- **`--max-invocations 35`** unless the profile sets it: approved (D09-F on lane B removes the EXEC-round budget
-  skip; the invocation headroom still applies).
+- **`--max-invocations 45`** unless the profile sets it: approved (D09-F on lane B removes the EXEC-round budget
+  skip; the invocation headroom still applies). It was 35 until CQL-WIRE2 (supervisor ruling, 2026-10-07): with the
+  non-blocking fix round wired, 35 left the writers `skipped:budget` on an LG1-size run; it is a cap, not a target.
 - **`quality_focus` / `review_style` into the work item** ("Review priorities"): approved as the interim; the D11 L105
   port may replace it.
 - **`--reorganize` refused** with a pointer to the standalone tool and `--legacy`; **no Codex skill**: approved.

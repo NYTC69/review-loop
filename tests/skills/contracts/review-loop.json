@@ -4026,7 +4026,7 @@
       "id": "pse_cql_budget",
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
-      "needle": "pass `--max-invocations 35` unless the operator profile sets `max_invocations`"
+      "needle": "pass `--max-invocations 45` unless the operator profile sets `max_invocations`"
     },
     {
       "id": "pse_cql_cli_check",
@@ -4050,7 +4050,7 @@
       "id": "paired_session_skill_cql_explicit_test_command",
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
-      "needle": "`--max-invocations 35` unless the profile sets `max_invocations`) and the explicit `--test-command`;"
+      "needle": "`--max-invocations 45` unless the profile sets `max_invocations`) and the explicit `--test-command`;"
     },
     {
       "id": "pse_cql_explicit_test_command",

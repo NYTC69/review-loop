@@ -162,8 +162,9 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
 - Test command: as for any review-only run (profile `test_command`, else the verified project command).
   Pass it as `--test-command`: the quality writers need an explicit one (`skipped:no-test-command`).
 - Quality writers: the review-only default `both`; do not pass `--quality-writers` (a profile value wins).
-- Budget: pass `--max-invocations 35` unless the operator profile sets `max_invocations` (under the
-  default 25 the writers are usually `skipped:budget`). Rounds: a handed-over N wins over `soft_limit_exec`;
+- Budget: pass `--max-invocations 45` unless the operator profile sets `max_invocations` (under the
+  default 25 the writers are usually `skipped:budget`; 45 is a cap that leaves room for the non-blocking fix round
+  and the writers on a typical run). Rounds: a handed-over N wins over `soft_limit_exec`;
   pass one `--max-exec-rounds` value, the same to `permission-probe` and `run`.
 - Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass
   it. Otherwise the review-only default applies (`auto_commit: true` unless the profile says false; no
