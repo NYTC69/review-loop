@@ -1,5 +1,19 @@
 # Changelog
 
+### v2.12.5：review-only 运行在 POLISH-Q 里会跑 simplifier 和测试整合两个写入步骤，写出的改动先过本地测试和完整重审才保留（D09 能力 1，code-quality-loop 的核心能力移植完成）；run 目录在 git 仓库里时警告（FIELD-28）；override 记录保留历史
+
+- **D09 能力 1：simplifier 和测试整合（code-quality-loop 退役的前提 ②）**：
+  - 新的 POLISH-Q 写入步骤：先 simplifier，再测试整合（只整理改动过的测试，不补新测试）。`--quality-writers both|simplify|tests|off`，**review-only 默认 `both`，主流程默认 `off`**（owner 决定）；主流程的交付报告会提示可以开启（约多 10 次调用）。
+  - 什么时候跳过：没有显式配置测试命令（`npm test` 默认值不算）、代码改动少于 20 行（simplifier）、没有改测试文件（测试整合）、调用次数余量不够，或者在 `base_oid` 上先跑一次测试结果不是绿的（`skipped:no-green-baseline`）。跳过不会 HOLD。
+  - 写入之后：先在本地跑一次测试（只看退出码，跑完后树不能变）；通过就保留，并让 EXEC reviewer、shadow、gate、FINISH 和 specialists 在新树上完整重审一遍，然后才进 DOCS。
+  - 任何一步不过都回滚并验证：本地测试失败（`rolled-back:tests`）、碰到 DOCS 或 `.review-loop/` 配置（`rolled-back:boundary`）、回答 HOLD 却改了树（`rolled-back:hold`）、重审第一次没通过（`rolled-back:review`，不开修复轮，回放期间的 finding 一并还原）、尝试失败（`exhausted`）。回滚会保留用户原有的 staged 条目和 untracked 文件。
+  - 测试命令跑完后会杀掉它留下的子进程，再拍快照。
+  - 实测：v2.12.4 的 review-only 真实 run 里，跳过规则已经按预期记为 `skipped:budget`。
+- **fix（FIELD-28，poker-news-bot 现场）**：run 目录在 git 工作树里时，run、resume、permission-probe 在 stderr 打一行 WARNING。很多项目会拒绝仓库内的 scratch 目录，然后退回到 `/tmp`，而 Codex 只读沙箱不允许写 `/tmp`。现场的 AAB 加 Codex gate 就是因此 probe 失败的。请把 run root 放在任何仓库之外。
+- **STRICT-NITS**：替换已接受的 override 记录时（未验证的 codex-cli、未验证的 Claude author、probe-skip），旧记录追加到 `<key>_history`，不再被覆盖。
+- **审查**：D09 的 C1-a、C1-b1、C1-b2、C1-b3 都由 Opus 终审 APPROVE（C1-a 打回过一次，已修）；FIELD-28 和 C1-c 由监工逐行核对；STRICT-NITS 终审抓到一个回归（3 个原本通过的测试），已撤回相关改动，测试没改。
+- **已知问题**：仓库或工具路径里带 vendor 名（如 `~/claude-tools/`），而测试命令写的是这个绝对路径时，fresh shadow 会误判 HOLD（FIELD-29，修复中）。
+
 ### v2.12.4：review-only 的 accept 直接给出下一步命令、列出未提交文件，默认自动提交（遇到 `* text=auto` 等仓库会降级成不提交）（FIELD-25）；Codex 用默认 `~/.codex` 时警告，模型别名在启动时就拒绝（HYGIENE-1）；报告把相似的发现归组列出（REPORT-DEDUPE）；M7 扫描器 v2；D09 能力 1 的配置部分
 
 - **review-only 实地反馈（FIELD-25，poker-tools 现场）**：
