@@ -209,7 +209,11 @@ def delivery_report(state, run_id, workitem, delivery):
              f'- 运行：`{run_id}`；工作项：{title}',
              f"- 结论：已接受（ACCEPTED），{state.get('accepted_at', '')}",
              ('- 交付：auto_commit 开启，本地提交 `' + str(delivery.get('commit')) + '`（父提交 `' + str(delivery.get('head'))
-              + '`），未推送。' if delivery.get('auto_commit') else '- 交付：auto_commit 关闭，没有改动任何 ref 或 index。'),
+              + '`），未推送。' if delivery.get('auto_commit') else
+              f"- 交付：auto_commit 已跳过（{delivery['commit_skipped']}），没有改动任何 ref 或 index。" if delivery.get('commit_skipped')
+              else '- 交付：auto_commit 关闭，没有改动任何 ref 或 index。'),
+             *(['- auto_commit 一并提交的未跟踪文件：' + '、'.join(delivery['committed_untracked'])]
+               if delivery.get('committed_untracked') else []),   # FIELD-25 gate MINOR
              *(['- 未提交的文件（请自行提交）：' + '、'.join(rows)] if (rows := (state.get('acceptance') or {}).get('uncommitted')) else []),   # FIELD-25
              *([f"- review-only：review base `{state['config']['review_base']}`，开始时 HEAD `{state['review_only']['head_at_start']}`；"
                 f"审查的已有提交：{', '.join(delivery.get('reviewed_commits') or []) or '无（只有未提交的改动）'}"]

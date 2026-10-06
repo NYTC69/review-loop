@@ -1535,6 +1535,12 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
     return digest, manifest
 
 
+def uncommitted_cause(state: dict) -> str:
+    """FIELD-25: why an accept left files uncommitted: auto_commit off, or a defaulted auto_commit its checks refused."""
+    reason = ((state.get('acceptance') or {}).get('delivery') or {}).get('commit_skipped')
+    return f'auto_commit skipped: {reason}' if reason else 'auto_commit off'
+
+
 class DefaultTestCommand(str):
     """D09 §3: the parser's `npm test` default, told apart from a test command the CLI or a profile set explicitly."""
 
@@ -2530,6 +2536,7 @@ class Coordinator:
         config = {key: getattr(self.args, key) for key in keys}
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
+        if getattr(self.args, 'auto_commit_source', None): config['auto_commit_source'] = self.args.auto_commit_source   # as F2
         if getattr(self.args, 'review_report', None):   # LG2-a1, as F2
             config.update(review_report=True, review_aspects=list(self.args.review_aspects))   # LG2-b1
         gate_prompt = Path(self.args.gate_prompt).expanduser()
@@ -4112,7 +4119,7 @@ class Coordinator:
         lines += ['', f"Final coordinator status: **{self.state['status']}**"]
         lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
         if rows := (self.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
-            lines.append('Uncommitted after acceptance (auto_commit off): ' + ', '.join(rows))
+            lines.append(f'Uncommitted after acceptance ({uncommitted_cause(self.state)}): ' + ', '.join(rows))
         if self.state.get('residual_risk'): lines.append('Residual risk: ' + self.state['residual_risk'])
         if self.state.get('pending_operator_note_id'):
             lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
@@ -4268,7 +4275,8 @@ class Coordinator:
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
         atomic_json(config_path, {k: v for k, v in {'quality_writers': 'off', **self._saved_config()}.items()   # D09: a run saved
                     if k in CONFIGURABLE_DESTS and v is not None and   # before the key is off, and so is its successor
-                    not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:'))})
+                    not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:')) and
+                    not (k == 'auto_commit' and self.state['config'].get('auto_commit_source'))})   # FIELD-25 gate: re-derived
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
                 'original_hash': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
                 'task_sha256': hashlib.sha256(task.encode()).hexdigest(), 'base_commit': self.state['base_commit'],
@@ -4432,9 +4440,12 @@ class Coordinator:
                                  'HEAD and the approved tree and resume (SECURITY runs again), or abort')
             intent = self.operator_intent('accept', None, None, self.args.expect, True)
             journal = None
+        untracked = self._git_names(['ls-files', '-z', '--others', '--exclude-standard']) if config.get('auto_commit') else []
         try:
             delivery = (self._worktree_commit(intent, journal) if config.get('auto_commit') else
                         {'auto_commit': False, 'commit': None, 'head': life['parent'], 'external_delivery': False})
+            if delivery.get('commit') and untracked:   # FIELD-25 gate MINOR: name the untracked files the commit took in
+                delivery['committed_untracked'] = [review_scope_path(name) for name in untracked]
         except WorktreeDeliveryHold as exc:   # resume is refused; only accept with the journaled digest finishes it
             self.state['delivery_pending'] = intent['digest']
             return self.hold(f"{exc}; accept --expect {intent['digest']}")
@@ -4528,8 +4539,13 @@ class Coordinator:
         CAS on HEAD and an index sync. A journal written before the ref moves makes a replay finish the same commit."""
         parent = self.state['lifecycle']['parent']
         if journal is None:
-            self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
-            tree = self._manifest_tree(intent['tree_snapshot'])
+            try:
+                self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
+                tree = self._manifest_tree(intent['tree_snapshot'])
+            except ValueError as exc:   # FIELD-25 gate: a defaulted auto_commit delivers uncommitted; an explicit one refuses
+                if self.state['config'].get('auto_commit_source') != 'review-only-default':
+                    raise
+                return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc)}
             if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                 raise ValueError('the tree changed during the accept; restore the approved tree or abort')
             title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
@@ -5451,9 +5467,12 @@ class Coordinator:
             raise ValueError('--base needs --review-only')
         else:
             args.review_only, args.review_base = False, None
+        args.auto_commit_source = (saved or {}).get('auto_commit_source')   # FIELD-25 gate: frozen with the value
         if getattr(args, 'auto_commit', None) is None:   # owner 2026-10-06: a review-only W run commits by default; an
             args.auto_commit = (bool(saved.get('auto_commit')) if saved is not None else   # explicit value (CLI, profile) wins
                                 bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
+            if saved is None and args.auto_commit:
+                args.auto_commit_source = 'review-only-default'   # an accept the commit checks refuse delivers uncommitted
         if saved is not None and getattr(args, 'quality_writers', None) not in (None, saved.get('quality_writers') or 'off'):
             raise ValueError('resume configuration differs: quality_writers')   # also a run saved before the key: off
         if getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
@@ -9886,9 +9905,10 @@ def _execute_locked(args: argparse.Namespace) -> int:
         for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
             print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
         if (delivery := (co.state.get('acceptance') or {}).get('delivery') or {}).get('commit'):   # FIELD-25 (a)
-            print(f"COMMIT: {delivery['commit']} (auto_commit, parent {str(delivery.get('head'))[:12]}); not pushed")
+            print(f"COMMIT: {delivery['commit']} (auto_commit, parent {str(delivery.get('head'))[:12]}); not pushed"
+                  + (f"; untracked files committed: {', '.join(delivery['committed_untracked'])}" if delivery.get('committed_untracked') else ''))
         if rows := (co.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
-            print('UNCOMMITTED: no commit was made (auto_commit off); commit these yourself: ' + ', '.join(rows))
+            print(f'UNCOMMITTED: no commit was made ({uncommitted_cause(co.state)}); commit these yourself: ' + ', '.join(rows))
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):

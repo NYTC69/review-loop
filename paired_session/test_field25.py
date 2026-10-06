@@ -1,6 +1,7 @@
 """FIELD-25 (poker-tools WI-BOB-UI, review-only on v2.12.1): the accept next command, the files an accept leaves
 uncommitted, the untracked files in a review-only scope, and an open finding re-reported by a later reviewer."""
 import json
+from pathlib import Path
 import shlex
 import subprocess
 import unittest
@@ -106,8 +107,59 @@ class Field25Tests(unittest.TestCase):
         self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
         commit = self.git('rev-parse', 'HEAD')
         self.assertEqual(self.git('rev-parse', 'HEAD~1'), parent)
-        self.assertIn(f'COMMIT: {commit} (auto_commit, parent {parent[:12]}); not pushed', accepted.stdout)
+        self.assertIn(f'COMMIT: {commit} (auto_commit, parent {parent[:12]}); not pushed; '
+                      'untracked files committed: sum_ints.py', accepted.stdout)   # FIELD-25 gate MINOR
         self.assertNotIn('UNCOMMITTED', accepted.stdout)
+        self.assertIn('auto_commit 一并提交的未跟踪文件：sum_ints.py', (self.run_dir / 'delivery-report.md').read_text())
+
+    def test_the_default_source_is_frozen_and_re_derived_by_a_successor(self):   # FIELD-25 gate
+        self.change()
+        w = ('--review-only', '--lifecycle-mode', 'on')
+        parent_dir = self.run_dir
+        parent = rc.Coordinator(rc.parser().parse_args(self.command(*w)[2:]))
+        self.assertEqual((parent.state['config']['auto_commit'], parent.state['config']['auto_commit_source']),
+                         (True, 'review-only-default'))
+        resumed = rc.Coordinator(rc.parser().parse_args(['resume', *self.command(*w)[3:]]))
+        self.assertEqual(resumed.args.auto_commit_source, 'review-only-default')   # kept on resume, no config difference
+        parent.args.action = 'note'   # an ACTIVE run's scope change
+        start = parent.scope_change('Also reject floats.', None).split('Start: ', 1)[1].split()
+        option = lambda name: start[start.index(name) + 1]
+        self.assertNotIn('auto_commit', json.loads(Path(option('--config')).read_text()))   # re-derived, not made explicit
+        self.run_dir, self.workitem = Path(option('--run-dir')), Path(option('--workitem'))
+        argv = self.command('--lifecycle-mode', 'on', '--config', option('--config'), '--supersedes', str(parent_dir))[2:]
+        child = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv)).state['config']
+        self.assertEqual((child['review_only'], child['auto_commit'], child['auto_commit_source']), (True, True, 'review-only-default'))
+        argv = self.command(*w, '--auto-commit', 'true', '--run-dir', str(self.root / 'explicit'))[2:]   # the last --run-dir wins
+        self.assertNotIn('auto_commit_source', rc.Coordinator(rc.parser().parse_args(argv)).state['config'])
+
+    def test_a_defaulted_auto_commit_the_checks_refuse_delivers_uncommitted(self):   # FIELD-25 gate BLOCKER
+        roe.ReviewOnlyEntryTests.w_ready(self)
+        (self.workspace / '.gitattributes').write_text('* text=auto\n')
+        self.git('add', '.gitattributes')
+        self.git('commit', '-qm', 'normalize line endings')
+        self.change()
+        parent = self.git('rev-parse', 'HEAD')
+        runs = {'default': (), 'explicit': ('--auto-commit', 'true')}
+        for name, extra in runs.items():
+            with self.subTest(name):
+                self.run_dir = self.root / name
+                w = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60', *extra)
+                done = self.run_coordinator(*w)
+                self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+                self.assertEqual(self.state()['config'].get('auto_commit_source'),
+                                 'review-only-default' if name == 'default' else None)
+                accepted = self.run_operator_action('accept', *w)
+                self.assertEqual(self.git('rev-parse', 'HEAD'), parent)   # no commit either way
+                if name == 'explicit':   # the owner's own choice keeps refusing, as before
+                    self.assertIn('REFUSED: auto_commit refuses content-transforming attributes', accepted.stdout)
+                    continue
+                self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+                self.assertIn('UNCOMMITTED: no commit was made (auto_commit skipped: auto_commit refuses content-transforming '
+                              'attributes: ', accepted.stdout)
+                self.assertIn('commit these yourself: tracked.txt, untracked: sum_ints.py', accepted.stdout)
+                self.assertIn('auto_commit 已跳过（auto_commit refuses content-transforming attributes',
+                              (self.run_dir / 'delivery-report.md').read_text())
+                self.assertIn('Uncommitted after acceptance (auto_commit skipped: ', (self.run_dir / 'review-comparison.md').read_text())
 
     def test_the_auto_commit_default_by_entry(self):   # owner decision (a): explicit values win; other runs unchanged
         self.change()
