@@ -66,11 +66,5 @@ needed by its actions, so a fresh context loads its full closure. Full evidence
 record/derivation rules load before execution or a state-writing dispute;
 planning's read-only rubric check needs only its output/retry rules.
 
-For framework self-modification, the controlling invocation uses an explicitly
-frozen support revision; candidate text is tested separately. Never hot-switch
-its rules or let a reviewing agent start another orchestration workflow.
-
-If shell loading is unavailable, read the exact sources/sections and prerequisite
-units listed in `loading.json` for the current action. This has the same contract;
-do not silently omit a prerequisite. Whole-file reads are permitted when a
-client cannot select sections, but report their full cost in measurements.
+Before acting on framework self-modification, or when shell loading is unavailable,
+read `loading-special-cases.md` in full.

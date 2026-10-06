@@ -63,7 +63,28 @@ status, which may still be HOLD after later checks.
 The fresh shadow and gate must not see review history: before launch they refuse
 any input that carries reviewer ledger ids (`F` plus three or more digits) or
 review narratives (for example "previous review" or "response to reviewer"),
-including `context/plan.md` and `context/workitem.md`. When a shadow or gate is
+including `context/plan.md` and `context/workitem.md`. FIELD-23 prevents ACCIDENTAL carry-over of review history into a fresh context;
+it does not defend against an author who deliberately evades the check.
+Deliberate evasion is a known residual. Review independence otherwise rests on
+the fresh session and the gate templates, which stay unexempted, as do prompts.
+With a run's `base_commit`, both delta patches scan only added (`+`) lines,
+excluding `+++` headers; context and removed lines are never scanned. A match is
+exempt if the same matched text, case-insensitively, occurs anywhere in that
+file at the base commit (post-image path; for renames, also pre-image path).
+New files and binaries get no exemption. A base marker reused anywhere in the
+same file therefore passes, including copies: this is a documented residual.
+The exempt text is the whole match ("Claude approved", not "Claude") and must
+occur at the base as a whole word ("APPROVE" is not in "approved"). Another
+known residual, on the strict side: a file moved without `git mv` (`mv`, or `rm`
+plus a new file) appears as a new untracked file and gets no exemption, so a
+base marker in it holds; use `git mv`.
+In `delta.stat` and `status.txt`, matches inside paths that exist at the base
+commit are exempt. In `plan.md` and `workitem.md`, a match is exempt only inside
+backticks or a fenced code block and only if its matched text occurs in a file
+at the base commit. Unquoted narrative is scanned as before. Without a
+`base_commit`, the old scan applies. The same helper applies to fresh shadow,
+gate, PLAN approval and review-only creation inputs.
+When a shadow or gate is
 on, a plan that the reviewer approves while it still carries ledger ids or such
 wording is sent back to the author for a restatement without them, so the gate
 does not refuse it after EXEC. With no PLAN round left, the author gets one extra
@@ -97,10 +118,22 @@ one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
 configure `/bin/bash /absolute/path/to/script.sh`. When the probe's run of the
 test command hits the Claude CLI's own Bash timeout (set per call, at most 10
 minutes by default), the probe fails with `allowed-command-timeout (<N> s)`
-instead of `allowed-command-failed` (a Codex reviewer's command timeout is still
-reported as `allowed-command-failed`);
+instead of `allowed-command-failed`;
 re-run the probe on a less loaded host, or configure a faster test command (the
 same one for probe and run).
+FIELD-20 (long test commands): Codex's `exec_command` returns after about 10 s
+with a session id and no exit code while the command keeps running. Every probe,
+reviewer, gate, docs-reviewer and specialist prompt now tells the role to poll a
+still-running command until it has an exit code, never to start another command
+or end the turn before that, and to give a long Bash call the 600000 ms timeout.
+A command started but never completed (no exit status when the turn ended, or
+`-1`) is reported as `allowed-command-not-completed` by the probe and as "not
+observed to completion" in an EXEC or DOCS approval HOLD, not as an ordinary
+failure. One observed completed exit-0 run of the exact configured command is
+still required. The remaining limits are the per-dispatch timeout (`--timeout`)
+and, for a Claude role, the CLI's 10-minute cap on one Bash call (reported as
+`allowed-command-timeout`, above); a test command longer than either cannot be
+observed to completion.
 Write launcher logs (for example `permission-probe ... > probe.log`) outside the
 run dir's parent: the Claude author probe watches the entries beside the run dir,
 and a log that grows there during the probe fails it as a file changed outside
@@ -409,6 +442,17 @@ Attribution removes exactly one such block per path (plus at most one blank
 line) and the remainder must equal the earlier file byte for byte.
 The file is **not** byte-identical in that case. Any other
 Codex change fails; Claude plugin `lastUpdated` is attributed separately.
+FIELD-22: when two runs share one Codex home (the default `~/.codex` included), the other run's own trust block is
+also attributed, as `trusted-concurrent-run-workspace` with that run's id. This applies only when all of these hold:
+- that workspace's lease in this user's workspace-lease directory is a private record under its own identity key;
+- its run dir's `state.json` names the same workspace and is ACTIVE;
+- that run's coordinator lock carries the same pid, and that pid is alive.
+
+Any other addition still fails. This is evidence of another coordinator of the same user, not proof against a
+same-UID process, which could edit `config.toml` directly anyway. Sandboxed turns can write neither the lease
+directory nor the Codex home. A turn held by such a change before this rule recovers
+with a plain `resume`, which re-runs the turn on a fresh baseline. `resume --acknowledge-codex-trust` also accepts
+exact trust blocks for a workspace that has such a lease record, including one from a run that has since ended.
 The coordinator never edits or restores the user's global config. `--skip-probe`
 is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider
 binaries are fake CLI wrappers. This is a misuse guard for tests, not a security boundary.
@@ -446,9 +490,12 @@ A rate-limit HOLD includes a reset hint when the provider supplies one. Resume
 with the same workspace, work item, run directory, author/reviewer settings,
 and test command:
 
-`--timeout` (default 2700 seconds, with no upper bound) governs every
-non-EXEC-author turn, including PLAN, POLISH, persistent/fresh reviewer,
-shadow and gate turns. EXEC author turns use the separate `--exec-turn-timeout`; when omitted,
+`--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
+refused before the run starts) governs every non-EXEC-author turn, including
+PLAN, POLISH, persistent/fresh reviewer, shadow and gate turns, and the
+coordinator's own test-command runs. The cap is a one-day sanity bound; it sits
+above the 14400-second EXEC cap because a general timeout above 14400 is a
+supported setting (the EXEC default then stays at 14400). EXEC author turns use the separate `--exec-turn-timeout`; when omitted,
 it defaults to `max(7200, --timeout)` capped at 14400 seconds. On resume, only
 an explicit CLI `--exec-turn-timeout` may raise the saved EXEC timeout, never
 lower it; project-config defaults do not count as an explicit raise. The value

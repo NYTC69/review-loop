@@ -29,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from typing import Optional
 try:
@@ -132,6 +133,9 @@ MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
+DEFAULT_TIMEOUT_SECONDS = 2700
+MAX_TIMEOUT_SECONDS = 86400   # timeoutcap: one day per non-EXEC turn or coordinator test run (an existing run starts with --timeout 20000)
+TIMEOUT_RANGE_ERROR = f'--timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds'
 
 
 def resolve_exec_turn_timeout(value, general_timeout):
@@ -165,6 +169,9 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# FIELD-23: delta.stat names every path in full (git shortens long ones to ".../tail"), so a path that exists at the base
+# commit is recognised as repository text by the fresh scan.
+STAT_FULL_PATHS = ('--stat=100000,100000', '--no-renames')   # a rename lists both full paths, not dir/{a => b}
 
 
 def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
@@ -240,6 +247,11 @@ class WorktreeDeliveryHold(RuntimeError):
 
 class RateLimitError(ValueError):
     pass
+
+
+class RateLimitedTurn(RuntimeError):
+    """ratelimit: a turn the provider rejected for a rate limit, as raised by invoke(). Only this exact type makes a typed
+    rate-limit hold; an error that wraps it (a W writer's git guard) is a different hold and needs its own repair."""
 
 
 def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
@@ -463,42 +475,133 @@ def _only_codex_workspace_trust_append(before: dict, after: dict, workspaces) ->
     return []
 
 
-def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path) -> bool:
-    raw = path.read_bytes()
-    entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode() for root in _codex_trust_paths(workspace)}
+def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path, raw: Optional[bytes] = None, extra=()) -> bool:
+    """The file is the before-hash file plus exact trust blocks for this workspace's trust paths (and, FIELD-22, for the
+    `extra` workspaces of other paired-session runs) and nothing else."""
+    raw = path.read_bytes() if raw is None else raw   # F7: the caller passes the bytes it hashed, so check and hash agree
+    entries = {root: ('[projects.' + json.dumps(root) + ']\ntrust_level = "trusted"\n').encode()
+               for each in (workspace, *extra) for root in _codex_trust_paths(each)}
     present = [root for root, entry in entries.items() if raw.count(entry) == 1]
-    for count in range(1, len(present) + 1):   # RF-7: the expected set, each path at most once, in any order
-        for roots in itertools.permutations(present, count):
-            for variants in itertools.product(((b'', b''), (b'\n', b''), (b'', b'\n'), (b'\n', b'\n')), repeat=count):
-                before = raw
-                for root, (leading, trailing) in zip(roots, variants):
-                    block = leading + entries[root] + trailing
-                    if block not in before: break
-                    before = before.replace(block, b'', 1)
-                else:
-                    if (hashlib.sha256(before).hexdigest() == before_sha256 or (before_sha256 is None and not before)) and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace]): return True
+    if not extra:   # RF-7: the expected set, each path at most once, in any order (unchanged)
+        candidates = (roots for count in range(1, len(present) + 1) for roots in itertools.permutations(present, count))
+    else:   # FIELD-22: older trust blocks of lease-recorded workspaces may be present too, so search subsets in file order,
+        # smallest first, under a fixed budget of attempts (fail closed past it); no cap on how many blocks were added
+        ordered = sorted(present, key=lambda root: raw.index(entries[root]))
+        candidates = (roots for count in range(1, len(ordered) + 1) for roots in itertools.combinations(ordered, count))
+    budget = 400_000
+    for roots in candidates:
+        for variants in itertools.product(((b'', b''), (b'\n', b''), (b'', b'\n'), (b'\n', b'\n')), repeat=len(roots)):
+            if extra:
+                budget -= 1
+                if budget < 0:
+                    return False
+            before = raw
+            for root, (leading, trailing) in zip(roots, variants):
+                block = leading + entries[root] + trailing
+                if block not in before: break
+                before = before.replace(block, b'', 1)
+            else:
+                if (hashlib.sha256(before).hexdigest() == before_sha256 or (before_sha256 is None and not before)) and _only_codex_workspace_trust_append({'raw': before.decode('utf-8')}, {'raw': raw.decode('utf-8')}, [workspace, *extra]): return True
     return False
 
 
 PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re-runs the turn on a fresh baseline)'
 
 
-def _plugin_entries_without_bump(value):
-    if isinstance(value, dict): return {k: None if k in ('version', 'lastUpdated') and not isinstance(v, (dict, list)) else _plugin_entries_without_bump(v) for k, v in value.items()}   # G-b: the keys stay, only scalar values are ignored
-    if isinstance(value, list): return [_plugin_entries_without_bump(v) for v in value]
-    return value
+PLUGIN_UPDATE_FIELDS = ('version', 'installPath', 'gitCommitSha', 'lastUpdated')   # field21: what a normal plugin update rewrites
+
+
+def normal_plugin_update(old: dict, new: dict) -> Optional[list]:
+    """field21: the entries a NORMAL Claude Code plugin update changed in installed_plugins.json, or None for anything else. Same
+    document apart from `plugins`, same plugin keys, same entries (count and keys); a changed entry differs only in the scalar
+    values of PLUGIN_UPDATE_FIELDS, and a changed installPath is the canonical cache directory of that plugin and its new version
+    (<plugins>/cache/<marketplace>/<plugin>/<version>), present on disk as a real directory."""
+    if old.get('error') or new.get('error') or not isinstance(old.get('document'), dict) or not isinstance(new.get('document'), dict): return None
+    before, after = old['document'], new['document']
+    if before == after or {k: v for k, v in before.items() if k != 'plugins'} != {k: v for k, v in after.items() if k != 'plugins'}: return None
+    plugins = (before.get('plugins'), after.get('plugins'))
+    if not all(isinstance(p, dict) for p in plugins) or set(plugins[0]) != set(plugins[1]): return None
+    cache = Path(new['path']).parent / 'cache' if new.get('path') else None
+    updates = []
+    for key in sorted(plugins[0]):
+        rows = (plugins[0][key], plugins[1][key])
+        if not all(isinstance(r, list) for r in rows) or len(rows[0]) != len(rows[1]): return None
+        for index, (was, now) in enumerate(zip(*rows)):
+            if not isinstance(was, dict) or not isinstance(now, dict) or set(was) != set(now): return None
+            changed = sorted(field for field in was if was[field] != now[field])
+            if not changed: continue
+            if any(field not in PLUGIN_UPDATE_FIELDS or isinstance(was[field], (dict, list)) or isinstance(now[field], (dict, list)) for field in changed): return None
+            if 'installPath' in changed:
+                plugin, _, marketplace = key.rpartition('@')
+                version = now.get('version')
+                if not (cache and plugin and marketplace and isinstance(version, str) and isinstance(now['installPath'], str)
+                        and version not in ('', '.', '..') and '/' not in version and '/' not in plugin and '/' not in marketplace):
+                    return None
+                canonical = cache / marketplace / plugin / version
+                levels = (cache, cache / marketplace, cache / marketplace / plugin, canonical)   # every level a real directory: no link out
+                if Path(now['installPath']) != canonical or any(level.is_symlink() or not level.is_dir() for level in levels): return None
+            updates.append({'plugin': key, 'entry': index, 'fields': changed, 'version': [was.get('version'), now.get('version')]})
+    return updates or None
 
 
 def plugin_version_bump_only(findings: list, before: dict, after: dict) -> bool:
-    """RF-4: the only finding is installed_plugins.json and it differs from the baseline only in version/lastUpdated values."""
+    """RF-4, widened by field21: the only finding is installed_plugins.json and it is a normal plugin update (normal_plugin_update)."""
     if [row['file'] for row in findings] != ['claude_plugins']: return False
-    old, new = before['claude_plugins'], after['claude_plugins']
-    if old.get('error') or new.get('error') or old.get('document') is None or new.get('document') is None: return False
-    return old['document'] != new['document'] and _plugin_entries_without_bump(old['document']) == _plugin_entries_without_bump(new['document'])
+    return normal_plugin_update(before['claude_plugins'], after['claude_plugins']) is not None
 
 
-def attribute_global_config_changes(before: dict, after: dict, workspaces=()) -> dict:
-    """Attribute only the known Codex trust and Claude lastUpdated side effects."""
+def concurrent_run_workspaces(own_workspace, live=True) -> dict:
+    """FIELD-22: {workspace: run id} of OTHER paired-session runs, read from this user's workspace-lease directory without
+    taking any lock (a probe lock could make that run's own lease acquisition fail). A lease file counts only when it is
+    a private regular file owned by this user, its name is the lease path of the workspace it names (no stray entry),
+    and the run dir it names holds a state.json naming that same workspace. live=True also needs the lease pid alive,
+    that run's coordinator lock naming the same pid, and its state ACTIVE; live=False (an operator acknowledgment)
+    accepts such a record of a run that has ended. Boundary: this is evidence of a paired-session coordinator of this
+    user; a same-UID process could forge it, but such a process can edit config.toml directly anyway. The guard holds
+    against sandboxed turns, which can write neither the lease directory nor the Codex home. Residual: a reused pid
+    with a stale ACTIVE state and lock record counts as live."""
+    try:
+        own = Path(own_workspace).expanduser().resolve()
+        lock_dir = workspace_lease_path(own).parent
+        info = lock_dir.lstat()
+    except (OSError, RunLeaseError):
+        return {}
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        return {}
+    found = {}
+    for entry in sorted(lock_dir.glob('*.lock')):
+        try:
+            meta = entry.lstat()
+            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or stat.S_IMODE(meta.st_mode) & 0o077:
+                continue
+            record = json.loads(entry.read_text(encoding='utf-8', errors='replace')[:4096])
+            if not isinstance(record, dict) or not isinstance(record.get('workspace'), str) or not isinstance(record.get('run_dir'), str):
+                continue
+            workspace, run_dir = Path(record['workspace']).resolve(), Path(record['run_dir'])
+            if workspace == own or workspace_lease_path(workspace) != entry:
+                continue
+            state = json.loads((run_dir / 'state.json').read_text(encoding='utf-8'))
+            if not isinstance(state, dict) or not isinstance(state.get('workspace'), str) or Path(state['workspace']).resolve() != workspace:
+                continue
+            if live:
+                pid = record.get('pid')
+                if type(pid) is not int or pid <= 1 or state.get('status') != 'ACTIVE':
+                    continue
+                lock = json.loads((run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
+                if not isinstance(lock, dict) or lock.get('pid') != pid:   # the same coordinator holds the run lease
+                    continue
+                try: os.kill(pid, 0)
+                except ProcessLookupError: continue
+                except PermissionError: pass
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RunLeaseError):
+            continue
+        found[str(workspace)] = run_dir.name
+    return found
+
+
+def attribute_global_config_changes(before: dict, after: dict, workspaces=(), concurrent=None) -> dict:
+    """Attribute only the known Codex trust and Claude lastUpdated side effects. FIELD-22: concurrent = {workspace: run id}
+    of other live paired-session runs (concurrent_run_workspaces); an exact trust append for one of them is expected too."""
     expected, findings = [], []
     public = {'before': {}, 'after': {}}
     for label in ('codex_config', 'claude_settings', 'claude_plugins',
@@ -514,11 +617,18 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=()) ->
             findings.append({'file': label, 'reason': 'unreadable-or-invalid'})
             continue
         if label == 'codex_config':
-            trusted_workspaces = _only_codex_workspace_trust_append(old, new, workspaces)
-            if trusted_workspaces:
+            trusted_workspaces = _only_codex_workspace_trust_append(old, new, [*workspaces, *(concurrent or {})])
+            own = {path for workspace in workspaces for path in _codex_trust_paths(workspace)}
+            others = {path: run for workspace, run in (concurrent or {}).items() for path in _codex_trust_paths(workspace)}
+            mine = [path for path in trusted_workspaces if path in own]
+            theirs = [path for path in trusted_workspaces if path not in own]
+            if mine:
                 expected.append({'file': label, 'change': 'trusted-probe-workspace-entry',
-                                 'workspaces': trusted_workspaces})
-            else:
+                                 'workspaces': mine})
+            if theirs:   # FIELD-22: another live paired-session run's own trust entry, on the shared Codex home
+                expected.append({'file': label, 'change': 'trusted-concurrent-run-workspace', 'workspaces': theirs,
+                                 'runs': sorted({others[path] for path in theirs})})
+            if not trusted_workspaces:
                 findings.append({'file': label, 'reason': 'unexpected-content-change'})
         elif label == 'claude_plugins':
             old_doc, new_doc = old['document'], new['document']
@@ -530,7 +640,7 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=()) ->
         else:
             findings.append({'file': label, 'reason': 'unexpected-content-change'})
     return {'status': 'FAIL' if findings else 'PASS', **public,
-            'expected_changes': expected, 'findings': findings, 'warnings': ['global config mutated by codex CLI trust persistence'] if any(row['file'] == 'codex_config' for row in expected) else []}
+            'expected_changes': expected, 'findings': findings, 'warnings': ['global config mutated by codex CLI trust persistence'] if any(row['file'] == 'codex_config' and row['change'] == 'trusted-probe-workspace-entry' for row in expected) else []}
 
 
 def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
@@ -699,6 +809,22 @@ def reclassify_default_home_trust(changes: dict, before: dict, after: dict, work
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex read-only roles get a per-dispatch temp root
 CODEX_READONLY_PROFILE = 'paired_session_readonly'
 SCRATCH_PROBE_COMMAND = 'printf probe > "$TMPDIR/paired-session-scratch-probe"'
+# FIELD-20 (poker-news-bot WI-101, 2026-10-05; real codex-cli 0.160.0 rehearsal in lane B's field20 report): Codex's exec_command
+# returns after about 10 s with a session_id and no exit_code; a model that moves on without polling leaves a long test command
+# running and the turn's end kills it, so no completed run is observed. Every role runs a command to completion within the
+# dispatch timeout; the coordinator still requires one observed completed exit-0 run of the exact configured command.
+LONG_COMMAND_RULE = ('Run each command to completion before the next one and never end your turn while a command is still running. '
+                     'A result with a session_id and no exit_code is still running: poll that session until the result carries an '
+                     'exit_code (code-mode cells of exactly: const r = await tools.write_stdin({"session_id":<that id>,"chars":"",'
+                     '"yield_time_ms":30000}); text(JSON.stringify(r));). Polls are not extra commands. '
+                     'A Bash tool call that takes a timeout parameter gets 600000 for a long command.')   # no vendor names: fresh-role scan
+
+
+def command_not_completed(row: dict) -> bool:
+    """FIELD-20: a Codex command with no exit status (still running or killed when the turn ended, or reported as -1). Claude rows
+    carry -1 for every error, so they never count here; a Claude tool timeout is FIELD-12."""
+    code = row.get('exit_code')
+    return row.get('source') != 'Bash tool_use/tool_result' and (code is None or (type(code) is int and code < 0))
 
 
 def codex_readonly_profile_args() -> list[str]:
@@ -915,6 +1041,150 @@ def resolve_test_executable(workspace: Path, command: str) -> str:
     if not resolved:
         raise ValueError('configured test executable is missing or not on PATH: ' + executable)
     return resolved
+
+
+DETACH_ACTIONS = ('run', 'resume', 'reject', 'permission-probe')
+DETACH_TURN = {'group': None, 'spawning': False}   # detach: the CLI turn in flight, for the SIGTERM handler
+
+
+class DetachStop(BaseException):
+    """detach: SIGTERM to a detached coordinator; a BaseException, so a dispatch kills its turn's process group as on Ctrl-C."""
+
+
+def detach_paths(run_dir) -> tuple[Path, Path]:
+    """detach: the per-user 0700 record and lock of a run dir's detached command (outside the run dir and its parent, which the
+    Claude author probe watches); keyed by the resolved run dir, so relative and symlinked spellings share them."""
+    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{os.getuid()}'
+    try: root.mkdir(mode=0o700)
+    except FileExistsError: pass
+    info = os.lstat(root)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError(f'detach directory {root} must be a directory owned by this user with mode 0700')
+    key = hashlib.sha256(str(Path(run_dir).expanduser().resolve()).encode()).hexdigest()[:16]
+    return root / (key + '.json'), root / (key + '.lock')
+
+
+def detach_holder(run_dir):
+    """None when no detached command holds this run dir's lock; 'starting' while the holder has not published its own record
+    (the caller marks the record `starting` under the lock, so an older run's record is never read as the holder's); else the
+    holder's record. Only the lock holder writes the record."""
+    record, lock = detach_paths(run_dir)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try: data = json.loads(record.read_text())
+        except (OSError, ValueError): return 'starting'
+        ok = data.get('status') == 'running' and type(data.get('pid')) is int and type(data.get('sid')) is int
+        return data if ok else 'starting'
+    finally:
+        os.close(fd)
+    return None
+
+
+def stop_turn_group(_signum=None, _frame=None):
+    """detach: SIGTERM handler. Kill the turn in flight first (a stop between Popen and the dispatch's cleanup guard must not
+    leave it running), then unwind like Ctrl-C: the dispatch keeps the turn active and reaps it. While a turn is being spawned
+    the stop is only noted; the dispatch acts on it as soon as the group is known."""
+    if DETACH_TURN['spawning']:
+        DETACH_TURN['stop'] = True
+        return
+    if (group := DETACH_TURN['group']) is not None:
+        try: os.killpg(group, signal.SIGKILL)
+        except OSError: pass
+    raise DetachStop()
+
+
+def detach(raw_argv: list, run_dir: str) -> int:
+    """FIELD-17 follow-up (docs/detach.md): a host that ends its turn signals the process group it started (Claude Code: SIGTERM)
+    or kills the command (Codex: SIGKILL). setsid() and a second fork leave that tree; the grandchild runs the same command and
+    records its exit code. Nothing else changes: lease, active/uncertain turns, cleanup and every check are those of a plain run."""
+    record, lock = detach_paths(run_dir)
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # inherited by the grandchild, which keeps it until it exits
+    except BlockingIOError:
+        os.close(lock_fd)
+        held = detach_holder(run_dir)
+        print(f"REFUSED: a detached command for this run dir is still running (pid {held.get('pid') if isinstance(held, dict) else held}); "
+              'poll `status --brief` or use `stop`')
+        return 2
+    try:   # under the lock: an older run's record must never be read as this command's
+        atomic_json(record, {'status': 'starting', 'since': time.time()})
+    except OSError as exc:
+        os.close(lock_fd)
+        print('REFUSED: cannot write the detach record: ' + str(exc))
+        return 2
+    log = record.with_name(record.stem + time.strftime('-%Y%m%dT%H%M%S.log'))
+    argv = [arg for arg in raw_argv if arg != '--detach']
+    sys.stdout.flush(); sys.stderr.flush()
+    ready, ready_w = os.pipe()
+    if (child := os.fork()):
+        os.close(ready_w); os.close(lock_fd)
+        answer = b''
+        while (chunk := os.read(ready, 4096)): answer += chunk
+        os.close(ready)
+        os.waitpid(child, 0)
+        if not answer.startswith(b'ok '):
+            print('REFUSED: the detached command did not start: ' + (answer.decode(errors='replace') or 'no answer'))
+            return 2
+        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; poll `status --brief` (or RUN_DIR/state.json) until DONE or '
+              'HOLD; stop with `stop`')
+        return 0
+    os.close(ready)
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(os.open(os.devnull, os.O_RDONLY), 0); os.dup2(out, 1); os.dup2(out, 2)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, stop_turn_group)
+        atomic_json(record, {'pid': os.getpid(), 'sid': os.getsid(0), 'run_dir': str(Path(run_dir).expanduser().resolve()),
+                             'argv': argv, 'log': str(log), 'status': 'running', 'started': time.time()})
+    except BaseException as exc:   # the caller reports it; nothing has run
+        os.write(ready_w, f'{type(exc).__name__}: {exc}'.encode()); os._exit(2)
+    os.write(ready_w, f'ok {os.getpid()}'.encode()); os.close(ready_w)
+    code = 1
+    try:
+        code = main(argv)
+    except DetachStop:
+        print('STOPPED: `stop` ended this detached command; a turn it interrupted stays active: check its process group, then '
+              'resume --retry-uncertain or abort')
+        code = 130
+    except BaseException:
+        traceback.print_exc()
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the stop has been taken; finish the record
+        sys.stdout.flush(); sys.stderr.flush()
+        try: atomic_json(record, {**json.loads(record.read_text()), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
+        finally: os._exit(code)
+
+
+def stop_detached(run_dir: str, wait: float = 60) -> int:
+    """detach: SIGTERM to this run dir's detached coordinator, then wait until it has exited (it kills its turn's group first)."""
+    record, _ = detach_paths(run_dir)
+    held = detach_holder(run_dir)
+    if held is None:
+        print('NOTE: no detached command is running for this run dir')
+        return 0
+    if held == 'starting':
+        print('HOLD: a detached command for this run dir is starting; retry stop in a moment')
+        return 2
+    pid = held['pid']
+    try:   # the recorded session id guards against a pid reused after the holder exited between the read and the signal
+        if os.getsid(pid) != held['sid']: raise ProcessLookupError(pid)
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass   # it exited on its own (a reused pid is never signalled); wait for its lock below
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and detach_holder(run_dir) is not None:
+        time.sleep(0.2)
+    if detach_holder(run_dir) is not None:
+        print(f'HOLD: the detached command (pid {pid}) has not exited after {wait:.0f} s; check it before acting on this run')
+        return 2
+    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text()).get('exit_code')})")
+    return 0
 
 
 @contextmanager
@@ -1358,10 +1628,15 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
     """Return actual commands and all observed tool calls from a CLI event stream."""
     commands, calls = [], []
     if vendor == 'codex':
+        started = {}   # FIELD-20: a command started but never completed (still running or killed when the turn ended)
         for row in rows:
             item = row.get('item', {})
+            if row.get('type') == 'item.started' and item.get('type') == 'command_execution' and item.get('id') is not None:
+                started[item['id']] = item
+                continue
             if row.get('type') != 'item.completed':
                 continue
+            started.pop(item.get('id'), None)
             if item.get('type') == 'command_execution':
                 raw_command = item.get('command', '')
                 exit_code = item.get('exit_code')
@@ -1382,6 +1657,19 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
             elif item.get('type') == 'file_change':
                 calls.append({'tool': 'file_change', 'input': {'changes': item.get('changes', [])},
                               'error': item.get('status') != 'completed'})
+        for item in started.values():
+            raw_command = item.get('command', '')
+            command = raw_command
+            try:
+                outer = shlex.split(raw_command)
+                if len(outer) == 3 and outer[0].endswith(('sh', 'bash', 'zsh')) and outer[1] in ('-c', '-lc'):
+                    command = outer[2]
+            except ValueError:
+                pass
+            calls.append({'tool': 'command_execution', 'input': {'command': command}, 'error': None})
+            commands.append({'command': command, 'raw_command': raw_command, 'exit_code': None, 'error': False,
+                             'output': item.get('aggregated_output', ''), 'source': 'command_execution',
+                             'evidence_kind': 'started; no exit status when the turn ended'})
         return commands, calls
     pending = {}
     for row in rows:
@@ -1844,6 +2132,11 @@ class ReadOnlyTurnVoided(ValueError):
         self.restored = restored
 
 
+class PluginUpdateTurnVoided(ValueError):
+    """field21: in efficient mode, a turn during which only a normal plugin update outside the run rewrote installed_plugins.json;
+    its result is never used and invoke() re-dispatches the turn once on a fresh global-config baseline."""
+
+
 class Coordinator:
     def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
         resolve_role_model_defaults(args)
@@ -1857,6 +2150,8 @@ class Coordinator:
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
         if getattr(args, 'wi_deadline', None) is not None and args.wi_deadline <= 0: raise ValueError('--wi-deadline must be a positive number of seconds')
+        if not 1 <= getattr(args, 'timeout', DEFAULT_TIMEOUT_SECONDS) <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any state exists
+            raise ValueError(TIMEOUT_RANGE_ERROR)
         self.args = args
         self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
         self._fake_dispatching = False
@@ -3426,7 +3721,8 @@ class Coordinator:
         """Create program-owned, read-only review views without reviewer Git Bash access."""
         base = self.state.get('base_commit')
         tracked = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--binary', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--binary', '--'])
-        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--stat', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--stat', '--'])
+        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, base, '--'] if base else
+                         ['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, '--'])
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
@@ -3799,7 +4095,7 @@ class Coordinator:
         if self.state.get('publication_hold') or (journal_path.exists() and not complete):
             raise ValueError('publication incomplete; use locked publication recovery before operator commands')
 
-    def hold(self, reason: str, terminal_kind: Optional[str] = None) -> str:
+    def hold(self, reason: str, terminal_kind: Optional[str] = None, rate_limited: bool = False) -> str:
         self._publication_guard()
         if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED', 'REPORTED'):
             return self.state['status']
@@ -3823,6 +4119,12 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
+        last = next((row for row in reversed(self.state.get('turns', [])) if row.get('error_kind') == 'rate_limited'), {})
+        if rate_limited and last:   # ratelimit: the drive passes it for a RateLimitedTurn only
+            self.state['hold_kind'] = 'rate_limited'
+            self.state['rate_limit'] = {key: last.get(key) for key in ('role', 'phase', 'sequence', 'reset_hint')}
+        else:
+            self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
         if (self.state.get('config') or {}).get('review_report'):
             self._report_mark(False, reason)
             self._write_review_report()
@@ -3960,8 +4262,17 @@ class Coordinator:
             raise ValueError('note requires a HOLD run; DONE uses reject')
         if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
             raise ValueError('rejection limit: accept, abort or use --scope-change')
-        if self.state.get('next') != 'author':
-            raise ValueError(f"run is waiting for {self.state.get('next')}; resume first, or use --scope-change (not yet available; abort + new run)")
+        waiting = self.state.get('next')
+        # FIELD-23: an EXEC HOLD that waits for the reviewer (or its shadow) takes a note too, so an operator change made in
+        # that HOLD is on record; it reaches the next EXEC author turn (a REVISE), never a review role.
+        if waiting == 'reviewer' and self.state['phase'] == 'PLAN':
+            raise ValueError('run is waiting for reviewer in PLAN, and an approval moves it to EXEC, where a PLAN note is never '
+                             'delivered. To put an operator change on record: resume with --stop-after-plan and add the note '
+                             'at the EXEC HOLD, or note --scope-change (abort; the successor run carries the note)')
+        if waiting not in ('author', 'reviewer'):
+            raise ValueError(f'run is waiting for {waiting}; no author turn is due, so a note would not be delivered. To put '
+                             'an operator change on record: note --scope-change (abort; the successor run carries the note); '
+                             'resume only if the change needs no record')
         if self.state.get('pending_author_result_sequence') is not None:
             raise ValueError('author READY receipt pending; resume first')
         phase = self.state['phase']
@@ -3996,7 +4307,8 @@ class Coordinator:
         row = {'id': note_id, 'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(),
                'target_phase': phase, 'sha256': hashlib.sha256(raw).hexdigest(), 'evidence': str(path),
                'status': 'pending', 'replaces_id': previous['id'] if previous else None,
-               'replaces_sha256': previous['sha256'] if previous else None}
+               'replaces_sha256': previous['sha256'] if previous else None,
+               **({'while_next': waiting} if waiting != 'author' else {})}
         notes.append(row); self.state['pending_operator_note_id'] = note_id
         self.state.pop('terminal_hold_kind', None)
         self.save(); self.write_comparison()
@@ -4309,7 +4621,21 @@ class Coordinator:
         self.write_comparison()
         return 'ACTIVE'
 
-    def archive_abandoned_turn(self, receipt: dict) -> None:
+    def _recovery_config_issue(self, snapshot: dict, consume=True) -> Optional[str]:
+        """F7: the first dispatch baseline after an uncertain-turn recovery must still show the global-config hashes the
+        recovery validated. The hashes stay pending until a dispatch baseline matches them (consume) or a change is
+        reported once (the operator inspects, then resumes on a fresh baseline); an earlier check only peeks."""
+        pending = self.state.get('recovery_config_hashes') or {}
+        changed = sorted(key for key, value in pending.items() if snapshot.get(key, {}).get('sha256') != value)
+        if changed or consume:
+            self.state.pop('recovery_config_hashes', None)
+        return ('global config changed during uncertain-turn recovery (' + ', '.join(changed) + '); inspect, then resume'
+                if changed else None)
+
+    def archive_abandoned_turn(self, receipt: dict) -> dict:
+        """Archive a stopped uncertain turn; returns the global-config hashes it validated (F7: resume re-checks them right
+        before any dispatch, so a change after this check is not silently taken into the next turn's baseline)."""
+        verified = {}
         scratch = (receipt.get('environment_overrides') or {}).get('TMPDIR')
         if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.run_dir / 'role-tmp':
             self._drop_scratch(Path(scratch))   # b295-f1: the uncertain turn's child is stopped before it is archived
@@ -4322,20 +4648,26 @@ class Coordinator:
                 if self.args.action == 'resume' and self.state.get('claude_uncertain_config_change') == pending:
                     receipt['global_claude_ack'] = {'operator_uid': os.getuid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
                 else: self.state['claude_uncertain_config_change'] = pending; self.hold('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain'); raise RuntimeError('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain')
+            verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_claude_before']})
         if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
+            verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_codex_before']})
             if (receipt.get('global_codex_home') != str(self.global_codex_home) or receipt.get('global_config_home') != str(self.global_config_home) or any(current.get(key, {}).get('sha256') != value for key, value in receipt['global_codex_before'].items())):
+                try: raw = (self.global_codex_home / 'config.toml').read_bytes()   # F7: one read for the hash and the trust check
+                except OSError: raw = None
                 allowed = (self.args.action == 'resume' and self.args.acknowledge_codex_trust == self.run_dir.name
+                           and raw is not None and hashlib.sha256(raw).hexdigest() == current['codex_config']['sha256']
                            and current['codex_config']['sha256'] != receipt['global_codex_before']['codex_config']
                            and all(current.get(key, {}).get('sha256') == value for key, value in receipt['global_codex_before'].items() if key != 'codex_config')
                            and receipt.get('global_codex_home') == str(self.global_codex_home)
-                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace'])))
+                           and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw,
+                                                           extra=list(concurrent_run_workspaces(receipt['workspace'], live=False))))   # FIELD-22: the operator inspected it
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
                 self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
-            return
+            return verified
         usage = receipt.get('usage_requests', [])
         provider_usage = 'reported' if usage else 'unknown'
         row = {**receipt, 'recovered_at': time.time(), 'group_gone': True,
@@ -4351,6 +4683,7 @@ class Coordinator:
             path = self.evidence / f'{sequence:03d}-abandoned.receipt.json'
             if not path.exists():
                 atomic_json(path, row)
+        return verified
 
     def done(self, expected: Optional[str] = None, lifecycle_stage: Optional[str] = None) -> str:
         blocking = self.blocking_open_findings()
@@ -4637,7 +4970,7 @@ class Coordinator:
     def allowed_command_prompt(self) -> str:
         commands = self.reviewer_commands()
         return '\n'.join(['Commands you may run exactly as written (each must be an unwrapped Bash call):',
-                          *(f'- {command}' for command in commands)])
+                          *(f'- {command}' for command in commands), LONG_COMMAND_RULE])
 
     def verified_claims_prompt(self) -> str:
         return ('Return verified_claims as an array of {claim, file, line}: concrete claims you '
@@ -4791,11 +5124,189 @@ class Coordinator:
         spellings.update(prefix + path for path in tuple(spellings) for prefix in ('a', 'b'))
         return sorted(spellings, key=len, reverse=True)
 
-    def _plan_history_issue(self, texts: Optional[dict] = None) -> Optional[str]:
+    def _history_markers(self, name: str, content: str) -> list[str]:
+        """The review-history markers the fresh shadow/gate scan finds in one input, in scan order (as reported)."""
+        return [shown for shown, _ in self._history_matches(name, content)]
+
+    def _history_matches(self, name: str, content: str) -> list[tuple[str, str]]:
+        """(reported marker, whole matched text) per review-history match; a vendor pattern reports its name group
+        ("Claude") while the whole match ("Claude approved") is what a FIELD-23 exemption must find at the base."""
+        def findall(pattern, text, flags=0):
+            return [(match.group(1) if match.re.groups else match.group(0), match.group(0))
+                    for match in re.finditer(pattern, text, flags)]
+        # Role/rubric instructions in prompts/templates are not prior verdicts.
+        matches = findall(FRESH_HISTORY_RE, content)
+        # Mask only coordinator-owned absolute paths; require a token boundary after each path.
+        prose = content
+        # Support paths occur in generated prompts and diff headers, not user plan prose.
+        include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
+        known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
+                               for path in self._fresh_scan_run_paths(include_support)]
+        for known_path in known_path_patterns:
+            prose = known_path.sub('<run-path>', prose)
+        # Unknown vendor-named directory paths remain subject to the scan.
+        matches += findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
+        matches += findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
+                           prose, re.I)
+        # Keep attribution prose visible when a vendor-dot token resembles a filename.
+        matches += findall(
+            r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
+            r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
+        matches += findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
+                           r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
+        prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
+                       '<path>', prose)
+        matches += findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
+        if name not in ('prompt', 'gate-template'):
+            matches += findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
+        return matches
+
+    # FIELD-23 prevents ACCIDENTAL review-history carry-over, not deliberate author evasion.
+    # Independence otherwise rests on fresh sessions and unexempted prompt/gate templates.
+    # Only added patch lines are scanned. A marker already in the base file is exempt anywhere
+    # in that file (including copies): this is a known residual, not a positional provenance check.
+    REPO_QUOTE_SOURCES = ('context/plan.md', 'context/workitem.md', 'original-workitem')
+
+    def _base_blob(self, base: str, rel: str) -> Optional[str]:
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('cat-file', '-p', f'{base}:{rel}', cwd=self.workspace),
+                                          cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return proc.stdout.decode('utf-8', 'replace') if proc.returncode == 0 and b'\0' not in proc.stdout else None
+
+    def _fresh_history_text(self, name: str, content: str, base: Optional[str] = None) -> str:
+        """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
+        base = base if base is not None else self.state.get('base_commit')
+        if not base or name in ('prompt', 'gate-template'):
+            return content
+
+        def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
+            return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
+
+        def mask(text, exists):
+            # Replace an exempt whole match as a whole word; unrelated markers in the same quote/line remain visible, and
+            # so does a non-exempt match that contains exempt text ("Claude approved" when only "Claude" is base text).
+            wholes = {whole: exists(whole) for _, whole in self._history_matches(name, text)}
+            kept = [whole.lower() for whole, exempt in wholes.items() if not exempt]
+            for whole, exempt in wholes.items():
+                if exempt and not any(whole.lower() in other for other in kept):
+                    text = repo_word(whole).sub('<repo-text>', text)
+            return text
+
+        if name.endswith('.patch'):
+            if content.strip() and not content.startswith('diff --git '):
+                return content  # A non-patch input gets the old scan; it has no repository provenance.
+            result = []
+            renames = {}
+            if name == 'context/delta-since-last-review.patch':
+                fields = self._git_names(['diff', '--name-status', '-M', '-z', base, '--'])
+                while fields:
+                    status = fields.pop(0)
+                    old_path = fields.pop(0)
+                    if status.startswith(('R', 'C')):
+                        new_path = fields.pop(0)
+                        if status.startswith('R'): renames[new_path] = old_path
+            mirrors = (str(self.internal / 'last-review'), str(self.internal / 'current-review'))
+            for section in re.split(r'(?m)^(?=diff --git )', content):
+                old = new = None
+                header = section.split('\n@@', 1)[0]
+                for line in header.splitlines():
+                    if line.startswith(('--- ', '+++ ')):
+                        raw = line[4:].rstrip('\t')
+                        if raw.startswith('"') and raw.endswith('"'):
+                            raw = self._git_unquote(raw[1:-1])
+                        rel = None
+                        if raw and raw != '/dev/null' and raw[:2] in ('a/', 'b/'):
+                            rel = raw[2:]
+                            if name == 'context/delta-since-last-review.patch':
+                                rel = next((raw[1:][len(root) + 1:] for root in mirrors
+                                            if raw[1:].startswith(root + '/')), None)
+                        if line.startswith('--- '): old = rel
+                        else: new = rel
+                # A new file has no exemption, even if its post-image path happens to exist at base.
+                # --no-index mirrors can render a run rename as a deletion plus an addition.
+                old = renames.get(new, old)
+                paths = (new, old) if 'rename from ' in header or new in renames else (new,)
+                blobs = [self._base_blob(base, rel) for rel in dict.fromkeys(paths) if rel] if old and not (
+                    'GIT binary patch' in section or 'Binary files ' in section) else []
+                repository = '\n'.join(blob for blob in blobs if blob is not None)
+                for line in section[len(header):].splitlines():
+                    if line.startswith('+'):
+                        result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository))))
+            return '\n'.join(result)
+
+        if name in ('context/delta.stat', 'context/status.txt'):
+            if not self._history_markers(name, content):
+                return content
+            proc = candidate_tree.run_bounded(candidate_tree.git_command('ls-tree', '-r', '--name-only', '-z', base,
+                                                                         cwd=self.workspace),
+                                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode == 0:
+                paths = set(proc.stdout.decode('utf-8', 'replace').split('\0')) - {''}
+                def quoted(match):
+                    return '<repo-path>' if self._git_unquote(match.group(0)[1:-1]) in paths else match.group(0)
+                quote = r'"(?:[^"\\\n]|\\.)*"'
+                content = re.sub(quote, quoted, content)
+                marked = {path for path in paths if FRESH_HISTORY_RE.search(path) or
+                          re.search(r'(?i:claude|codex|opus|astra)|\b(?:APPROVE|REVISE|needs-attention)\b', path)}
+                for path in sorted(marked, key=len, reverse=True):   # only a path that can carry a marker needs masking
+                    # Consume unknown quoted paths intact; a base filename prefix is not that path.
+                    pattern = quote + r'|(?<![\w/.-])' + re.escape(path) + r'(?=[ \t]*(?:\||\(\d+ bytes\)|$)| -> )'
+                    content = re.sub(pattern, lambda match: '<repo-path>' if match.group(0) == path
+                                     else match.group(0), content, flags=re.M)
+            return content
+
+        if name in self.REPO_QUOTE_SOURCES:
+            def exists(whole):   # git grep narrows the files; the blob check applies the word boundary (and a multi-line match)
+                proc = candidate_tree.run_bounded(candidate_tree.git_command('grep', '-F', '-i', '-I', '-l', '-z', '-e', whole,
+                                                                             base, '--', cwd=self.workspace),
+                                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                return proc.returncode == 0 and any(
+                    repo_word(whole).search(self._base_blob(base, path[len(base) + 1:]) or '')
+                    for path in proc.stdout.decode('utf-8', 'replace').split('\0') if path)
+            def inline(text):   # a code span may run over line ends within a paragraph, never over a blank line
+                return re.sub(r'(`+)((?:(?!\n[ \t]*\n)[^`])*?)\1', lambda match: mask(match.group(0), exists), text)
+            result, prose, block, fenced = [], [], [], None
+            for line in content.splitlines(keepends=True):
+                fence = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+                if fence and not fenced:
+                    fenced = fence.group(1)
+                    result.append(inline(''.join(prose)) + line)
+                    prose = []
+                elif fence and fenced and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) and not fence.group(2).strip():
+                    result.append(mask(''.join(block), exists))
+                    block, fenced = [], None
+                    result.append(line)
+                elif fenced:
+                    block.append(line)
+                else:
+                    prose.append(line)
+            return ''.join(result) + inline(''.join(prose)) + mask(''.join(block), exists)
+        return content
+
+    def _introduced_history(self, name: str, content: str) -> list[str]:
+        return self._history_markers(name, self._fresh_history_text(name, content))
+
+    @staticmethod
+    def _git_unquote(body: str) -> Optional[str]:
+        """git's C-style path quoting (\\" \\\\ \\t \\n ... and \\ooo octal bytes) undone; None when malformed."""
+        out, i, simple = bytearray(), 0, {'a': 7, 'b': 8, 'f': 12, 'n': 10, 'r': 13, 't': 9, 'v': 11, '"': 34, '\\': 92}
+        while i < len(body):
+            if body[i] != '\\':
+                out += body[i].encode('utf-8'); i += 1
+            elif body[i + 1:i + 2] and body[i + 1] in simple:
+                out.append(simple[body[i + 1]]); i += 2
+            elif re.fullmatch(r'[0-7]{3}', body[i + 1:i + 4]):
+                out.append(int(body[i + 1:i + 4], 8)); i += 4
+            else:
+                return None
+        try: return out.decode('utf-8')
+        except UnicodeDecodeError: return None
+
+    def _plan_history_issue(self, texts: Optional[dict] = None, base: Optional[str] = None) -> Optional[str]:
         """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval (or, for a
         review-only run, which has no PLAN approval, on the texts it is about to write)."""
         for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
             text = texts[label] if texts else path.read_text() if path.is_file() else ''
+            text = self._fresh_history_text('context/' + path.name, text, base)   # FIELD-23: as the gate scan
             if ids := sorted(set(LEDGER_ID_RE.findall(text))):
                 return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
             if match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):   # as the gate scan
@@ -4918,7 +5429,7 @@ class Coordinator:
                  f'## Goal (the work item, verbatim)\n\n{workitem.rstrip()}\n\n'
                  '## Initial change (as the run was created; later fixes make it stale)\n\n'
                  + changed + ''.join(f'untracked: {review_scope_path(name)}\n' for name in untracked))
-        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}):   # FIELD-11: no PLAN approval runs it later
+        if issue := self._plan_history_issue({'work item': workitem, 'plan': scope}, base):   # FIELD-11: no PLAN approval runs it later
             issue = issue.replace('plan:', 'review scope (a changed path or the test command):', 1)   # the work item is checked first
             raise ValueError(f'--review-only refuses review history in the {issue}; the fresh shadow and gate would refuse it')
         return {'text': scope, 'head': head,
@@ -4962,7 +5473,7 @@ class Coordinator:
         # Do not rewrite past evidence or silently strip meaningful plan content.
         for name in ('workitem.md', 'plan.md'):
             path = self.context / name
-            if path.is_file() and re.search(r'\bF\d{3,}\b', path.read_text()):
+            if path.is_file() and LEDGER_ID_RE.search(self._fresh_history_text(f'context/{name}', path.read_text())):
                 raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}')
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', prompt)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
@@ -4980,34 +5491,9 @@ class Coordinator:
                         for p in sorted(self.context.iterdir()) if p.is_file()})
         if role == 'gate':
             sources['gate-template'] = Path(self.args.gate_prompt).read_text()
-        history = FRESH_HISTORY_RE
         checked = {}
         for name, content in sources.items():
-            # Role/rubric instructions in prompts/templates are not prior verdicts.
-            matches = history.findall(content)
-            # Mask only coordinator-owned absolute paths; require a token boundary after each path.
-            prose = content
-            # Support paths occur in generated prompts and diff headers, not user plan prose.
-            include_support = name in ('prompt', 'gate-template') or name.endswith('.patch')
-            known_path_patterns = [re.compile(r'(?<![\w/])' + re.escape(path) + r'(?!\w)')
-                                   for path in self._fresh_scan_run_paths(include_support)]
-            for known_path in known_path_patterns:
-                prose = known_path.sub('<run-path>', prose)
-            # Unknown vendor-named directory paths remain subject to the scan.
-            matches += re.findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
-            matches += re.findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
-                                  prose, re.I)
-            # Keep attribution prose visible when a vendor-dot token resembles a filename.
-            matches += re.findall(
-                r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
-                r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
-            matches += re.findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
-                                  r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
-            prose = re.sub(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''',
-                           '<path>', prose)
-            matches += re.findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
-            if name not in ('prompt', 'gate-template'):
-                matches += re.findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
+            matches = self._introduced_history(name, content)   # FIELD-23: repository text is not review history
             if matches:
                 raise RuntimeError(f'{role} independence check rejected history in {name}: {matches[0]}')
             checked[name] = {'sha256': hashlib.sha256(content.encode()).hexdigest(),
@@ -5300,6 +5786,7 @@ class Coordinator:
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
+        plugin_redispatched = False                                      # field21: one re-dispatch per invoke after a plugin update
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
@@ -5318,6 +5805,15 @@ class Coordinator:
                                 self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
                                 self._drop_scratch(scratch)
                             except RuntimeError: pass
+                        if isinstance(exc, RuntimeError) and isinstance(exc.__cause__, PluginUpdateTurnVoided):   # field21
+                            if plugin_redispatched: raise RuntimeError(f'{exc}; again after one re-dispatch{PLUGIN_UPDATE_HINT}') from exc
+                            self._redispatch_budget(phase, exc)
+                            plugin_redispatched = True
+                            turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request was discarded because the '
+                                            'global plugin registry changed while it ran (recognized as a normal plugin update). Answer '
+                                            'the request again on the current tree.')
+                            print(f'NOTE: {exc}; re-dispatching the {role} turn once on a fresh global-config baseline')
+                            continue
                         if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
                                 and exc.__cause__.restored): raise
                         if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
@@ -5475,6 +5971,8 @@ class Coordinator:
             env = {key: value for key, value in env.items() if not key.startswith('GIT_')}
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
+            raise RuntimeError(issue)
         vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
@@ -5492,8 +5990,15 @@ class Coordinator:
                     rejection.update(status='dispatched', dispatched_sequence=seq)
                 self.state['active'] = receipt
                 self.save()
-                process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
-                                           stdout=out, stderr=err, start_new_session=True)
+                DETACH_TURN['spawning'] = True   # detach: a stop in this span waits until the group is known (no signal mask:
+                try:                              # a child would inherit it and could not be terminated)
+                    process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
+                                               stdout=out, stderr=err, start_new_session=True)
+                    DETACH_TURN['group'] = process.pid
+                finally:
+                    DETACH_TURN['spawning'] = False
+                    if DETACH_TURN.pop('stop', False):   # a stop noted while spawning: kill the new group, unwind below
+                        stop_turn_group()
                 receipt['pid'] = process.pid
                 self.state['active'] = receipt
                 self.save()
@@ -5514,6 +6019,7 @@ class Coordinator:
                     process.wait()
                 except BaseException:
                     pass
+                DETACH_TURN['group'] = None
                 raise
             if not isinstance(exc, (OSError, ValueError, subprocess.SubprocessError)):
                 raise
@@ -5569,6 +6075,7 @@ class Coordinator:
                 pass
             raise
         finally:
+            DETACH_TURN['group'] = None   # reaped (or being re-raised after its group was killed)
             usage_stop.set()
             usage_monitor.join()
         receipt['end'] = time.time()
@@ -5595,6 +6102,7 @@ class Coordinator:
                 self._record_ignored_config(receipt, config_before, ignored_config.inventory(
                     snapshot_workspace, lambda names: self._ignored_paths(snapshot_workspace, names)))
         voided = None   # D-EFF category A: set below when a read-only turn changed the workspace
+        plugin_void = None   # field21: set below when only a normal plugin update changed the global config (efficient mode)
         try:
             if control_problem: raise ValueError(control_problem)
             if head_before is not None and git_head_state(snapshot_workspace) != head_before:   # before any exit-code check: a failed turn too
@@ -5615,7 +6123,9 @@ class Coordinator:
                     raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(run_dir_touched[:5]))
             if vendor_config_before is not None:
                 config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-                changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace])
+                concurrent = (concurrent_run_workspaces(active_workspace) if receipt['vendor'] == 'codex' and   # FIELD-22, read lazily
+                              vendor_config_before['codex_config']['sha256'] != config_after['codex_config']['sha256'] else None)
+                changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace], concurrent)
                 changes['other_vendor_changes'] = [key for key in changes['before'] if not key.startswith(vendor_prefix) and changes['before'][key]['sha256'] != changes['after'][key]['sha256']]
                 changes['findings'] = [row for row in changes['findings'] if row['file'].startswith(vendor_prefix)]
                 changes['expected_changes'] = [row for row in changes['expected_changes'] if row['file'].startswith(vendor_prefix)]
@@ -5624,8 +6134,14 @@ class Coordinator:
                 changes['status'] = 'FAIL' if changes['findings'] else 'PASS'
                 receipt['global_config_changes'] = changes
                 if changes['status'] != 'PASS':
-                    raise ValueError(receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings'])
-                                     + (PLUGIN_UPDATE_HINT if plugin_version_bump_only(changes['findings'], vendor_config_before, config_after) else ''))
+                    message = receipt['vendor'] + ' turn changed global config: ' + ', '.join(row['file'] for row in changes['findings'])
+                    if update := ([row['file'] for row in changes['findings']] == ['claude_plugins'] and
+                                  normal_plugin_update(vendor_config_before['claude_plugins'], config_after['claude_plugins'])):
+                        changes['plugin_update'] = update   # field21: recorded in both modes
+                    if not update or self.strict or voided is not None or touched:
+                        raise ValueError(message + (PLUGIN_UPDATE_HINT if update else ''))
+                    plugin_void = PluginUpdateTurnVoided(message + ' (a normal plugin update outside the run: ' + ', '.join(
+                        f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update) + '); the turn is void')
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -5701,11 +6217,17 @@ class Coordinator:
                                           self.state['fake_candidate_test']['root']).resolve()) and not any(
                     observed_test_succeeded(row, self.args.test_command)
                                          for row in observed_commands):
-                raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command')
+                unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
+                                 for row in observed_commands)   # FIELD-20
+                raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
+                                 + ('; the configured test was not observed to completion (no exit status when the turn ended)'
+                                    if unfinished else ''))
+            old = self.state['sessions'].get(role)
+            if not fresh and old and session and old != session:
+                raise ValueError(f'{role} resumed a different session')
+            if plugin_void is not None:   # field21: after every check of this turn, so any of them still leads; before the session update
+                raise plugin_void
             if not fresh:
-                old = self.state['sessions'].get(role)
-                if old and session and old != session:
-                    raise ValueError(f'{role} resumed a different session')
                 if session:
                     self.state['sessions'][role] = session
                 self.state['started'][role] = True
@@ -5721,7 +6243,8 @@ class Coordinator:
             self.state['last_end'][role] = receipt['end']
             self.state['active'] = None
             self.save()
-            raise RuntimeError(receipt['error']) from exc
+            raise (RateLimitedTurn if receipt.get('error_kind') == 'rate_limited' and voided is None else RuntimeError)(
+                receipt['error']) from exc
         receipt['answer'] = answer
         atomic_json(prefix.with_suffix('.receipt.json'), receipt)
         self.state['turns'].append(receipt)
@@ -5948,8 +6471,11 @@ class Coordinator:
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
             raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
         if not (observed := self._observed_test(answer)):
-            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command; '
-                               'resume reviews again')
+            unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
+                             for row in answer.get('observed_commands', []))   # FIELD-20
+            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
+                               + (' (the configured test was not observed to completion: no exit status when the turn ended)'
+                                  if unfinished else '') + '; resume reviews again')
         self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer disposes them
         self.render(result, 'docs-reviewer', 'DOCS')
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
@@ -5964,12 +6490,18 @@ class Coordinator:
         caller's next check refuses and max_invocations bounds the run."""
         if phase not in ('POLISH-Q', 'DOCS', 'SECURITY') or not worktree_lifecycle.is_worktree(self.state): return
         rows = [row for row in [*self.state['turns'], *self.state.get('spawn_failures', [])] if row.get('phase') == phase]
-        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else len(rows)
+        used = sum(row.get('invocation_budget_counted') is not False for row in rows) if phase == 'POLISH-Q' else self._stage_calls(phase)
         if used + 1 > self._worktree_run_cap(phase):
             raise RuntimeError(f'{phase} budget has no room to re-dispatch the void turn ({voided}); abort') from voided
 
+    def _stage_calls(self, phase: str) -> int:
+        """DOCS/SECURITY calls against the stage cap: every row of the phase except a provider rate-limit rejection, which is
+        refunded like the invocation budget (ratelimit), so a limited call never uses up the stage."""
+        return sum(row.get('phase') == phase and row.get('error_kind') != 'rate_limited'
+                   for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+
     def _docs_budget(self) -> None:
-        used = sum(row.get('phase') == 'DOCS' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+        used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
 
@@ -6220,7 +6752,7 @@ class Coordinator:
                               'in full_review; any finding stops delivery.\n' + worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
-                used = sum(row.get('phase') == 'SECURITY' for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
+                used = self._stage_calls('SECURITY')
                 if used + 1 > self._worktree_run_cap('SECURITY'):
                     raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
                 result = self.invoke('reviewer', 'SECURITY', prompt, review_schema(), fresh=True)
@@ -7413,6 +7945,7 @@ class Coordinator:
             'Do not pre-judge, refuse, explain, or skip a command.',
             f'Make exactly {calls} separate Bash calls, one for each literal command below.',
             'Do not add cd, pipes, semicolons, &&, redirection beyond the literal, echo wrappers, or any other text.',
+            LONG_COMMAND_RULE,
             'Allowed exact command:', allowed_command, *scratch,
             'Write commands expected to be denied:', *attempts, *sandbox_probe_commands[3:],
             f'Return APPROVE and list only the {calls} literal commands in self_run_evidence.',
@@ -7423,7 +7956,8 @@ class Coordinator:
                        'Do not use arrays, loops, Promise.all, or batched exec cells for this probe. '
                        'If using code-mode, each cell must be exactly: const r = await tools.exec_command('
                        '{"cmd":"<one literal command>","workdir":' + json.dumps(str(self.workspace)) +
-                       '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output.')
+                       '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output. '
+                       'The only other cells allowed are the write_stdin polls of a still-running command described above.')
         return prompt
 
     def _codex_escape_targets(self) -> dict:
@@ -7476,8 +8010,13 @@ class Coordinator:
             failures.append('not-attempted: ' + allowed_command)
         elif not allowed:
             timeout = tool_timeout_seconds(allowed_matches)   # FIELD-12: a CLI tool timeout is not an ordinary failure
-            failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}' if timeout is not None
-                            else 'allowed-command-failed: ' + allowed_command)
+            if timeout is not None:
+                failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}')
+            elif any(command_not_completed(row) for row in allowed_matches):   # FIELD-20: never observed to completion
+                failures.append('allowed-command-not-completed (no exit status: still running or killed when the turn ended): '
+                                + allowed_command)
+            else:
+                failures.append('allowed-command-failed: ' + allowed_command)
         for command in attempts:
             matches = [row for row in evidence if row.get('command', '').strip() == command]
             if not matches:
@@ -7621,7 +8160,8 @@ class Coordinator:
                 self.state['uncertain_active'] = uncertain
                 self.hold('uncertain permission-probe process group is still alive; refusing concurrent retry')
                 return False
-            self.archive_abandoned_turn(uncertain)
+            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against this probe's own baseline below
+                self.state['recovery_config_hashes'] = verified
             self.state['active'] = None
             self.state['uncertain_active'] = None
             if self.state.get('hold_reason', '').startswith(
@@ -7643,6 +8183,9 @@ class Coordinator:
                       "for the probe's git checkout/rm legs; commit at least one file, then re-run permission-probe")
             return False
         global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        if issue := self._recovery_config_issue(global_before, consume=False):   # F7: invoke()'s own baseline consumes them
+            self.hold(issue)
+            return False
         allowed_command = self.args.test_command.strip()
         attempts = self._probe_attempts(allowed_command, tracked)
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
@@ -8615,7 +9158,7 @@ class Coordinator:
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
-                return self.hold(str(exc))
+                return self.hold(str(exc), rate_limited=type(exc) is RateLimitedTurn)
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
@@ -8677,7 +9220,8 @@ class Coordinator:
             else:
                 return self.hold('uncertain CLI process group is still alive; refusing concurrent replay')
         if uncertain:
-            self.archive_abandoned_turn(uncertain)
+            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against the next turn's own baseline
+                self.state['recovery_config_hashes'] = verified
             self._rotate_failed_first_claude_session(
                 uncertain.get('role', ''), uncertain.get('vendor') or
                 self._role_vendor(uncertain.get('role', '')), uncertain.get('fresh', False))
@@ -8686,6 +9230,7 @@ class Coordinator:
             return self.hold(past_deadline)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
+        self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
@@ -8848,7 +9393,10 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note', 'status', 'attach-verification'])
+                                      'accept', 'reject', 'note', 'status', 'attach-verification', 'stop'])
+    p.add_argument('--detach', action='store_true',
+                   help='run, resume, reject or permission-probe in a new session, outside the host\'s process tree, and return '
+                        'at once with its pid and log; poll `status --brief`; `stop` ends it (docs/detach.md)')
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
     p.add_argument('--run-dir', required=True)
@@ -8881,7 +9429,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
     p.add_argument('--max-invocations', type=int, default=25)
-    p.add_argument('--timeout', type=int, default=2700)
+    p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT_SECONDS,
+                   help=f'per-dispatch timeout for every non-EXEC turn and the coordinator\'s own test runs '
+                        f'(default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS} seconds)')
     p.set_defaults(exec_turn_timeout_explicit=False)
     p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
                    help=f'EXEC author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
@@ -9280,6 +9830,15 @@ def main(argv=None) -> int:
         print('REFUSED: ' + str(exc))
         return 2
     args = normalize_cli_paths(args)
+    if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
+        try: return stop_detached(args.run_dir)
+        except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
+    if args.detach and args.action not in DETACH_ACTIONS:
+        print('REFUSED: --detach is only for ' + ', '.join(DETACH_ACTIONS))
+        return 2
+    if not 1 <= args.timeout <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any lease, run dir or detached child
+        print('REFUSED: ' + TIMEOUT_RANGE_ERROR)
+        return 2
     if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
         args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
     args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
@@ -9325,6 +9884,9 @@ def main(argv=None) -> int:
         return 2
     if args.polish and args.action != 'resume':
         parser().error('--polish is only valid with resume')
+    if args.detach:   # after the synchronous refusals above, so a bad command line still fails in the caller's shell
+        try: return detach(raw_argv, args.run_dir)
+        except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
     if args.action == 'snapshot':
         print(git_snapshot(Path(args.workspace))[0])
         return 0

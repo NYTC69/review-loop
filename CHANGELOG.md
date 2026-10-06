@@ -1,5 +1,106 @@
 # Changelog
 
+### v2.12.1：用独立 CODEX_HOME 的 run 不再因默认 ~/.codex/config.toml 里别人的 trust 条目而 HOLD（owner P0）；fresh shadow/gate 不再把仓库原有文字当成泄漏的审查记录（FIELD-23）；EXEC 等待 reviewer 时可以 note；smoke runner 被杀后不留残局；owner 决策单落档；review-pr 移植的设计与前两批内部实现
+
+- **fix（owner P0，poker-news-bot 现场）**：run 用独立 `CODEX_HOME` 时，也会对默认 `~/.codex/config.toml` 做快照，用来发现无视 `CODEX_HOME` 的 Codex 子进程。原先这个文件有任何变化，都会作废已完成的回合并 HOLD。而另一个项目在默认 home 上跑 Codex（或有人还原备份）时，Codex 会自动追加 `[projects."<dir>"] trust_level = "trusted"`，于是 WI-108 丢了 19 分钟和 13 分钟的 author 回合。现在：
+  - 默认配置的变化如果只是增删整张外来 trust 表，即路径不是本 run 自己的 workspace、clone 或 worktree 主根，就记为 `foreign-default-home-trust-entry {added, removed}`，不作废回合。Codex 回合和 permission probe（包括 probe 正常结束的路径）都适用。
+  - 其他变化照旧 HOLD。下列情况也照旧 HOLD：
+    - 本 run 自己路径的 trust 条目（比较前先做 realpath、去掉尾部斜杠，macOS 上不区分大小写）；
+    - 无法按 UTF-8 解码的内容；
+    - 超过 1 MiB 或结构有歧义的文件。
+  - 扫描只过一遍：已有 3000 张表时也在 1 秒内完成。
+  - 不变的部分：`$CODEX_HOME/config.toml` 本身的检查、在默认 home 上跑的 run、uncertain 回合，行为都不变。
+  - 建议：每个 run（包括验收 run 和监工 run）都使用独立的绝对路径 `CODEX_HOME`。实测 codex-cli 0.160.0 在 git 目录里以 workspace-write 运行时一定会写 trust 条目，`-c` 和 `--ignore-user-config` 都挡不住。
+- **fix（FIELD-23，poker-tools 现场）**：仓库里本来就有的注释（例如 "gate finding"）被作者改动后，出现在 delta patch 的 -/+ 行里，fresh shadow 的独立性检查把它当成泄漏的审查记录，run 因此 HOLD；改写注释也没用，因为旧文字留在 "-" 行里。owner 选了简单规则：
+  - 有 `base_commit` 时，patch 只扫描 "+" 行；"-" 行和上下文行都不扫。
+  - "+" 行里的命中，如果整段命中文字按整词在 base 中同一文件（或重命名前的文件）里出现过，就豁免；新文件和二进制文件不豁免。
+  - delta.stat 和 status.txt：命中落在 base 已有路径里就豁免；stat 改为完整路径，并且不合并重命名。
+  - plan.md 和 workitem.md：只豁免用反引号或代码块引用的 base 原文。
+  - prompt 和 gate 模板永远不豁免。fresh shadow、gate、PLAN 批准和 review-only 创建共用同一个 helper。
+  - 威胁模型：只防无意中带入审查记录，不防作者刻意绕过。已知残余：base 中已有的标记词在同一文件里任何位置都豁免；不用 `git mv` 的移动按新文件处理（偏严）。
+- **note**：EXEC 在等 reviewer（或它的 shadow）而 HOLD 时，现在接受 `note`，只交给下一个 EXEC author 回合，不会进任何审查角色。PLAN 阶段等 reviewer 时仍然拒绝，并提示替代做法。
+- **smoke runner（SMOKE-RUNNER-KILL / SMOKE-TIMEOUT）**：
+  - runner 被杀后会停掉 case 进程组并恢复临时配置，不留残局。
+  - 以 nohup 方式或在后台作业中启动时，继承下来的 SIGHUP 忽略状态会被保留。
+  - case 超时只在机器有负载时放宽，最多 6 倍；空闲时不变。SMOKE-TIMEOUT 的根因没有查清，详见 smoke README 和 ADR-4 的修订。
+  - 已知残余：marker 不校验 temp_config 的 sha，孤儿进程组还活着时也不拒绝运行。
+- **review-pr 移植（D-LG2），内部实现，尚未接入任何 skill**：
+  - 设计文档 `paired_session/docs/review-pr-port.md` 已经 owner 答复并通过终审。
+  - 前两批是 coordinator 里的 report mode，入口是 `run --review-only --review-report`：
+    - 创建、resume 和反馈时的拒绝规则；
+    - 不论 EXEC 和 gate 给出什么结论，都依次走到 gate 和 POLISH-Q，全程没有任何 writer 回合；
+    - 每次派发前都核对冻结的树；
+    - report run 上的 permission-probe 不跑 author probe（标为 NOT-APPLICABLE）。
+  - 目前 report run 在 POLISH-Q 之后停在临时 HOLD，SECURITY、REPORTED 和报告文件由后续批次补齐。这个开关还没有写进文档，请勿使用。
+- **决策记录**：ADR-13 D-OWNER-1005（owner 对 2026-10-05 决策单的 59 项答复；D11 各行为暂定）及其补充条款：终审后的修复审查、D12（review-only 的 max_exec_rounds 保持 4）、ABA/BAB 审查链。
+- **测试**：`tests/evidence_ledger_test.py` 的一条断言不再依赖 git 自己的 hook 报错原文（新版 git 措辞不同）。
+- **CI（D08）**：GitHub Actions 新增 tests/ 的 pytest job，Linux 和 macOS 都跑。
+- **审查**：采用 ABA/BAB 审查链。
+  - FIELD-23：Codex 2 轮，加 Opus 终审和终审后的修复审查轮。
+  - LG2-a2：Codex 1 轮，加 Opus 终审和修复审查轮。
+  - LG2-a1：BAB，Codex 写、Opus 2 轮、Codex 终审，加修复审查轮。
+  - smokefix 的修复审查轮没过，按 owner 裁定由监工复核后收下。
+  - P0：Codex 2 轮，加 Opus 终审（1 HIGH、1 MEDIUM、2 LOW）和终审后的修复审查轮（APPROVE）。
+
+### v2.12.0：legacy 工作流正式弃用（owner 裁定 D-READY）；同一台机器上的并发 run 不再因对方的 Codex trust 条目而 HOLD（FIELD-22）；M7 评分与冻结工具
+
+- **弃用（D-READY，owner 2026-10-05）**：
+  - owner 按现场证据裁定 ADR-6 的替换门槛已经满足，legacy 工作流从 v2.12.0 起标为 deprecated。现场证据有两条：poker-news-bot 和 poker-tools 连续多天在 paired-session 上做真实工作并交付；owner 记得的那次额度用完后 reset 续跑，事后查实是 Codex 额度、发生在试验版协调程序上；它暴露的两个问题（限额暂停没有类型、失败重试占用调用上限）v2.11.0 已修。新流程从中断恢复并跑完的证据是 poker-news-bot 的 WI-86。owner 看过证据后维持裁定。
+  - 显式选用 legacy 时会打印一行弃用提示。显式选用指：`entry: legacy`、`/review-loop:legacy`、Codex 的 legacy 请求，或直接调用 `/review-loop:plan` / `/review-loop:execute`。路由和行为都没有改。
+  - 删除 legacy 代码要等三项都完成：review-pr 迁到 paired-session（D-LG2）；code-quality-loop 并入 `run --review-only`（Q6）；legacy 对照表中 18 个 owner 行由 owner 定夺。在此之前，review-pr 和 code-quality-loop 仍走 legacy。
+  - M7 种子缺陷对比不再是退役门槛，改为可选的成本/质量研究。不计分的试点显示，paired 的首轮 review 成本约为 legacy 的 6%，墙钟约为 1/12。
+  - 相关文档：DECISIONS.md 中 ADR-6 新增修订，迁移文档新增 "Deprecation status (v2.12.0)"，`paired_session/docs/legacy-deprecation-readiness.md`；README 和 guide 同步更新。
+- **fix（FIELD-22，supervisor 并行真实 run 发现）**：两个 run 共用默认的 `~/.codex` 时，一个 run 的 Codex 回合会给自己的 workspace 写 trust 条目，原来会让另一个 run 的 Codex 回合误判为全局配置被改而 HOLD。现在，如果某个 workspace 属于另一个正在运行的 paired-session run，它的 trust-only 追加记为预期改动 `trusted-concurrent-run-workspace`，并附上那个 run 的 id。"正在运行"需要同时满足：有本用户私有的 workspace lease、该 run 的 state 写的是同一个 workspace、coordinator lock 的 pid 与 lease 一致且进程还活着。uncertain 回合的 `resume --acknowledge-codex-trust` 也接受这类条目。其他任何改动仍然是硬 finding。仍然推荐每条 lane 用独立的 CODEX_HOME。
+- **M7 工具（不影响产品行为）**：采纳了 Dot 的评分修复 21/21b，lane B 又补了几项加固：对案例仓库做 git 隔离；DUPLICATE 不能链式引用；冻结时记录原始字节摘要，skip-worktree 和 eol 转换都藏不住改动。冻结时会保留被跟踪但匹配 .gitignore 的文件；拒绝放在 `.compass/results` 下的语料。D-b1 扫描器停在评审上限，没有包含在本版里。
+- **文档**：Q6 code-quality-loop 备忘、legacy 退役就绪度报告（附 overseer 成本测量）、大任务定义提案。
+- **审查**：Codex gpt-6.1-sol。field22 3 轮，m7-s1 3 轮，m7-s1b 2 轮，deprecate 2 轮。
+
+### v2.11.1：插件正常更新不再让回合 HOLD（FIELD-21）；`--timeout` 设上限；author 在被忽略路径写的可执行配置会在报告里列出；legacy → paired-session 对照表
+
+- **fix（FIELD-21，poker-news-bot 现场报告）**：回合进行时，如果另一个 Claude Code 会话把 review-loop 插件更新到新版本（`~/.claude/plugins/installed_plugins.json` 里同一插件条目的 version、installPath、gitCommitSha、lastUpdated 一起变），原来会把这次改动算到 author 头上并 HOLD。现在只要能确认是正常更新，efficient 模式下就作废这个回合，并在新的 baseline 上自动重跑一次；strict 模式下 HOLD，并提示可以 resume。识别条件很严：新 installPath 必须正好是插件缓存里新版本的目录，从缓存根目录往下每一级都必须是真实目录、不能是链接，其他字段不能有任何变化。只要有一项不符，仍按原来的硬 finding 处理。被作废的回合照样计入调用次数，和已有的作废重派路径一致。
+- **改进（timeoutcap）**：`--timeout` 限定在 1 到 86400 秒之间，默认仍是 2700。超出范围时，在创建任何 lease、run 目录或 detach 子进程之前就直接拒绝。
+- **改进（f3，B 类，只报告）**：author、FINISH、DOCS 或 POLISH-Q 修复回合在被 git 忽略的路径里新建或修改了可执行配置文件（`.vscode/tasks.json`、`.vscode/launch.json`、`.claude/settings*.json`、`.claude/commands/**`、`.mcp.json`、`.envrc` 等）时，会写进 receipt 和 state、打印 WARNING，并在 `status --brief` 和交付报告里列出来。两种模式都不 HOLD。清单只看元数据，扫描有上限。
+- **fix（startup40）**：`tests/protocol_loading_graph_test.py` 的 Claude one-file-delivery 启动削减比例，从 v2.9.7 起一直低于 40% 门槛（39.84，后来降到 39.68），现在是 40.45%。修法是把 `loading.md` 里两段很少用到的规则原样移到按需读取的 `docs/protocol/loading-special-cases.md`，再把各入口 skill 里重复 `loading.md` 的措辞改成指针。规则一条没删，测试和门槛都没改。
+- **文档**：`docs/paired-session-migration.md` 新增"Legacy → paired-session map (after v2.11.0)"，共 49 行：已覆盖 27 行，已排进计划 4 行，等 owner 决定 18 行。F6（一家厂商的回合期间另一家的全局配置被改，只记录、不 HOLD）在 1C 安全控制表里登记为接受的残余风险。
+- **审查**：Codex gpt-6.1-sol。field21 2 轮，startup40 1 轮，timeoutcap 2 轮，wrapperdedupe 1 轮，legacy-map 3 轮，f3 2 轮。最后一轮都是 APPROVE。
+
+### v2.11.0：paired-session 支持"只审已有代码"（`run --review-only`），默认入口的审查请求不再落回 legacy；可选的 `--detach`/`stop`；限流 HOLD 带类型
+
+- **新功能（D-LG1：只审已有代码的入口）**：
+  - `bin/paired-session run --review-only [--base REF]` 审查工作区里已有的改动，不经过 PLAN，第一步就是 EXEC review。已有改动算作 EXEC 第 1 轮，所以 `--max-exec-rounds N` 恰好是 N 次审查。base 默认为 `HEAD`，也就是审查未提交的改动；审查分支时传 `--base main` 或某个 merge-base。
+  - 创建时直接拒绝的情况：base 不是 HEAD 的祖先、没有改动、index 有冲突或部分暂存、unborn HEAD、`--stop-after-plan`。第一次 review 之前树或范围变了，就 HOLD。
+  - 各角色的提示词改用 review scope，不再出现"已批准的计划"；author 只修复审查提出的问题。
+  - 交付：baseline 取 review base 的树，被审改动记为本次交付；完全暂存的改动属于被审范围；被审改动已经改过的 docs 文件算它自带的（pre-owned）；提交信息带 `Review base: <oid>`。完整 lifecycle（FINISH、POLISH-Q、DOCS、SECURITY、accept/auto_commit）照常可用。
+  - **默认入口**：没有 `entry` 键时，"审查我的改动"这类请求（code-exists）也交给 paired-session 的 `run --review-only`，不再落回 legacy。只有与任务相关的改动才这样路由；工作区里还有无关改动时先问用户。已有计划、已有 session 仍走 legacy。legacy 的 `execute --review-only` 在退役前保持不变。
+  - Q1–Q9 的选择（`run --review-only`、base 默认 HEAD、经 skill 走完整 lifecycle、base 不是祖先就拒绝、已有改动算第 1 轮等）由 supervisor 按设计文档的建议临时采用，等 owner 确认。每项都集中在一个常量里，改起来只动一处。
+- **新功能（detach，FIELD-17 后续）**：`run|resume|reject|permission-probe --detach` 让命令脱离宿主会话运行（setsid 加两次 fork），日志写到按用户隔离的临时目录，调用方立刻拿到 pid 和日志路径。用 `stop` 结束：先作废当前回合并回收它的进程组，然后按中断处理（`resume --retry-uncertain` 或 `abort`）。默认行为不变。Claude 宿主规则写明，无交互会话里优先用 `--detach`。实测宿主怎么结束命令：Claude Code 的 `claude -p` 交卷时给后台命令的进程组发 SIGTERM，Codex 直接 SIGKILL 命令所在的会话；脱离后的进程都不受影响。
+- **改进（ratelimit）**：任何角色、任何阶段被 provider 限流，都会停在一个带类型的 HOLD（`hold_kind: rate_limited`，附角色、阶段和 reset 提示）。被限流的调用不计入调用次数，也不占 DOCS、SECURITY 和重派预算；`resume` 后不重复、也不跳过回合。
+- **fix（F7）**：`resume --retry-uncertain` / `permission-probe --retry-uncertain` 恢复期间如果全局配置变了，会在下一次派发的 baseline 处 HOLD，比较和恢复之间不再留有窗口。
+- **测试（igncache）**：允许的测试命令在已存在的被忽略缓存目录（`__pycache__`、`.pytest_cache`）里写东西，不会让只读回合作废。新测试证明了这一点，产品代码没改。
+- **审查**：每个单元都由 Codex gpt-6.1-sol 审查（D-REV-CODEX）：
+  - LG1 共 6 个单元（a1、a2、b、c、d、e），各 1 到 3 轮，最后都是 APPROVE 或 APPROVE_WITH_FINDINGS（只剩 LOW）；
+  - detach 3 轮，ratelimit 2 轮，f7 3 轮，igncache 2 轮。
+- **已知限制**：
+  - review-only：base 里非 UTF-8 的文件名、DOCS 的删除和重命名、writer 的暂存拒绝，只写进了文档或测试，没有完整覆盖。
+  - detach 没有真实宿主上的端到端自动测试；记录目录不会自动清理；用 SIGKILL 结束脱离的命令会留下回合的进程组，请用 `stop`。
+  - F6：一家厂商的回合期间另一家的全局配置变了，仍然只记录、不 HOLD。现有测试固定了这个设计；宿主 Claude Code 自己就会写 `~/.claude`。这是接受的残余风险，"只在有证据表明是本回合造成时才 HOLD"作为提议留给 owner。
+  - `tests/protocol_loading_graph_test.py` 的 40% 启动削减测试（claude 一文件交付）在 v2.9.7 起就低于门槛（39.84，现在 39.68），之前没进 CI 所以没被发现。修复已排期，门槛和测试都不改。
+
+### v2.10.1：耗时长的测试命令等跑完再判定（FIELD-20）；run 开始时提醒 .gitignore 覆盖不全（FIELD-19）；只读回合改动权限位可检测（READONLY-PERM）
+
+- **fix（FIELD-20，poker-news-bot 现场报告）**：配置的测试命令超过约 10 秒时，Codex 会让命令转入后台。原来 permission-probe 的提示词规定每条命令只调用一次 `exec_command`，模型就不会回头轮询；回合结束时命令被杀，记录里只有开始、没有退出码，结果被报成 `allowed-command-failed`。用真实 codex-cli 0.160.0 已复现：一条 120 s 的命令在回合结束时被杀。
+  - reviewer、gate、docs reviewer、specialist 和 probe 的提示词都加了轮询规则：用 `write_stdin` 发空输入、`yield_time_ms` 30000 轮询，拿到退出码之前不得结束回合，轮询不算额外命令。Claude 侧要求长命令的 Bash 调用把 timeout 设为 600000。真实 CLI 实测 120 s 和 150 s 的命令都等到了 exit 0。
+  - 只有 item.started、没有 item.completed 的 Codex 命令，现在记为"已开始、回合结束时没有退出码"。probe 报 `allowed-command-not-completed (no exit status: still running or killed when the turn ended)`；EXEC 审批 HOLD 和 DOCS reviewer 的报错会注明"the configured test was not observed to completion"，不再报成测试失败。
+  - evidence guard 只放行字面的、不带输入的轮询 cell。A/B 类要求不变：仍要观察到配置命令完整跑完一次且退出码为 0。
+- **改进（FIELD-19，发版前真实 run 发现）**：
+  - run 开始时（efficient 下是 `run`，strict 下是 `permission-probe`）就按 SECURITY 预检的同一套规则检查已提交的 `.gitignore`。有缺失类别时打印 WARNING 并写入 `lifecycle.ignore_coverage_at_start`，提醒先提交覆盖这些类别的 `.gitignore` 再开跑。只警告，不阻止。
+  - SECURITY 因覆盖不全 HOLD 后，可行的恢复办法是：在工作树里改 `.gitignore`，既不提交也不暂存，然后 resume。这会重放 EXEC 审查，修改随交付一起提交。已提交的话 HEAD 会移动而 HOLD，把 HEAD 恢复到 run 的 parent 并保留修改即可；已暂存的话 accept 时会拒绝，需要先取消暂存。HOLD 原因和文档都写明了这些。
+- **fix（READONLY-PERM，Codex 跨厂商复审 B2）**：只读回合把 tracked 或未被忽略的 untracked 普通文件的权限位改了（例如 0644 改成 0600），现在能检测到，处理方式和执行位改动相同：作废该回合、恢复、校验、重派一次。evidence 里会有 `mode: <path> 0644 -> 0600`。交付时的 mode 仍取自 manifest。
+- **审查**：每项都由 Codex gpt-6.1-sol 审查（D-REV-CODEX：审查改由 Codex 做，Claude 只写代码和协调）。FIELD-19：R1 APPROVE_WITH_FINDINGS，R2 APPROVE。READONLY-PERM：R1 REQUEST_CHANGES（2 个 MEDIUM），R2、R3 APPROVE。FIELD-20：R1 APPROVE_WITH_FINDINGS，R2 APPROVE。
+- **已知限制**：
+  - 轮询规则只写在提示词里，模型仍可能不遵守；不遵守时会如实报"没跑完"。上限是每次派发的 `--timeout`，以及 Claude 单次 Bash 调用最长 10 分钟。
+  - 权限位检查不覆盖被忽略文件、symlink、目录、ACL、xattr 和 file flags。
+
 ### v2.10.0：paired-session 成为默认入口（完整 lifecycle，默认 efficient 安全模式）；`entry: legacy` 可退回旧流程
 
 - **升级须知**：

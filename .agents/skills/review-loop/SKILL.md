@@ -15,26 +15,19 @@ then run, with that printed directory written out literally as `<bundle-dir>`:
 python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-review-loop --output <bundle-dir>/protocol-codex-entry-review-loop.md
 ```
 
-Resolve <support-root> to this plugin/repository, not the task workspace.
-Keep cwd in the user's workspace. After exit 0, read the complete output file
-in bounded chunks before acting; stdout contains only a compact hash/size receipt,
-not the instruction body. A missing, unreadable, or incompletely read file blocks the action.
-Run every loader call as its own Bash command, never chained (rule in `docs/protocol/loading.md`).
+Resolve <support-root> to this plugin/repository, not the task workspace. Cwd,
+complete reads of the output file and one Bash command per loader call follow `loading.md`;
+a missing, unreadable, or incompletely read file blocks the action.
 `docs/protocol/loading.json` is the action/prerequisite map for both runtimes.
 
 Fresh work and a review-only code target may hand off to paired-session (the default when `entry` is absent; the code target as `run --review-only`) per the entry procedures.
 Detect fresh / plan-exists / code-exists / explicit-resume via the entry procedures. For fresh work run planning → planning-review; after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone.
 
 Before initialization load `session-init` AND `review-loop-init`; before a resume
-load `resume` AND `review-loop-init`. Before any work-agent dispatch load the
-matching `planning` or `execution` bundle; before review load
-`planning-review` or `execution-review`. On planning approval, only the plan-only entry loads `plan-exit`.
+load `resume` AND `review-loop-init`. On planning approval, only the plan-only entry loads `plan-exit`.
 The umbrella retains its session/lock and continues directly into execution.
-Before a stage transition, retry,
-stop or error exit, load its applicable bundle per `loading.md`.
-Use `parallel-review` only in the Codex orchestrator for N>1 Claude-CLI
-reviewer jobs (never in Claude Code or for local Codex Reviewer agents); load
-`context-persist` only when that optional substep is applicable.
+Every other action (work-agent dispatch, review, stage transition, retry, stop or
+error exit, and the optional `parallel-review`/`context-persist`) loads its bundle per the `loading.md` table.
 
 Single default Claude-CLI reviewer job:
 `python3 <support-root>/scripts/run_claude_reviewer.py --session-id {session_id} --parent-session-id {session_id} --model {resolved_reviewer_model} --stage {planning|execution} --role reviewer --timeout-seconds 570`
@@ -51,8 +44,4 @@ Full session schema: `docs/protocol/session-file.md`; active loops:
 `docs/protocol/executor-output.md` and `docs/protocol/reviewer-output.md`.
 These are scoped references, not an eager import list. Detailed native entry
 steps live in `references/entry.md` and are selected by the loading map.
-
-Reuse a rule unit only while its exact text remains in this live context,
-using the fingerprint emitted by the loader. Fresh agents, compaction and
-new invocations must load their own prerequisites. Do not use persisted session
-state as proof that instructions are still available.
+Unit reuse within one live context follows `loading.md`.

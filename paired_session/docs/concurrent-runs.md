@@ -26,6 +26,9 @@ author, the other lane's trust block also changes this lane's
 `author_flags_digest` (its `codex_config_sha256` removes only this lane's own
 trust blocks), so the permission-probe PASS no longer matches the run. This is a
 safety check, not permission to accept arbitrary concurrent changes.
+Since FIELD-22 a turn's check (not the permission probe) also accepts the exact trust block of another live
+paired-session run's workspace, named by its workspace lease (pid alive, state ACTIVE). Separate homes are still
+the recommendation: the author flags digest and the probe are unchanged.
 
 Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
 `attribute_global_config_changes`, and `_invoke_once` in `../coordinator.py`.

@@ -23,6 +23,15 @@ def readonly_profile(args):
     except ValueError: return {}
 
 
+def long_command(events, command):
+    """FIELD-20: FAKE_CODEX_LONG=yield|started-only|killed makes `command` outlive exec_command's first yield; it then completes
+    with exit 0 (the model polled), never completes (killed at the turn end), or completes with -1 (killed)."""
+    state = os.environ.get('FAKE_CODEX_LONG')
+    changes = {'yield': {'started': True}, 'started-only': {'started': True, 'complete': False},
+               'killed': {'started': True, 'exit_code': -1, 'output': '........ [ 70%]'}}.get(state, {})
+    return [{**event, **changes} if event['command'] == command else event for event in events]
+
+
 def emit_codex(answer, session, command_events=None):
     model = os.environ.get('FAKE_CODEX_MODEL', 'gpt-6.1-sol')
     print(json.dumps({'type': 'thread.started', 'thread_id': session, 'model': model}))
@@ -54,6 +63,12 @@ def emit_codex(answer, session, command_events=None):
         time.sleep(30)
     if command_events and not os.environ.get('FAKE_MISSING_OBSERVED'):
         for index, event in enumerate(command_events):
+            if event.get('started'):   # FIELD-20: as codex-cli 0.160.0 reports a command that outlives exec_command's first yield
+                print(json.dumps({'type': 'item.started', 'item': {
+                    'id': 'fake-command-' + str(index), 'type': 'command_execution', 'command': event['command'],
+                    'exit_code': None, 'status': 'in_progress', 'aggregated_output': ''}}))
+            if event.get('complete') is False:   # killed when the turn ended: no completion event at all
+                continue
             print(json.dumps({'type': 'item.completed', 'item': {
                 'id': 'fake-command-' + str(index), 'type': 'command_execution',
                 'command': event['command'], 'exit_code': event['exit_code'],
@@ -178,6 +193,12 @@ def main():
     if append_commands and 'implementer. Phase: EXEC.' in prompt:
         with Path(os.environ['FAKE_APPEND_REVIEWER_COMMAND_FILE']).open('a') as target:
             target.write('\n```reviewer-commands\n' + append_commands + '\n```\n')
+    if os.environ.get('FAKE_PLUGIN_UPDATES') and os.environ.get('FAKE_PLUGIN_UPDATES_MATCH', 'implementer. Phase: EXEC.') in prompt:
+        queue = Path(os.environ['FAKE_PLUGIN_UPDATES'])   # field21: a JSON list of installed_plugins.json documents, one per matching turn
+        documents = json.loads(queue.read_text())          # (an update outside the run rewrites the registry during the turn)
+        if documents:
+            (Path.home() / '.claude' / 'plugins' / 'installed_plugins.json').write_text(json.dumps(documents.pop(0), indent=2))
+            queue.write_text(json.dumps(documents))
     foreign = os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG')   # P0: another process rewrites the DEFAULT ~/.codex/config.toml
     marker = {'author': 'implementer. Phase: EXEC.', 'probe': 'Role: permission-system probe'}[
         os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG_ON', 'author')]
@@ -211,7 +232,14 @@ def main():
         os.link(os.environ['FAKE_CODEX_LINK_WRITE_UNLINK'], through)
         through.write_bytes(through.read_bytes())   # the same bytes: only the inode's ctime records the write
         through.unlink()
-    if os.environ.get('FAKE_RATE_LIMIT'):
+    limit_match = os.environ.get('FAKE_RATE_LIMIT_MATCH')   # ratelimit: only a turn whose prompt contains this text
+    limit_once = os.environ.get('FAKE_RATE_LIMIT_ONCE')     # ratelimit: a marker file; only the first matching turn is limited
+    if (os.environ.get('FAKE_RATE_LIMIT') and (not limit_match or limit_match in prompt)
+            and not (limit_once and Path(limit_once).exists())):
+        if limit_once: Path(limit_once).write_text('limited\n')
+        if os.environ.get('FAKE_RATE_LIMIT_STAGE_FIRST'):   # ratelimit: a writer that changed the index before the provider refused
+            (Path.cwd() / 'rate-limit-stray.txt').write_text('stray\n')
+            __import__('subprocess').run(['git', 'add', 'rate-limit-stray.txt'], check=True)
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
     session = 'fake-codex-thread'
@@ -281,6 +309,12 @@ def main():
         if os.environ.get('FAKE_GLOBAL_CONFIG_WRITE') and 'Phase: EXEC' in prompt:   # D-EFF: a turn that changes the global Codex config
             with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
                 handle.write('\nmodel_verbosity = "high"\n')
+        once = os.environ.get('FAKE_CONCURRENT_TRUST_ONCE')
+        if os.environ.get('FAKE_CONCURRENT_TRUST_APPEND') and 'Phase: EXEC' in prompt and not (once and Path(once).exists()):
+            # FIELD-22: another run on the same Codex home trusts its own workspace while this turn runs
+            with (Path(os.environ['CODEX_HOME']) / 'config.toml').open('a') as handle:
+                handle.write('\n[projects.' + json.dumps(os.environ['FAKE_CONCURRENT_TRUST_APPEND']) + ']\ntrust_level = "trusted"\n')
+            if once: Path(once).write_text('done')
         if os.environ.get('FAKE_AUTHOR_FAIL_AFTER_WRITE') and 'Phase: EXEC' in prompt:   # v2.9.7 OPV: a CLI that fails after changing the tree
             print('fake author failed after writing', file=sys.stderr)
             return 1
@@ -356,6 +390,7 @@ def main():
             for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
                 if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
                     command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
+            command_events = long_command(command_events, allowed)
             fs = readonly_profile(args)   # b295-f1: the read-only profile in this argv decides the scratch and workspace writes
             if 'Scratch write expected to succeed:\n' in prompt:
                 scratch = prompt.split('Scratch write expected to succeed:\n', 1)[1].splitlines()[0]
@@ -528,6 +563,9 @@ def main():
         command_events = ([{'command': configured_test, 'exit_code': 1, 'output': 'FAILED fake test'}]
                           if vendor == 'codex' and role == 'reviewer' and phase == 'EXEC'
                           and configured_test and os.environ.get('FAKE_REVIEW_TEST_FAILURE') else None)
+        if (command_events is None and vendor == 'codex' and role == 'reviewer' and phase == 'EXEC' and configured_test
+                and os.environ.get('FAKE_CODEX_LONG')):   # FIELD-20: the configured test outlives the first yield
+            command_events = long_command([{'command': configured_test, 'exit_code': 0, 'output': 'OK'}], configured_test)
     if prompt.startswith('Role: author workspace-write permission probe'):
         encoded = prompt.split('PROBE_COMMANDS_JSON: ', 1)[1].splitlines()[0]
         commands = json.loads(encoded)
@@ -598,6 +636,8 @@ def main():
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_TOUCH_IGNORED'):   # eff-e: edit an existing ignored file
             with (Path.cwd() / os.environ['FAKE_PLAN_REVIEWER_TOUCH_IGNORED']).open('a') as handle:
                 handle.write('reviewer edit\n')
+        if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_RUN_TEST'):   # igncache: the allowed test command, run for real
+            subprocess.run(shlex.split(os.environ['FAKE_PLAN_REVIEWER_RUN_TEST']), cwd=Path.cwd(), capture_output=True, check=False)
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_CORRUPT_INDEX'):   # eff-e: git ls-files fails afterwards
             (Path.cwd() / '.git' / 'index').write_bytes(b'not an index\n')
 
