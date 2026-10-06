@@ -239,7 +239,9 @@ def resolve(repo: str | Path, value: str, base: str | None = None,
             base_pin = ref_pin(repo, base, remotes)
         return {"kind": "pr", "operator_repo": str(repo), "target_url": source,
                 "repository": target, "number": number, "url": expected,
-                "is_cross_repository": data["isCrossRepository"], "head": head, "base": base_pin}
+                "is_cross_repository": data["isCrossRepository"], "head": head, "base": base_pin,
+                # baseRefOid is the base the PR recorded; its branch may have advanced since (always, once merged)
+                "base_may_trail": base is None}
     if repository is not None:
         raise ResolutionError("--repository requires a PR input")
     head = ref_pin(repo, value, remotes)
@@ -269,6 +271,15 @@ def operator_areas(operator: Path) -> set:
     for flag in ("--absolute-git-dir", "--git-common-dir"):
         areas.add((operator / git_step("operator repository", ["git", "rev-parse", flag], operator)).resolve())
     return areas
+
+
+def on_branch(dest: Path, oid: str) -> bool:
+    """The pinned OID is a commit the fetched base branch contains (an ancestor of, or equal to, its tip)."""
+    try:
+        command(["git", "merge-base", "--is-ancestor", "--end-of-options", oid, "refs/review/base"], dest)
+        return True
+    except ResolutionError:   # exit 1 (not an ancestor) or 128 (the object was not fetched)
+        return False
 
 
 def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -> dict:
@@ -305,7 +316,9 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
                                        f"+{what}:refs/review/{side}"], dest, network=True, timeout=1800)
             got = git_step(f"{side} verify", ["git", "rev-parse", "--verify", "--end-of-options",
                                               f"refs/review/{side}^{{commit}}"], dest)
-            if got != pin_["oid"]:
+            if got != pin_["oid"] and side == "base" and resolution.get("base_may_trail") and on_branch(dest, pin_["oid"]):
+                git_step("base verify", ["git", "update-ref", "refs/review/base", pin_["oid"]], dest)   # review the pinned base
+            elif got != pin_["oid"]:
                 raise MaterializeError(f"{side} moved: fetched {got[:12]}, pinned {pin_['oid'][:12]}")
         try:   # exit 1 with no output: unrelated histories
             bases = command(["git", "merge-base", "--all", "refs/review/base", "refs/review/head"], dest).splitlines()

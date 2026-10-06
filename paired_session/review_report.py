@@ -6,6 +6,9 @@ the roles that ran with their tool-use counts and the stages that did not comple
 Recommended Actions list. "Strengths" is not invented: the ledger has none.
 """
 SECTIONS = (('CRITICAL', 'Critical'), ('SECURITY', 'Security'), ('MAJOR', 'Important'), ('MINOR', 'Suggestions'))
+# FIELD-26: as WL normalizes specialist severities (HIGH/MEDIUM -> MAJOR, LOW -> MINOR); the EXEC reviewer and the gate keep
+# theirs in the ledger. Anything else goes to "Other", so no open finding is dropped.
+ALIASES = {'HIGH': 'MAJOR', 'MEDIUM': 'MAJOR', 'LOW': 'MINOR'}
 ROLE_NAMES = {'persistent-reviewer': 'EXEC reviewer', 'fresh-shadow': 'shadow', 'adversarial-gate': 'gate',
               'security-reviewer': 'security reviewer', 'security-preflight': 'security preflight'}
 RECOMMENDED = ('Fix every Critical and Security finding first.', 'Then fix the Important findings.',
@@ -33,7 +36,9 @@ def render(state: dict) -> str:
     if config.get('review_aspects'):
         lines.append('- Aspects: ' + ','.join(config['review_aspects']))
     test_command = config.get('test_command')
-    lines.append('- Tests: ' + (f'roles were asked to run `{test_command}`' if test_command else 'tests not run'))
+    static = sum(1 for turn in state.get('turns', []) if turn.get('static_untested_approval'))
+    lines.append('- Tests: ' + (f'roles were asked to run `{test_command}`' if test_command else 'tests not run') +
+                 (f'; {static} approvals are static and untested' if static else ''))
     life = state.get('lifecycle') or {}
     # every specialist dispatches as role reviewer in POLISH-Q: name each sequence it used (retries and failures too)
     names = {int(seq): 'specialist ' + str(name) for seq, name in (life.get('specialist_sequences') or {}).items()}
@@ -48,26 +53,40 @@ def render(state: dict) -> str:
         if turn.get('role') in ('probe', 'gate-probe'):
             continue
         label = names.get(turn.get('sequence')) or phase_names.get((turn.get('role'), turn.get('phase'))) or turn.get('role')
-        status = ' (discarded: ' + str(turn['discarded']) + ')' if turn.get('discarded') else ' (voided)' if turn.get('voided') else ''
+        status = (' (discarded: ' + str(turn['discarded']) + ')' if turn.get('discarded') else ' (voided)' if turn.get('voided') else
+                  ' (static, untested approval)' if turn.get('static_untested_approval') else '')
         lines.append(f"- {label} ({turn.get('phase')}): {len(turn.get('observed_tool_calls') or [])} tool calls{status}")
     for failure in state.get('spawn_failures', []):
         label = names.get(failure.get('sequence')) or failure.get('role')
         lines.append(f"- {label} ({failure.get('phase')}): failed to start: {failure.get('error')}")
-    for receipt in life.get('receipts', []):
-        if receipt.get('stage') == 'POLISH-Q' and receipt.get('skipped'):
-            lines.append('- POLISH-Q specialists: skipped (skip_quality_polish)')
+    polish = [receipt for receipt in life.get('receipts', []) if receipt.get('stage') == 'POLISH-Q']
+    for receipt in polish:
+        if receipt.get('skipped'):
+            reason = ('skip_quality_polish' if config.get('skip_quality_polish') else
+                      'no specialist selected for aspects ' + ','.join(config.get('review_aspects') or ()))
+            lines.append(f'- POLISH-Q specialists: skipped ({reason})')
     comparison = (state.get('exec_comparisons') or [{}])[-1]
-    verdicts = [('EXEC reviewer', (comparison.get('persistent') or {}).get('verdict')),
+    raw = (comparison.get('persistent') or {}).get('verdict')   # its turn's effective verdict, e.g. RF-5 APPROVE -> REVISE
+    effective = next((row.get('effective_verdict') for row in state.get('review_verdicts', [])
+                      if row.get('sequence') == comparison.get('review_sequence')), None)
+    verdicts = [('EXEC reviewer', f'{raw} → {effective}' if raw and effective and effective != raw else raw),
+                *(('specialist ' + str(turn.get('name')), turn.get('status')) for turn in (polish[-1:] or [{}])[0].get('specialist_turns') or []),
                 ('shadow', (comparison.get('shadow') or {}).get('verdict')),
                 ('gate', (comparison.get('gate') or {}).get('verdict')),
                 *(('security reviewer', (receipt.get('review') or {}).get('status')) for receipt in life.get('receipts', [])
                   if receipt.get('stage') == 'SECURITY')]
     lines += ['', '## Verdicts', *(f'- {who}: {verdict}' for who, verdict in verdicts if verdict)]
     rows = [row for row in state.get('finding_ledger', []) if row.get('status') not in ('withdrawn', 'fixed')]
-    for severity, title in SECTIONS:
-        found = [row for row in rows if str(row.get('severity')).upper() == severity]
+    def section(row):
+        severity = str(row.get('severity')).upper()
+        return ALIASES.get(severity, severity if severity in dict(SECTIONS) else 'OTHER')
+    for severity, title in (*SECTIONS, ('OTHER', 'Other')):
+        found = [row for row in rows if section(row) == severity]
+        if severity == 'OTHER' and not found:
+            continue
         lines += ['', f'## {title} ({len(found)})']
-        lines += [f"- **{row['id']}** [{_role(row)}, {row.get('phase')}] `{row.get('file') or '-'}`: {row.get('summary', '')}"
-                  for row in found] or ['- none']
+        lines += [f"- **{row['id']}** [{_role(row)}, {row.get('phase')}"
+                  f"{'' if str(row.get('severity')).upper() == severity else ', ' + str(row.get('severity')).upper()}] "
+                  f"`{row.get('file') or '-'}`: {row.get('summary', '')}" for row in found] or ['- none']
     lines += ['', '## Recommended Actions', *(f'{index}. {text}' for index, text in enumerate(RECOMMENDED, 1)), '']
     return '\n'.join(lines)

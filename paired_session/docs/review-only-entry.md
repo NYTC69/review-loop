@@ -32,11 +32,13 @@ Anchors are at `18479ba`. `C` = `paired_session/coordinator.py`; `PSE` = `docs/p
 - `--stop-after-plan` is given. The skill refuses its own `--plan-only` argument.
 - The work item already carries ledger ids or review-history wording. `_plan_history_issue` (FIELD-11, C:4514-4522) runs
   only at PLAN approval, which this entry skips, so it runs here at creation instead.
-  As built (LG1-e), it also scans the review scope, so a changed path named like review history (`docs/F001.md`,
-  `APPROVE.txt`) is refused, and the message names the scope as the source. This conservative refusal stays: the
-  fresh shadow and gate scan `context/plan.md`, which lists the path, and the ledger-id pattern there
-  (`assert_fresh_prompt`) is an independence guard. Narrowing the entry check alone would only move the refusal to a
-  mid-run gate failure. Such a change is reviewed with the legacy workflow.
+  As built (LG1-e), it also scans the review scope. Since FIELD-27 the scope's initial-change path list is exempt,
+  both here and when the fresh shadow and gate scan `context/plan.md` (only this run's frozen scope), and
+  `delta.stat`/`status.txt` exempt the creation mirror's paths: a changed path that names a vendor or a review
+  (`bin/codex-run`, `docs/gate-review-notes.md`) is the user's code. A path a later fix round adds is still caught in
+  `delta.stat`/`status.txt`. The rest of the scope (the work item, the test command) is scanned as before. A path
+  shaped like a ledger id or a verdict (`docs/F001.md`, `APPROVE.txt`) is still refused here (FIELD-11, kept
+  conservative: the ledger-id pattern is an independence guard); such a change is reviewed with the legacy workflow.
 - Until LG1-c lands, `--review-only` with `--lifecycle-mode on` (§9). Lifted in LG1-c.
 
 The scope lists one path per line; since LG1-e a name with a tab, newline, other control character, backslash, leading

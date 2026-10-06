@@ -1,5 +1,26 @@
 # Changelog
 
+### v2.12.3：`/review-loop:review-pr` 默认改走 paired-session 的报告模式（review-pr 移植完成，收尾检查已通过）；review-only 运行不再把用户自己改动里的 vendor 字样当成审查记录（FIELD-26/27）；AAB 等组合在 strict 模式下也检查 codex-cli（ROLE-NITS）
+
+- **review-pr 移植完成（D-LG2，legacy 删除前提 ①）**：
+  - `.review-loop/config.md` 里没有 `entry`，或 `entry: paired-session` 时，`/review-loop:review-pr [PR 号 | PR URL | ref] [aspects]` 走 paired-session 的报告模式（`run --review-only --review-report`）。新增的 Codex review-pr skill 按同样规则路由。
+    - PR 先由 `scripts/materialize_pr.py` 钉住 head 和 base，在临时 clone 里检出；钉住的值在 run 创建时冻结进 state（`--review-pr-pins`），对不上就拒绝。
+    - 全程没有 writer，什么都不提交、不发布。报告写到 `review-report.md`。要发到 PR 上，需要用户明确要求，发布前会扫描 secret 并要求确认全文。
+    - `simplify` 在这条路线上被拒绝，提示改用 `/review-loop:review-pr --legacy simplify`。
+    - 想继续用 legacy：在 config 里写 `entry: legacy`，或加 `--legacy` 参数，或对 Codex 说 "use the legacy review-pr workflow"。
+  - PR 记录的 base（`baseRefOid`）常常比 base 分支的当前 tip 旧：已合并的 PR 一定如此，base 前进过的 open PR 也会。现在只要它仍在分支上就接受，并用它作为 review base；分支被改写时才拒绝。head 被 force-push 时仍按原规则拒绝（LG2-d basepin）。
+  - 收尾检查：用默认入口真实审 NYTC69/review-loop#6，REPORTED complete，7/25 次调用，没有发布任何内容。前两次尝试分别暴露了 base 的问题和 FIELD-26，均已修复。
+  - legacy 弃用提示改为：review-pr 已移植，code-quality-loop 仍走 legacy。各文档里 2026-04-19 的 README 快照块都标注了 "README.md is current"。
+  - 内部报告模式的其余部分（LG2-a/b）在 v2.12.1、v2.12.2 已发布：no-test 运行、发布前的 secret 扫描与全文确认、b1 gate 的 3 个 MINOR 等。
+- **fix（FIELD-26/27，review-pr 收尾检查现场）**：fresh shadow/gate 的独立性检查会把 vendor 名、审查用语当成泄漏的审查记录。在 review-only 运行里，创建时就已存在的改动是用户自己的代码：
+  - 它的文件内容（FIELD-26）和文件路径（FIELD-27，例如 `bin/codex-run`、`docs/gate-review-notes.md`）现在都按用户内容放行，新文件也一样。
+  - 之后 fix 轮加进来的文字和路径照常扫描；prompt 和模板永远不豁免；普通运行不变。
+  - 形似 ledger id 或审查结论的路径（`docs/F001.md`、`APPROVE.txt`）照旧在创建时拒绝（FIELD-11）。
+  - 报告现在列出全部 open finding：HIGH/MEDIUM 归入 Important，LOW 归入 Suggestions；原来 LOW 会被漏掉。"Base tip" 改名为 "Base (pinned)"。
+- **fix（ROLE-NITS）**：strict 模式下，只要有任一角色用 Codex（例如 AAB 的 gate），普通运行就做 codex-cli 版本检查；以前只有 author 是 Codex 时才检查。报告模式保持不检查。三个角色的厂商本来就可以自由组合，ABA/BAB 是推荐默认，不是硬性要求。
+- **审查**：都走 ABA，Opus 写、Codex 逐轮审、fresh Opus 终审；从这一版起终审在临时 clone 里跑。LG2-c、basepin、FIELD-26、FIELD-27 终审 APPROVE；ROLE-NITS 终审抓到一个回归（报告模式的两个测试），已修复。
+- **没有进这一版**：B 道的 FIELD-25（accept 给出下一步命令等）、M7 扫描器 v2（D04）和 D09 能力 1，CI 或终审还有待修的问题，修好后在 v2.12.4 发布。
+
 ### v2.12.2：Claude 周额度或会话额度用完时，run 进入限额暂停并显示重置时间，不扣调用次数（RL-WEEKLY）；efficient 模式下，回合进行中插件正常升级不再作废这个回合（FIELD-24）；review-pr 移植的后续内部批次
 
 - **fix（RL-WEEKLY，poker-news-bot WI-109 现场）**：Claude author 回合撞上周额度，run 以笼统的 "CLI exit 1" HOLD，扣掉了一次调用，也没有重置时间。原因是 `classify_rate_limit_failure` 不认识 stream-json 里的限额形态。现在以下任一信号都确认为额度限制：

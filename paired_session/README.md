@@ -77,7 +77,16 @@ The exempt text is the whole match ("Claude approved", not "Claude") and must
 occur at the base as a whole word ("APPROVE" is not in "approved"). Another
 known residual, on the strict side: a file moved without `git mv` (`mv`, or `rm`
 plus a new file) appears as a new untracked file and gets no exemption, so a
-base marker in it holds; use `git mv`.
+base marker in it holds; use `git mv`. In a review-only run (FIELD-26) the change
+as created is the user's code, not review history: a match is also exempt when
+the same file in the run's creation mirror (`internal/review-start`) contains
+it, new files included, so a PR that names a vendor passes. Text a later fix
+round adds is not in that mirror and is scanned as before. Its paths count the
+same way (FIELD-27): `delta.stat`/`status.txt` exempt the mirror's paths and the
+frozen review scope's initial-change list is masked, so `bin/codex-run` passes
+while a path a fix round adds is caught; a ledger-id or verdict shaped path
+(`docs/F001.md`, `APPROVE.txt`) is still refused at creation (FIELD-11). A
+scope-change successor keeps its parent's creation mirror for this.
 In `delta.stat` and `status.txt`, matches inside paths that exist at the base
 commit are exempt. In `plan.md` and `workitem.md`, a match is exempt only inside
 backticks or a fenced code block and only if its matched text occurs in a file

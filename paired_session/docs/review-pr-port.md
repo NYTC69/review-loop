@@ -52,6 +52,10 @@ is committed, pushed or posted.
 **Pinned, then verified.** The skill resolves every input to OIDs once.
 - After the fetch it verifies, in the clone, that the head and base OIDs are the pinned ones. A PR updated in between is
   re-resolved once, then refused.
+- Exception, the base of a PR input without `--base` (LG2-d-basepin): `baseRefOid` is the base the PR recorded, and its
+  branch may have advanced since (always, once the PR is merged). The base branch is fetched; the pinned OID is accepted
+  when the branch still contains it (an ancestor of, or equal to, the fetched tip) and becomes `refs/review/base`. A
+  pinned base the branch no longer contains (a rewritten branch) is refused as moved. The head keeps the strict rule.
 - The review base is `git merge-base --all <base OID> <head OID>`, computed in the clone, and must give exactly one
   result. It is always an ancestor of the head, as RO §1 requires. More than one merge base (criss-cross history) is
   refused in v1.
@@ -104,7 +108,8 @@ says so.
      its full ref name (`git -C <dir> fetch <operator repo> <refs/heads/...>:refs/review/head`, which only reads that
      repository), then checked against the pinned OID. A fetch by bare OID can be refused by the uploading side's
      `uploadpack` settings;
-   - the base: from its own source, the same way.
+   - the base: from its own source, the same way (a PR's base branch by name, its pinned `baseRefOid` then checked
+     to be on it, §2.1).
 
    Store them as `refs/review/head` and `refs/review/base`, then verify both OIDs (§2.1).
 4. Run `git -C <dir> checkout --detach refs/review/head`. The tree is then clean: the change is `base..HEAD`, all
@@ -265,7 +270,7 @@ pattern of `review_only`):
     - MINOR → Suggestions;
     - nothing is dropped;
   - each finding with its role, `file:line` and verdict context (EXEC REVISE/BLOCK, gate, specialist, security);
-  - the pinned OIDs (target repository, head, base tip, merge base) and the PR URL;
+  - the pinned OIDs (target repository, head, base (pinned), merge base) and the PR URL;
   - the roles that ran (with their tool-use counts) and the roles skipped or failed;
   - whether tests ran (approvals recorded as static and untested are marked), LFS pointers left unreviewed,
     "incomplete" if the run ended at a HOLD, and a coverage note for a PR above the Q-R10 threshold. Role tool-use counts

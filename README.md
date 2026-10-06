@@ -92,7 +92,7 @@ The shared `reviewer` and `executor_model` keys do not actively control
 Stage 1 Codex reviewer/backend selection. In Codex Stage 1,
 `executor_model` is ignored and `codex_executor_model` remains reserved.
 
-Stage 1 does not yet migrate `code-quality-loop`, `review-pr`, or `reorganize`.
+Stage 1 does not yet migrate `code-quality-loop` or `reorganize`.
 
 ### Install in Codex CLI
 
@@ -120,8 +120,8 @@ The plugin is cached under `$CODEX_HOME/plugins/cache/` (default
 version from `codex plugin list --json` rather than assuming a fixed versioned
 path.
 
-Once enabled, the five Stage 1 skills under `.agents/skills/` (`review-loop`,
-`plan`, `execute`, `guide`, `paired-session`) are exposed to the Codex agent and respond to
+Once enabled, the six Stage 1 skills under `.agents/skills/` (`review-loop`,
+`plan`, `execute`, `guide`, `paired-session`, `review-pr`) are exposed to the Codex agent and respond to
 natural-language triggers like "run review-loop on this branch" or
 "plan this task with review-loop". Codex matches plugin skills by their
 `SKILL.md` `description`, not by literal slash commands —

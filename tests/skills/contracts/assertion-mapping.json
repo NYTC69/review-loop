@@ -158,7 +158,7 @@
     "codex_stage1_downstream_lifecycle_unicode_arrow": {
       "kind": "artifact_contains",
       "artifact": "response.txt",
-      "needle": "exec → polish → docs → security → delivery"
+      "needle": "exec \u2192 polish \u2192 docs \u2192 security \u2192 delivery"
     },
     "codex_stage1_downstream_stop_points_mentioned": {
       "kind": "artifact_contains",
@@ -2128,35 +2128,35 @@
     "legacy_deprecation_notice": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": "skills/legacy/SKILL.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": "skills/plan/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": "skills/execute/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": ".agents/skills/plan/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": ".agents/skills/execute/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       },
       {
         "path": "docs/paired-session-migration.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work and review of existing changes; review-pr and code-quality-loop still use legacy until they are ported; removal is planned after that"
+        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes and review-pr; code-quality-loop still uses legacy until it is ported; removal is planned after that"
       }
     ],
     "legacy_deprecated_docs": [
@@ -2265,6 +2265,72 @@
       {
         "path": "review-loop-config.example.md",
         "needle": "\"legacy\" | \"paired-session\" (exact values only; anything else falls back to legacy with a warning)"
+      }
+    ],
+    "review_pr_default_entry_notice": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "review-pr: paired-session report mode is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      },
+      {
+        "path": ".agents/skills/review-pr/SKILL.md",
+        "needle": "review-pr: paired-session report mode is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-pr: paired-session report mode is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+      }
+    ],
+    "review_pr_simplify_legacy_pointer": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      },
+      {
+        "path": ".agents/skills/review-pr/SKILL.md",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      },
+      {
+        "path": "paired_session/coordinator.py",
+        "needle": "/review-loop:review-pr --legacy simplify"
+      }
+    ],
+    "review_pr_codex_legacy_request": [
+      {
+        "path": ".agents/skills/review-pr/SKILL.md",
+        "needle": "the legacy review-pr workflow"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "the legacy review-pr workflow"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "the legacy review-pr workflow"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "the legacy review-pr workflow"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "the legacy review-pr workflow"
       }
     ]
   }
