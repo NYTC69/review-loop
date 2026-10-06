@@ -742,6 +742,42 @@ def test_d2_moved_head_is_refused_and_the_clone_removed(setup, tmp_path, monkeyp
         mp.resolve_and_materialize(repo, '7', None, None, tmp_path / 'runs')
 
 
+def test_d2_a_pr_base_branch_that_advanced_keeps_the_pinned_base(setup, tmp_path):   # basepin: a merged PR's shape
+    repo, target, base, head, *_ = setup
+    git(repo, 'push', '-q', str(target), 'topic:refs/pull/7/head')
+    git(repo, 'checkout', '-q', 'main')
+    tip = commit(repo, 'later', 'later\n', 'main moved on')
+    git(repo, 'push', '-q', str(target), 'main:refs/heads/main')   # gh still reports baseRefOid = base
+    resolution = pr(setup, 7, head)
+    assert resolution['base']['oid'] == base and resolution['base_may_trail'] is True
+    out = mp.materialize(resolution, tmp_path / 'runs')
+    ws = assert_materialized(out, tmp_path / 'runs', head, base)   # refs/review/base is the pinned base, not the tip
+    assert out['merge_base'] == base and git(ws, 'rev-parse', 'origin/main') == tip
+
+
+def test_d2_a_pr_base_no_longer_on_its_branch_is_refused(setup, tmp_path):   # basepin: a rewritten base branch
+    repo, target, base, head, *_ = setup
+    git(repo, 'push', '-q', str(target), 'topic:refs/pull/7/head')
+    git(repo, 'checkout', '-q', '--orphan', 'rewritten')
+    commit(repo, 'other', 'other\n', 'rewritten history')
+    git(repo, 'push', '-q', '-f', str(target), 'rewritten:refs/heads/main')
+    with pytest.raises(mp.MaterializeError, match='base moved'):
+        mp.materialize(pr(setup, 7, head), tmp_path / 'runs')
+    assert list((tmp_path / 'runs' / 'pr').iterdir()) == []
+
+
+def test_d2_an_explicit_base_keeps_the_strict_moved_rule(setup, tmp_path):   # basepin: only gh's baseRefOid may trail
+    repo, target, *_ = setup
+    git(repo, 'push', '-q', str(target), 'topic:refs/pull/7/head')
+    resolution = localize(mp.resolve(repo, '7', 'origin/main'), target)
+    assert resolution['base_may_trail'] is False
+    git(repo, 'checkout', '-q', 'main')
+    commit(repo, 'later', 'later\n', 'main moved on')
+    git(repo, 'push', '-q', str(target), 'main:refs/heads/main')
+    with pytest.raises(mp.MaterializeError, match='base moved'):
+        mp.materialize(resolution, tmp_path / 'runs')
+
+
 def test_d2_criss_cross_history_is_refused(setup, tmp_path):
     repo = setup[0]
     git(repo, 'checkout', '-q', '-b', 'left', 'main')
