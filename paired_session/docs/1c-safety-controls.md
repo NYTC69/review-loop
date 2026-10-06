@@ -2,6 +2,13 @@
 
 Docs only; built from the code at this HEAD (`coordinator.py` = `co.py` below, line numbers are this HEAD). Feeds BACKLOG 1C and gate S5 of [1d-entry-mapping.md](1d-entry-mapping.md). It is an inventory, not an independent review and not a closure claim. `enforced` = a code anchor on a path real providers take AND a named test that fails if the control is removed. When unsure the weaker status is used. A test that asserts generated flags does not prove OS behaviour; OS effect is evidenced only by installed probes (R21-1) and is re-checked at M6.
 
+Status since this inventory (2026-10-07, DOCS-1007; the rows keep their HEAD-0f01484 wording): D-EFF made `efficient`
+the default mode (ADR-11 amendment), so the permission-probe gate (rows 4, 4b) and the Claude author probe and
+opt-in (row 3b) apply only to `--strict` runs; the sandboxes and the per-turn detective controls apply in both modes.
+The worktree lifecycle W is the real default route since v2.10.0, so rows 12, 16 and 17 are no longer fake-only: the
+SECURITY preflight, the stage budgets and the FINISH/DOCS writers run on real runs, and `lifecycle_mode=on` is not
+refused on the real CLI.
+
 Status: `enforced` / `offline-only` (code and tests exist but no caller on the real path, or the effect is not evidenced on the real CLI, or no dedicated test) / `fake-only` (reachable only with the fake-CLI lifecycle) / `design-only` (doc or convention, no code).
 
 | # | Control | Enforced at | Test that fails if removed | Status | Residual risk / M6 re-check |

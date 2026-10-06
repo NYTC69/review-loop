@@ -111,7 +111,11 @@ instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
 never interpolate user text as shell code. Write launcher logs under the run
 root's `logs/`, not next to the run dir (a strict probe counts a write beside
-the run dir as an author escape).
+the run dir as an author escape). Read a launcher log only when a coordinator
+command ends without its final line (DONE, HOLD, REFUSED, ACCEPTED, REPORTED or
+a probe PASS/FAIL), for example after a crash or a traceback: then read its last
+lines for the error. Otherwise read `RUN_DIR/state.json` or `status --brief`, and
+never stream a whole log into the conversation.
 
 ## Review-only entry
 

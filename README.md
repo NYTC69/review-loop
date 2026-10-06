@@ -320,7 +320,7 @@ shown. Optionally auto-commits the result.
 ### `/review-loop:code-quality-loop`
 
 Follows `entry`: by default a paired-session review-only run on the uncommitted change (review, fix,
-simplify, consolidate tests, docs, security; `accept` makes one local commit unless `auto_commit: false`).
+one fix round for the non-blocking findings, simplify, consolidate tests, docs, security; `accept` makes one local commit unless `auto_commit: false`).
 `--legacy` or `entry: legacy` runs the legacy loop (deprecated). Arguments: `[max-rounds]`,
 `--skip-reorganize`, `--legacy`; `--reorganize` is legacy only.
 
