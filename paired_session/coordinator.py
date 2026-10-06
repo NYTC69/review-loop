@@ -8409,8 +8409,8 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.strict and 'codex' in self.dispatched_vendors() and not lifecycle_spine.fake_dispatch_guard(self.args) \
-                and not (ok := self.codex_contract_verified())[0]:
+        if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
+                and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
             raise ValueError(ok[1])
         if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
                 and not (ok := self.claude_author_verified())[0]:
@@ -9833,7 +9833,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (co.strict and args.action in ('run', 'resume', 'reject') and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too
+    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject')
+            and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too; report runs keep skipping it (residual)
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
             co.state['codex_cli_override'] = {
