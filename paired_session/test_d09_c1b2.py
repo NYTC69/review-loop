@@ -14,6 +14,7 @@ from paired_session import test_worktree_lifecycle as twl
 rc, DONE = twl.rc, twl.DONE
 CODE = ''.join(f'VALUE_{n} = {n}\n' for n in range(30))
 RUN = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '80')
+SMOKE = 'import unittest\n\n\nclass Smoke(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n'
 
 
 class D09C1b2Tests(unittest.TestCase):
@@ -26,6 +27,7 @@ class D09C1b2Tests(unittest.TestCase):
         (self.workspace / 'new_code.py').write_text('A = 1\n' if small else CODE)
         (self.workspace / 'tests').mkdir()
         (self.workspace / 'tests' / 'test_new_code.py').write_text('import new_code\n')
+        (self.workspace / 'test.py').write_text(SMOKE)   # C1-b3: a green baseline on any Python (not a test path)
         return rc.git_snapshot(self.workspace)[0]
 
     def drive(self, check=True, extra=(), **env):   # in process, so the C1-b3 local check can be stood in for

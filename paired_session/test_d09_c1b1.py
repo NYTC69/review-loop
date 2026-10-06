@@ -1,7 +1,8 @@
 """D09 C1-b1 (paired_session/docs/d09-cap1-writer-passes.md §2, §5, §6 batch C1-b1): the POLISH-Q writer legs through the
 FINISH writer path, with input binding, captures, the tree-over-answer judgment, the rollback of a HOLD-with-writes or a
 failed attempt, and the zero-tool retry. The replay (C1-b2) and the local check (C1-b3) are not built yet, so a kept
-write is rolled back as `rolled-back:pending-replay`: nothing unreviewed reaches DOCS."""
+write was rolled back as `rolled-back:pending-replay`; C1-b3 replaced it: a write that fails the local run is
+`rolled-back:tests`, a reserved-docs write `rolled-back:boundary`. Nothing unreviewed reaches DOCS."""
 import json
 from pathlib import Path
 import unittest
@@ -13,6 +14,7 @@ from paired_session import worktree_lifecycle as wl
 rc, DONE = twl.rc, twl.DONE
 CODE = ''.join(f'VALUE_{n} = {n}\n' for n in range(30))
 RUN = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '80')
+SMOKE = 'import unittest\n\n\nclass Smoke(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n'
 
 
 class D09C1b1Tests(unittest.TestCase):
@@ -25,6 +27,7 @@ class D09C1b1Tests(unittest.TestCase):
         (self.workspace / 'new_code.py').write_text(CODE)
         (self.workspace / 'tests').mkdir()
         (self.workspace / 'tests' / 'test_new_code.py').write_text('import new_code\n')
+        (self.workspace / 'test.py').write_text(SMOKE)   # C1-b3: a green baseline on any Python (not a test path)
 
     def run_writers(self, **env):
         self.eligible_change()
@@ -42,11 +45,12 @@ class D09C1b1Tests(unittest.TestCase):
         self.git('add', 'tests/test_new_code.py')   # a staged entry from before the run: the restore keeps the index
         staged = self.git('diff', '--cached', '--name-only')
         before = rc.git_snapshot(self.workspace)[0]
-        done = self.run_coordinator(*RUN, env={'FAKE_WRITER_WRITE': 'simplifier,test-writer'})
+        done = self.run_coordinator(*RUN, '--test-command', 'test ! -e sum_ints.py',   # C1-b3: the local run fails on a write
+                                    env={'FAKE_WRITER_WRITE': 'simplifier,test-writer'})
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
         state = self.state()
         marker = state['lifecycle']['quality_writers']
-        self.assertEqual([marker[w]['state'] for w in ('simplifier', 'test-writer')], ['rolled-back:pending-replay'] * 2)
+        self.assertEqual([marker[w]['state'] for w in ('simplifier', 'test-writer')], ['rolled-back:tests'] * 2)
         self.assertEqual((marker['base_oid'], marker['simplifier']['input_oid'], marker['simplifier']['output_oid'],
                           marker['test-writer']['input_oid'], marker['test-writer']['output_oid']), (before,) * 5)
         self.assertTrue(Path(marker['base_capture'], 'record.json').is_file())
@@ -55,7 +59,7 @@ class D09C1b1Tests(unittest.TestCase):
         self.assertEqual([row['stage'] for row in state['lifecycle']['receipts']],
                          ['FINISH', 'POLISH-Q', 'POLISH-Q', 'POLISH-Q', 'DOCS', 'SECURITY'])
         self.assertEqual([(row['role'], row['writer_state']) for row in self.legs(state)],
-                         [('simplifier', 'rolled-back:pending-replay'), ('test-writer', 'rolled-back:pending-replay')])
+                         [('simplifier', 'rolled-back:tests'), ('test-writer', 'rolled-back:tests')])
         [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
         self.assertEqual((docs['candidate_oid'], state['lifecycle']['epoch'], state['exec_rounds']), (before, 0, 1))
         self.assertNotIn('# simplifier edit', (self.workspace / 'sum_ints.py').read_text() if (self.workspace / 'sum_ints.py').exists() else '')
@@ -70,7 +74,7 @@ class D09C1b1Tests(unittest.TestCase):
         self.assertIn('Do not add tests for uncovered logic.', prompts[1])
         self.assertEqual(state['lifecycle']['writer_counts'], {'simplifier': 1, 'test-writer': 1})
         self.assertNotIn('writer_leg', state['lifecycle'])
-        self.assertIn('质量 writer simplifier：rolled-back:pending-replay', wl.delivery_report(
+        self.assertIn('质量 writer simplifier：rolled-back:tests', wl.delivery_report(
             {**state, 'accepted_at': ''}, 'run', '# item\n', {'auto_commit': False}))
 
     # --- §5 test 3: no write, whatever the answer ---------------------------------------------------------------------------
@@ -146,7 +150,7 @@ class D09C1b1Tests(unittest.TestCase):
         done, state, before = self.run_writers(FAKE_WRITER_WRITE='simplifier', FAKE_WRITER_FILE='CHANGELOG.md')
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
         marker = state['lifecycle']['quality_writers']
-        self.assertEqual(marker['simplifier']['state'], 'rolled-back:pending-replay')   # the reserved DOCS file is put back
+        self.assertEqual(marker['simplifier']['state'], 'rolled-back:boundary')   # the reserved DOCS file is put back
         self.assertIn('CHANGELOG.md', Path(marker['simplifier']['diff']).read_text())
         [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
         self.assertEqual(docs['candidate_oid'], before)

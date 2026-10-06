@@ -7203,10 +7203,11 @@ class Coordinator:
 
     def worktree_writer_turn(self) -> None:
         """D09 C1-b1 (d09-cap1-writer-passes.md §2): one POLISH-Q writer leg through the FINISH writer path, bound to its
-        input tree, judged by the tree, not the answer. Until the replay (C1-b2) and the local check (C1-b3) land, a kept
-        write could only reach DOCS unreviewed, so every change is rolled back (verified): READY as
-        `rolled-back:pending-replay`, HOLD as `rolled-back:hold`. A failed attempt is rolled back as `exhausted`; only a
-        turn without tool calls is retried, once."""
+        input tree, judged by the tree, not the answer: a READY change that passes the local test run is kept (`wrote`,
+        the replay follows), one that fails it is rolled back (`rolled-back:tests`), a HOLD with a change is rolled back
+        (`rolled-back:hold`), and one that touches a reserved DOCS path or `.review-loop/` config is refused before the
+        local run (`rolled-back:boundary`). A failed attempt is rolled back as `exhausted`; only a turn without tool calls
+        is retried, once. Every rollback verifies."""
         life = self.state['lifecycle']
         marker, writer = life['quality_writers'], 'simplifier' if self.state['next'] == 'polish-simplify' else 'test-writer'
         if not (leg := life.get('writer_leg')) or leg['writer'] != writer:   # a new leg: bind and capture once
@@ -7214,8 +7215,10 @@ class Coordinator:
             input_oid = input_oid or marker['base_oid']
             if git_snapshot(self.workspace)[0] != input_oid:
                 raise RuntimeError(f'POLISH-Q {writer}: the tree differs from its input {input_oid[:12]}; inspect, then abort')
-            if 'base_capture' not in marker:   # §2: the restore point of a whole-group rollback (C1-b2)
+            if 'base_capture' not in marker:   # §2: the restore point of a whole-group rollback, taken before the baseline
                 marker['base_capture'] = self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-base")
+            if 'baseline' not in marker and not self._green_baseline(marker):   # §3: once, before the first writer
+                return
             leg = life['writer_leg'] = {'writer': writer, 'input_oid': input_oid, 'attempts': 0,
                                         'capture': self._writer_capture(self.internal / 'writers' / f"{life['epoch']}-{writer}")}
             self.save()
@@ -7265,7 +7268,8 @@ class Coordinator:
         if state is None:
             self.render(result, writer, 'POLISH-Q')
             state = ('no-op' if output == leg['input_oid'] else 'rolled-back:hold' if result['answer']['status'] == 'HOLD' else
-                     {True: 'wrote', False: 'rolled-back:tests', None: 'rolled-back:pending-replay'}[self._writer_local_check(writer)])
+                     'rolled-back:boundary' if self._writer_boundary(leg) else
+                     'wrote' if self._writer_local_check(writer) else 'rolled-back:tests')
         evidence = (self._writer_rollback(writer, leg, (result or {}).get('sequence'))
                     if output != leg['input_oid'] and state != 'wrote' else None)
         receipt = {**request, 'status': 'READY', 'output_oid': git_snapshot(self.workspace)[0], 'writer_state': state,
@@ -7275,7 +7279,9 @@ class Coordinator:
         life.pop('writer_leg', None)
         self._writer_state(writer, {'state': state, 'input_oid': leg['input_oid'], 'output_oid': receipt['output_oid'],
                                     'receipt': request['request_id'], 'digest': leg['input_oid'], 'sequence': receipt['sequence'],
-                                    'attempts': leg['attempts'], **({'diff': evidence} if evidence else {})})
+                                    'attempts': leg['attempts'], **({'diff': evidence} if evidence else {}),
+                                    **({'test': leg['test']} if leg.get('test') else {}),
+                                    **({'boundary': leg['boundary']} if leg.get('boundary') else {})})
         queue = [name for name in life.get('writer_queue', []) if name not in life['quality_writers']]
         if queue:
             self.state['next'] = 'polish-tests'
@@ -7286,10 +7292,66 @@ class Coordinator:
             self.state['next'] = 'docs'
         self.save()
 
+    def _writer_boundary(self, leg: dict) -> list[str]:
+        """§2 write boundary, as for FINISH: a reserved DOCS path or `.review-loop/` config is outside the writer's grant,
+        so such a change is refused before the local check and the review (`rolled-back:boundary`)."""
+        keep = Path(leg['capture'])
+        recorded = json.loads((keep / 'record.json').read_text())
+        now = readonly_guard.state(self.workspace, keep)['tree']
+        reserved = set(self._docs_allowlist()) - set(self._docs_owned())
+        leg['boundary'] = sorted(path for path in self._git_names(['diff', '--name-only', '--no-renames', '-z', recorded['tree'], now])
+                                 if path in reserved or path.split('/', 1)[0] == '.review-loop')
+        return leg['boundary']
+
     def _writer_local_check(self, writer: str) -> Optional[bool]:
-        """§2 local check after a changed READY turn: True keeps the write, False rolls it back (`rolled-back:tests`).
-        The executor is C1-b3; until it lands there is no check, so the write is rolled back as `pending-replay`."""
-        return None
+        """§2 local check after a changed READY turn: True keeps the write (the replay follows), False rolls it back
+        (`rolled-back:tests`). The run is recorded on the leg and in the writer's marker row."""
+        run = self.state['lifecycle']['writer_leg']['test'] = self._test_run(writer)
+        self.save()
+        return run['passed']
+
+    def _green_baseline(self, marker: dict) -> bool:
+        """§3 green baseline: the test command runs once on base_oid before the first writer. A fail, a timeout or a
+        changed tree (restored from base_capture first) skips every queued writer as `skipped:no-green-baseline`."""
+        run = marker['baseline'] = self._test_run('baseline')
+        if run['tree_changed']:
+            self._writer_rollback('baseline', {'capture': marker['base_capture'], 'input_oid': marker['base_oid']}, None)
+        if run['passed']:
+            self.save()
+            return True
+        life = self.state['lifecycle']
+        for writer in life.pop('writer_queue', []):
+            self._writer_state(writer, {'state': 'skipped:no-green-baseline', 'detail': run['reason'], 'digest': marker['base_oid'],
+                                        'receipt': (life['receipts'][-1] if life['receipts'] else {}).get('request_id')})
+        life['stage'] = 'DOCS'
+        self.state['next'] = 'docs'
+        self.save()
+        return False
+
+    def _test_run(self, label: str) -> dict:
+        """§2 local test executor (no model call, no invocation): the explicitly configured test command under /bin/sh -c
+        in the workspace, bounded by the run's --timeout, its output in evidence; only the exit code counts, and a run
+        that changes the live tree (tracked or untracked non-ignored files) fails."""
+        log = self.evidence / f"{self.state['sequence']:03d}-polish-q-{label}-test.log"
+        before, code, reason = git_snapshot(self.workspace)[0], None, ''
+        try:
+            with open(log, 'wb') as out:
+                proc = subprocess.Popen(['/bin/sh', '-c', self.args.test_command], cwd=self.workspace, stdout=out,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                                        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                try:
+                    code = proc.wait(timeout=self.args.timeout)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
+                    reason = f'timed out after {self.args.timeout}s'
+        except OSError as exc:
+            reason = f'could not run: {exc}'
+        changed = git_snapshot(self.workspace)[0] != before
+        reason = reason or ('changed the tree' if changed else '' if code == 0 else f'exit {code}')
+        self.progress('quality-writer', writer=label, state='local test ' + ('passed' if not reason else 'failed'), detail=reason)
+        return {'command': str(self.args.test_command), 'exit': code, 'tree_changed': changed, 'passed': not reason,
+                'reason': reason, 'log': str(log)}
 
     def _writer_replay(self) -> None:
         """§2: kept writes start a new EXEC convergence (the polish-fix transition, counted like a FINISH write): the EXEC
