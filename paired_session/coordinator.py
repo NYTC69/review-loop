@@ -4623,6 +4623,9 @@ class Coordinator:
             raise ValueError('worktree lifecycle reject requires stage DONE')
         if bool(text) == bool(file):
             raise ValueError('reject requires exactly one of --text or --file')
+        if (len(self.state.get('rejections', [])) < self.state.get('max_rejections', DEFAULT_MAX_REJECTIONS)
+                and (issue := self._dispatch_contract_issue())):   # STRICT-NITS: it dispatches; refuse before any state change
+            raise ValueError(issue)
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
         if file:
             feedback = Path(file).expanduser().read_text()
@@ -8453,13 +8456,22 @@ class Coordinator:
             raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
-        if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
-                and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
-            raise ValueError(ok[1])
-        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
-                and not (ok := self.claude_author_verified())[0]:
-            raise ValueError(ok[1])
+        if issue := self._dispatch_contract_issue():
+            raise ValueError(issue)
         return self._drive_loop()
+
+    def _dispatch_contract_issue(self) -> Optional[str]:
+        """drive()'s strict contract checks (codex-cli for any dispatched Codex role, the Claude author gate). resume and reject
+        also run them where they are sure to dispatch, before the run turns ACTIVE (STRICT-NITS); their no-dispatch paths are
+        unchanged. resume --polish knows only after start_polish_or_done whether it dispatches, so there drive() refuses
+        (direct calls only; the CLI checks first)."""
+        if not self.strict or self.state['config'].get('review_report') or lifecycle_spine.fake_dispatch_guard(self.args):
+            return None
+        if 'codex' in self.dispatched_vendors() and not (ok := self.codex_contract_verified())[0]:
+            return ok[1]
+        if self.args.author_vendor == 'claude' and not (ok := self.claude_author_verified())[0]:
+            return ok[1]
+        return None
 
     def fake_drive(self) -> str:
         if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
@@ -9337,6 +9349,8 @@ class Coordinator:
         if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
             self.state['active'] = self.state['uncertain_active'] = None
             return self.hold(past_deadline)
+        if issue := self._dispatch_contract_issue():   # STRICT-NITS: the run dispatches from here on; refuse before it turns ACTIVE
+            raise ValueError(issue)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
@@ -9697,6 +9711,13 @@ def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: 
 CLAUDE_CLI_ALIASES = {'default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan', 'opus[1m]', 'sonnet[1m]'}
 
 
+def replace_override(state: dict, key: str, record: dict) -> None:
+    """STRICT-NITS (P0-2 b): a new operator override record keeps the one it replaces (voided or not) in <key>_history."""
+    if state.get(key):
+        state.setdefault(key + '_history', []).append(state[key])
+    state[key] = record
+
+
 def validate_role_models(args: argparse.Namespace) -> None:
     """ADR-9: each role needs a well-formed model id, listed in allowed_models when that key is set."""
     allowed = getattr(args, 'allowed_models', None)
@@ -9853,9 +9874,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
         if args.accept_unverified_claude_author:
-            co.state['claude_author_override'] = {
+            replace_override(co.state, 'claude_author_override', {
                 'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
-                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
             co.save()
         if not (claude_ok := co.claude_author_verified())[0]:
             return co.refused(claude_ok[1])
@@ -9891,9 +9912,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too; report runs keep skipping it (residual)
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
-            co.state['codex_cli_override'] = {
+            replace_override(co.state, 'codex_cli_override', {
                 'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
-                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
             co.save()
         if not (verified := co.codex_contract_verified())[0]:
             return co.refused(verified[1])
@@ -9902,7 +9923,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
         if not co._gate_probe_covered():
             return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
-        co.state['probe_skip_override'] = {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}; co.save()
+        replace_override(co.state, 'probe_skip_override', {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}); co.save()
     if args.action == 'reject':
         if co.strict and not args.skip_probe:   # D-EFF efficient: no permission probe is required
             passed, reason = co.probe_gate()
