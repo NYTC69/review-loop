@@ -313,6 +313,13 @@ def test_untracked_session_directory_is_excluded_but_tracked_config_is_not(repo)
 
 
 
+def test_an_untracked_review_loop_output_is_refused(repo):   # V5: the .review-loop/ output exception is gone
+    (repo / ".review-loop").mkdir()
+    error = run(repo, "capture", "--scope", "task.txt", "--output", repo / ".review-loop/x.json", expect=2)["error"]
+    assert "Git-ignored" in error
+    assert not (repo / ".review-loop/x.json").exists()
+
+
 def test_from_commit_baseline_is_a_clean_checkout_of_the_base(repo):
     """LG1-c (review-only-entry.md §4): the base tree, not the live tree that already holds the change under review."""
     base = git(repo, "rev-parse", "HEAD").stdout.decode().strip()
