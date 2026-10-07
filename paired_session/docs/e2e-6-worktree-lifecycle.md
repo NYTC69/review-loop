@@ -220,12 +220,12 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   POLISH-Q, DOCS and SECURITY again).
 - Not a refusal: author and reviewer may share a vendor exactly as in real EXEC (ADR-11 D-8).
 
-## Fake-only (unchanged)
+## Fake-only (removed)
 
-Candidate roots and scratch Git (`candidate_tree`), `finish_dispatch` with separate filesystems,
-`candidate_test_sandbox`, Q proposal/review/bundle, `delivery_seal` (refuses active hooks),
-`delivery_publish`/journal/recovery, `delivery_close` with the Compass BACKLOG mutation, SECURITY repair
-and ignore consent. Their `fake_dispatch_guard` refusals and assertions do not change.
+The candidate-tree route's fake harness (`finish_dispatch`, `candidate_test_sandbox`, Q proposal/review/bundle,
+`delivery_seal`, `delivery_publish`/journal/recovery, `delivery_close`, SECURITY repair) was removed in V3-B4
+(ADR-17 V4). `candidate_tree` and `lifecycle_spine.fake_dispatch_guard` stay: the real path and its fake-CLI
+test harness use them.
 
 ## Implementation batches and follow-ups
 
