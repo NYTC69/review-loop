@@ -22,6 +22,8 @@
 ## Migrated — README.md:26-42
 
 Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+The Codex Stage 1 workflow described below (its reviewer backends and keys) was removed in v2.13.0-v2.13.1;
+Codex now runs the paired-session coordinator (README, `docs/install-codex.md`).
 
 ## Codex Stage 1
 

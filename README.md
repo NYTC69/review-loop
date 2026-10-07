@@ -68,35 +68,15 @@ cp ~/.claude/plugins/cache/review-loop-marketplace/review-loop/<version>/review-
 
 ## Codex Stage 1
 
-Codex uses repo skills under `.agents/skills/`. In Stage 1, the Codex
-`review-loop` skill shares `.review-loop/config.md` and `.review-loop/sessions/`
-with Claude Code, so both runtimes work against the same project state.
+Codex uses repo skills under `.agents/skills/`. The Codex `review-loop` skill
+shares `.review-loop/config.md` with Claude Code, so both runtimes read the same
+project settings.
 The rest of this README primarily documents the current Claude Code plugin
 surface; Codex Stage 1 also exposes the paired-session skill, which is the
 default review-loop entry from v2.10.0.
-The rest of this subsection, up to "Install in Codex CLI", describes the legacy workflow (removed in v2.13.0).
-Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
-Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
-Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
-Executor-created hidden worktrees are forbidden in Codex Stage 1.
-
-The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer
-(`claude -p`) and stays on that outside-sandbox Claude path unless you
-explicitly opt into the local Codex reviewer with
-`codex_reviewer_backend: codex` in `.review-loop/config.md`.
-When a Claude reviewer is selected, the permission probe checks unique writes
-to host `/tmp`, the run directory, and the `context` directory passed through
-`--add-dir`. The Claude reviewer sandbox requires a supported Claude host/backend;
-the probe (required only in strict mode) fails closed when the OS sandbox is unavailable.
-In Codex Stage 1, `reviewer_model` overrides that Claude reviewer path,
-`judgment_model` is its shared-tier fallback, and the empty backstop is an
-explicit `--model claude-opus-5-5`.
-The shared `cheap_model` key is accepted for cross-runtime config
-compatibility, but Stage 1 currently has no cheap-tier Codex agents, so it is
-a documented no-op there.
-The shared `reviewer` and `executor_model` keys do not actively control
-Stage 1 Codex reviewer/backend selection. In Codex Stage 1,
-`executor_model` is ignored and `codex_executor_model` remains reserved.
+The legacy Codex Stage 1 workflow (its plan and execute skills, the Claude CLI reviewer launcher and the
+`codex_reviewer_backend` / `codex_reviewer_model` / `codex_executor_model` keys) was removed in v2.13.0-v2.13.1;
+the paired-session coordinator dispatches every role.
 
 Codex has no code-quality-loop or reorganize skill; ask review-loop to review an existing change (a review-only
 run, quality writers on).
@@ -264,7 +244,6 @@ Spot-check specific aspects of recent changes. Available aspects:
 | `comments` | comment-analyzer | Comment accuracy, staleness |
 | `types` | type-design-analyzer | Type design, encapsulation |
 | `tests` | pr-test-analyzer | Test coverage, edge cases |
-| `simplify` | code-simplifier | Unnecessary complexity |
 
 ```
 /review-loop:review-pr code errors tests
@@ -281,36 +260,21 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
-| `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
-| `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
-| `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |
-| `cheap_model` | `""` | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |
-| `executor_model` | `inherit` | Path-specific Claude executor override; `""` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |
-| `codex_reviewer_backend` | `claude_cli` | Codex Stage 1 only; keeps review on the outside-sandbox Claude reviewer unless set to `codex` explicitly |
-| `codex_reviewer_model` | `""` | Codex Stage 1 only; local Codex reviewer override when `codex_reviewer_backend: codex` |
-| `codex_executor_model` | `""` | Reserved and ignored in Codex Stage 1 |
-| `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
-| `soft_limit_exec` | `3` | Same for execution phase |
-| `auto_commit` | `false` | Stage changed files and commit after delivery. Legacy workflow only: paired-session reads `auto_commit` only from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept`, never a push; code-quality-loop honours an explicit `auto_commit: false` here |
-| `commit_message_prefix` | `feat` | Conventional commit type prefix |
+| `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; at the cap the run HOLDs and `resume --add-rounds N` continues it |
+| `soft_limit_exec` | `4` | `--max-exec-rounds`: the same for EXEC |
+| `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept`, never a push; code-quality-loop honours an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
-| `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
+| `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` are never run |
 | `review_focus` | `""` | Project-specific review priorities (free text); paired-session: `--review-focus` (L105), frozen at run start, for the reviewer, shadow and gate |
-| `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs. Paired-session: `--quality-focus` (L105), frozen at run start, for the POLISH-Q specialists |
+| `quality_focus` | `""` | Paired-session: `--quality-focus` (L105), frozen at run start, for the POLISH-Q specialists |
 | `review_style` | `""` | Tone and rules for all reviews (free text); paired-session: `--review-style` (L105), frozen at run start, for every review role |
-| `skip_quality_polish` | `false` | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security. |
-| `cross_vendor_review` | `auto` | `auto` or `off`; a same-vendor final review gets one extra other-vendor review |
-| `adversarial_gate_skip_paths` | `["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]` | Step 3.4 terminal adversarial gate — skip when every Step 3 changed file matches one of these glob patterns. |
+| `skip_quality_polish` | `false` | `true` skips the POLISH-Q specialists and the quality writers; docs and security still run |
 
-For Codex Stage 1, the reviewer separation policy is explicit: unless
-`codex_reviewer_backend: codex` is set, review stays on the
-outside-sandbox Claude CLI reviewer path. That default path resolves its model
-as `reviewer_model` > `judgment_model` > `claude-opus-5-5` and passes it via
-`--model`. The local Codex reviewer is opt-in only. The `cheap_model` entry is
-accepted in the shared config but remains a no-op in Stage 1 because only
-judgment-tier Codex agents are currently shipped.
-`quality_focus` applies only when Step 3.5 Quality Polish actually runs.
-`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
+`reviewer_model` and `executor_model` are not applied: set to anything other than empty or `inherit`, they
+print a warning; models come from the operator profile. The legacy-only keys `reviewer`, `judgment_model`,
+`cheap_model`, `codex_reviewer_backend`, `codex_reviewer_model`, `codex_executor_model`,
+`commit_message_prefix`, `cross_vendor_review`, `adversarial_gate_skip_paths` and `context_persist_threshold`
+were removed with the legacy workflow and have no effect.
 
 ### Natural language config examples
 
@@ -323,18 +287,6 @@ quality_focus: "strict clippy lints, skip comment analysis"
 
 review_style: "be terse, flag any unwrap() as CRITICAL"
 ```
-
-## Reviewer Modes
-
-| Mode | Config | How it works |
-|------|--------|-------------|
-| **codex** (default) | `reviewer: codex` | Calls `codex exec -s read-only` — cross-AI review from a different model |
-| **subagent** | `reviewer: subagent` | Claude Code sub-agent with read-only tools — no external CLI required |
-
-The codex mode gives you genuinely independent review from a different AI.
-The subagent mode uses a Claude Code sub-agent — convenient when you don't
-have Codex installed. Set `reviewer_model` to control which model the
-Reviewer uses.
 
 ## Included Agents
 
@@ -363,17 +315,10 @@ You see the value of the review loop in real time.
 stays within the approved plan. Unauthorized design decisions are flagged as
 CRITICAL even if the code is technically correct.
 
-**Context File** — All loop state is persisted to
-`.review-loop/sessions/{uuid}.md`. Both agents read it each round
-for instant context. Session files are preserved permanently — the UUID
-is printed in the delivery summary. To trace a bug back to a specific
-review session, find the UUID in the delivery output and open the
-corresponding `.review-loop/sessions/{uuid}.md` file.
+**Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
+directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
 
-**Soft Limits + Stuck Detection** — No hard cap on rounds. When the soft limit
-is reached and CRITICALs remain, the Orchestrator asks whether to continue.
-Stuck detection stops the loop if the same issue recurs 3 rounds without
-progress. The default entry (paired-session) has hard round caps instead (plan 3 / exec 4 unless set) that
+**Round Caps** — The default entry (paired-session) has hard round caps (plan 3 / exec 4 unless set) that
 end in a HOLD; at that HOLD `resume --add-rounds N` continues the same run (L100). A legacy-format run
 (`--lifecycle-mode off`) may instead `accept --override-rejection --reason TEXT`; the worktree lifecycle
 refuses that override.

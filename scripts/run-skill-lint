@@ -284,7 +284,6 @@ def forbidden_scope_files(root: Path, applies_to: str):
 
     scope_roots = {
         "claude-plugin-agent-invocations": [root / ".claude-plugin"],
-        "codex-subagent-prompts": [root / ".codex/agents"],
         "all-skill-bodies": [root / "skills", root / ".agents/skills"],
     }.get(applies_to)
 
@@ -346,8 +345,8 @@ _LINT_ASSERTION_ALLOWED_OVERRIDE_KEYS: frozenset[str] = frozenset()
 
 
 def _resolve_lint_assertion_id(mapping_data, assertion):
-    # Centralized id-resolver mirroring the smoke-side resolver around
-    # `run-skill-smoke:686-689`. Inputs of the shape `{"id": "<id>"}`
+    # Centralized id-resolver (the deleted smoke runner had a matching one).
+    # Inputs of the shape `{"id": "<id>"}`
     # (single key `id`, no `kind`, optional `overrides`) get rewritten to
     # the registered entry under `lint_assertions.<id>`. Override keys
     # whose name starts with `_` (underscore) are silently dropped — they
@@ -756,7 +755,7 @@ def evaluate_assertion(root: Path, mapping_data, assertion):
                 # documentation-style mentions, not real command bodies, and
                 # are skipped. Triple-backtick fences (``` … ```) and
                 # *multi-line* single-backtick inline code (backticks span
-                # ≥2 source lines, like `docs/protocol/planning.md:294-295`)
+                # ≥2 source lines)
                 # ARE real command bodies and MUST be checked.
                 #
                 # Strategy: for every anchor occurrence in the original
@@ -1067,24 +1066,8 @@ def routed_search_paths(target: str):
         ],
         "review-loop": [
             ".agents/skills/review-loop/SKILL.md",
-            ".codex/agents/review-loop-executor.toml",
-            ".codex/agents/review-loop-reviewer.toml",
             "README.md",
             "review-loop-config.example.md",
-        ],
-        "plan": [
-            "skills/plan/SKILL.md",
-            "docs/protocol/session-file.md",
-            "docs/protocol/planning.md",
-            "docs/protocol/executor-output.md",
-            "docs/protocol/reviewer-output.md",
-        ],
-        "execute": [
-            "skills/execute/SKILL.md",
-            "docs/protocol/session-file.md",
-            "docs/protocol/execution.md",
-            "docs/protocol/executor-output.md",
-            "docs/protocol/reviewer-output.md",
         ],
     }
     return list(path_map.get(target, []))

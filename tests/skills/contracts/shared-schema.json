@@ -3,29 +3,9 @@
   "description": "Shared schema assertions for skill testing",
   "assertions": [
     {
-      "id": "executor_model_semantics_target",
+      "id": "model_keys_not_applied_target",
       "kind": "consistent_with",
-      "mapping_id": "executor_model"
-    },
-    {
-      "id": "codex_executor_model_semantics_target",
-      "kind": "consistent_with",
-      "mapping_id": "codex_executor_model"
-    },
-    {
-      "id": "judgment_model_semantics_target",
-      "kind": "consistent_with",
-      "mapping_id": "judgment_model"
-    },
-    {
-      "id": "cheap_model_semantics_target",
-      "kind": "consistent_with",
-      "mapping_id": "cheap_model"
-    },
-    {
-      "id": "executor_model_falls_through_to_judgment_target",
-      "kind": "consistent_with",
-      "mapping_id": "executor_model_falls_through_to_judgment"
+      "mapping_id": "model_keys_not_applied"
     }
   ]
 }

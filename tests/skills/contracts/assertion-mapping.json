@@ -24,74 +24,18 @@
   },
   "smoke_groups": {},
   "consistency_mappings": {
-    "executor_model": [
+    "model_keys_not_applied": [
       {
-        "path": "review-loop-config.example.md",
-        "needle": "executor_model: inherit         # shared Claude/plugin executor override; \"\" and inherit fall through to judgment_model; ignored by Codex Stage 1"
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "models come from the operator profile"
       },
       {
         "path": "README.md",
-        "needle": "The shared `reviewer` and `executor_model` keys do not actively control"
-      }
-    ],
-    "codex_executor_model": [
-      {
-        "path": "review-loop-config.example.md",
-        "needle": "# codex_executor_model: \"\"            # shared key remains `executor_model`; this is reserved/ignored in Stage 1"
-      },
-      {
-        "path": "README.md",
-        "needle": "In Codex Stage 1, `executor_model` is ignored and `codex_executor_model` remains reserved."
-      }
-    ],
-    "judgment_model": [
-      {
-        "path": "review-loop-config.example.md",
-        "needle": "judgment_model: \"\"              # shared tier override for judgment-tier agents; Codex Stage 1 uses this as the fallback for the default Claude reviewer path"
-      },
-      {
-        "path": "README.md",
-        "needle": "| `judgment_model` | `\"\"` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |"
-      }
-    ],
-    "cheap_model": [
-      {
-        "path": "review-loop-config.example.md",
-        "needle": "cheap_model: \"\"                 # shared tier override for cheap-tier agents; defaults to claude-opus-5-5 and is accepted-but-no-op in Codex Stage 1"
-      },
-      {
-        "path": "README.md",
-        "needle": "| `cheap_model` | `\"\"` | Shared tier override for cheap-tier agents; default backstop is `claude-opus-5-5`; accepted-but-no-op in Codex Stage 1 |"
-      }
-    ],
-    "executor_model_falls_through_to_judgment": [
-      {
-        "path": "README.md",
-        "needle": "| `executor_model` | `inherit` | Path-specific Claude executor override; `\"\"` and `inherit` both fall through to `judgment_model`; ignored by Codex Stage 1 |"
+        "needle": "models come from the operator profile"
       },
       {
         "path": "review-loop-config.example.md",
-        "needle": "executor_model: inherit         # shared Claude/plugin executor override; \"\" and inherit fall through to judgment_model; ignored by Codex Stage 1"
-      }
-    ],
-    "codex_stage1_claude_reviewer_default": [
-      {
-        "path": "README.md",
-        "needle": "The default reviewer path in Codex Stage 1 uses the Claude CLI reviewer"
-      },
-      {
-        "path": ".agents/skills/guide/SKILL.md",
-        "needle": "Codex Stage 1 defaults to the outside-sandbox Claude CLI reviewer path."
-      }
-    ],
-    "codex_stage1_explicit_codex_opt_in_only": [
-      {
-        "path": "README.md",
-        "needle": "The local Codex reviewer is opt-in only."
-      },
-      {
-        "path": ".agents/skills/guide/SKILL.md",
-        "needle": "explicitly opts into the local Codex reviewer."
+        "needle": "models come from the operator profile"
       }
     ],
     "entry_invalid_value_warning": [

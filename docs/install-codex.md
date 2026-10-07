@@ -100,7 +100,7 @@ codex exec --skip-git-repo-check \
   "List enabled plugins and skills. Be terse."
 ```
 
-The third command should list `review-loop`, its plan/execute/guide skills,
+The third command should list the four review-loop skills `review-loop`, `guide`,
 `paired-session` and `review-pr` among the available skills.
 
 ## Boundary: Claude Code plugin path vs Codex plugin path
