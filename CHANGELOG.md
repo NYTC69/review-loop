@@ -1,5 +1,19 @@
 # Changelog
 
+### v2.13.0：不再回退到 legacy（LG-DEL-1，删除 legacy 的第一步）
+
+**行为变化（owner 10-07，ADR-16）**：从这个版本起，任何请求都不会再落到 legacy 流程上。
+- 新任务、已有代码的审查：和以前一样交给 paired-session。
+- **已有 plan**：交给 paired-session，plan 原文作为工作项，paired-session 会重新起草并审查 plan（打印一行说明）。
+- **`entry: legacy`**：拒绝，提示 `the legacy workflow was removed in v2.13.0; remove "entry: legacy" from .review-loop/config.md`。`entry` 写错、重复或读不出来时打一行警告，然后照常走 paired-session。
+- **恢复旧的 legacy session**：拒绝，提示用 session 里的 plan 或工作项开一个新的 run。
+- **非 macOS 主机**：所有入口（`/review-loop`、review-pr、code-quality-loop、`/review-loop:paired-session`）都拒绝。暂时只支持 macOS（ADR-15 修订）。
+- **开跑前的检查失败**：报告后停止（后台执行不可用时 HOLD），不再退回 legacy。
+- **review-pr / code-quality-loop 的 `--legacy`**：拒绝。review-pr 的 `simplify` 改为指向 `/review-loop:code-quality-loop`；code-quality-loop 的 `--reorganize` 改为指向 `/review-loop:reorganize`。
+- `/review-loop:plan`、`/review-loop:execute` 不再被模型自动选中（Codex 端只在用户明确点名时使用）；它们和 `/review-loop:legacy` 在 v2.13.1 删除。
+- Claude 和 Codex 两端路由一致；guide、README、迁移文档同步更新。
+- **审查**：Codex 2 轮 APPROVE；fresh Opus 终审打回 4 处（plan/execute 仍可能被自动选中、README 和迁移文档有旧路由），修一轮后 Codex 审查 APPROVE。lint 契约随文字调整（删 16 条锁 legacy 路由的、改写 14 条、新增 12 条）；按 ADR-16 改写了 1 个测试（review-pr simplify 的提示）。
+
 ### v2.12.9：paired-session 读取 review_focus / review_style / quality_focus（L105）；轮次上限 HOLD 时可以 `resume --add-rounds N` 继续（L100）；legacy 对照表 18 行全部定案；README 小修
 
 - **L105（owner 10-07：port）**：`.review-loop/config.md` 里的 `review_focus`、`review_style`、`quality_focus` 现在由入口映射成 `--review-focus`、`--review-style`、`--quality-focus`（用 `--flag=<value>` 写法），run 开始时冻结。focus 和 style 进 reviewer（PLAN/EXEC/POLISH）、shadow 和 gate 的 prompt，quality focus 和 style 进 POLISH-Q specialist 的 prompt；作者拿不到。三个都没设时 prompt 与之前逐字节相同。这段文字是 operator 写的，不会被 fresh 独立性检查当成审查历史（写 "strict like Codex" 不会 HOLD）。以前 paired-session 会悄悄忽略它们。
