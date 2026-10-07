@@ -1,6 +1,6 @@
 ---
 name: execute
-description: "Codex Stage 1 execute skill. Run the execution + quality polish + delivery stages of review-loop against one of three entry modes: resume an approved session (`--session`), execute a user-supplied plan (`--plan`), or run a pure-CR pass on the current working tree (`--review-only`). Supports batched runs via `--stop-after STAGE`. Use when you already have a plan, or only want CR on existing code."
+description: "Legacy execute skill (legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1)). Use only when the user explicitly names the legacy execute skill; an existing plan or a review of existing code otherwise goes to review-loop. Codex Stage 1 execute skill. Run the execution + quality polish + delivery stages of review-loop against one of three entry modes: resume an approved session (`--session`), execute a user-supplied plan (`--plan`), or run a pure-CR pass on the current working tree (`--review-only`). Supports batched runs via `--stop-after STAGE`. Use when you already have a plan, or only want CR on existing code."
 ---
 
 # execute — codex orchestration

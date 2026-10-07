@@ -1,8 +1,10 @@
 ---
 name: execute
 argument-hint: "<--session <uuid> | --plan <text|path> --title <title> | --review-only> [--stop-after <stage>] [--handsfree] [--accept-external-state]"
+disable-model-invocation: true
 description: >
-  Run the execution + quality polish + delivery stages of review-loop
+  Legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1): run only when the user names
+  /review-loop:execute. An existing plan or a review of existing code goes to /review-loop. Run the execution + quality polish + delivery stages of review-loop
   against one of three entry modes: resume an approved session
   (`--session`), execute a user-supplied plan (`--plan`), or run a
   pure-CR pass on the current working tree (`--review-only`). Supports

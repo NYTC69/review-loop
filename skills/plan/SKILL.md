@@ -1,8 +1,10 @@
 ---
 name: plan
 argument-hint: "<work item description> [--handsfree]"
+disable-model-invocation: true
 description: >
-  Run the planning phase only: drive a work item from raw description to a
+  Legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1): run only when the user names
+  /review-loop:plan. For plan-only work use /review-loop:paired-session --plan-only. Run the planning phase only: drive a work item from raw description to a
   reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exit with
   a hint to resume via `review-loop:execute --session UUID`. Use when you
   want plan-only iteration without immediately entering execution.

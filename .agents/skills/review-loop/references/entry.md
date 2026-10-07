@@ -1,6 +1,9 @@
 # Codex umbrella entry procedures
 
 ## Entry
+Every review-loop request resolves `entry` and routes as below (the `entry` list and the stage A
+checks); the rest of this paragraph, `## Initialize / route` and `## Startup Banner` describe the legacy
+workflow and apply only to the explicit legacy request (removed in v2.13.1).
 Detect `--handsfree` in the invocation; when present it overrides the config
 value for this invocation. Handsfree alone never accepts external drift.
 Resolve config through runtime-codex.md. If explicitly resuming, use the

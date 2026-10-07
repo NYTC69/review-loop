@@ -4064,6 +4064,12 @@
       "mapping_id": "legacy_session_resume_refused"
     },
     {
+      "id": "entry_routing_no_prior_state_hands_off",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "- No prior state: hand off with the work item."
+    },
+    {
       "id": "review_loop_entry_never_falls_back_to_legacy",
       "kind": "not_contains",
       "path": "skills/review-loop/references/entry.md",

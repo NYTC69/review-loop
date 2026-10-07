@@ -4,7 +4,7 @@ Both paired-session entry skills (`skills/paired-session/SKILL.md` for Claude Co
 `.agents/skills/paired-session/SKILL.md` for Codex) load this file through the
 `entry-paired-session` stage. It holds every rule the two hosts share. The host
 skill adds its host rules, for example run-directory paths, shell form, how a
-long coordinator command runs and is stopped, its legacy pointer, and the exit
+long coordinator command runs and is stopped, and the exit
 codes of its own setup steps; a host rule is more specific and wins. Use the
 paired-session coordinator shipped with this plugin. Do not load or invoke the
 legacy review-loop workflow for this task. The coordinator owns reviewer
@@ -36,7 +36,8 @@ the first command that runs `bin/paired-session`):
 
 On every entry, first check the host and the CLIs: a host that is not macOS
 (`uname -s` is not `Darwin`) is refused with
-`<entry>: paired-session needs macOS; Linux and other hosts are not supported`,
+`<entry>: paired-session needs macOS; Linux and other hosts are not supported` (`<entry>` is the
+handing-off entry's name, or `paired-session` when this skill was invoked directly),
 and every CLI the resolved roles need must be on PATH (`command -v`; the default
 roles need `codex` and `claude`; the review-loop entry has already checked both on
 a handoff).

@@ -16,9 +16,13 @@ Resolve `entry` (exact values `legacy` and `paired-session` only; the legacy wor
 - Duplicate `entry` key, or config present but unreadable: print `review-loop: entry could not be read (<reason>); using paired-session` and route it as `paired-session`.
 - `paired-session`: apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock.
 
-Step 0.5 onward is the legacy workflow: only `/review-loop:legacy` (which ignores `entry`; deleted in v2.13.1) still runs it.
+Steps 0.5, 1 and 1.6 and the auto-routing bullets of Step 1.5 are the legacy workflow: only `/review-loop:legacy` (which
+ignores `entry`; deleted in v2.13.1) runs them. Every `/review-loop` request goes from Step 0 straight to the Step 1.5
+"Entry routing" and "Stage A checks" paragraphs and hands off from there.
 
 ### Step 0.5 — Initialize session file
+
+Legacy only (`/review-loop:legacy`).
 
 Generate a lowercase UUID. Create `.review-loop/sessions/{uuid}.md`
 with the canonical section list per `docs/protocol/session-file.md`
@@ -43,6 +47,8 @@ Acquire the single-writer lock per
 session file path.
 
 ### Step 1 — Parse the work item
+
+Legacy only (`/review-loop:legacy`); `/review-loop` passes the work item to paired-session as written.
 
 Extract title, problem description, context, acceptance criteria.
 Ask ONE clarifying question if critical information is missing.
@@ -118,6 +124,8 @@ Detected: {plan exists / code already implemented / fresh start}
 User can override if they disagree.
 
 ### Step 1.6 — Historical context retrieval (optional, fail-silently)
+
+Legacy only (`/review-loop:legacy`).
 
 **Strictly optional. Skip silently if no external memory tool is
 available. Never ask the user to install anything. Never mention the

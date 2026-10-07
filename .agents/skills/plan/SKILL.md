@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Codex Stage 1 planning-only skill. Drives a work item from raw description to a reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits with a hint to resume via `review-loop:execute --session UUID`. Use when you want plan-only iteration without immediately entering execution.
+description: Legacy plan skill (legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1)). Use only when the user explicitly names the legacy plan skill; a plan request otherwise goes to review-loop or paired-session. Codex Stage 1 planning-only skill. Drives a work item from raw description to a reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits with a hint to resume via `review-loop:execute --session UUID`. Use when you want plan-only iteration without immediately entering execution.
 ---
 
 # plan — codex orchestration

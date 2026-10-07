@@ -27,9 +27,9 @@ From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 entry; since v2.13.0 `entry: legacy` is refused and nothing falls back to legacy), and
 `/review-loop:paired-session <work item>` is the explicit entry. See
 [`docs/paired-session-migration.md`](docs/paired-session-migration.md).
-The legacy workflow is deprecated since v2.12.0: it still runs unchanged and prints a
-one-line notice when you choose it; review-pr and code-quality-loop follow `entry` too, and
-removal waits for the open legacy-map rows (the removal preconditions are in the migration guide).
+The legacy workflow is deprecated since v2.12.0 and was removed from routing in v2.13.0:
+`/review-loop`, review-pr and code-quality-loop no longer reach it; `/review-loop:legacy`, `:plan` and
+`:execute` still run it (with a one-line notice) until v2.13.1 deletes them (see the migration guide).
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
@@ -214,12 +214,14 @@ the one that matches where your work currently is:
   coordinator and code already implemented to a paired-session review-only run (`run --review-only`);
   an existing plan becomes the work item (PLAN drafts and reviews it again); resuming a legacy session is
   refused (the legacy workflow described here was removed from routing in v2.13.0).
-- **`/review-loop:plan`** — planning phase only. Drives a work item to a
+- **`/review-loop:plan`** — legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1); only when you name it (plan-only work:
+  `/review-loop:paired-session --plan-only`). Planning phase only. Drives a work item to a
   reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits
   with a hand-off hint (`Next: review-loop:execute --session <uuid>`). Use
   this when you want plan-only iteration, or want to plan on one runtime
   and execute on another.
-- **`/review-loop:execute`** — execution + quality polish + delivery.
+- **`/review-loop:execute`** — legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1); only when you name it (an existing plan or a
+  review of existing code: `/review-loop`). Execution + quality polish + delivery.
   Three mutually-exclusive entry modes:
   - `--session <uuid>` — resume an approved session. Reviewer strictness
     follows the session's `plan_source` (strict for `reviewer-approved`,
@@ -327,10 +329,10 @@ shown. Optionally auto-commits the result.
 
 ### `/review-loop:code-quality-loop`
 
-Follows `entry`: by default a paired-session review-only run on the uncommitted change (review, fix,
+A paired-session review-only run on the uncommitted change (review, fix,
 one fix round for the non-blocking findings, simplify, consolidate tests, docs, security; `accept` makes one local commit unless `auto_commit: false`).
-`--legacy` or `entry: legacy` runs the legacy loop (deprecated). Arguments: `[max-rounds]`,
-`--skip-reorganize`, `--legacy`; `--reorganize` is legacy only.
+Arguments: `[max-rounds] [--skip-reorganize]`. Since v2.13.0 `--legacy` and `entry: legacy` are refused, and
+`--reorganize` is refused with a pointer to `/review-loop:reorganize` (run it after the run).
 
 ### `/review-loop:reorganize <file/dir or 'diff'>`
 

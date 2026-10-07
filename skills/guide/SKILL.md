@@ -43,8 +43,8 @@ one that matches where your work currently is:
 | Skill | When to pick | What it does |
 |---|---|---|
 | `/review-loop` | You want the full pipeline in one invocation (default; fresh work goes to paired-session, see Entry below) | Fresh work → paired-session coordinator; existing code → paired-session `run --review-only` (Entry below); an existing plan → paired-session with the plan as the work item (Entry below) |
-| `/review-loop:plan` | You only want to iterate on the plan; run the code later (possibly on a different runtime) | Runs the planning loop only. On approval, prints the session UUID and a hint: `Next: review-loop:execute --session <uuid>` |
-| `/review-loop:execute` | You already have a plan, or you just want a pure CR sweep over existing code | Runs execution + polish + delivery. Three entry modes: `--session <uuid>`, `--plan <text\|path>`, `--review-only` (legacy workflow only; on the paired-session entry `/review-loop` reviews existing code with `run --review-only`) |
+| `/review-loop:plan` | Legacy (legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1)); only when you name it. Plan-only work: `/review-loop:paired-session --plan-only` | Runs the planning loop only. On approval, prints the session UUID and a hint: `Next: review-loop:execute --session <uuid>` |
+| `/review-loop:execute` | Legacy (legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1)); only when you name it. An existing plan or a review of existing code: `/review-loop` | Runs execution + polish + delivery. Three entry modes: `--session <uuid>`, `--plan <text\|path>`, `--review-only` (legacy workflow only; on the paired-session entry `/review-loop` reviews existing code with `run --review-only`) |
 
 All three skills write the same session-file schema under
 `.review-loop/sessions/{uuid}.md`, so you can hand off between them (and
@@ -114,7 +114,7 @@ contexts reload their prerequisites. This changes instruction transport only,
 not the required review, evidence, authorization or delivery gates.
 
 ```bash
-# Basic — starts full plan→review→implement→CR loop (paired-session by default; legacy with `entry: legacy`)
+# Basic — starts the paired-session plan→review→implement→CR run
 /review-loop add rate limiting to the /api/upload endpoint
 
 # Handsfree, legacy workflow — decision questions go to Reviewer, not you
@@ -124,6 +124,10 @@ not the required review, evidence, authorization or delivery gates.
 # If code is already written, it auto-detects and skips to CR
 /review-loop review the changes I just made to the parser
 
+# I already have a plan, or want a review of existing code: /review-loop (the plan becomes the work item)
+/review-loop implement this plan: <plan text>
+
+# Legacy (legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1)), only when named:
 # Plan-only, then execute separately (good for big multi-batch work)
 /review-loop:plan design an adaptive rate limiter for /api/upload
 # → prints "Next: review-loop:execute --session <uuid>"

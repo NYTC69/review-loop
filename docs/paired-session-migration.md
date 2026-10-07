@@ -10,6 +10,7 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 - `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` and the Codex plan/execute skills (and the Codex "legacy review-loop workflow" request) still run the legacy workflow with the deprecation notice until v2.13.1 deletes them (ADR-16).
 
 ## Status in v2.10.0
+Superseded by "Status in v2.13.0" above; kept as history.
 - **paired-session is the default entry.** A fresh `/review-loop <work item>` (Claude) or a fresh review-loop request (Codex) with no `entry` key in `.review-loop/config.md` hands off to the `paired-session` skill, which runs the coordinator with `--lifecycle-mode on`.
 - A request to review code that already exists (code-exists) hands off as `run --review-only` (D-LG1): no PLAN phase; the EXEC review of the change against `HEAD`, or `--base <ref>` when you name a base, is round 1. Unrelated dirty work is not a code-exists signal.
 - Plan-exists and existing-session states stay legacy, as do `/review-loop:plan` and `execute`. `/review-loop:review-pr` follows `entry` (see Review-pr below). Legacy `/review-loop:execute --review-only` stays legacy until its retirement; its paired-session equivalent is `run --review-only`, and its `--stop-after exec-round` maps to the operator CLI options `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route).
@@ -17,6 +18,8 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 - New runs are `efficient` by default and need no permission probe (see Safety modes). In strict mode the probe PASS is bound to the plugin version: after upgrading, a strict run directory needs a new `permission-probe`. Finish a run with the version that started it. If a v2.9.x run is nevertheless continued under v2.10.0, it resumes strict, needs a new probe, keeps `lifecycle_mode=off` and ends at DONE.
 
 ## Deprecation status (v2.12.0)
+Superseded by "Status in v2.13.0" above for routing ("Nothing is removed" no longer holds); the notice below is still
+printed by `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` and the Codex explicit legacy request until v2.13.1.
 The legacy workflow is deprecated since v2.12.0: the owner ruled the ADR-6 replacement gate met on field evidence (ADR-6 amendment D-READY, 2026-10-05, in `DECISIONS.md`). Nothing is removed and no routing changes. When you explicitly choose legacy (`entry: legacy`, `/review-loop:legacy`, the Codex "legacy review-loop workflow" request, or `/review-loop:plan` / `execute` invoked on their own), the entry prints one line:
 
 `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
@@ -26,7 +29,7 @@ The legacy code is removed only after every precondition below holds, so that no
 | Removal precondition | Status (2026-10-07) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
 |---|---|---|
 | `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); closing check passed 2026-10-06 (PR NYTC69/review-loop#6: one real PR review through the default entry, REPORTED complete, no post) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
-| `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | retired onto the review-only entry (CQL-RETIRE: `/review-loop:code-quality-loop` follows `entry`; `--legacy` keeps the legacy loop until legacy is deleted); capability 1 (the writers) shipped in v2.12.5, capability 3 (the analyzers) went with D-LG2, capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
+| `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | retired onto the review-only entry (CQL-RETIRE: `/review-loop:code-quality-loop` runs the review-only entry; `--legacy` is refused since v2.13.0); capability 1 (the writers) shipped in v2.12.5, capability 3 (the analyzers) went with D-LG2, capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
 | Every legacy-map row has a final owner answer | answered 2026-10-07 (ADR-15): 10 retire, 3 covered, 4 port (the owner moved L100 from covered to port the same day); L133 Linux dropped (macOS only for now) | the rows marked "(ADR-15)", and L100 |
 | The port rows ship | L117 shipped (D09 POLISH-Q, v2.12.5-6), L120 shipped (v2.12.8), L100 `resume --add-rounds` and L105 shipped (v2.12.9) | the "port" rows |
 | L133 Linux | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback | `Linux (legacy works today)` |
@@ -137,8 +140,8 @@ Status values:
 | `--stop-after before-delivery` | DONE = acceptance pending | covered |
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
 | Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
-| `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` only through `--legacy` | covered (LG2); closing check passed 2026-10-06 (PR NYTC69/review-loop#6) |
-| `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A; `paired_session/docs/cql-retirement.md`) | covered (CQL-RETIRE); `--legacy` keeps the legacy loop until legacy is deleted |
+| `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` is refused with the pointer `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)` | covered (LG2); closing check passed 2026-10-06 (PR NYTC69/review-loop#6) |
+| `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A; `paired_session/docs/cql-retirement.md`) | covered (CQL-RETIRE); `--legacy` is refused since v2.13.0 |
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
 | `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
@@ -186,7 +189,7 @@ Status values:
 | `reviewer: codex \| subagent`, `.codex/agents/*.toml`, `scripts/run_claude_reviewer.py` | the coordinator launches its own role CLIs | covered |
 | Parallel reviewer fan-out | none needed: roles run in sequence (wall time only) | covered |
 | macOS | the full path | covered |
-| Linux (legacy works today) | with the `entry` key absent, a non-macOS host falls back to legacy; with `entry: paired-session` there is no host check; no real Linux run recorded | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback (L133) |
+| Linux (legacy works today) | since v2.13.0 a non-macOS host is refused on every entry (`paired-session needs macOS; Linux and other hosts are not supported`); no real Linux run recorded | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback (L133) |
 | Windows | unsupported in both | covered |
 | CI and off-macOS tests | GitHub Actions runs the tests on Linux and macOS (D08; the workflow lives on the `ci/**` branches); the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`) | covered (ADR-15) (L135) |
 
