@@ -97,7 +97,9 @@ def delivery_section(state: dict) -> str:
             lines.append(f'- {title}：{len(found)} 条' + ('（' + '，'.join(f'{s} {n}' for s, n in statuses.items()) + '）' if found else '')
                          + (f"；未关闭：{', '.join(open_ids)}" if open_ids else ''))
     verdicts = [f'- {who}：{verdict}' for who, verdict in _verdicts(state) if verdict] or ['- 无']
-    lines += ['', '## 轮次', f"- PLAN {state.get('plan_rounds', 0)} 轮，EXEC {state.get('exec_rounds', 0)} 轮",
+    added = '，'.join(f"{row['phase']} +{row['n']}" for row in state.get('round_extensions', []))   # L100
+    lines += ['', '## 轮次', f"- PLAN {state.get('plan_rounds', 0)} 轮，EXEC {state.get('exec_rounds', 0)} 轮"
+              + (f'；操作员追加轮次（resume --add-rounds）：{added}' if added else ''),
               '', '## 判定（最后一轮）', *verdicts, '', '## Token 用量（按供应商，明细见 usage.md）']
     vendors = {}
     for turn in state.get('turns', []):

@@ -316,6 +316,16 @@ recovering an interrupted probe, use `resume` on the existing run directory;
 do not use `run` again or start a new work item. In strict mode, re-run the
 permission probe first if it is missing or no longer matches.
 
+At a PLAN or EXEC round-limit HOLD (the command prints a `NEXT: resume
+--add-rounds N` line before it), report the open findings and offer the
+choices that line names: `resume --add-rounds N` (1-10; the same run continues
+with N more rounds of that phase, starting with the author turn after a review
+or gate HOLD; a HOLD after a write keeps its review; the saved cap
+stays and the extension is recorded in `round_extensions`), `accept
+--override-rejection --reason TEXT` (lifecycle off only), a successor run with
+`note --scope-change`, or `abort`. Add rounds only on the user's request,
+with the number they choose; never on your own initiative.
+
 A run start that prints `WARNING: the tracked .gitignore does not cover ...`
 will HOLD at SECURITY (`security preflight review-required`). Tell the user
 then: committing a covering `.gitignore` before the run avoids it. At that

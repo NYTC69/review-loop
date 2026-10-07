@@ -1,5 +1,15 @@
 # Changelog
 
+### v2.12.9：paired-session 读取 review_focus / review_style / quality_focus（L105）；轮次上限 HOLD 时可以 `resume --add-rounds N` 继续（L100）；legacy 对照表 18 行全部定案；README 小修
+
+- **L105（owner 10-07：port）**：`.review-loop/config.md` 里的 `review_focus`、`review_style`、`quality_focus` 现在由入口映射成 `--review-focus`、`--review-style`、`--quality-focus`（用 `--flag=<value>` 写法），run 开始时冻结。focus 和 style 进 reviewer（PLAN/EXEC/POLISH）、shadow 和 gate 的 prompt，quality focus 和 style 进 POLISH-Q specialist 的 prompt；作者拿不到。三个都没设时 prompt 与之前逐字节相同。这段文字是 operator 写的，不会被 fresh 独立性检查当成审查历史（写 "strict like Codex" 不会 HOLD）。以前 paired-session 会悄悄忽略它们。
+- **L100（owner 10-07：加"继续"命令）**：PLAN 或 EXEC 的轮次上限 HOLD 时，`resume --add-rounds N`（1–10）让同一个 run 再跑 N 轮。保存的上限不变，追加记在 `round_extensions` 里并写进交付报告；审查或 gate 停下的 HOLD 直接进作者轮，写入之后的 HOLD 保留原来的下一步。其他状态下拒绝。HOLD 时在最后一行 `HOLD: ...` 之前多打一行 `NEXT:` 列出可选做法，最后一行不变。
+- **L107（owner 10-07：retire）**：`--skip-globs` / profile 的 `skip_globs` 仍然接受（旧 profile 和已保存的 run 照常加载），但不起作用；gate 总会跑。示例 profile 去掉了这个键。
+- **legacy 对照表**：18 行按 ADR-15 定案（10 retire、3 covered、4 port；L133 Linux 放弃，暂只支持 macOS）。删除 legacy 的方案见 ADR-16，从 2.13.0 开始分三步发布。
+- **README 小修（README-1）**：配置示例路径、`/review-loop` 现在的路由、Codex 有 6 个 skill、review-only 的 `auto_commit` 默认值、轮次硬上限和 `--add-rounds`、三个 focus/style 键、`entry` 键、默认入口的前提（只支持 macOS、两个 CLI、codex-cli ≥ 0.159.2、交互式会话、每个 run 一个 CODEX_HOME），legacy 章节前加了说明。整体重写留到 3.0 复查。
+- **BACKLOG / DECISIONS**：1C 五项按残余关闭（ADR-14）；ADR-15、ADR-16；"Road to v3.0.0"。
+- **审查**：L105 Codex 3 轮 + Opus 终审 APPROVE；L100 Codex 2 轮 + Opus 终审 APPROVE（两条 LOW 已在 L100b 修掉）；L107、L105b、L100b、README-1 由 Codex 审查、监工核对。
+
 ### v2.12.8：paired-session 两条路线都给完整的中文交付报告（L120）；常驻 reviewer 不再把已列出的 open finding 换个编号再报；plan 里斜杠连写的模型名不再误 HOLD（FIELD-34）
 
 - **L120（legacy 对照表，owner 10-05 答 keep）**：ACCEPTED 时 `delivery-report.md` 末尾多一节，内容来自 ledger 和用量记录：按严重度列出全部 finding 及最终状态（未关闭的写 id）、PLAN/EXEC 轮数、最后一轮各审查角色的判定（EXEC reviewer、shadow、gate、specialist、security reviewer）、按 Claude/Codex 分开的调用次数和 token 合计。`--lifecycle-mode off`（CLI 默认）的 accept 以前不写交付报告，现在也写一份。accept 的输出在最后一行状态之前多打一行 `REPORT: <路径>`。review-report.md 的输出不变。

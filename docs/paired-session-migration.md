@@ -23,34 +23,25 @@ The legacy workflow is deprecated since v2.12.0: the owner ruled the ADR-6 repla
 
 The legacy code is removed only after every precondition below holds, so that nothing only legacy can do is lost:
 
-| Removal precondition | Status (2026-10-06) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
+| Removal precondition | Status (2026-10-07) | Rows in the [legacy map](#legacy--paired-session-map-after-v2110) |
 |---|---|---|
 | `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); closing check passed 2026-10-06 (PR NYTC69/review-loop#6: one real PR review through the default entry, REPORTED complete, no post) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
 | `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | retired onto the review-only entry (CQL-RETIRE: `/review-loop:code-quality-loop` follows `entry`; `--legacy` keeps the legacy loop until legacy is deleted); capability 1 (the writers) shipped in v2.12.5, capability 3 (the analyzers) went with D-LG2, capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
-| Every "keep (provisional)" row has a paired-session equivalent, or the owner re-confirms it as retire | 13 rows; removal work items below | the "keep (provisional)" rows |
-| Every "retire (provisional)" row is re-confirmed | 5 rows | the "retire (provisional)" rows |
-| L133 Linux: a real Linux paired-session run, then the host check is opened | not run; the owner's retire answer names it as the condition | `Linux (legacy works today)` |
+| Every legacy-map row has a final owner answer | answered 2026-10-07 (ADR-15): 10 retire, 3 covered, 4 port (the owner moved L100 from covered to port the same day); L133 Linux dropped (macOS only for now) | the rows marked "(ADR-15)", and L100 |
+| The port rows ship | L117 shipped (D09 POLISH-Q, v2.12.5-6), L120 shipped (v2.12.8), L100 `resume --add-rounds` and L105 shipped (v2.12.9) | the "port" rows |
+| L133 Linux | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback | `Linux (legacy works today)` |
 
-The owner answered the 18 legacy-map rows on 2026-10-05 (`DECISIONS.md` ADR-13, D-OWNER-1005). Every keep/retire
-answer is **provisional**: the owner asked that each be confirmed again when its work item starts. No row is
-implemented before that confirmation.
+The owner answered the 18 legacy-map rows provisionally on 2026-10-05 (ADR-13, D-OWNER-1005) and finally on
+2026-10-07 (`DECISIONS.md` ADR-15, D11-1006); the final answers replace the provisional ones.
 
-Removal work items (the "keep (provisional)" rows; each needs its paired-session equivalent, or a re-confirmed retire,
-before legacy is removed):
-1. L75 plan-exists auto-route and L78 `execute --plan`: a paired-session path for an existing plan (E-8).
-2. L80 `--stop-after before-polish` / `before-docs` / `before-security`: intermediate stops.
-3. L89 the stage A fallback when the key is absent. The owner's keep conflicts with removal itself: the sheet called
-   a refusal with new wording mandatory once legacy is gone, and the owner chose "keep legacy". This is resolved at
-   re-confirmation, not here.
-4. L90 handsfree reviewer decisions (`DECISION:`): a decision path that does not HOLD every author question.
-5. L99 `judgment_model`, `cheap_model`: a mapping.
-6. L100 `soft_limit_plan`, `soft_limit_exec`: a continue path at the cap.
-7. L102 `commit_message_prefix`: a mapping.
-8. L108 `cross_vendor_review`: a same-vendor check.
-9. L117 the code-simplifier and test-consolidation writers: a port (D09 capability 1).
-10. L119 finding dispute / triage: a dispute flow.
-11. L120 the Chinese delivery report: brought up to the legacy content.
-12. L135 CI and off-macOS tests (see also D08: `tests/` joins CI).
+All ADR-15 rows are settled as of v2.12.9: L105 `review_focus`, `review_style`, `quality_focus` and L100 `resume --add-rounds` shipped;
+L107 `adversarial_gate_skip_paths` is retired (`skip_globs` stays accepted for old profiles and saved runs but is ignored, and is no longer in the example profile).
+The removal itself follows ADR-16 (routing in 2.13.0, deletion in 2.13.1, loader and lint in 2.13.2).
+
+L133 Linux is dropped (macOS only for now): no Linux run is planned.
+
+The retired rows need no paired-session equivalent (the capability goes away with legacy); the covered rows and the
+shipped port rows (L117, L120, L100, L105) need no further work.
 
 M7, the seeded-defect comparison, no longer gates removal; it stays an optional cost and quality study.
 
@@ -119,15 +110,16 @@ New runs are `efficient` by default ([`paired_session/docs/efficient-mode.md`](.
 Set legacy keys map to one-run paired-session options: `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` / `--max-exec-rounds`, `review_focus` / `review_style` / `quality_focus` → `--review-focus` / `--review-style` / `--quality-focus` (L105: focus and style reach the reviewer, the shadow and the gate, quality focus and style the POLISH-Q specialists, never the author); the start line shows the effective values and which came from `.review-loop/config.md`. `auto_commit: true` in `.review-loop/config.md` is not applied (set `auto_commit` in the operator profile; with it, `accept` makes one local commit of the accepted tree) and prints a warning; `reviewer_model` / `executor_model` print a warning when set to anything other than empty or `inherit` (models come from the profile). Other legacy keys (`reviewer`, ...) are not mapped; `handsfree` only means that the paired-session skill cannot ask its stage A questions, and it never runs `accept` or `reject`. paired-session caps are hard (a HOLD), not a prompt; unset defaults are plan 3 / exec 4 rounds (legacy 3/3).
 
 ## Legacy → paired-session map (after v2.11.0)
-How close legacy is to retirement: every legacy entry, flag, skill, config key and step, with its paired-session equivalent. Source: the legacy-gap inventory of 2026-10-05, updated for D-LG1 (review-only entry, v2.11.0) and the D-LG2 design.
+How close legacy is to retirement: every legacy entry, flag, skill, config key and step, with its paired-session equivalent. Source: the legacy-gap inventory of 2026-10-05, updated for D-LG1 (review-only entry, v2.11.0), the D-LG2 design and the
+final owner answers of 2026-10-07 (ADR-15).
 
 Status values:
 - **covered**: an equivalent exists, or none is needed once legacy is gone (marked "none needed").
 - **planned**: designed or scheduled, under the named decision. M7 is the seeded-defect comparison.
-- **keep (provisional)** / **retire (provisional)**: the owner's answer of 2026-10-05 (D-OWNER-1005), to be confirmed
-  again when the row's work item starts. Keep: paired-session needs an equivalent before legacy is removed. Retire:
-  the capability is not carried over as a legacy path; any follow-up named in the row still applies (L105 warn or drop,
-  L107 delete `skip_globs`, L133 open paired-session to Linux after a real Linux run). `Lnn` is the row's line at `57cb6cf`, from which the decision sheet was built.
+- **(ADR-15)** marks the owner's final answer of 2026-10-07 for the 18 rows of the decision sheet. **retire**: the
+  capability is not carried over; it goes away with legacy. **covered**: as above. **port**: paired-session gains an
+  equivalent; the row names where it shipped. **dropped**: L133, Linux is not supported for now (macOS only).
+  `Lnn` is the row's line at `57cb6cf`, from which the decision sheet was built.
 
 **Entries and skills**
 
@@ -136,12 +128,12 @@ Status values:
 | `/review-loop` with fresh work (Claude), a fresh review-loop request (Codex) | the paired-session skill runs `run --lifecycle-mode on` | covered |
 | Code-exists auto-route (review an existing change) | `run --review-only [--base <ref>]` (D-LG1) | covered |
 | `/review-loop:execute --review-only` | `run --review-only`; the legacy command stays until E-8 is revisited, and M7 needs it from a pinned copy | covered |
-| Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | keep (provisional): keep legacy (L75) |
+| Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | covered (ADR-15) (L75) |
 | `/review-loop:plan` (both hosts) | `run --stop-after-plan`: `/review-loop:paired-session <work item> --plan-only` (Claude), or a request to stop after the plan (Codex, PSE) | covered |
 | `/review-loop:execute --session <uuid>` | `resume` of a paired run (after `--stop-after-plan`) | covered |
-| `/review-loop:execute --plan <text\|path>` | plan text in `WORKITEM.md`, then drafted and reviewed again (no `plan_source` import) | keep (provisional): keep legacy (L78) |
+| `/review-loop:execute --plan <text\|path>` | plan text in `WORKITEM.md`, then drafted and reviewed again (no `plan_source` import) | covered (ADR-15) (L78) |
 | `--stop-after exec-round` | operator CLI `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route) | planned (M7) |
-| `--stop-after before-polish` / `before-docs` / `before-security` | none; a HOLD plus `resume` partly substitutes | keep (provisional): keep legacy (L80) |
+| `--stop-after before-polish` / `before-docs` / `before-security` | none; a HOLD plus `resume` partly substitutes | retire (ADR-15) (L80) |
 | `--stop-after before-delivery` | DONE = acceptance pending | covered |
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
 | Resume of a legacy session | none needed: paired runs resume with `resume`; legacy sessions are not imported | covered |
@@ -150,8 +142,8 @@ Status values:
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
 | `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
 | `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
-| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | keep (provisional): keep legacy (L89); conflicts with removal itself, resolved at re-confirmation |
-| Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | keep (provisional): keep legacy (L90) |
+| Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | retire (ADR-15) (L89) |
+| Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | retire (ADR-15) (L90) |
 
 **Config keys** (`.review-loop/config.md`)
 
@@ -160,16 +152,16 @@ Status values:
 | `reviewer`, `codex_reviewer_backend` | role vendors from the operator profile or `--reviewer-vendor` | covered |
 | `reviewer_model`, `executor_model` | `--reviewer-model` / `--author-model` or the operator profile; warned when set to anything other than empty or `inherit`, not applied | covered |
 | `codex_reviewer_model`, `codex_executor_model` | `--reviewer-model` / `--author-model` or the operator profile; silently ignored | covered |
-| `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | keep (provisional): keep legacy; give paired-session a mapping (L99) |
-| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a hard HOLD, not a prompt; exec default 4 (legacy 3) | keep (provisional): keep legacy; give paired-session a continue path (L100) |
+| `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | retire (ADR-15) (L99) |
+| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a HOLD at the cap, not a prompt; exec default 4 (legacy 3). At that HOLD, `resume --add-rounds N` (1-10) continues the same run with N more rounds of the phase (the saved cap stays; `round_extensions` records it) | port (owner 2026-10-07, after ADR-15's "covered"): `resume --add-rounds N` (L100) |
 | `auto_commit` | operator-profile `auto_commit`: one hook-free local commit on accept | covered |
-| `commit_message_prefix` | none: the commit message is fixed | keep (provisional): keep legacy; give paired-session a mapping (L102) |
+| `commit_message_prefix` | none: the commit message is fixed | retire (ADR-15) (L102) |
 | `docs_file` | `--docs-file` | covered |
-| `handsfree` | stage A questions fail; `accept` / `reject` are never run | retire (provisional) (L104) |
-| `review_focus`, `review_style`, `quality_focus` | `--review-focus` / `--review-style` / `--quality-focus`, frozen at run start (L105) | port (ADR-15); shipped in the next release |
+| `handsfree` | stage A questions fail; `accept` / `reject` are never run | retire (ADR-15) (L104) |
+| `review_focus`, `review_style`, `quality_focus` | `--review-focus` / `--review-style` / `--quality-focus`, frozen at run start (L105) | port (ADR-15); shipped in v2.12.9 |
 | `skip_quality_polish` | `--skip-quality-polish` | covered |
-| `adversarial_gate_skip_paths` | none: `skip_globs` is frozen but not read, and the lifecycle refuses `--adversarial-gate off` | retire (provisional): delete `skip_globs` (L107) |
-| `cross_vendor_review` | the default roles are cross-vendor; no same-vendor detection | keep (provisional): keep legacy; give paired-session a same-vendor check (L108) |
+| `adversarial_gate_skip_paths` | none: `skip_globs` is retired (accepted for old profiles and saved runs, ignored), so it never skips the gate; the lifecycle refuses `--adversarial-gate off` | retire (ADR-15) (L107) |
+| `cross_vendor_review` | the default roles are cross-vendor; no same-vendor detection | retire (ADR-15) (L108) |
 | `context_persist_threshold` | none needed: state lives in the run directory | covered |
 | `entry` | none needed: goes away with legacy | covered |
 
@@ -178,13 +170,13 @@ Status values:
 | Legacy step | paired-session equivalent | Status |
 |---|---|---|
 | Plan drafting and review; implementation and execution review; stuck detection; terminal adversarial gate (3.4); quality-polish specialists (3.5: language reviewers, code-reviewer, silent-failure-hunter, pr-test-analyzer); docs (3.6); security (3.7); delivery gate and `auto_commit`; evidence and usage | PLAN / EXEC with shadow, FIELD-5 structural HOLD, gate, POLISH-Q, DOCS, SECURITY, accept, receipts and `usage.json` | covered |
-| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | POLISH-Q quality writers (D09 capability 1, v2.12.5) | covered |
+| code-simplifier writer (3.5.4), test-consolidation writer (3.5.5) | POLISH-Q quality writers (D09 capability 1, v2.12.5) | port (ADR-15): shipped as D09 POLISH-Q, v2.12.5-6 (L117) |
 | comment-analyzer, type-design-analyzer (review-pr, code-quality-loop only) | specialists of the review-pr report mode (D-LG2) | covered for review-pr (LG2); code-quality-loop: dropped from the fixing route under D09 (report mode keeps them) |
-| Dispute / triage of a finding | owner-only disposition; operator `note` | keep (provisional): keep legacy; give paired-session a dispute flow (L119) |
-| Chinese delivery report with findings, rounds and token totals | a shorter report, only at ACCEPTED | keep (provisional): keep legacy; bring paired-session up to it (L120) |
+| Dispute / triage of a finding | owner-only disposition; operator `note` | retire (ADR-15) (L119) |
+| Chinese delivery report with findings, rounds and token totals | `delivery-report.md` on both accept routes: findings per severity with their final status, rounds, verdicts, tokens per vendor; `accept` prints its path | port (ADR-15): shipped in v2.12.8 (L120) |
 | Push / PR | none in either workflow; `accept` refuses external delivery | covered |
 | Compass BACKLOG close | none needed: legacy never closed items either; no close stage (D-3) | covered |
-| Compass checkpoint injection, MemPalace historical context | none | retire (provisional): drop; MemPalace is no longer used (L123) |
+| Compass checkpoint injection, MemPalace historical context | none | retire (ADR-15): MemPalace is no longer used (L123) |
 
 **Runtimes and platforms**
 
@@ -194,12 +186,13 @@ Status values:
 | `reviewer: codex \| subagent`, `.codex/agents/*.toml`, `scripts/run_claude_reviewer.py` | the coordinator launches its own role CLIs | covered |
 | Parallel reviewer fan-out | none needed: roles run in sequence (wall time only) | covered |
 | macOS | the full path | covered |
-| Linux (legacy works today) | with the `entry` key absent, a non-macOS host falls back to legacy; with `entry: paired-session` there is no host check; no real Linux run recorded | retire (provisional): open paired-session to Linux after a real Linux run (L133) |
+| Linux (legacy works today) | with the `entry` key absent, a non-macOS host falls back to legacy; with `entry: paired-session` there is no host check; no real Linux run recorded | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback (L133) |
 | Windows | unsupported in both | covered |
-| CI and off-macOS tests | the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`); the workflow location is to be confirmed | keep (provisional): keep legacy (L135) |
+| CI and off-macOS tests | GitHub Actions runs the tests on Linux and macOS (D08; the workflow lives on the `ci/**` branches); the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`) | covered (ADR-15) (L135) |
 
-**Owner answers:** the 18 rows above were answered on 2026-10-05 (D-OWNER-1005): 13 keep, 5 retire, all
-provisional. The owner's note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
+**Owner answers:** the 18 rows marked (ADR-15) were answered provisionally on 2026-10-05 (D-OWNER-1005) and finally
+on 2026-10-07 (ADR-15, D11-1006, with the owner's same-day changes: L100 moved from covered to port, a continue
+command at the round-limit HOLD; L133 dropped, macOS only for now): 10 retire, 3 covered, 4 port, L133 dropped. The owner's note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
 
 Push and PR delivery stays an owner decision (D8).
 

@@ -4,7 +4,12 @@
 
 ## P1 — high priority
 
-(none)
+- [new] **Road to v3.0.0** (owner 2026-10-07: "我们等彻底 deprecate 了 legacy, 做一遍 repo 的彻底复查, 尤其是说明文档, 看看和当前版本的行为是否一致. 不一致一定要更新, 然后等彻底 deprecate 以后, 我希望发布 3.0.0 版本."). In order:
+  1. Finish the ADR-15 rows: L105 (lane A), L100 continue command (lane B), L107 (done 11732e6).
+  2. ~~L133 Linux~~ dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; the docs say so and a non-macOS host gets a clear refusal once legacy is gone.
+  3. Legacy removal (ADR-16: design `.compass/results/2026-10-07_lgdel-design.md`; ships as 2.13.0 routing / 2.13.1 deletion / 2.13.2 loader+lint): route every remaining legacy path to paired-session or retire it (plan-exists, legacy session resume, invalid/unreadable config, failed pre-checks with the key absent, `entry: legacy`, `--legacy`, standalone `/review-loop:plan` and `/review-loop:execute`, the Codex Stage 1 legacy workflow), then delete the legacy skills, protocol docs, agents and lint/README needles together. Owner confirms the deletion plan before it runs.
+  4. Full repository review after removal, docs first (owner 2026-10-07: README gets its full rewrite here; only small README fixes ship before, with v2.12.9): README audit `.compass/results/2026-10-07_readme-audit.md` lists the rewrite items (#7, #9-#15, #17-#24); every README, guide, skill, protocol doc and example config checked against current behaviour; every mismatch fixed.
+  5. Release v3.0.0 (CI + real default-entry runs, announce to both consumers).
 
 ## P2 — normal
 
