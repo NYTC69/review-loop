@@ -7863,11 +7863,11 @@ class Coordinator:
         those 2, or the ordinary limit when that is higher (D09-F2: ordinary rounds left stay usable, e.g. a FINISH write
         after a partial rollback); at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
         `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
-        rounds = self.state.get('writer_replay_rounds')
-        ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) + self._round_extensions('EXEC') +
+        rounds, added = self.state.get('writer_replay_rounds'), self._round_extensions('EXEC')
+        ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) + added +
                     ((self.state.get('advisory_fix') or {}).get('state') == 'ran'))   # ADVFIX: its own one round
-        if rounds and rounds.get('used') is None:
-            return max(rounds['start'] + 2, ordinary)
+        if rounds and rounds.get('used') is None:   # L100: an operator extension always lands on top, never inside the max
+            return max(rounds['start'] + 2, ordinary - added) + added
         return ordinary + (rounds['used'] if rounds else 0)
 
     def at_round_limit_hold(self) -> bool:   # L100: the current HOLD is the one round_limit_hold recorded (writer passes too)

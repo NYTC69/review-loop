@@ -143,8 +143,13 @@ class AddRoundsTests(unittest.TestCase):
         co = self.coordinator('--max-exec-rounds', '1', '--max-plan-rounds', '2')
         co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2}, {'phase': 'PLAN', 'n': 3}]
         self.assertEqual((co.exec_round_limit(), co.plan_round_limit()), (3, 5))
-        co.state['writer_replay_rounds'] = {'start': 3, 'used': None}   # open replay: max(start + 2, ordinary)
-        self.assertEqual(co.exec_round_limit(), 5)
+        co.state['writer_replay_rounds'] = {'start': 3, 'used': None}   # open replay: max(start + 2, ordinary - ext) + ext
+        self.assertEqual(co.exec_round_limit(), 7)
+        co.state['writer_replay_rounds']['start'] = 1   # gate LOW 1: start=1, ordinary=1, ext=1 -> 4, not swallowed by the max
+        co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 1}]
+        self.assertEqual(co.exec_round_limit(), 4)
+        co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2}, {'phase': 'PLAN', 'n': 3}]
+        co.state['writer_replay_rounds']['start'] = 3
         co.state['writer_replay_rounds']['used'] = 2   # frozen at DOCS: ordinary + used
         self.assertEqual(co.exec_round_limit(), 5)
         self.assertEqual(co._config()['max_exec_rounds'], 1)   # the resume comparison sees the saved cap only
