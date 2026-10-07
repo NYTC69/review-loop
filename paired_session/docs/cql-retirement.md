@@ -72,8 +72,8 @@ PSE gets a **Code-quality-loop entry** subsection after "Review-only entry" (abo
   (owner FIELD-25, 2026-10-06: auto_commit true, with the untracked-file notice): `accept` makes one local commit and
   never pushes; an operator-profile `auto_commit: false` also wins, as for any review-only run.
 - **WORKITEM.md:** the goal "Review and improve the quality of the uncommitted change: correctness, error handling,
-  tests and simplicity; fix what the reviews find." plus a "Review priorities" section carrying `quality_focus` and
-  `review_style` verbatim when they are set (§1.3). No review history.
+  tests and simplicity; fix what the reviews find." No review history. (`quality_focus` and `review_style` were
+  first copied into it as an interim "Review priorities" section; since L105 they are passed as run flags, §1.3.)
 - **Result:** the run ends DONE (or HOLD) like any review-only run; show the delivery report (it has one line per
   quality writer, D09 §4) and accept or reject only on the user's explicit decision.
 - PSE "Entry and failure handling": "only the review-loop or review-pr entry falls back" becomes "only the
@@ -112,7 +112,7 @@ One line each; "refused" stops before the handoff with that line.
 | `--legacy` | the legacy route (§1.1) |
 | any other argument | refused: `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds] [--skip-reorganize] [--legacy]` |
 | `judgment_model`, `cheap_model` (config.md) | not applied; when set, one warning line: `code-quality-loop: <key> in .review-loop/config.md is not applied by paired-session; models come from the operator profile` (the PSE warning for `reviewer_model`, same shape) |
-| `quality_focus`, `review_style` (config.md) | mapped: copied verbatim into WORKITEM.md under "Review priorities" (operator text, which every role reads; FIELD-30 keeps tool names there from holding the scan) |
+| `quality_focus`, `review_style` (config.md) | mapped: passed as `--quality-focus` / `--review-style` run flags (L105; the interim copy into WORKITEM.md under "Review priorities" is gone) |
 | `auto_commit` (config.md) | `false`: handed over as `--auto-commit false`; absent or `true`: the review-only default (one local commit at `accept`), no warning on this route |
 | `skip_quality_polish`, `docs_file`, `soft_limit_exec` (config.md) | as for every paired run (PSE "Profile and settings"); `skip_quality_polish: true` also turns the writers off (D09 §4) |
 

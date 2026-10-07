@@ -74,7 +74,8 @@ Legacy keys in `.review-loop/config.md` that are set map to one-run options:
 `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish
 true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /
 `--max-exec-rounds`, and `review_focus` / `review_style` / `quality_focus` → `--review-focus` /
-`--review-style` / `--quality-focus` (each value as one quoted argument; the run freezes them and gives
+`--review-style` / `--quality-focus` (each value as one quoted argument in the `--review-focus=<value>`
+form, so a value that starts with "-" is not read as an option; the run freezes them and gives
 review focus and style to the reviewer, the shadow and the gate, quality focus and style to the POLISH-Q
 specialists, never to the author). Do not apply, but print a warning for, `auto_commit: true`
 (`review-loop: auto_commit in .review-loop/config.md is not applied by
