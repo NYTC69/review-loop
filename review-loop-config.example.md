@@ -1,6 +1,8 @@
 # Review Loop — Project Config
 # Place this file at: .review-loop/config.md
-# All fields are optional and shown commented out with their default; uncomment only the keys you change.
+# All fields are optional and shown commented out; uncomment only the keys you change. A `# key: value` line shows
+# the default unless its note says otherwise (auto_commit has none: see its note). The review_focus, quality_focus
+# and review_style lines are examples; their default is empty.
 
 # Roles, vendors and models come from the operator profile: the one you name, else
 # ~/.config/review-loop/paired-session.json (example: paired_session/paired-session-config.example.json); role and
