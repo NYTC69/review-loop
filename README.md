@@ -181,9 +181,11 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 └── DONE       acceptance pending: you accept or reject
 ```
 
-A blocking finding from PLAN to DOCS goes back to the author, and the EXEC review and the gate run again. A SECURITY
-finding is a HOLD, never repaired by the run: fix it outside the run and resume (the EXEC review and the gate run
-again).
+In PLAN a blocking finding goes back to the author for the next plan round. From EXEC on, a blocking finding of the
+reviewer, the shadow or the gate goes back to the author; FINISH fixes what blocks delivery in its own session; a
+FINISH or POLISH-Q fix, a DOCS write outside the docs or a DOCS-review REVISE opens a new EXEC round (the reviewer
+first, then the gate). A SECURITY finding is a HOLD, never repaired by the run: fix it outside the run and resume
+(the EXEC review and the gate run again).
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
 shadow, the gate and the stage reviewers start fresh each time. Default roles: Codex is the author
@@ -196,7 +198,8 @@ A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and say
 - **accept** — only on your explicit decision. The agent accepts the tree that passed SECURITY and shows the delivery
   report it writes, `delivery-report.md` in the run directory (in Chinese: the stages, the commit, the finding counts
   by severity and final status with the ids still open, the rounds, the verdicts and the token totals). A review-only run (`/review-loop`
-  on existing code, code-quality-loop) makes one local commit by default; `auto_commit: false` in
+  on existing code, code-quality-loop) makes one local commit by default when its commit checks pass (otherwise the
+  change stays uncommitted and `accept` lists the files to commit yourself); `auto_commit: false` in
   `.review-loop/config.md` keeps it uncommitted. The main pipeline commits only when the operator profile sets
   `auto_commit`. Nothing is ever pushed.
 - **reject** — with your note, the run reopens EXEC and the author works on it.
@@ -348,7 +351,8 @@ review_style: "be terse, flag any unwrap() as CRITICAL"
 and logs it to `progress.jsonl` in the run directory; `status --brief` shows the latest.
 
 **Plan Conformance** — In EXEC the reviewer and the shadow review the change against the approved plan, and an
-EXEC approval needs their own run evidence (`self_run_evidence`).
+EXEC approval needs their own run evidence (`self_run_evidence`; a review-pr report run without a test
+command may approve statically).
 
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
