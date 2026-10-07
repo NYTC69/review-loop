@@ -5524,9 +5524,12 @@ class Coordinator:
         text = DOTTED_PATH_RE.sub('<path>', self._run_path_prose('context/plan.md', text))   # as the bare-name scan reads it
         word = re.escape(whole)
         prose = re.compile(r'(?<![\w/.])' + word + r'(?!\w|-?/)', re.I)
-        attribution = re.compile(word + r'(?:/[\w.-]+)?\s+(?:approved?|signed|rejected|requested)\b', re.I)
-        # FIELD-34: one slash between two plain words ("Claude/Codex pp", "Opus/GPT") is prose, not a path segment
-        pairs = [match.span() for match in re.finditer(r'(?<![\w/.-])[A-Za-z][\w-]*/[A-Za-z][\w-]*(?![\w/-]|\.\w)', text)]
+        attribution = re.compile(word + r'(?:/[\w.-]+)*\s+(?:approved?|signed|rejected|requested)\b', re.I)   # 34b: a chain too
+        # FIELD-34: one slash between two plain words ("Claude/Codex pp", "Opus/GPT") is prose, not a path segment; so is a
+        # longer slash chain of model names only ("Claude/Codex/Opus"), while a/codex/b stays a path
+        model = r'(?i:claude|codex|opus|astra|gpt[\w.-]*|sonnet|haiku)'
+        pairs = [match.span() for pattern in (r'[A-Za-z][\w-]*/[A-Za-z][\w-]*', model + r'(?:/' + model + r')+')
+                 for match in re.finditer(r'(?<![\w/.-])' + pattern + r'(?![\w/-]|\.\w)', text)]
         return all((prose.match(text, use.start()) or any(a <= use.start() < b for a, b in pairs))
                    and not attribution.match(text, use.start()) for use in re.finditer(r'\b' + word + r'\b', text, re.I))
 
