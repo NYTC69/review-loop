@@ -257,7 +257,8 @@ pattern of `review_only`):
       that check are skipped; the sandbox-denial attempts stay. So a strict no-test report run can pass the probe,
       while an ordinary strict probe keeps requiring the attempt.
 - Tier config (L3, `judgment_model` / `cheap_model`) does not map: models come from the operator profile (ADR-9).
-  `review_style` is not mapped (as the migration doc already says for paired-session).
+  `review_style` is not mapped (as the migration doc then said for paired-session); since L105 it is, as
+  `--review-style`.
 
 ### 2.5 Output
 

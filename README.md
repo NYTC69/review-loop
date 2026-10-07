@@ -18,6 +18,10 @@ A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill 
 
 Start a new session. The `/review-loop` command is now available in all your projects.
 
+**Requirements (default entry).** macOS only (Linux is not supported for now; ADR-15 amendment); `claude` and
+`codex` on PATH (codex-cli 0.159.2 or later); a dedicated git worktree for the task and a test command; an
+interactive session (a headless session needs `--detach`); one absolute `CODEX_HOME` per run.
+
 From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 `.review-loop/config.md` hands off to the paired-session coordinator (the default
 entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
@@ -53,7 +57,7 @@ HEAD or the branch is a HOLD. See
 
 ```bash
 mkdir -p .review-loop
-cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loop/config.md
+cp ~/.claude/plugins/cache/review-loop-marketplace/review-loop/<version>/review-loop-config.example.md .review-loop/config.md
 ```
 
 > **After updating the plugin** — Claude Code caches plugins at session
@@ -69,6 +73,7 @@ with Claude Code, so both runtimes work against the same project state.
 The rest of this README primarily documents the current Claude Code plugin
 surface; Codex Stage 1 also exposes the paired-session skill, which is the
 default review-loop entry from v2.10.0.
+The rest of this subsection, up to "Install in Codex CLI", describes the legacy workflow (deprecated since v2.12.0).
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
@@ -144,6 +149,8 @@ Full step-by-step + verification: [`docs/install-codex.md`](docs/install-codex.m
 
 ## Reviewer isolation and invocation evidence
 
+The following describes the legacy workflow (deprecated since v2.12.0).
+
 Report-only reviewers use bounded native CLI launchers. Claude reviewers expose
 only Read/Grep/Glob; Codex reviewers use a clean configuration context and a
 read-only sandbox. The `reviewer: subagent` config name remains accepted but
@@ -192,20 +199,21 @@ recursively collecting the plugin's repository symlink.
 
 ## Claude Plugin Surface
 
+The following describes the legacy workflow (deprecated since v2.12.0) unless a line names paired-session.
+
 The commands, configuration tables, reviewer modes, and included agent list
 below describe the current Claude Code plugin surface. They are not yet part of
-the Codex Stage 1 surface beyond the shared `review-loop` and `guide` entries
-described above.
+the Codex Stage 1 surface beyond the six Codex skills described above (`review-loop`, `plan`, `execute`,
+`guide`, `paired-session`, `review-pr`).
 
 ## Three Skills: `plan`, `execute`, `review-loop`
 
 Starting in v2.6.0 the workflow is split into three composable skills. Pick
 the one that matches where your work currently is:
 
-- **`/review-loop`** — the umbrella. Full plan → execute → polish →
-  delivery in one invocation. Step 1.5 auto-routes based on detected state
-  (fresh / existing plan / code already implemented). Unchanged external UX
-  from earlier versions.
+- **`/review-loop`** — the umbrella. With the default entry, fresh work goes to the paired-session
+  coordinator and code already implemented to a paired-session review-only run (`run --review-only`);
+  an existing plan or a session resume stays on the legacy workflow described here.
 - **`/review-loop:plan`** — planning phase only. Drives a work item to a
   reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits
   with a hand-off hint (`Next: review-loop:execute --session <uuid>`). Use
@@ -363,6 +371,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `entry` | absent = `paired-session` | `paired-session` or `legacy` (exact values; anything else falls back to legacy with a warning) |
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
 | `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |
@@ -373,13 +382,13 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `codex_executor_model` | `""` | Reserved and ignored in Codex Stage 1 |
 | `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
 | `soft_limit_exec` | `3` | Same for execution phase |
-| `auto_commit` | `false` | Stage changed files and commit after delivery. Legacy workflow only: paired-session reads `auto_commit` only from the operator profile and prints a warning when `auto_commit: true` is set here |
+| `auto_commit` | `false` | Stage changed files and commit after delivery. Legacy workflow only: paired-session reads `auto_commit` only from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept`, never a push; code-quality-loop honours an explicit `auto_commit: false` here |
 | `commit_message_prefix` | `feat` | Conventional commit type prefix |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
-| `review_focus` | `""` | Project-specific review priorities (free text) |
-| `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs. |
-| `review_style` | `""` | Tone and rules for all reviews (free text) |
+| `review_focus` | `""` | Project-specific review priorities (free text); paired-session: `--review-focus` (L105), frozen at run start, for the reviewer, shadow and gate |
+| `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs. Paired-session: `--quality-focus` (L105), frozen at run start, for the POLISH-Q specialists |
+| `review_style` | `""` | Tone and rules for all reviews (free text); paired-session: `--review-style` (L105), frozen at run start, for every review role |
 | `skip_quality_polish` | `false` | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security. |
 | `cross_vendor_review` | `auto` | `auto` or `off`; a same-vendor final review gets one extra other-vendor review |
 | `adversarial_gate_skip_paths` | `["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]` | Step 3.4 terminal adversarial gate — skip when every Step 3 changed file matches one of these glob patterns. |
@@ -455,7 +464,10 @@ corresponding `.review-loop/sessions/{uuid}.md` file.
 **Soft Limits + Stuck Detection** — No hard cap on rounds. When the soft limit
 is reached and CRITICALs remain, the Orchestrator asks whether to continue.
 Stuck detection stops the loop if the same issue recurs 3 rounds without
-progress.
+progress. The default entry (paired-session) has hard round caps instead (plan 3 / exec 4 unless set) that
+end in a HOLD; at that HOLD `resume --add-rounds N` continues the same run (L100). A legacy-format run
+(`--lifecycle-mode off`) may instead `accept --override-rejection --reason TEXT`; the worktree lifecycle
+refuses that override.
 
 **Quality Polish** — After the adversarial review loop approves, a suite of
 specialized agents automatically runs static analysis, simplification, test
@@ -466,7 +478,8 @@ coverage, and comment checks. Configurable via `quality_focus` and
 
 The tree below shows the Claude/plugin-side structure. Codex Stage 1 also uses
 the runtime paths `.agents/skills/` and `.codex/agents/` for its repo skills
-and subagents. Only `review-loop` and `guide` are wired for Codex in Stage 1.
+and subagents. Six skills are wired for Codex: `review-loop`, `plan`, `execute`, `guide`,
+`paired-session` and `review-pr`.
 
 ```
 review-loop/

@@ -72,9 +72,9 @@ surface as `Unrecognized command` in Codex. Use natural language:
 | Paired-session work item (the default review-loop entry from v2.10.0; explicit request) | "use paired-session for this task" |
 | Legacy review-loop workflow | "use the legacy review-loop workflow" |
 
-Stage 1 exposes five skills under `.agents/skills/`:
-`review-loop` (umbrella; hands fresh work to paired-session by default from v2.10.0), `plan`, `execute`, `guide`, and
-`paired-session`. Both `plan` and
+Stage 1 exposes six skills under `.agents/skills/`:
+`review-loop` (umbrella; hands fresh work to paired-session by default from v2.10.0), `plan`, `execute`, `guide`,
+`paired-session`, and `review-pr`. Both `plan` and
 `execute` share `.review-loop/config.md` and `.review-loop/sessions/`
 with the Claude Code path, so a session started under one runtime can be
 resumed under the other.
@@ -105,7 +105,7 @@ codex exec --skip-git-repo-check \
 ```
 
 The third command should list `review-loop`, its plan/execute/guide skills,
-and `paired-session` among the available skills.
+`paired-session` and `review-pr` among the available skills.
 
 ## Boundary: Claude Code plugin path vs Codex plugin path
 
@@ -117,9 +117,9 @@ session state but install through different package managers.
 | Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` | `skills/` (top-level) | `/review-loop`, `/review-loop:plan`, `/review-loop:paired-session`, … |
 | Codex CLI | `.codex-plugin/plugin.json` | `.agents/plugins/marketplace.json` | `.agents/skills/` | none — natural-language only |
 
-The top-level `skills/` tree (with `review-pr`, `code-quality-loop`,
+The top-level `skills/` tree (with `code-quality-loop`,
 `reorganize`, …) dispatches via Claude's Agent tool and is intentionally
-**not** exposed to Codex. The five `.agents/skills/` entries are the
+**not** exposed to Codex. The six `.agents/skills/` entries are the
 Stage 1 Codex surface. From v2.10.0, paired-session is the default
 review-loop entry in both runtimes; `entry: legacy` or an explicit legacy request
 keeps the legacy workflow.
