@@ -4459,6 +4459,13 @@ class Coordinator:
         self.state['status'] = 'ACCEPTED'
         self.state.pop('terminal_hold_kind', None)
         self.state['accepted_at'] = record['timestamp']
+        title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()), '')
+        atomic_text(self.run_dir / 'delivery-report.md', '\n'.join([   # L120: as W's report, without its stages and commit
+            '# 交付报告（lifecycle off）', '', f'- 运行：`{self.run_dir.name}`；工作项：{title}',
+            f"- 结论：已接受（ACCEPTED）{'，--override-rejection' if record['override_rejection'] else ''}，{record['timestamp']}",
+            '- 交付：lifecycle off 不提交，改动留在工作区；外部交付（push、PR、merge）未执行。',
+            *(['- 未提交的文件（请自行提交）：' + '、'.join(record['uncommitted'])] if record.get('uncommitted') else []),
+            f"- 用量：调用 {self.state.get('invocations_used')} 次", '', review_report.delivery_section(self.state)]))
         self.save()
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
@@ -4522,7 +4529,7 @@ class Coordinator:
         self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
         self.state.pop('delivery_pending', None)
         atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
-            self.state, self.run_dir.name, self.workitem.read_text(), delivery))
+            self.state, self.run_dir.name, self.workitem.read_text(), delivery) + '\n' + review_report.delivery_section(self.state))
         self.save()
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
@@ -10607,6 +10614,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
                   + (f"; untracked files committed: {', '.join(delivery['committed_untracked'])}" if delivery.get('committed_untracked') else ''))
         if rows := (co.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
             print(f'UNCOMMITTED: no commit was made ({uncommitted_cause(co.state)}); commit these yourself: ' + ', '.join(rows))
+        if status == 'ACCEPTED' and (report := co.run_dir / 'delivery-report.md').is_file():   # L120
+            print(f'REPORT: {report}')
         print(status)
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
