@@ -6,7 +6,7 @@
 - **fix（FIELD-34，poker-news-bot 现场）**：plan.md 里用斜杠连写的模型名（"Claude/Codex pp"、"Opus/Codex"、"Claude/Codex/Opus"）不再被当成以工具命名的路径而 HOLD gate；"Codex/GPT approved"、"Claude/Codex/GPT approved the plan" 这类评审归因和 `a/codex/b`、`.codex/agents` 这类路径照样拦。Opus 终审 APPROVE。
 - **HYGIENE-2**：polish 和常驻 reviewer 的 prompt 加了一句：已列出的 open finding 不要换个编号重复报告。
 - **DOCS-1007**：文档写明 launcher 日志在哪、什么时候该读；1C 安全控制说明更新到 D-EFF 之后的状态；README/guide 补上 code-quality-loop 的非阻塞修复轮。
-- **BACKLOG**：按 10-06 的分诊关闭 19 项（含 v2.12.1–v2.12.7 已发布的现场修复），P0 清空。
+- **BACKLOG**：按 10-06 的分诊关闭 19 项（含 v2.12.1–v2.12.7 已发布的现场修复）；剩下的 5 项 1C 安全加固按 owner 10-07 的决定作为可接受残余关闭（ADR-14）。P0、P1 清空。
 - **审查**：L120 Codex 2 轮（第 1 轮要求测试用字面量预期值）后 APPROVE，fresh Opus 终审 APPROVE（3000 个随机 state 上 review-report 输出逐字节不变，token 合计与 usage.json 一致）。HYGIENE-2 和 DOCS-1007 由 Codex 审查、监工核对。
 
 ### v2.12.7：code-quality-loop 入口加一轮修非阻塞 finding（ADVFIX）；gate 提的问题修完后 DONE 前必须再过一次 gate（FIELD-32）；plan 里讨论模型不再误 HOLD（FIELD-33）

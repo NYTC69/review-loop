@@ -296,3 +296,10 @@ entry; never edit history.
     - Owner 2026-10-06: ABA/BAB is the recommended default, not a requirement; per-role vendors stay freely configurable (e.g. AAB or BBA when quota is short).
   - (d) The D11 rows stay provisional and are re-confirmed with the owner per work item, as recorded under Consequences
     above (cross-reference only; nothing changes).
+
+### ADR-14: the remaining 1C items close as accepted residuals
+- **Date**: 2026-10-07
+- **Status**: Accepted.
+- **Context**: After the 2026-10-06 backlog triage, P1 held only five 1C safety items: R22-1 F1 (workspace config selects operator-executed tools), F3 (ignored files and .git outside the review snapshot), F4 (Codex global MCP/notify/profile), F6 (global config monitor coverage) and M6 (installed Codex writes workspace trust into the global config). All are class C hardening under D-EFF (2026-10-04), whose strict mode is optional and frozen.
+- **Decision**: The owner, verbatim: "1C 那几项按残余关掉吧". The five items move to BACKLOG Done as accepted residuals; no further work is scheduled.
+- **Consequences**: P0 and P1 are empty. The realistic M6 case stays covered by an isolated CODEX_HOME per acceptance run (owner P0 2026-10-06) and the HYGIENE-1/2 warnings. Reopening any of them needs a field report of normal-use harm, per the owner threat model (users and models are assumed not to act maliciously).
