@@ -1,6 +1,6 @@
 # Hook runner boundary (M4 batch 4)
 
-> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+> **Historical** (M4 hook-runner design, never implemented). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
 
 Design only; lifecycle off. Extends [doc 4](e2e-4-delivery-close.md) and [doc 2a](e2e-2a-tree-binding.md) under D8. Coordinator owns dispatch, budgets, receipts and HOLDs; hooks never edit the ledger.
 

@@ -10,10 +10,10 @@ except ModuleNotFoundError:
 
 FORMAT = 'worktree'
 DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
-LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
+LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',
                    **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),
                                    'frontend-security-reviewer')}
-QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')   # legacy Steps 3.5.3 and 3.5.5
+QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')
 SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM': 'MAJOR', 'SECURITY': 'SECURITY',
             'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
 WAIVERS = (('accept_unverified_claude_author', '--accept-unverified-claude-author'),
@@ -207,7 +207,7 @@ def writer_report_lines(state):
 
 
 def specialists(paths):
-    """Language reviewers for the changed paths (legacy 3.5.1 map), then the code and test quality reviewers."""
+    """Language reviewers for the changed paths, then the code and test quality reviewers."""
     languages = sorted({LANGUAGE_AGENTS[ext] for ext in (Path(path).suffix for path in paths) if ext in LANGUAGE_AGENTS})
     return (*languages, *QUALITY_AGENTS)
 

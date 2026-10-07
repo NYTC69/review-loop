@@ -255,7 +255,7 @@ citing CQL Step 3; lane B's file) stay.
 | Plugin manifests | version bump only, by the release. Surfaced, not in scope: `.claude-plugin/plugin.json:4` and `.claude-plugin/marketplace.json:14` say "5 skills" while `skills/` has 9. |
 
 Historical design docs (`d09-cap1-writer-passes.md`, `review-only-entry.md`, `review-pr-port.md`,
-`legacy-deprecation-readiness.md`, `1d-entry-mapping.md`, `docs/superpowers/**`), `DECISIONS.md` and `BACKLOG.md`
+`legacy-deprecation-readiness.md`, `1d-entry-mapping.md`, `docs/history/**`), `DECISIONS.md` and `BACKLOG.md`
 cite CQL as history and stay.
 
 ## 4. Size and implementation units
