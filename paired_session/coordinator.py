@@ -4390,7 +4390,7 @@ class Coordinator:
         phase = self.state['phase']
         if (phase not in ('PLAN', 'EXEC') or self.state['polish']['active'] or self.state.get('active') or
                 self.state.get('uncertain_active') or self.state['invocations_used'] >= self.args.max_invocations or
-                (phase == 'PLAN' and self.state['plan_rounds'] >= self.args.max_plan_rounds) or
+                (phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
                 (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit())):
             raise ValueError('next author turn is unavailable; note remains undelivered')
         if bool(text) == bool(file):
@@ -7890,12 +7890,34 @@ class Coordinator:
         those 2, or the ordinary limit when that is higher (D09-F2: ordinary rounds left stay usable, e.g. a FINISH write
         after a partial rollback); at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
         `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
-        rounds = self.state.get('writer_replay_rounds')
-        ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) +
+        rounds, added = self.state.get('writer_replay_rounds'), self._round_extensions('EXEC')
+        ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) + added +
                     ((self.state.get('advisory_fix') or {}).get('state') == 'ran'))   # ADVFIX: its own one round
-        if rounds and rounds.get('used') is None:
-            return max(rounds['start'] + 2, ordinary)
+        if rounds and rounds.get('used') is None:   # L100: an operator extension always lands on top, never inside the max
+            return max(rounds['start'] + 2, ordinary - added) + added
         return ordinary + (rounds['used'] if rounds else 0)
+
+    def at_round_limit_hold(self) -> bool:   # L100: the current HOLD is the one round_limit_hold recorded (writer passes too)
+        return self.state.get('status') == 'HOLD' and (self.state.get('round_limit_hold') or {}).get('hold_reason') == self.state.get('hold_reason')
+
+    def plan_round_limit(self) -> int:
+        return self.args.max_plan_rounds + self._round_extensions('PLAN')
+
+    def _round_extensions(self, phase: str) -> int:   # L100: the operator's resume --add-rounds; the frozen cap stays as saved
+        return sum(row['n'] for row in self.state.get('round_extensions', []) if row['phase'] == phase)
+
+    def _add_rounds(self, n: int) -> None:
+        """L100 (owner 2026-10-07): resume --add-rounds N at a PLAN or EXEC round-limit HOLD. The extension is recorded in
+        the same save that leaves the HOLD, so a retried command finds no HOLD and is refused, never applied twice. A review or
+        gate verdict that stopped before the author turn delivers the open findings to that author turn (no new review); a
+        HOLD after a FINISH, DOCS, SECURITY or writer change keeps its next step (the review of that change)."""
+        held = self.state['round_limit_hold']
+        self.state.setdefault('round_extensions', []).append({'phase': held['phase'], 'n': n, 'hold_reason': held['hold_reason'],
+                                                               'timestamp': datetime.now().astimezone().isoformat()})
+        if held['hold_reason'] in ROUND_LIMIT_REASONS[:3] and self.state['next'] in ('reviewer', 'gate'):
+            blocking = self.blocking_open_findings()
+            self.state.update(next='author', delivered_review=worktree_lifecycle.delivered_findings(
+                'round-limit-extension', blocking + [row for row in self.open_findings() if row not in blocking]))
 
     def _close_writer_replay_rounds(self) -> None:
         if (rounds := self.state.get('writer_replay_rounds')) and rounds.get('used') is None:
@@ -7990,7 +8012,7 @@ class Coordinator:
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold('shadow HOLD')
                 return
-        limit = self.args.max_plan_rounds if phase == 'PLAN' else self.exec_round_limit()
+        limit = self.plan_round_limit() if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
         advisory = self.state.get('advisory_fix') or {}   # ADVFIX: the round's re-review lets a pure-advisory REVISE pass,
         if phase == 'EXEC' and advisory.get('state') == 'ran' and advisory.get('epoch') == (self.state.get('lifecycle') or {}).get('epoch'):
@@ -10005,6 +10027,10 @@ class Coordinator:
         if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
+        if (add := getattr(self.args, 'add_rounds', None)) is not None and (   # L100: only at the round-limit HOLD itself
+                not self.at_round_limit_hold() or self.state['config'].get('review_report')):
+            raise ValueError(f"--add-rounds needs a PLAN or EXEC round-limit HOLD (not report mode); this run is {self.state['status']}"
+                             + (f": {self.state.get('hold_reason')}" if self.state['status'] == 'HOLD' else ''))
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state['status'] == 'REPORTED': return 'REPORTED'   # LG2-a3: terminal
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
@@ -10067,6 +10093,7 @@ class Coordinator:
         if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
             self.state['active'] = self.state['uncertain_active'] = None
             return self.hold(past_deadline)
+        if add is not None: self._add_rounds(add)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
@@ -10258,7 +10285,8 @@ def parser() -> argparse.ArgumentParser:
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
-    p.add_argument('--skip-globs', action='append', default=[])
+    p.add_argument('--skip-globs', action='append', default=[],
+                   help='retired (L107): accepted for old profiles and saved runs, ignored; the gate always runs')
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
     for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
                             ('--review-style', 'tone and rules for every review role (config.md review_style)'),
@@ -10284,6 +10312,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
                    help=f'EXEC author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
                         f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
+    p.add_argument('--add-rounds', type=int, choices=range(1, 11), metavar='N', default=None,
+                   help='resume only, at a PLAN or EXEC round-limit HOLD: N (1-10) more rounds of that phase; the saved cap stays (L100)')
     p.add_argument('--resume-timeout', type=int, default=None,
                    help=f'increase the saved timeout on resume, up to {MAX_RESUME_TIMEOUT_SECONDS} seconds')
     p.add_argument('--wi-deadline', type=int, default=None, metavar='SECONDS',
@@ -10707,6 +10737,10 @@ def _execute_locked(args: argparse.Namespace) -> int:
     print(f'GATE: {args.gate_vendor} {args.gate_model} (gate_vendor_source: {args.gate_vendor_source})')   # ADR-10 M2
     status = (co.drive() if args.action == 'run' else
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
+    if status == 'HOLD' and co.at_round_limit_hold():   # L100: the continue option first
+        print('NEXT: resume --add-rounds N (1-10) continues this run with N more rounds; '
+              + ('' if worktree_lifecycle.is_worktree(co.state) else 'accept --override-rejection --reason TEXT accepts the held tree; ')
+              + 'note --scope-change starts a successor run; or abort')
     print(status + (' (acceptance pending)' if status == 'DONE' else
                     ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
     return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
@@ -10741,6 +10775,9 @@ def main(argv=None) -> int:
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
     if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
         print('REFUSED: --skip-probe is limited to the fake test harness')
+        return 2
+    if args.add_rounds is not None and (args.action != 'resume' or args.polish):
+        print('REFUSED: --add-rounds is only for resume (not resume --polish), at a PLAN or EXEC round-limit HOLD')
         return 2
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')

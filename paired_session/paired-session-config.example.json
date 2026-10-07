@@ -13,7 +13,6 @@
   "polish_round": "on",
   "lifecycle_mode": "on",
   "docs_allowlist": [],
-  "skip_globs": [],
   "skip_quality_polish": false,
   "max_plan_rounds": 3,
   "max_exec_rounds": 4,
