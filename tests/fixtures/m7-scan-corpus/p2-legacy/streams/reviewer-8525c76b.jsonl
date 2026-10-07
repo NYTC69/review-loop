@@ -1,6 +1,0 @@
-{"type": "stream_event", "event": {"content_block": {"type": "tool_use", "id": "toolu_01SPDK8xQUcuY2mjo8WW4a12"}}}
-{"type": "assistant", "message": {"id": "msg_011CfimEJgQ2Hx5YJp8vTArt", "content": [{"type": "tool_use", "id": "toolu_01SPDK8xQUcuY2mjo8WW4a12", "name": "Grep", "input": {"pattern": "^## ", "path": "@CASE@/repo/.review-loop/sessions/5faff560-9a87-4e91-a457-5cbbd2850155.md", "output_mode": "content"}, "caller": {"type": "direct"}}]}}
-{"type": "stream_event", "event": {"content_block": {"type": "tool_use", "id": "toolu_012CeTRjAWBRYoFx95d5d1Q9"}}}
-{"type": "assistant", "message": {"id": "msg_011CfimEJgQ2Hx5YJp8vTArt", "content": [{"type": "tool_use", "id": "toolu_012CeTRjAWBRYoFx95d5d1Q9", "name": "Read", "input": {"file_path": "@CASE@/repo/.review-loop/tmp/5faff560-9a87-4e91-a457-5cbbd2850155-round1-staged.patch"}, "caller": {"type": "direct"}}]}}
-{"type": "stream_event", "event": {"content_block": {"type": "tool_use", "id": "toolu_01LW2ECBjrEK1AaEYxKhzuzD"}}}
-{"type": "assistant", "message": {"id": "msg_011CfimEXjhg8p9EVaVRTEfE", "content": [{"type": "tool_use", "id": "toolu_01LW2ECBjrEK1AaEYxKhzuzD", "name": "Read", "input": {"file_path": "@CASE@/repo/.review-loop/sessions/5faff560-9a87-4e91-a457-5cbbd2850155.md", "offset": 1, "limit": 75}, "caller": {"type": "direct"}}]}}

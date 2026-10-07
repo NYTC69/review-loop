@@ -4,7 +4,7 @@ This is the tracked implementation of the paired-session workflow. Its stable
 repository-local entry point is `bin/paired-session`. From v2.10.0, a fresh
 `/review-loop` request without an `entry` key hands off to this coordinator through
 the paired-session skill (the default entry, `docs/v2.10-entry-switch.md`);
-`entry: legacy` or `/review-loop:legacy` keeps the legacy workflow.
+the legacy workflow was removed in v2.13.0 (`entry: legacy` is refused; `/review-loop:legacy` was deleted in v2.13.1).
 
 The coordinator runs one author and reviewer through PLAN/EXEC, then applies
 fresh shadow/adversarial checks and a delivery sequence. It owns isolated run
@@ -736,8 +736,8 @@ bin/paired-session resume \
 Each run directory belongs to one task and must not be shared between tasks.
 
 The workflow still needs the remaining productization and protocol batches
-listed in the repository backlog. The legacy implementation remains available
-through `entry: legacy` and `/review-loop:legacy`.
+listed in the repository backlog. The legacy implementation was removed in v2.13.0 (routing) and
+v2.13.1 (files).
 
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
 protocol transitions and permissions-command construction; the runtime

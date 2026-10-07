@@ -12,7 +12,7 @@ description: >
   /review-loop:review-pr hands off on its paired route (`--review-pr`); (5)
   /review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`). Do not trigger on
   a bare review-loop request yourself (the review-loop entry routes it), nor on `entry: legacy` (refused
-  there since v2.13.0) or /review-loop:legacy.
+  there since v2.13.0).
 ---
 
 # Paired-session workflow (Claude Code)

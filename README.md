@@ -27,9 +27,10 @@ From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 entry; since v2.13.0 `entry: legacy` is refused and nothing falls back to legacy), and
 `/review-loop:paired-session <work item>` is the explicit entry. See
 [`docs/paired-session-migration.md`](docs/paired-session-migration.md).
-The legacy workflow is deprecated since v2.12.0 and was removed from routing in v2.13.0:
-`/review-loop`, review-pr and code-quality-loop no longer reach it; `/review-loop:legacy`, `:plan` and
-`:execute` still run it (with a one-line notice) until v2.13.1 deletes them (see the migration guide).
+The legacy workflow was removed in v2.13.0 (routing) and v2.13.1 (`/review-loop:legacy`, `/review-loop:plan`,
+`/review-loop:execute`, the Codex plan and execute skills and the legacy protocol files): plan-only work is
+`/review-loop:paired-session <work item> --plan-only`, and an existing plan or a review of existing code is
+`/review-loop` (see the migration guide).
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
@@ -73,7 +74,7 @@ with Claude Code, so both runtimes work against the same project state.
 The rest of this README primarily documents the current Claude Code plugin
 surface; Codex Stage 1 also exposes the paired-session skill, which is the
 default review-loop entry from v2.10.0.
-The rest of this subsection, up to "Install in Codex CLI", describes the legacy workflow (deprecated since v2.12.0).
+The rest of this subsection, up to "Install in Codex CLI", describes the legacy workflow (removed in v2.13.0).
 Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
 Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
 Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
@@ -126,17 +127,17 @@ The plugin is cached under `$CODEX_HOME/plugins/cache/` (default
 version from `codex plugin list --json` rather than assuming a fixed versioned
 path.
 
-Once enabled, the six Stage 1 skills under `.agents/skills/` (`review-loop`,
-`plan`, `execute`, `guide`, `paired-session`, `review-pr`) are exposed to the Codex agent and respond to
+Once enabled, the four skills under `.agents/skills/` (`review-loop`,
+`guide`, `paired-session`, `review-pr`) are exposed to the Codex agent and respond to
 natural-language triggers like "run review-loop on this branch" or
-"plan this task with review-loop". Codex matches plugin skills by their
+"use paired-session for this task". Codex matches plugin skills by their
 `SKILL.md` `description`, not by literal slash commands —
-`/review-loop:plan` etc. are Claude-only and surface as `Unrecognized` in
+`/review-loop:paired-session` etc. are Claude-only and surface as `Unrecognized` in
 Codex.
 
 A fresh review-loop request hands off to the coordinator by default from
 v2.10.0; ask Codex to "use paired-session for this task" to name it explicitly
-(the request for "the legacy review-loop workflow" still runs legacy until v2.13.1 removes it).
+(a request for "the legacy review-loop workflow" is refused: the legacy workflow was removed in v2.13.0).
 It reads non-program workspace defaults from `.review-loop/paired-session.json`
 when no `--config` is given; the skill passes `~/.config/review-loop/paired-session.json`
 as `--config` when that file exists and you name no other profile. Program and role settings require an external operator
@@ -148,138 +149,44 @@ Full step-by-step + verification: [`docs/install-codex.md`](docs/install-codex.m
 
 ## Reviewer isolation and invocation evidence
 
-The following describes the legacy workflow (deprecated since v2.12.0).
-
-Report-only reviewers use bounded native CLI launchers. Claude reviewers expose
-only Read/Grep/Glob; Codex reviewers use a clean configuration context and a
-read-only sandbox. The `reviewer: subagent` config name remains accepted but
-selects the isolated Claude launcher. Verification commands run in the caller
-and their evidence is supplied to the reviewer. See the
-[reviewer runtime contract](docs/protocol/reviewer-runtime.md).
-
-Each native reviewer call retains immutable diagnostics and normalized usage,
-including partial/unknown usage on failure. The
-[usage contract](docs/protocol/usage-accounting.md) explains cache and resume
-accounting. The [delivery manifest](docs/protocol/delivery-scope.md) identifies
-HEAD/index/worktree and pre-existing user changes without staging or committing.
-The W02/W04/W05 consumers are documented in
-[delivery-controls.md](docs/protocol/delivery-controls.md): manifest-bound
-security scanning, ownership-limited auto-commit, and a machine-checked final
-delivery gate.
+Report-only reviewers and specialists are dispatched by the paired-session coordinator as fresh
+reviewer-role turns (the legacy launchers were removed in v2.13.1); see the
+[reviewer runtime contract](docs/protocol/reviewer-runtime.md). The
+[delivery manifest](docs/protocol/delivery-scope.md) identifies HEAD/index/worktree and pre-existing user
+changes without staging or committing.
 
 ## Skill Tests
 
 The repository includes a first-version skill testing framework for
 `review-loop` and `guide`.
 
-- `scripts/run-skill-lint` runs static contract checks
-- `scripts/run-skill-smoke` runs the small real smoke suite
-- `scripts/run-skill-tests` runs both in order
+- `scripts/run-skill-lint` runs static contract checks (the legacy smoke suite was removed in v2.13.1)
 
 Test output uses `PASS`, `FAIL`, and `SKIP`.
 
 - Aggregate results: `tests/skills/.last-run.json`
 - Per-case artifacts: `tests/skills/.artifacts/`
 
-Native lifecycle regressions run only with an explicit opt-in, in disposable
-fixture repositories with frozen support copies and independent file/index
-assertions. They never use the candidate workflow to approve its own changes:
-
-```bash
-python3 scripts/run_runtime_regression.py --live --runtime codex --output .compass/results/native-regression-run
-python3 scripts/run_runtime_regression.py --live --runtime claude --output .compass/results/native-regression-run
-```
-
-Choose a fresh output directory for a rerun. Cases cover plan-only, execution,
-review-only, stop/resume and invalid-flag rejection. Missing CLIs, authentication
-failures and timeouts are reported as unavailable/failure, not passing tests.
 Unit tests run with `python3 -m pytest tests`; explicitly naming `tests` avoids
 recursively collecting the plugin's repository symlink.
 
 ## Claude Plugin Surface
 
-The following describes the legacy workflow (deprecated since v2.12.0) unless a line names paired-session.
+The following describes the legacy workflow (removed in v2.13.0) unless a line names paired-session.
 
 The commands, configuration tables, reviewer modes, and included agent list
 below describe the current Claude Code plugin surface. They are not yet part of
-the Codex Stage 1 surface beyond the six Codex skills described above (`review-loop`, `plan`, `execute`,
+the Codex surface beyond the four Codex skills described above (`review-loop`,
 `guide`, `paired-session`, `review-pr`).
 
-## Three Skills: `plan`, `execute`, `review-loop`
+## The `/review-loop` entry
 
-Starting in v2.6.0 the workflow is split into three composable skills. Pick
-the one that matches where your work currently is:
-
-- **`/review-loop`** — the umbrella. With the default entry, fresh work goes to the paired-session
+- **`/review-loop`** — the entry. Fresh work goes to the paired-session
   coordinator and code already implemented to a paired-session review-only run (`run --review-only`);
   an existing plan becomes the work item (PLAN drafts and reviews it again); resuming a legacy session is
-  refused (the legacy workflow described here was removed from routing in v2.13.0).
-- **`/review-loop:plan`** — legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1); only when you name it (plan-only work:
-  `/review-loop:paired-session --plan-only`). Planning phase only. Drives a work item to a
-  reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits
-  with a hand-off hint (`Next: review-loop:execute --session <uuid>`). Use
-  this when you want plan-only iteration, or want to plan on one runtime
-  and execute on another.
-- **`/review-loop:execute`** — legacy workflow (removed from routing in v2.13.0; deleted in v2.13.1); only when you name it (an existing plan or a
-  review of existing code: `/review-loop`). Execution + quality polish + delivery.
-  Three mutually-exclusive entry modes:
-  - `--session <uuid>` — resume an approved session. Reviewer strictness
-    follows the session's `plan_source` (strict for `reviewer-approved`,
-    advisory-for-plan-conformance for `user-supplied`, pure CR for
-    `review-only`).
-  - `--plan <text|path> --title <title>` — execute a user-supplied plan
-    verbatim. `plan_source: user-supplied`; plan-conformance deviations
-    become advisory MINOR findings.
-  - `--review-only [--description <what was done>]` — pure CR sweep over
-    the current working tree. Skips the first Executor round; goes
-    straight to the Reviewer.
-
-All three skills share the same session-file schema and can hand off
-between invocations (and between runtimes).
-
-### Multi-batch example
-
-Stop cleanly between stages with `--stop-after <stage>`, then resume:
-
-```bash
-# 1. Plan-only.
-/review-loop:plan split auth middleware into request-scoped + global layers
-# → prints session UUID, e.g. a3c4...
-
-# 2. Execute but stop before Quality Polish.
-/review-loop:execute --session a3c4... --stop-after before-polish
-
-# 3. Review the diff, then resume — runs polish + docs + security + delivery.
-/review-loop:execute --session a3c4...
-```
-
-### `--stop-after <stage>` enum (Claude Code)
-
-Claude Code supports the full set of stages:
-
-| Value | Stops |
-|---|---|
-| `exec-round` | After the current execution round finishes (even on REQUEST_CHANGES) |
-| `before-polish` | After Step 3.4 gate APPROVE/SKIP, before Step 3.5 Quality Polish |
-| `before-docs` | Before Step 3.6 Documentation Consistency |
-| `before-security` | Before Step 3.7 Security Preflight |
-| `before-delivery` | Before Step 4 Delivery |
-| `delivery` | Default — no early stop |
-
-Unsupported values are rejected at parse time, before any lock is acquired
-or session field is written. Codex Stage 1 supports the same full set here;
-Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
-
-### `--accept-external-state` (unsafe opt-in)
-
-Auto-accepts every "external drift detected — (A) accept / (B) abort"
-pause-and-confirm prompt the Orchestrator would otherwise surface
-(drift-check decision tree; backward-compat missing-baseline fallback).
-
-**Unsafe**. Use only when you *know* external tree changes between
-batches were intentional and you want to reset baseline silently. The
-`--handsfree` flag alone does NOT auto-accept drift — this flag must be
-passed explicitly.
+  refused. `/review-loop:plan` and `/review-loop:execute` (with `--stop-after` and
+  `--accept-external-state`) were deleted in v2.13.1: plan-only work is
+  `/review-loop:paired-session <work item> --plan-only`.
 
 ## Workflow Overview
 
@@ -478,27 +385,21 @@ coverage, and comment checks. Configurable via `quality_focus` and
 
 ## File Structure
 
-The tree below shows the Claude/plugin-side structure. Codex Stage 1 also uses
-the runtime paths `.agents/skills/` and `.codex/agents/` for its repo skills
-and subagents. Six skills are wired for Codex: `review-loop`, `plan`, `execute`, `guide`,
-`paired-session` and `review-pr`.
+The tree below shows the Claude/plugin-side structure. Codex also uses
+the runtime path `.agents/skills/` for its repo skills. Four skills are wired for Codex:
+`review-loop`, `guide`, `paired-session` and `review-pr`.
 
 ```
 review-loop/
 ├── docs/
 │   └── protocol/                 ← Shared protocol docs (single source of truth)
-│       ├── session-file.md       ← Canonical session schema + moving baseline
-│       ├── planning.md           ← Planning phase round loop
-│       ├── execution.md          ← Execution / polish / docs / security / delivery
-│       ├── executor-output.md    ← Executor output schema
-│       └── reviewer-output.md    ← Reviewer output schema
+│       ├── loading.md / loading.json   ← Protocol loading contract and map
+│       └── paired-session-entry.md     ← Shared paired-session entry contract
 ├── skills/
 │   ├── review-loop/
-│   │   └── SKILL.md              ← Umbrella orchestrator (auto-routing)
-│   ├── plan/
-│   │   └── SKILL.md              ← Planning-only sub-skill
-│   ├── execute/
-│   │   └── SKILL.md              ← Execution + polish + delivery (3 entry modes)
+│   │   └── SKILL.md              ← Entry: routes to paired-session
+│   ├── paired-session/
+│   │   └── SKILL.md              ← Paired-session coordinator entry
 │   ├── code-quality-loop/
 │   │   └── SKILL.md              ← Standalone quality polish
 │   ├── reorganize/

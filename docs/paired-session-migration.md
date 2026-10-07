@@ -7,7 +7,7 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 - Every `/review-loop` request (and the Codex review-loop request) hands off to paired-session: fresh work; an existing plan, used as the work item (PLAN drafts and reviews it again; `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again`); existing code as `run --review-only`.
 - Refused, with one line saying what to do instead: `entry: legacy`, a legacy session resume, `--legacy` on review-pr and code-quality-loop, code-quality-loop `--reorganize` (run `/review-loop:reorganize` after the run), and a host that is not macOS (on every entry).
 - A failed check before the coordinator starts refuses (or HOLDs) whether the `entry` key is set or not; nothing falls back to legacy.
-- `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` and the Codex plan/execute skills (and the Codex "legacy review-loop workflow" request) still run the legacy workflow with the deprecation notice until v2.13.1 deletes them (ADR-16).
+- v2.13.1 deleted `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute`, the Codex plan/execute skills, the Codex Stage 1 workflow and its agents, and the legacy protocol files, scripts and tests (ADR-16). The Codex "legacy review-loop workflow" request is refused with `review-loop: the legacy workflow was removed in v2.13.0; ask for review-loop without "legacy" (paired-session is the only entry)`. Plan-only work is `/review-loop:paired-session <work item> --plan-only`; an existing plan or a review of existing code is `/review-loop`. Legacy session files under `.review-loop/sessions/` are left on disk and never read.
 
 ## Status in v2.10.0
 Superseded by "Status in v2.13.0" above; kept as history.
@@ -18,11 +18,8 @@ Superseded by "Status in v2.13.0" above; kept as history.
 - New runs are `efficient` by default and need no permission probe (see Safety modes). In strict mode the probe PASS is bound to the plugin version: after upgrading, a strict run directory needs a new `permission-probe`. Finish a run with the version that started it. If a v2.9.x run is nevertheless continued under v2.10.0, it resumes strict, needs a new probe, keeps `lifecycle_mode=off` and ends at DONE.
 
 ## Deprecation status (v2.12.0)
-Superseded by "Status in v2.13.0" above for routing ("Nothing is removed" no longer holds); the notice below is still
-printed by `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` and the Codex explicit legacy request until v2.13.1.
-The legacy workflow is deprecated since v2.12.0: the owner ruled the ADR-6 replacement gate met on field evidence (ADR-6 amendment D-READY, 2026-10-05, in `DECISIONS.md`). Nothing is removed and no routing changes. When you explicitly choose legacy (`entry: legacy`, `/review-loop:legacy`, the Codex "legacy review-loop workflow" request, or `/review-loop:plan` / `execute` invoked on their own), the entry prints one line:
-
-`review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
+Superseded by "Status in v2.13.0" above ("Nothing is removed" no longer holds); kept as history.
+The legacy workflow was deprecated in v2.12.0: the owner ruled the ADR-6 replacement gate met on field evidence (ADR-6 amendment D-READY, 2026-10-05, in `DECISIONS.md`). From v2.12.0 an explicit choice of legacy printed a one-line deprecation notice; since v2.13.0 every remaining way to choose it is refused with the removal sentence `<entry>: the legacy workflow was removed in v2.13.0; <what to do instead>`.
 
 The legacy code is removed only after every precondition below holds, so that nothing only legacy can do is lost:
 
@@ -56,10 +53,9 @@ In v2.9.x the legacy workflow was the default and `entry: paired-session` was an
 the explicit value only changes the entry notice. `entry: legacy` is refused since v2.13.0 (remove the line); any other
 value, a duplicate key or an unreadable config prints a warning and routes as a missing key. A failed check before the
 coordinator starts refuses with the reason, whatever the key says (unavailable background or outside-sandbox execution
-is reported as HOLD); nothing falls back to legacy. Until v2.13.1 deletes them, `/review-loop:legacy <work item>`,
-`/review-loop:plan`, `/review-loop:execute` (Claude) and the Codex request "use the legacy review-loop workflow" still
-run the legacy workflow with the deprecation notice; review-pr's `--legacy` and the Codex "legacy review-pr workflow"
-request are refused. The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, runs with `--lifecycle-mode on`. `--plan-only` on it maps to `run --stop-after-plan`.
+is reported as HOLD); nothing falls back to legacy. `/review-loop:legacy <work item>`, `/review-loop:plan` and
+`/review-loop:execute` (Claude) were deleted in v2.13.1; the Codex request "use the legacy review-loop workflow",
+review-pr's `--legacy` and the Codex "legacy review-pr workflow" request are refused. The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, runs with `--lifecycle-mode on`. `--plan-only` on it maps to `run --stop-after-plan`.
 
 ## What is and is not routed
 | Situation | Result |
@@ -86,7 +82,7 @@ Printed by the `/review-loop` skill text (from v2.13.0; Claude and Codex alike):
 - A legacy session resume: `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item`
 - A host that is not macOS: `review-loop: paired-session needs macOS; Linux and other hosts are not supported`
 - A failed check before the coordinator starts: `review-loop: paired-session entry refused (<reason>)` (unavailable background or outside-sandbox execution: HOLD)
-- `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` (until v2.13.1): the deprecation notice above (Deprecation status)
+- Codex, a request for "the legacy review-loop workflow": `review-loop: the legacy workflow was removed in v2.13.0; ask for review-loop without "legacy" (paired-session is the only entry)`
 - review-pr, no `entry` key: `review-pr: paired-session report mode (the default entry)`
 - review-pr, `entry: paired-session`: `review-pr: paired-session report mode (entry set in .review-loop/config.md)`
 - code-quality-loop, no `entry` key: `code-quality-loop: paired-session review-only run (the default entry)`
@@ -130,7 +126,7 @@ Status values:
 |---|---|---|
 | `/review-loop` with fresh work (Claude), a fresh review-loop request (Codex) | the paired-session skill runs `run --lifecycle-mode on` | covered |
 | Code-exists auto-route (review an existing change) | `run --review-only [--base <ref>]` (D-LG1) | covered |
-| `/review-loop:execute --review-only` | `run --review-only`; the legacy command stays until E-8 is revisited, and M7 needs it from a pinned copy | covered |
+| `/review-loop:execute --review-only` | `run --review-only` (the legacy command was deleted in v2.13.1) | covered |
 | Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | covered (ADR-15) (L75) |
 | `/review-loop:plan` (both hosts) | `run --stop-after-plan`: `/review-loop:paired-session <work item> --plan-only` (Claude), or a request to stop after the plan (Codex, PSE) | covered |
 | `/review-loop:execute --session <uuid>` | `resume` of a paired run (after `--stop-after-plan`) | covered |

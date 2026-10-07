@@ -4,12 +4,9 @@
 It records the pre-task state, explicit task scope, and current candidate without
 changing source files, the user's index, Git objects, or Git refs. The only write
 is an explicitly requested JSON artifact. This is the W01 object definition and freshness helper. The read-only W02
-scanner is `scripts/security_preflight.py`; W04 path ownership actions are in
-`scripts/delivery_actions.py`; W05 final-stage enforcement is in
-`scripts/delivery_gate.py`. These consumers validate this artifact but do not
-change its read-only capture contract or provide user approval.
-See [delivery-controls.md](delivery-controls.md) for the W02/W04/W05 invocation
-and evidence contracts.
+scanner is `scripts/security_preflight.py`; it validates this artifact but does not
+change its read-only capture contract or provide user approval. The paired-session
+coordinator calls both.
 
 ## Lifecycle and CLI
 
@@ -148,11 +145,8 @@ an optimistic consistency check, not an atomic filesystem snapshot or protection
 against changes after `check` returns.
 
 Git blob identities are computed locally without writing objects. The
-`<mode>:<oid>` representation matches the shape used by
-`scripts/evidence_ledger.py`; HEAD and index OIDs retain Git's native object
-format. Disk entries additionally bind raw SHA-256 and byte size. This helper
-does not invoke evidence-ledger snapshots, append evidence, or alter that
-ledger's behavior. A manifest contains identities, not historical file bytes or
+`<mode>:<oid>` representation matches Git's tree-entry shape; HEAD and index OIDs retain Git's native object
+format. Disk entries additionally bind raw SHA-256 and byte size. A manifest contains identities, not historical file bytes or
 a patch archive. When review needs a baseline preimage or an attributable patch,
 retain the corresponding existing evidence snapshot or another authorized
 preimage source and explicitly establish the matching identities. A manifest

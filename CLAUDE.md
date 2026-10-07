@@ -8,11 +8,11 @@
 
 **Fix:** read-only agents declare `tools: Read, Grep, Glob, Bash` (no Edit/Write; `reviewer` declares `Read, Grep, Glob`); agents that edit files (`executor`, `code-simplifier`) omit `tools` and inherit everything. Never put a policy word in `tools:` — valid values are tool names, `*`, or an omitted field.
 
-**Bash in report-only agents:** the `Bash` in those frontmatters is for direct user invocation only (`git diff`, static analysis). The launcher dispatch path sets its own read-only tools (Claude: Read/Grep/Glob; Codex: a read-only sandbox) and the caller runs verification; see `docs/protocol/reviewer-runtime.md` (owner decision 2026-10-04: keep Bash, align the docs).
+**Bash in report-only agents:** the `Bash` in those frontmatters is for direct user invocation only (`git diff`, static analysis). The paired-session coordinator dispatches report-only roles as reviewer-role turns with that role's own permissions; see `docs/protocol/reviewer-runtime.md` (owner decision 2026-10-04: keep Bash, align the docs; the legacy launchers were removed in v2.13.1).
 
 **History:** first seen with Executor (`tools: all`) in commit `8506809`, then with `code-simplifier` (2026-04-06) and `rust-reviewer` (issue #3). Each time the conclusion was "plugin agent types are sandboxed", so the protocol switched to `subagent_type: general-purpose` with the agent body inlined in the prompt.
 
-**Rule**: Every writer-agent invocation uses `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. The agents resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work. Report-only reviewers instead use the enforced native CLI boundary in `docs/protocol/reviewer-runtime.md`; a writable general-purpose agent cannot serve as a permission boundary.
+**Rule**: Every writer-agent invocation uses `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. The agents resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work. Report-only reviewers instead run as paired-session reviewer-role turns (`docs/protocol/reviewer-runtime.md`); a writable general-purpose agent cannot serve as a permission boundary.
 
 ### README.md must stay intact (lint SSOT dependency)
 
@@ -61,45 +61,28 @@ Start a fresh Codex session to load its skills. Older Codex versions may use
 the `/plugins` UI; check `codex plugin --help` rather than assuming the CLI
 install command exists.
 
-Slash commands like `/review-loop:plan` are Claude-only. Codex matches
+Slash commands like `/review-loop:paired-session` are Claude-only. Codex matches
 plugin skills via their `SKILL.md` `description` field; trigger is
 natural-language only. Full step-by-step + verification:
 [`docs/install-codex.md`](docs/install-codex.md).
 
-## Codex Stage 1 Notes
+## Codex Notes
 
-- Codex skills live under `.agents/skills/`.
-- Codex subagents live under `.codex/agents/*.toml`.
-- Codex invokes `python3 scripts/run_claude_reviewer.py --session-id {session_id} --model {reviewer_model if set; else judgment_model if set; else claude-opus-5-5} --stage {planning|execution} --role reviewer --timeout-seconds 570` with the script path resolved against the support repository and cwd kept in the task workspace. Its child contract is `claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose --model MODEL < prompt-file`; `--verbose` is required for print-mode stream-json.
-- Run the wrapper and child outside the Codex sandbox. Poll only bounded heartbeat/status output; never stream or poll raw reviewer logs into the orchestrator context. Retain the per-invocation `.review-loop/tmp/{session_id}-reviewer-{invocation_id}/stream.jsonl` and `stderr.log` as audit artifacts. On wrapper exit `0` only, read `.review-loop/tmp/{session_id}-reviewer-result.txt`, then apply the existing schema and triage gates. Exits `1`, `2`, and `3` mean command execution, JSON parsing, and missing `result` respectively.
-- Sandbox diagnostic caveat: a sandboxed `claude -p` rehearsal is not a valid
-  substitute for the real Codex reviewer path. If the sandboxed call fails,
-  rerun the same command outside the Codex sandbox before changing protocol
-  assumptions or falling back to Codex reviewer.
+- Codex skills live under `.agents/skills/`: `review-loop`, `guide`, `paired-session`, `review-pr`. The Codex
+  Stage 1 workflow (its plan/execute skills, `.codex/agents/*.toml`, the reviewer launchers
+  `scripts/run_claude_reviewer.py` / `run_codex_reviewer.py` and the parallel-review scheduler) was removed in
+  v2.13.1 with the rest of the legacy workflow; the paired-session coordinator dispatches every role itself.
+- The Codex paired-session skill runs the coordinator outside the Codex sandbox (full host permission); a
+  sandboxed rehearsal is not a valid substitute for that path.
 - In `codex exec --ephemeral`, subagent calls should use fresh self-contained
   prompts instead of relying on forked parent-thread context.
-- `.review-loop/config.md` and `.review-loop/sessions/*.md` remain the shared protocol.
-- **Stage 1 scope (current)** — Codex continues to expose only the
-  repo-local `review-loop` + `guide` skills under `.agents/skills/`,
-  but the shared Stage 1 runtime contract now carries the same broad
-  `exec -> polish -> docs -> security -> delivery` lifecycle as Claude
-  Code. Phase 3 split-skill work remains future Codex surface work, not
-  a limitation of the current downstream lifecycle.
-- **Parallel-CR library entry point** — `scripts/review_verification.py`
-  is the conflict-aware parallel reviewer-fan-out scheduler (Codex
-  Stage 1 scope only). Orchestrator wiring lives once in
-  `docs/protocol/parallel-review.md`, loaded by the `parallel-review`
-  action in `docs/protocol/loading.json`; single-shot N=1 dispatch keeps the existing
-  `claude -p` shell-out behind the wrapper, with the same required `--verbose`
-  flag as parallel dispatch; only N>1 fans out via
-  `python3 scripts/review_verification.py --jobs <path> --output <path>`.
-  Both native reviewer transports use the same isolated, bounded launchers.
-  Parallel scheduling wraps those launchers and retains per-invocation usage.
+- `.review-loop/config.md` is shared by both hosts; legacy `.review-loop/sessions/*.md` files are left on disk
+  and never read.
 
-- **Stage-scoped instructions** — the six entry skills use
+- **Stage-scoped instructions** — the entry skills (`review-loop` and `paired-session` on both hosts) use
   `docs/protocol/loading.md` and `scripts/read_protocol.py` to read exact
-  authoritative sections before the relevant action. Shared protocol files
-  remain the SSOT; a link alone is not an eager import. New agents and new or
+  authoritative sections before the relevant action (stages `entry-review-loop` and `entry-paired-session`).
+  Shared protocol files remain the SSOT; a link alone is not an eager import. New agents and new or
   compacted contexts reload prerequisites. Runtime entry details live in each
   skill's `references/entry.md`. Loading does not change stage/gate semantics.
   The two paired-session entry skills load their shared contract,
@@ -141,17 +124,14 @@ Agent tool parameters:
     <task-specific instructions here>
 ```
 
-This applies to writer roles such as executor, code-simplifier and test-consolidation authors. Report-only reviewer/specialist roles use `scripts/run_claude_reviewer.py` or `scripts/run_codex_reviewer.py`, with caller-produced verification evidence.
-
-Codex Stage 1 runtime agents are defined separately under `.codex/agents/*.toml`
-and do not use this Claude-specific invocation pattern.
+This applies to writer roles such as executor, code-simplifier and test-consolidation authors. Report-only reviewer/specialist roles are dispatched by the paired-session coordinator (`docs/protocol/reviewer-runtime.md`).
 
 ### Agent hallucination guard
 
 Even with `general-purpose`, agents may not use tools and fabricate output. Two defenses:
 
 1. **Agent-side**: All language agents (rust/go/python/frontend-security) open their `.md` body with an instruction to run the analysis commands and read every in-scope file before any analysis, and to base the report only on that output.
-2. **Orchestrator-side**: After every agent call, check `tool_uses` in the Agent metadata; after every report-only launcher call, check the integer `tool_uses` in the launcher summary (missing or `null` fails closed). If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report.
+2. **Orchestrator-side**: After every agent call, check `tool_uses` in the Agent metadata. If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report. The paired-session coordinator applies the same guard to its specialist turns (a turn without tool calls is discarded and retried once).
 
 <!-- 迁移自 README.md:1-4 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
 ## Migrated — README.md:1-4

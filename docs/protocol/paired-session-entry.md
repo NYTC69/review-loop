@@ -6,8 +6,7 @@ Both paired-session entry skills (`skills/paired-session/SKILL.md` for Claude Co
 skill adds its host rules, for example run-directory paths, shell form, how a
 long coordinator command runs and is stopped, and the exit
 codes of its own setup steps; a host rule is more specific and wins. Use the
-paired-session coordinator shipped with this plugin. Do not load or invoke the
-legacy review-loop workflow for this task. The coordinator owns reviewer
+paired-session coordinator shipped with this plugin. The coordinator owns reviewer
 dispatch and limits.
 
 ## Entry and failure handling

@@ -22,8 +22,8 @@ from typing import Optional
 
 SCHEMA = 1
 POLICY = "raw-files/nonignored-untracked-except-session-dir/literal-prefix-scope/v2"
-# Untracked review-loop session artifacts are never delivery content; the
-# evidence ledger applies the same exclusion (SESSION_DIR_PREFIX).
+# Untracked files under .review-loop/ (local config and old session files) are
+# never delivery content (SESSION_DIR_PREFIX).
 SESSION_DIR_PREFIX = ".review-loop/"
 GIT_ENV_OVERRIDES = (
     "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",

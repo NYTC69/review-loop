@@ -19,9 +19,8 @@ executor_model: inherit         # shared Claude/plugin executor override; "" and
 # "paired-session" (exact values only: since v2.13.0 "legacy" is refused, and anything else is warned about and treated as absent).
 # Fresh work, an existing plan (as the work item) and review-only requests (run --review-only) are routed; a legacy
 # session resume is refused. Absent key = paired-session (the default entry). Codex honors this key the same way.
-# The legacy workflow is deprecated since v2.12.0 (removal after the open legacy-map rows are decided;
-# review-pr and code-quality-loop are ported);
-# since v2.13.0 nothing routes to it (/review-loop:legacy, :plan and :execute remain until v2.13.1).
+# The legacy workflow was removed in v2.13.0 (routing) and v2.13.1 (/review-loop:legacy, :plan, :execute
+# and its files deleted).
 soft_limit_plan: 3              # after N rounds, ask user to continue if CRITICALs remain
 soft_limit_exec: 3
 auto_commit: false              # legacy only; paired-session reads auto_commit from the operator profile (E-4)

@@ -1,42 +1,25 @@
 ---
 name: guide
-description: Codex Stage 1 guide for review-loop and the shared Claude/Codex state model.
+description: Codex guide for review-loop - the paired-session entry, review-pr and the shared .review-loop/config.md.
 ---
 
 # review-loop Guide
 
 ## What `review-loop` Does in Codex
 
-In Codex Stage 1, `review-loop` is a repo skill that follows the same broad
-review workflow used in Claude Code. It coordinates planning, implementation,
-and review while keeping the shared session log current.
-Codex Stage 1 follows the same broad `exec -> polish -> docs -> security -> delivery` lifecycle.
-
-Codex reads and writes the same review-loop state as Claude Code:
-
-- `.review-loop/config.md`
-- `.review-loop/sessions/`
-
-That means a project can keep one shared config file and one shared session log
-history across both runtimes.
-Codex Stage 1 assumes a single orchestrator-owned workspace for the session.
-
-## Entry: paired-session default, legacy on request
-
-From v2.10.0 a fresh review-loop request with no `entry` key in
-`.review-loop/config.md` hands off to the Codex `paired-session` skill, which
-runs the coordinator through plan, implementation, review, finish, polish,
-docs and security up to DONE; it accepts only on your explicit acceptance.
+A review-loop request goes to the Codex `review-loop` skill, which resolves the `entry` key in
+`.review-loop/config.md` and hands the work item to the Codex `paired-session` skill. That skill
+runs the coordinator through plan, implementation, review, finish, polish, docs and security up to
+DONE; it accepts only on your explicit acceptance.
 A request to review existing code hands off the same way as `run --review-only`, and an existing
-plan becomes the work item (PLAN drafts and reviews it again). Since v2.13.0 nothing routes to the
-legacy workflow described above: `entry: legacy` and resuming a legacy session are refused, a failed
-check before the coordinator starts refuses instead of falling back, and only asking for "the legacy
-review-loop workflow" still runs it until v2.13.1 removes it. Runs are `efficient` by
+plan becomes the work item (PLAN drafts and reviews it again). `entry: legacy`, asking for "the legacy
+review-loop workflow" and resuming a legacy session are refused, and a failed check before the
+coordinator starts refuses instead of falling back. Runs are `efficient` by
 default (every sandbox, no permission-probe PASS required); `--strict` or
 `"safety_mode": "strict"` in the operator profile adds the probe gate.
-The legacy workflow is deprecated since v2.12.0 and was removed from routing in v2.13.0; asking for
-"the legacy review-loop workflow" and the plan and execute skills invoked on their own still print a
-one-line deprecation notice until v2.13.1 deletes them.
+The legacy workflow was removed in v2.13.0 (routing) and v2.13.1 (the Codex plan and execute skills, the
+Codex Stage 1 workflow and its agents). Legacy session files under `.review-loop/sessions/` are left on
+disk and never read.
 Details: `docs/paired-session-migration.md`.
 
 A request to review a pull request ("review PR 123", a PR URL), a branch or
@@ -47,11 +30,9 @@ nothing; posting is a separate request with a secret scan and a second
 confirmation of the full body. `simplify` is not available there (Claude Code:
 `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`).
 
-## Stage 1 Scope
+## Skills in Codex
 
-Stage 1 in Codex includes:
-
-- `review-loop`, `plan`, `execute`, `paired-session`, `review-pr`
+- `review-loop`, `paired-session`, `review-pr`
 - `guide`
 
 Not on Codex:
@@ -60,39 +41,10 @@ Not on Codex:
   quality writers on)
 - `reorganize`
 
-## Reviewer Behavior
-
-Codex Stage 1 defaults to the outside-sandbox Claude CLI reviewer path. In
-practice, that means review stays on `claude -p --model ...` unless the user
-explicitly opts into the local Codex reviewer.
-
-You can force the local Codex reviewer with:
-
-- `codex_reviewer_backend: codex`
-
-This is the override to use when you want Codex to skip the Claude CLI reviewer
-and use the Codex reviewer directly. In that case, `codex_reviewer_model` is
-the paired model override, while `reviewer_model` still applies to the Claude
-CLI reviewer path and `judgment_model` is its shared-tier fallback before the
-explicit `claude-opus-5-5` backstop.
-
-`cheap_model` is accepted in the shared config so Claude and Codex can share
-the same file, but in Codex Stage 1 it is a documented no-op because only
-judgment-tier Codex agents are currently shipped.
-`quality_focus` applies only when Step 3.5 Quality Polish actually runs.
-`skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security.
-
 ## Usage Notes
 
-- Instructions load by active action via `docs/protocol/loading.md` and
-  `scripts/read_protocol.py`, shared with Claude Code. Only still-available,
-  unchanged units can be reused in one live context; resume/compaction and
-  independent agents reload their prerequisites. All lifecycle gates remain.
-
-- Executor-created hidden worktrees are forbidden in Codex Stage 1.
-- Codex Stage 1 supports `before-polish`, `before-docs`, and `before-security` as clean stop points.
+- The entry skills load their instructions via `docs/protocol/loading.md` and
+  `scripts/read_protocol.py`, shared with Claude Code.
 - Codex repo skills live under `.agents/skills/` in the Codex workspace.
-- Keep the shared review-loop config in `.review-loop/config.md`.
-- Keep session logs in `.review-loop/sessions/`.
-- Use the local Codex reviewer only when you need to bypass the default
-  Claude CLI reviewer path explicitly.
+- Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
+  paired-session operator profile.

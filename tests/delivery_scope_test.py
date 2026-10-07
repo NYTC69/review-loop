@@ -284,14 +284,6 @@ def test_environment_cannot_redirect_capture_to_another_index(repo):
     assert alternative.read_bytes() == b"invalid index data"
 
 
-def test_review_packet_contract_binds_the_same_candidate_identity():
-    session_contract = (ROOT / "docs/protocol/session-file.md").read_text()
-    assert "| Delivery candidate |" in session_contract
-    for field in ("baseline path", "manifest path", "baseline fingerprint",
-                  "candidate fingerprint", "declared scope", "ownership ambiguity"):
-        assert field in session_contract
-
-
 def test_untracked_session_directory_is_excluded_but_tracked_config_is_not(repo):
     write(repo, ".review-loop/config.md", "auto_commit: false\n")
     git(repo, "add", ".review-loop/config.md")

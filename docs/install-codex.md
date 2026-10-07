@@ -7,19 +7,17 @@ top-level `README.md` Quick Start.
 
 ## Prerequisites
 
-- **Codex CLI 0.159.2 or later** — the shipped Codex agents
-  (`.codex/agents/*.toml`) and the paired-session Codex default use
+- **Codex CLI 0.159.2 or later** — the paired-session Codex default uses
   `gpt-6.1-sol`, which needs 0.159.2+. The plugin install command below was
   verified on 0.155.1; older releases may require the `/plugins` UI path, so
   check `codex plugin --help` before using it.
-- **Python ≥ 3.11** — `scripts/run_skill_smoke_lib.py` and other helpers
-  used by review-loop's smoke / lint suites depend on it.
-- **git** — used by the executor / reviewer agents and by the smoke
-  harness to scope diffs.
-- **Claude CLI** (optional but recommended) — review-loop's Codex Stage 1
-  default reviewer path shells out to `claude -p` outside the Codex
-  sandbox. Without it, opt into the local Codex reviewer with
-  `codex_reviewer_backend: codex` in `.review-loop/config.md`.
+- **Python ≥ 3.11** — the paired-session coordinator and review-loop's helper
+  scripts depend on it.
+- **git** — used by the coordinator and its roles to scope diffs.
+- **Claude CLI** — the default paired-session roles use Codex as the author and gate and Claude as the
+  reviewer, so both `codex` and `claude` must be on PATH. To run without Claude, set the roles in the
+  paired-session operator profile (`~/.config/review-loop/paired-session.json`; see
+  `paired_session/paired-session-config.example.json`).
 
 ## Install path: marketplace + CLI install
 
@@ -59,25 +57,23 @@ codex plugin marketplace remove review-loop-marketplace
 ## Triggering workflows in a Codex session
 
 Codex matches plugin skills via their `SKILL.md` `description` field;
-literal slash commands like `/review-loop:plan` are Claude-Code-only and
+literal slash commands like `/review-loop:paired-session` are Claude-Code-only and
 surface as `Unrecognized command` in Codex. Use natural language:
 
 | What you want | Say |
 |---|---|
 | Full plan → execute → review pipeline | "run review-loop on this branch" |
-| Plan a work item only | "plan this task with review-loop" |
-| Resume an approved plan | "resume review-loop session `<uuid>`" |
+| Plan a work item only | "use paired-session to plan this task (plan only)" |
 | Review-only pass on the working tree | "review the pending changes" |
 | Show review-loop's command surface | "show review-loop guide" |
 | Paired-session work item (the default review-loop entry from v2.10.0; explicit request) | "use paired-session for this task" |
-| Legacy review-loop workflow | "use the legacy review-loop workflow" |
 
-Stage 1 exposes six skills under `.agents/skills/`:
-`review-loop` (umbrella; hands fresh work to paired-session by default from v2.10.0), `plan`, `execute`, `guide`,
-`paired-session`, and `review-pr`. Both `plan` and
-`execute` share `.review-loop/config.md` and `.review-loop/sessions/`
-with the Claude Code path, so a session started under one runtime can be
-resumed under the other.
+The legacy workflow was removed in v2.13.0/v2.13.1: a request for "the legacy review-loop workflow" is refused,
+and the Codex plan and execute skills were deleted.
+
+Codex exposes four skills under `.agents/skills/`:
+`review-loop` (the entry; hands every request to paired-session), `guide`,
+`paired-session`, and `review-pr`. `.review-loop/config.md` is shared with the Claude Code path.
 
 Paired-session reads non-program defaults from the optional workspace
 `.review-loop/paired-session.json`. Keep role, vendor, program and test-command
@@ -114,15 +110,14 @@ session state but install through different package managers.
 
 | Surface | Manifest | Marketplace manifest | Skill tree | Slash commands |
 |---|---|---|---|---|
-| Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` | `skills/` (top-level) | `/review-loop`, `/review-loop:plan`, `/review-loop:paired-session`, … |
+| Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` | `skills/` (top-level) | `/review-loop`, `/review-loop:paired-session`, `/review-loop:review-pr`, … |
 | Codex CLI | `.codex-plugin/plugin.json` | `.agents/plugins/marketplace.json` | `.agents/skills/` | none — natural-language only |
 
 The top-level `skills/` tree (with `code-quality-loop`,
 `reorganize`, …) dispatches via Claude's Agent tool and is intentionally
-**not** exposed to Codex. The six `.agents/skills/` entries are the
-Stage 1 Codex surface. From v2.10.0, paired-session is the default
-review-loop entry in both runtimes; `entry: legacy` or an explicit legacy request
-keeps the legacy workflow.
+**not** exposed to Codex. The four `.agents/skills/` entries are the
+Codex surface. Paired-session is the only review-loop entry in both runtimes; `entry: legacy`
+and an explicit legacy request are refused (the legacy workflow was removed in v2.13.0).
 
 There is also a fallback wrapper at `~/.codex/skills/review-loop/SKILL.md`
 that some users symlink for the legacy "skills only, no marketplace"

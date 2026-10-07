@@ -1,6 +1,6 @@
 ---
 name: paired-session
-description: Use in exactly four cases - the user explicitly asks for paired-session, the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`, the review-loop entry hands off because that key is absent or invalid (the default entry), or the review-pr skill hands off on its paired route; this is the plan, implementation, independent-review, finish, polish, docs, security and acceptance workflow. Generic review-loop requests go to the review-loop entry first, which routes them here; `entry: legacy` is refused there since v2.13.0, and only the explicit request for the legacy review-loop workflow still runs it until v2.13.1.
+description: Use in exactly four cases - the user explicitly asks for paired-session, the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`, the review-loop entry hands off because that key is absent or invalid (the default entry), or the review-pr skill hands off on its paired route; this is the plan, implementation, independent-review, finish, polish, docs, security and acceptance workflow. Generic review-loop requests go to the review-loop entry first, which routes them here; `entry: legacy` and the explicit request for the legacy review-loop workflow are refused there (the legacy workflow was removed in v2.13.0).
 ---
 
 # Paired-session workflow (Codex)
