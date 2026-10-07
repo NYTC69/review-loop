@@ -118,7 +118,7 @@ Create `.review-loop/config.md` in your project to customize:
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |
 | `review_style` | "" | Tone and rules for the review roles and the POLISH-Q specialists |
 | `quality_focus` | "" | Quality priorities for the POLISH-Q specialists |
-| `auto_commit` | — | Not applied on the main pipeline (`true` prints a warning; set it in the operator profile). A review-only run (`/review-loop` on existing code, code-quality-loop) makes one local commit at `accept` by default; `false` here keeps a code-quality-loop run uncommitted |
+| `auto_commit` | — | A review-only run (`/review-loop` on existing code, code-quality-loop) makes one local commit at `accept` by default; `false` here keeps it uncommitted. Not applied on the main pipeline (`true` prints a warning; set it in the operator profile) |
 | `handsfree` | false | Blocks stage A questions (any such question fails) and acceptance |
 
 Unset paired-session caps are plan 3 / exec 4 rounds. `reviewer_model` and `executor_model` only warn

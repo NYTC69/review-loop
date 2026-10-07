@@ -439,10 +439,10 @@
       "needle": "Every `read_protocol.py` call is its own Bash command"
     },
     {
-      "id": "project_config_reviewer_model_owner_default",
-      "kind": "contains",
+      "id": "project_config_sets_no_reviewer_model",
+      "kind": "not_contains",
       "path": ".review-loop/config.md",
-      "needle": "reviewer_model: \"gpt-6.1-sol\""
+      "needle": "reviewer_model"
     },
     {
       "id": "review_pr_routes_on_entry",
@@ -810,6 +810,24 @@
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
       "needle": "add `--stop-after-plan` only to `run`,\nnever to `permission-probe`"
+    },
+    {
+      "id": "review_loop_review_only_hands_over_auto_commit_false",
+      "kind": "contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "`auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false` (absent or `true`: the review-only default, one local commit at `accept`)."
+    },
+    {
+      "id": "codex_review_loop_review_only_hands_over_auto_commit_false",
+      "kind": "contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "`--auto-commit false` when `.review-loop/config.md` sets\n  `auto_commit: false`"
+    },
+    {
+      "id": "pse_review_only_auto_commit_from_config",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "`auto_commit` applies to a review-only run only (whatever entry started\nit): `auto_commit: false` becomes `--auto-commit false`"
     }
   ]
 }

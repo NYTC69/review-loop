@@ -19,7 +19,8 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
 - `paired-session`: fresh work, an existing plan and a review-only code target hand off (the legacy workflow was removed in v2.13.0). Print `review-loop: paired-session entry (entry set in .review-loop/config.md)`,
   invoke the Codex `paired-session` skill (`.agents/skills/paired-session`) with
   the work item (for a code target, as a review-only request: `--review-only`, plus
-  `--base <ref>` only when the user names a base; for an existing plan, first print
+  `--base <ref>` only when the user names a base, and `--auto-commit false` when `.review-loop/config.md` sets
+  `auto_commit: false` (absent or `true`: the review-only default, one local commit at `accept`); for an existing plan, first print
   `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again` and pass the plan text as the work item), and end this workflow (no session file, lock or stage of its own).
   A paired-session probe/run HOLD is reported and never falls back to legacy.
   An explicit resume of a legacy session is refused: print

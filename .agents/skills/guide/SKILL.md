@@ -52,5 +52,7 @@ Not on Codex:
   `resume --add-rounds N` (1-10).
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
   paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
-  `review_focus`, `review_style`, `quality_focus`, `handsfree`) is listed in
+  `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
   `docs/protocol/paired-session-entry.md` (Profile and settings).
+- A review of existing code is a review-only run: `accept` makes one local commit by default (never a push);
+  `auto_commit: false` in `.review-loop/config.md` keeps the accepted change uncommitted.

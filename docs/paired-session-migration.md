@@ -106,10 +106,17 @@ Legacy: Claude executes, Codex reviews. paired-session defaults to the reverse: 
 New runs are `efficient` by default ([`paired_session/docs/efficient-mode.md`](../paired_session/docs/efficient-mode.md)): every sandbox and the secret and global-config checks apply, but `run` needs no permission-probe PASS, the `--accept-*` waivers are unnecessary (a NOTE says so) and the evidence guard only logs. `--strict`, or `"safety_mode": "strict"` in the operator profile, restores the probe PASS gate, the Claude-author opt-in and the holding evidence guard, and a strict lifecycle run refuses `--accept-unverified-claude-author` and `--accept-probe-skip` (D-7). The mode is fixed when the run is created; a run started on v2.9.x resumes strict. Two HOLDs apply in both modes: a reviewer, gate or shadow turn that changes the workspace is void (the workspace is restored and the turn re-dispatched once; a second change or a failed restore is a HOLD), and an author turn that changes HEAD or the branch (a commit, reset or checkout) is a HOLD.
 
 ## Config mapping
-Set legacy keys map to one-run paired-session options: `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` / `--max-exec-rounds`, `review_focus` / `review_style` / `quality_focus` → `--review-focus` / `--review-style` / `--quality-focus` (L105: focus and style reach the reviewer, the shadow and the gate, quality focus and style the POLISH-Q specialists, never the author); the start line shows the effective values and which came from `.review-loop/config.md`. `auto_commit: true` in `.review-loop/config.md` is not applied (set `auto_commit` in the operator profile; with it, `accept` makes one local commit of the accepted tree) and prints a warning; `reviewer_model` / `executor_model` print a warning when set to anything other than empty or `inherit` (models come from the profile). Other legacy keys (`reviewer`, ...) are not mapped; `handsfree` only means that the paired-session skill cannot ask its stage A questions, and it never runs `accept` or `reject`. paired-session caps are hard (a HOLD), not a prompt; unset defaults are plan 3 / exec 4 rounds (legacy 3/3).
+Which `.review-loop/config.md` keys map to which run options, and which only warn, is defined once in
+`docs/protocol/paired-session-entry.md` (Profile and settings); the table below lists every legacy key. What differs
+from legacy: the caps are hard (a HOLD, continued with `resume --add-rounds N`), not a prompt, and unset defaults are
+plan 3 / exec 4 rounds (legacy 3/3); `auto_commit` applies to review-only runs only (`false` keeps the accepted change
+uncommitted; their default is one local commit at `accept`), while the main pipeline takes it from the operator
+profile; `handsfree` only means that the paired-session skill cannot ask its stage A questions, and it never runs
+`accept` or `reject`.
 
 ## Legacy → paired-session map (after v2.11.0)
-How close legacy is to retirement: every legacy entry, flag, skill, config key and step, with its paired-session equivalent. Source: the legacy-gap inventory of 2026-10-05, updated for D-LG1 (review-only entry, v2.11.0), the D-LG2 design and the
+History: the map as it stood when legacy was removed (v2.13.0/v2.13.1); nothing in it is pending.
+Every legacy entry, flag, skill, config key and step, with its paired-session equivalent. Source: the legacy-gap inventory of 2026-10-05, updated for D-LG1 (review-only entry, v2.11.0), the D-LG2 design and the
 final owner answers of 2026-10-07 (ADR-15).
 
 Status values:
@@ -131,7 +138,7 @@ Status values:
 | `/review-loop:plan` (both hosts) | `run --stop-after-plan`: `/review-loop:paired-session <work item> --plan-only` (Claude), or a request to stop after the plan (Codex, PSE) | covered |
 | `/review-loop:execute --session <uuid>` | `resume` of a paired run (after `--stop-after-plan`) | covered |
 | `/review-loop:execute --plan <text\|path>` | plan text in `WORKITEM.md`, then drafted and reviewed again (no `plan_source` import) | covered (ADR-15) (L78) |
-| `--stop-after exec-round` | operator CLI `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off` (not a skill route) | planned (M7) |
+| `--stop-after exec-round` | operator CLI `--max-exec-rounds 1` (not a skill route): a HOLD when a second EXEC round would be needed | covered |
 | `--stop-after before-polish` / `before-docs` / `before-security` | none; a HOLD plus `resume` partly substitutes | retire (ADR-15) (L80) |
 | `--stop-after before-delivery` | DONE = acceptance pending | covered |
 | `--accept-external-state` | none needed: external drift is a HOLD by design | covered |
@@ -139,7 +146,7 @@ Status values:
 | `/review-loop:review-pr` | report mode on a materialized PR copy (D-LG2; nothing is posted unless the operator opts in); `simplify` is refused with the pointer `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)` | covered (LG2); closing check passed 2026-10-06 (PR NYTC69/review-loop#6) |
 | `/review-loop:code-quality-loop` | `run --review-only` + POLISH-Q (D09 = A; `paired_session/docs/cql-retirement.md`) | covered (CQL-RETIRE); `--legacy` is refused since v2.13.0 |
 | `/review-loop:reorganize` | none needed: a standalone tool without review-loop state | covered |
-| `/review-loop:guide` (both hosts) | already describes paired-session; final rewrite at retirement | covered |
+| `/review-loop:guide` (both hosts) | describes paired-session | covered |
 | `/review-loop:legacy`, `entry: legacy`, the Codex "legacy review-loop workflow" request | none needed: they go away with legacy | covered |
 | Stage A fallback to legacy (key absent) | none after retirement: the default entry must refuse, with new wording | retire (ADR-15) (L89) |
 | Handsfree reviewer decisions (`DECISION:`) | every author question is a HOLD for a human | retire (ADR-15) (L90) |
@@ -153,7 +160,7 @@ Status values:
 | `codex_reviewer_model`, `codex_executor_model` | `--reviewer-model` / `--author-model` or the operator profile; silently ignored | covered |
 | `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | retire (ADR-15) (L99) |
 | `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a HOLD at the cap, not a prompt; exec default 4 (legacy 3). At that HOLD, `resume --add-rounds N` (1-10) continues the same run with N more rounds of the phase (the saved cap stays; `round_extensions` records it) | port (owner 2026-10-07, after ADR-15's "covered"): `resume --add-rounds N` (L100) |
-| `auto_commit` | operator-profile `auto_commit`: one hook-free local commit on accept | covered |
+| `auto_commit` | review-only runs: `.review-loop/config.md` `auto_commit: false` keeps the accepted change uncommitted (default: one hook-free local commit on accept); main pipeline: operator-profile `auto_commit` | covered |
 | `commit_message_prefix` | none: the commit message is fixed | retire (ADR-15) (L102) |
 | `docs_file` | `--docs-file` | covered |
 | `handsfree` | stage A questions fail; `accept` / `reject` are never run | retire (ADR-15) (L104) |

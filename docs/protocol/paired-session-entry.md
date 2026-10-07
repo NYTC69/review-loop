@@ -76,9 +76,12 @@ true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /
 `--review-style` / `--quality-focus` (each value as one quoted argument in the `--review-focus=<value>`
 form, so a value that starts with "-" is not read as an option; the run freezes them and gives
 review focus and style to the reviewer, the shadow and the gate, quality focus and style to the POLISH-Q
-specialists, never to the author). Do not apply, but print a warning for, `auto_commit: true`
+specialists, never to the author). `auto_commit` applies to a review-only run only (whatever entry started
+it): `auto_commit: false` becomes `--auto-commit false` (the review-loop and code-quality-loop entries hand it
+over), and absent or `true` keeps the review-only default (one local commit at `accept`), with no warning. On
+the main pipeline do not apply, but print a warning for, `auto_commit: true`
 (`review-loop: auto_commit in .review-loop/config.md is not applied by
-paired-session; set it in the operator profile`) and a `reviewer_model` /
+paired-session; set it in the operator profile`), and for a `reviewer_model` /
 `executor_model` set to anything other than empty or `inherit` (models come
 from the operator profile, ADR-9). Never pass `--adversarial-gate off`.
 
@@ -135,7 +138,8 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   change: if a path is unrelated to the request, ask whether to review it too (a
   declined question is a failed stage A check). With `auto_commit`, every
   reviewed path is delivered. A review-only run defaults to `auto_commit: true`
-  (owner 2026-10-06); an explicit `--auto-commit false` or operator-profile
+  (owner 2026-10-06); `auto_commit: false` in `.review-loop/config.md` (as `--auto-commit false`, see Profile
+  and settings), an explicit `--auto-commit false` or operator-profile
   `auto_commit: false` wins, and `accept` then lists the uncommitted files. `--plan-only` does not apply: refuse it in stage A.
 - `WORKITEM.md` starts with a title that names the change (`# <one-line summary
   of the change>`, see Work item), then states the review goal (one line such as

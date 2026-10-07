@@ -112,6 +112,7 @@ run was not started.
 A review-only request (the user asks to review an existing change, or the review-loop handoff of
 a code target) follows the shared contract's review-only entry: add `--review-only` (and
 `--base "$BASE"` only when the user named a base) to both invocations.
+Add `--auto-commit false` too when the review-loop entry handed it over.
 
 A review-pr handoff (from the Codex `review-pr` skill, or the user asks paired-session to review a PR or
 ref) follows the shared contract's Review-PR entry.

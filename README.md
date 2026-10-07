@@ -54,7 +54,7 @@ second change or a failed restore is a HOLD), and an author turn that changes
 HEAD or the branch is a HOLD. See
 [`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
-**Optional** — copy the config template to customize per-project defaults:
+**Optional** — copy the config template and uncomment only the keys you change (every key is commented out at its default):
 
 ```bash
 mkdir -p .review-loop
@@ -262,7 +262,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
 | `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; at the cap the run HOLDs and `resume --add-rounds N` continues it |
 | `soft_limit_exec` | `4` | `--max-exec-rounds`: the same for EXEC |
-| `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept`, never a push; code-quality-loop honours an explicit `auto_commit: false` here |
+| `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept`, never a push; both honour an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` are never run |
 | `review_focus` | `""` | Project-specific review priorities (free text); paired-session: `--review-focus` (L105), frozen at run start, for the reviewer, shadow and gate |
