@@ -1,5 +1,7 @@
 # M6 first controlled real run: plan (paired-session, design only)
 
+> **Historical** (v2.9.5 plan for the first controlled real run). Current behaviour: [paired_session/README.md](../README.md).
+
 Docs only; nothing here has been run. Sources: week plan M6 row and A2/A3, [1c-safety-controls.md](1c-safety-controls.md), [1d-entry-mapping.md](1d-entry-mapping.md), BACKLOG 1C/2A, `bin/paired-session --help`, `coordinator.py`. Decisions M6-a..M6-f are supervisor decisions, recorded as decided.
 
 **v2.9.5 update (2026-10-04).** The run uses the pinned copy `~/paired-runs/review-loop-v2.9.5` (`CHANGELOG.md` v2.9.5 upgrade note): "this repository" below means that copy, its `bin/paired-session` runs probe, run, abort and accept, and the probe PASS is bound to its plugin version. Facts that changed after this plan was written (2026-09-30) are marked "(v2.9.5)" below, meaning "as of the pinned v2.9.5 copy". Most are new in v2.9.5: CODEX_HOME preflight, the dontAsk test-command warning, launcher logs outside `RUN_DIR`'s parent, `attach-verification`, and `accept --reason`. Two are older but were missing here: the probe-pass cache (v2.9.1 P0-4) and the gate-probe requirement for a gate whose vendor differs from the reviewer's (cross-vendor gate v2.9.2; ADR-10 made the author's vendor the gate default in v2.9.3). The decisions themselves are unchanged. The operator script that applies this plan, with a `--dry-run` mode, is kept outside the tracked tree (lane C `compass-run-kit.sh`).

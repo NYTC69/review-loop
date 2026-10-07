@@ -1,5 +1,7 @@
 # Legacy deprecation readiness (2026-10-05)
 
+> **Historical** (2026-10-05 readiness memo). The legacy workflow was removed in v2.13.0 (routing) and v2.13.1 (files), ADR-16; current entry: [migration guide](../../docs/paired-session-migration.md).
+
 ## 给 owner 的摘要
 
 **owner 已裁定 ready（D-READY，2026-10-05）。** 原话："我觉得已经跑了很多了，bob和tools两个repo这两天一直在跑，也在ship 工作，而且一周前还遇到过额度用完 hold，reset了继续的情况，所以我觉得已经算ready了"。

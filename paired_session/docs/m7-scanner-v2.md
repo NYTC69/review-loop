@@ -1,5 +1,7 @@
 # M7 D-b1 transcript scanner, v2 (design, D04)
 
+> **Historical** (M7 scanner design). Its tooling (`scripts/m7_*.py`) and the legacy arm were removed in v2.13.1, so it cannot be run as written.
+
 Status: design only, step 1 of 2 (owner D04 = "redesign", 2026-10-05). Implementation is step 2, after the design gate.
 M7 is an optional cost and quality study; nothing here blocks the legacy removal.
 

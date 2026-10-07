@@ -1,5 +1,7 @@
 # M7 execution plan: seeded-defect comparison and 2G cost on v2.10.0
 
+> **Historical** (M7 study plan). Its tooling (`scripts/m7_*.py`) and the legacy arm were removed in v2.13.1, so it cannot be run as written.
+
 Role change (ADR-6 amendment D-READY, 2026-10-05): M7 no longer gates legacy retirement; it is an optional cost and quality study, run only if the owner authorizes it.
 
 Status: plan only (lane B, 2026-10-05); nothing here has been run. Design and pass criteria:

@@ -1,5 +1,7 @@
 # review-pr on paired-session (design, lg2)
 
+> **Historical** (D-LG2 design, the default review-pr route since v2.12.3). The `--legacy` route and every legacy fallback below were removed in v2.13.0-v2.13.1; current behaviour: [review-pr skill](../../skills/review-pr/SKILL.md) and the [PSE](../../docs/protocol/paired-session-entry.md) "Review-PR entry".
+
 Design only; no product code. Owner decision D-LG2 (2026-10-05): keep `review-pr` and `code-quality-loop` as capabilities
 and migrate them onto paired-session; this document designs `review-pr`.
 

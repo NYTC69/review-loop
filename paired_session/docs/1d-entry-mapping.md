@@ -1,5 +1,7 @@
 # 1D entry mapping: `/review-loop` to paired-session (design, v2.9.0)
 
+> **Historical** (v2.9.0 design). The legacy entry and `/review-loop:legacy` were removed in v2.13.0-v2.13.1; current routing: [migration guide](../../docs/paired-session-migration.md) and [PSE](../../docs/protocol/paired-session-entry.md).
+
 Superseded for v2.10.0 by [v2.10-entry-switch.md](v2.10-entry-switch.md): there a missing `entry` key routes fresh work to paired-session; S4 and S5 below record both notices. v2.9.0 design record (written before implementation). Sources: `skills/review-loop`, `plan`, `execute`, `review-pr`, `paired-session`, `bin/paired-session --help`, `review-loop-config.example.md`, BACKLOG 1D/1E, `coordinator.py` argparse.
 
 ## Decisions

@@ -1,5 +1,7 @@
 # CQL-RETIRE: code-quality-loop onto the review-only entry (design)
 
+> **Historical** (CQL-RETIRE design, shipped in v2.12.6). The `--legacy` loop and every legacy fallback below were removed in v2.13.0-v2.13.1; current behaviour: [code-quality-loop skill](../../skills/code-quality-loop/SKILL.md) and the [PSE](../../docs/protocol/paired-session-entry.md) "Code-quality-loop entry".
+
 Status: design only, no code. Owner decision D09 / Q6 option A (2026-10-05): "retire code-quality-loop onto
 `run --review-only` + POLISH-Q". Capability 1 (the simplifier and test-consolidation writers) shipped in v2.12.5
 ([d09-cap1-writer-passes.md](d09-cap1-writer-passes.md)); capability 3 (comment/type analyzers) went to D-LG2;

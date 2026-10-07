@@ -6841,8 +6841,8 @@ class Coordinator:
         or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again."""
         self.materialize_review_context()
         prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
-                  f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff (legacy review-loop '
-                  'Step 3.6): the docs must describe the implemented behavior, APIs and logic accurately, and the '
+                  f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff: '
+                  'the docs must describe the implemented behavior, APIs and logic accurately, and the '
                   'changed code comments must match the code. Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
                   f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'

@@ -49,6 +49,6 @@ After `stop` the next command sees the interrupted turn as uncertain, as after C
 `status --brief`, the log. Without `--detach` nothing changes, including SIGTERM.
 
 ## Limits
-- POSIX only (fork, setsid), like the rest of the coordinator. A detached run outlives the host session by design; the
+- macOS only, like the rest of the coordinator (it uses fork and setsid; Linux is not supported, ADR-15 amendment). A detached run outlives the host session by design; the
   operator ends it with `stop` (or `kill -TERM <pid>`), never with SIGKILL, which would leave the turn's group running.
 - The record dir accumulates one small JSON and one log per detached command; nothing prunes it.
