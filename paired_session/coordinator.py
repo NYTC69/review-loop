@@ -5525,8 +5525,10 @@ class Coordinator:
         word = re.escape(whole)
         prose = re.compile(r'(?<![\w/.])' + word + r'(?!\w|-?/)', re.I)
         attribution = re.compile(word + r'(?:/[\w.-]+)?\s+(?:approved?|signed|rejected|requested)\b', re.I)
-        return all(prose.match(text, use.start()) and not attribution.match(text, use.start())
-                   for use in re.finditer(r'\b' + word + r'\b', text, re.I))
+        # FIELD-34: one slash between two plain words ("Claude/Codex pp", "Opus/GPT") is prose, not a path segment
+        pairs = [match.span() for match in re.finditer(r'(?<![\w/.-])[A-Za-z][\w-]*/[A-Za-z][\w-]*(?![\w/-]|\.\w)', text)]
+        return all((prose.match(text, use.start()) or any(a <= use.start() < b for a, b in pairs))
+                   and not attribution.match(text, use.start()) for use in re.finditer(r'\b' + word + r'\b', text, re.I))
 
     def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
         text = self._fresh_history_text(name, content, base)
