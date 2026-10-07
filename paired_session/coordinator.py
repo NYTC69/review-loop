@@ -171,6 +171,9 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# L105: .review-loop/config.md review guidance (operator text) and the prompts it reaches: reviews, and the POLISH-Q specialists.
+GUIDANCE_KEYS = (('review_focus', 'Review focus'), ('review_style', 'Review style'), ('quality_focus', 'Quality focus'))
+REVIEW_GUIDANCE, QUALITY_GUIDANCE = ('review_focus', 'review_style'), ('quality_focus', 'review_style')
 # A path with a dotted extension (gg/readers/opus.py, docs/Codex.md:7) is a file name, not prose, for the bare-name scan.
 DOTTED_PATH_RE = re.compile(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''')
 # FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
@@ -2590,6 +2593,7 @@ class Coordinator:
                 'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
                 'safety_mode', 'quality_writers', 'advisory_fix_round')
         config = {key: getattr(self.args, key) for key in keys}
+        config.update({key: (getattr(self.args, key, None) or '').strip() for key, _ in GUIDANCE_KEYS})   # L105
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
         if getattr(self.args, 'auto_commit_source', None): config['auto_commit_source'] = self.args.auto_commit_source   # as F2
@@ -3186,6 +3190,8 @@ class Coordinator:
                 requested_exec_timeout, self.args.timeout)
         self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
         validate_role_models(self.args)
+        for key, _ in GUIDANCE_KEYS:   # L105: fixed at run start; a resume without the flag keeps the saved text
+            if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'].get(key, ''))
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
             self.args.wi_deadline = self.state['config'].get('wi_deadline')
         elif 'wi_deadline' not in self.state['config']:
@@ -5179,6 +5185,23 @@ class Coordinator:
                 'Never report a listed finding again as a new one; its disposition above is its report.\n'
                 + owned + APPROVE_CONVERSION_NOTE)
 
+    def _guidance_texts(self) -> list[str]:
+        config = (getattr(self, 'state', None) or {}).get('config') or {}
+        return [config[key] for key, _ in GUIDANCE_KEYS if config.get(key)]
+
+    def _mask_guidance(self, text: str) -> str:
+        """L105: the frozen guidance is operator text, not review history: masked in one pass (longest first, so overlapping
+        texts stay whole) wherever a fresh role's prompt is checked."""
+        texts = sorted(self._guidance_texts(), key=len, reverse=True)
+        return re.sub('|'.join(map(re.escape, texts)), '<project-guidance>', text) if texts else text
+
+    def _guidance(self, keys: tuple) -> str:
+        """L105: the operator's review guidance from .review-loop/config.md, frozen at run start; '' when none is set."""
+        config = self.state.get('config') or {}
+        rows = [f'{label}:\n{config[key]}' for key, label in GUIDANCE_KEYS if key in keys and config.get(key)]
+        return ('\n## Project review guidance (operator settings from .review-loop/config.md)\n' + '\n'.join(rows) + '\n'
+                if rows else '')
+
     def _plan_ref(self, default: str) -> str:
         """LG1-b: how review roles are pointed at plan.md; a review-only run has a coordinator-written scope, no plan."""
         if not self.state.get('review_only'):
@@ -5211,7 +5234,7 @@ class Coordinator:
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
-            ]) + opv.prompt_block(self, snapshot, atomic_json)
+            ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json)
         fresh_note = 'Use your persistent thread history across PLAN, EXEC, and POLISH.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -5246,7 +5269,7 @@ class Coordinator:
                 self.open_findings_prompt(), exercise,
                 'Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
-            ]) + inline
+            ]) + self._guidance(REVIEW_GUIDANCE) + inline
         return '\n'.join([
             f'Role: {role}, read-only whole-delta reviewer. Phase: {phase}. {fresh_note}',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
@@ -5262,7 +5285,7 @@ class Coordinator:
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
             'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
             'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
-        ]) + opv.prompt_block(self, snapshot, atomic_json, role)
+        ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role)
 
     def _gate_prompt(self, snapshot: str) -> str:
         template = Path(self.args.gate_prompt).read_text()
@@ -5279,7 +5302,8 @@ class Coordinator:
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
-                '\nNever edit, commit, push, or load skills.' + opv.prompt_block(self, snapshot, atomic_json))
+                '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
+                opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -5368,6 +5392,8 @@ class Coordinator:
         """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
         record = (getattr(self, 'state', None) or {}).get('review_only') or {}
         frozen_scope = name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256')
+        if name == 'prompt':
+            content = self._mask_guidance(content)
         for command in self._configured_command_texts():   # FIELD-29: operator configuration, wherever it is quoted (prompts too);
             # on token boundaries only, so a path that merely contains it (tests/pytest_helpers.py in a patch header) keeps its name
             content = re.sub(r'(?<![\w./-])' + re.escape(command) + r'(?![\w/-])', '<configured-command>', content)
@@ -5839,12 +5865,13 @@ class Coordinator:
             path = self.context / name
             if path.is_file() and LEDGER_ID_RE.search(self._fresh_history_text(f'context/{name}', path.read_text())):
                 raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}')
-        leaked = sorted(set(re.findall(r'\bF\d{3,}\b', prompt)))
+        checked = self._mask_guidance(prompt)   # L105: the operator's guidance is not a leak
+        leaked = sorted(set(re.findall(r'\bF\d{3,}\b', checked)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
-                     if row.get('summary') and row['summary'] in prompt]
+                     if row.get('summary') and row['summary'] in checked]
         forbidden_phrases = [phrase for phrase in
                              ('Open finding ledger', 'prior_findings', 'Delivered review:')
-                             if phrase in prompt]
+                             if phrase in checked]
         if leaked or summaries or forbidden_phrases:
             details = leaked or forbidden_phrases or ['known finding summary']
             raise RuntimeError(f'{role} independence check rejected prompt leak: ' + ', '.join(details))
@@ -7770,7 +7797,7 @@ class Coordinator:
         owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
                                                        self._review_protocol(paths), self._change_noun()) +
-                  opv.prompt_block(self, tree, atomic_json))
+                  self._guidance(QUALITY_GUIDANCE) + opv.prompt_block(self, tree, atomic_json))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
             counts = self._specialist_budget(name)
             counts[name] = counts.get(name, 0) + 1
@@ -10233,6 +10260,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-globs', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
+    for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
+                            ('--review-style', 'tone and rules for every review role (config.md review_style)'),
+                            ('--quality-focus', 'priorities for the POLISH-Q specialists (config.md quality_focus)')):
+        p.add_argument(flag, metavar='TEXT', default=None, help=help_text + '; fixed at run start (L105)')
     p.add_argument('--advisory-fix-round', type=config_bool, default=False,
                    help='worktree lifecycle: one author round for the non-blocking findings left after POLISH-Q (ADVFIX)')
     p.add_argument('--quality-writers', choices=tuple(worktree_lifecycle.QUALITY_WRITERS), default=None,
@@ -10325,7 +10356,7 @@ CONFIGURABLE_DESTS = {
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
-    'safety_mode', 'quality_writers', 'advisory_fix_round',
+    'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
 }
 
 

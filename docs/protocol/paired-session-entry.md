@@ -73,7 +73,10 @@ to the author's vendor (ADR-10).
 Legacy keys in `.review-loop/config.md` that are set map to one-run options:
 `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish
 true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /
-`--max-exec-rounds`. Do not apply, but print a warning for, `auto_commit: true`
+`--max-exec-rounds`, and `review_focus` / `review_style` / `quality_focus` → `--review-focus` /
+`--review-style` / `--quality-focus` (each value as one quoted argument; the run freezes them and gives
+review focus and style to the reviewer, the shadow and the gate, quality focus and style to the POLISH-Q
+specialists, never to the author). Do not apply, but print a warning for, `auto_commit: true`
 (`review-loop: auto_commit in .review-loop/config.md is not applied by
 paired-session; set it in the operator profile`) and a `reviewer_model` /
 `executor_model` set to anything other than empty or `inherit` (models come
@@ -175,9 +178,8 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   warning for `auto_commit` on this handoff): `accept` makes one local commit and never pushes.
 - `WORKITEM.md`: the first line is `# code-quality-loop: <one-line summary of the uncommitted change>` (the commit title), then
   the goal "Review and improve the quality of the uncommitted change: correctness, error
-  handling, tests and simplicity; fix what the reviews find." When `quality_focus` or `review_style` is
-  set in `.review-loop/config.md`, add a "Review priorities" section with each value verbatim. No review
-  history.
+  handling, tests and simplicity; fix what the reviews find." No review history. `quality_focus` and
+  `review_style` reach the review roles through the run flags of Profile and settings, not the work item.
 - Non-blocking fix round: pass `--advisory-fix-round true` in both blocks (owner decision "加一轮修非阻塞"). After the first clean
   POLISH-Q the author gets one round for the open non-blocking findings (MINOR, LOW, a gate's MEDIUM/LOW): fix what is
   reasonable, dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again, before

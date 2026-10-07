@@ -281,6 +281,6 @@ Supervisor rulings (2026-10-06) on the trade-offs this design proposed:
 - **`--max-invocations 45`** unless the profile sets it: approved (D09-F on lane B removes the EXEC-round budget
   skip; the invocation headroom still applies). It was 35 until CQL-WIRE2 (supervisor ruling, 2026-10-07): with the
   non-blocking fix round wired, 35 left the writers `skipped:budget` on an LG1-size run; it is a cap, not a target.
-- **`quality_focus` / `review_style` into the work item** ("Review priorities"): approved as the interim; the D11 L105
-  port may replace it.
+- **`quality_focus` / `review_style` into the work item** ("Review priorities"): approved as the interim; replaced by
+  the L105 port (2026-10-07): the entry passes them as `--quality-focus` / `--review-style` run flags.
 - **`--reorganize` refused** with a pointer to the standalone tool and `--legacy`; **no Codex skill**: approved.

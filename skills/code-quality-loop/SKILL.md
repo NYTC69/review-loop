@@ -41,7 +41,7 @@ warning line). Then:
        review-only default, one local commit at `accept`).
      - `judgment_model` or `cheap_model` set in `.review-loop/config.md`: print, per key,
        `code-quality-loop: <key> in .review-loop/config.md is not applied by paired-session; models come from the operator profile`.
-       (`quality_focus` and `review_style` are carried into the work item by the paired-session skill.)
+       (`review_focus`, `review_style` and `quality_focus` are passed to the run by the paired-session skill.)
   3. Print
      `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)`.
   4. Invoke the `paired-session` skill with `--code-quality-loop` and the mapped `--max-exec-rounds N` and
