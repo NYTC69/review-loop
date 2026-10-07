@@ -1,5 +1,13 @@
 # Changelog
 
+### v2.12.8：paired-session 两条路线都给完整的中文交付报告（L120）；常驻 reviewer 不再把已列出的 open finding 换个编号再报
+
+- **L120（legacy 对照表，owner 10-05 答 keep）**：ACCEPTED 时 `delivery-report.md` 末尾多一节，内容来自 ledger 和用量记录：按严重度列出全部 finding 及最终状态（未关闭的写 id）、PLAN/EXEC 轮数、最后一轮各审查角色的判定（EXEC reviewer、shadow、gate、specialist、security reviewer）、按 Claude/Codex 分开的调用次数和 token 合计。`--lifecycle-mode off`（CLI 默认）的 accept 以前不写交付报告，现在也写一份。accept 的输出在最后一行状态之前多打一行 `REPORT: <路径>`。review-report.md 的输出不变。
+- **HYGIENE-2**：polish 和常驻 reviewer 的 prompt 加了一句：已列出的 open finding 不要换个编号重复报告。
+- **DOCS-1007**：文档写明 launcher 日志在哪、什么时候该读；1C 安全控制说明更新到 D-EFF 之后的状态；README/guide 补上 code-quality-loop 的非阻塞修复轮。
+- **BACKLOG**：按 10-06 的分诊关闭 19 项（含 v2.12.1–v2.12.7 已发布的现场修复），P0 清空。
+- **审查**：L120 Codex 2 轮（第 1 轮要求测试用字面量预期值）后 APPROVE，fresh Opus 终审 APPROVE（3000 个随机 state 上 review-report 输出逐字节不变，token 合计与 usage.json 一致）。HYGIENE-2 和 DOCS-1007 由 Codex 审查、监工核对。
+
 ### v2.12.7：code-quality-loop 入口加一轮修非阻塞 finding（ADVFIX）；gate 提的问题修完后 DONE 前必须再过一次 gate（FIELD-32）；plan 里讨论模型不再误 HOLD（FIELD-33）
 
 - **ADVFIX（owner 决定 2026-10-06："加一轮修非阻塞"）**：新的 run 选项 `--advisory-fix-round`（默认关闭）。POLISH-Q 第一次干净结束后，如果还有非阻塞 finding（MINOR、LOW、gate 的 MEDIUM/LOW；不含 security），作者得到一轮修复机会：合理的修掉，不修的逐条写理由；然后 EXEC reviewer、shadow、gate、FINISH、specialists 整条链重审，再跑写入步骤。每个 run 只跑一次，单独计轮，不占 `--max-exec-rounds`；调用次数不够时跳过并写明原因；之后仍 open 的 finding 保持建议性，不会因此 HOLD。交付报告多一行说明这一轮的结果。

@@ -198,7 +198,9 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   run-wide budgets (DOCS 7, SECURITY 3, POLISH-Q 32) grow by one allowance per reject, since each reject
   reruns FINISH..SECURITY. `auto_commit` and `external_delivery` are frozen operator-only keys (default false);
   `external_delivery` true refuses the accept (D8). With `auto_commit` false the accept changes no ref and
-  no index; the Chinese delivery report is `delivery-report.md` in the run directory. W3b-2, `auto_commit`
+  no index; the Chinese delivery report is `delivery-report.md` in the run directory (L120: it ends with the findings per
+  severity, PLAN/EXEC rounds, last-round verdicts and per-vendor token totals; the lifecycle-off accept writes one too, and the
+  accept output prints `REPORT: <path>` before the final status line). W3b-2, `auto_commit`
   true (D-1: `accept --expect` authorizes it): W04 refusals first (work staged before the run, a
   content-transforming `filter`/`text`/`eol`/`working-tree-encoding` attribute, any true `core.autocrlf`,
   submodules and skip-worktree entries, whose rows would read as deletions, and `core.fileMode` false); then the accepted manifest's raw bytes (no filters; symlinks as link text; the manifest's executable bits, which every stage binding includes) go
