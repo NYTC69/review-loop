@@ -1,13 +1,8 @@
 # review-loop
 
-Workflow instructions load by active action on both Claude Code and Codex.
-The [loading contract](docs/protocol/loading.md) and its declarative map select
-exact shared-protocol sections before each action. Within a live context,
-unchanged instructions need not be delivered repeatedly; new agents and
-resumed/compacted contexts reload prerequisites. Review and safety gates are
-unchanged. Runtime entry procedures live under each skill's `references/`.
-
-A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
+A Claude Code and Codex plugin that drives a work item through the paired-session coordinator: an author and an
+independent reviewer plan and implement it, an adversarial gate checks the result, then finish, quality polish, docs
+and security run, and nothing is delivered until you accept.
 
 ## Quick Start
 
@@ -66,14 +61,12 @@ cp ~/.claude/plugins/cache/review-loop-marketplace/review-loop/<version>/review-
 > to reload plugins while keeping your conversation context. This is a
 > Claude Code caching behavior, not a review-loop limitation.
 
-## Codex Stage 1
+## Codex
 
-Codex uses repo skills under `.agents/skills/`. The Codex `review-loop` skill
-shares `.review-loop/config.md` with Claude Code, so both runtimes read the same
-project settings.
-The rest of this README primarily documents the current Claude Code plugin
-surface; Codex Stage 1 also exposes the paired-session skill, which is the
-default review-loop entry from v2.10.0.
+Codex installs the same plugin (below) with four skills under `.agents/skills/`: `review-loop`, `guide`,
+`paired-session` and `review-pr`. They run the same coordinator and read the same `.review-loop/config.md` as
+Claude Code. The rest of this README documents the Claude Code commands; on Codex, ask in natural language
+("run review-loop on this branch", "review the pending changes", "use paired-session for this task").
 The legacy Codex Stage 1 workflow (its plan and execute skills, the Claude CLI reviewer launcher and the
 `codex_reviewer_backend` / `codex_reviewer_model` / `codex_executor_model` keys) was removed in v2.13.0-v2.13.1;
 the paired-session coordinator dispatches every role.
@@ -135,6 +128,13 @@ reviewer-role turns (the legacy launchers were removed in v2.13.1); see the
 [delivery manifest](docs/protocol/delivery-scope.md) identifies HEAD/index/worktree and pre-existing user
 changes without staging or committing.
 
+## Contributing: how the skills load their instructions
+
+The entry skills load their instructions by action: the [loading contract](docs/protocol/loading.md) and its map
+(`docs/protocol/loading.json`) select the exact shared-protocol text, which `scripts/read_protocol.py` emits. Within a
+live context unchanged text is not delivered again; new agents and resumed or compacted contexts reload it. The
+review-loop skills keep their entry procedures under `references/`.
+
 ## Skill Tests
 
 The repository includes a first-version skill testing framework for
@@ -152,12 +152,9 @@ recursively collecting the plugin's repository symlink.
 
 ## Claude Plugin Surface
 
-The following describes the legacy workflow (removed in v2.13.0) unless a line names paired-session.
-
-The commands, configuration tables, reviewer modes, and included agent list
-below describe the current Claude Code plugin surface. They are not yet part of
-the Codex surface beyond the four Codex skills described above (`review-loop`,
-`guide`, `paired-session`, `review-pr`).
+The commands, configuration table and included agent list
+below describe the current Claude Code plugin surface. `.review-loop/config.md` and the agents apply on Codex too,
+through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 
 ## The `/review-loop` entry
 
@@ -168,49 +165,71 @@ the Codex surface beyond the four Codex skills described above (`review-loop`,
   `--accept-external-state`) were deleted in v2.13.1: plan-only work is
   `/review-loop:paired-session <work item> --plan-only`.
 
-## Workflow Overview
+## How a run goes
 
 ```
-/review-loop <task>
+/review-loop <work item>
 │
-├── 1. Planning
-│   Executor drafts plan → Adversarial Reviewer critiques → iterate until APPROVE
-│
-├── 2. Execution
-│   Executor implements → Adversarial Reviewer code-reviews → iterate until APPROVE
-│
-├── 3. Quality Polish (automatic)
-│   Language-specific static analysis → code quality review →
-│   code simplification → test coverage check → docs consistency
-│
-└── 4. Delivery
-    Findings table + quality summary + time breakdown
+├── PLAN       the author drafts a plan → an independent reviewer reviews it → revise until approved
+├── EXEC       the author implements → the reviewer and a fresh shadow reviewer review → fix until approved
+├── GATE       a fresh adversarial gate checks the approved change
+├── FINISH     a fresh finisher runs the tests and fixes only what blocks delivery inside the plan
+├── POLISH-Q   read-only specialists: language reviewers by file type, code-reviewer, silent-failure-hunter,
+│              pr-test-analyzer (plus the simplifier and test consolidation when the quality writers are on)
+├── DOCS       a docs writer brings the docs in line and adds the run's entry to the docs file; a reviewer checks it
+├── SECURITY   a secret and .gitignore scan, then a fresh security reviewer
+└── DONE       acceptance pending: you accept or reject
 ```
 
-Both the Executor and Reviewer operate independently — the Reviewer is a
-different AI (or an isolated sub-agent) that catches blind spots, design
-deviations, and unauthorized compromises the Executor would silently ship.
+A blocking finding from PLAN to DOCS goes back to the author, and the EXEC review and the gate run again. A SECURITY
+finding is a HOLD, never repaired by the run: fix it outside the run and resume (the EXEC review and the gate run
+again).
+A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
+None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
+shadow, the gate and the stage reviewers start fresh each time. Default roles: Codex is the author
+and the gate (`gpt-6.1-sol`), Claude the reviewer and the shadow (`claude-opus-5-5`); the operator profile changes
+roles and models.
 
-## Example: Rust Repo
+## Ending a run
+
+A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and says why). Nothing is delivered at DONE:
+- **accept** — only on your explicit decision. The agent accepts the tree that passed SECURITY and shows the delivery
+  report it writes, `delivery-report.md` in the run directory (in Chinese: the stages, the commit, the finding counts
+  by severity and final status with the ids still open, the rounds, the verdicts and the token totals). A review-only run (`/review-loop`
+  on existing code, code-quality-loop) makes one local commit by default; `auto_commit: false` in
+  `.review-loop/config.md` keeps it uncommitted. The main pipeline commits only when the operator profile sets
+  `auto_commit`. Nothing is ever pushed.
+- **reject** — with your note, the run reopens EXEC and the author works on it.
+- Under `handsfree` the agent never accepts or rejects.
+
+## Run control
+
+The coordinator prints one progress line per event (the role, its verdict and the open finding ids) and logs it to
+`progress.jsonl` in the run directory. Ask the agent at any time:
+- for the run's status (`status --brief`: the latest progress lines, without disturbing the run);
+- to resume after a HOLD, once you have answered or fixed what it names; at a PLAN or EXEC round-limit HOLD,
+  `resume --add-rounds N` (1-10) continues the same run with N more rounds of that phase;
+- to abort the run (`abort`).
+A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it).
+
+## Example: Rust repo
 
 ```
 /review-loop add rate limiting to the upload endpoint using tower middleware
 ```
 
-**Planning** — The Executor drafts a plan using `tower::limit::RateLimitLayer`.
-The Reviewer flags a missing per-IP bucket strategy and rates it CRITICAL.
-The Executor revises. The Reviewer approves on round 2.
+**PLAN** — The author drafts a plan using `tower::limit::RateLimitLayer`. The reviewer flags a missing per-IP bucket
+strategy as blocking; the author revises and the reviewer approves on round 2.
 
-**Execution** — The Executor implements the plan. The Reviewer catches that the
-`RateLimitLayer` was applied globally instead of per-route and flags plan
-conformance violation. Fixed and approved on round 2.
+**EXEC** — The author implements the plan. The reviewer catches that `RateLimitLayer` was applied globally instead of
+per route, a deviation from the approved plan; the author fixes it, and the reviewer and the shadow approve.
 
-**Quality Polish** — `rust-reviewer` runs `cargo clippy`, `code-simplifier`
-removes a redundant `.clone()`, `pr-test-analyzer` notes missing test for
-the 429 response path.
+**GATE to SECURITY** — The gate finds nothing blocking. In POLISH-Q, `rust-reviewer` checks the change and
+`pr-test-analyzer` notes a missing test for the 429 response; the author adds it, and the EXEC review and the gate run
+again. DOCS adds the run's entry to `CHANGELOG.md`; SECURITY finds no secret and full `.gitignore` coverage.
 
-**Delivery** — Full findings table, quality summary, and time breakdown are
-shown. Optionally auto-commits the result.
+**DONE** — You accept; the agent shows the delivery report. The change stays uncommitted unless the operator profile
+sets `auto_commit`.
 
 ## Standalone Tools
 
@@ -307,9 +326,8 @@ review_style: "be terse, flag any unwrap() as CRITICAL"
 
 ## Key Design Features
 
-**Live Reports** — After every review round, the Orchestrator shows you what
-the Reviewer found: CRITICAL issues, MINOR suggestions, and the verdict.
-You see the value of the review loop in real time.
+**Live progress** — The coordinator prints one line per event (the role, its verdict and the open finding ids)
+and logs it to `progress.jsonl` in the run directory; `status --brief` shows the latest.
 
 **Plan Conformance** — The Reviewer checks that the Executor's implementation
 stays within the approved plan. Unauthorized design decisions are flagged as
@@ -318,10 +336,8 @@ CRITICAL even if the code is technically correct.
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
 
-**Round Caps** — The default entry (paired-session) has hard round caps (plan 3 / exec 4 unless set) that
-end in a HOLD; at that HOLD `resume --add-rounds N` continues the same run (L100). A legacy-format run
-(`--lifecycle-mode off`) may instead `accept --override-rejection --reason TEXT`; the worktree lifecycle
-refuses that override.
+**Round Caps** — Hard round caps (plan 3 / exec 4 unless set) end in a HOLD; at that HOLD
+`resume --add-rounds N` continues the same run (L100).
 
 **Quality Polish** — After the adversarial review loop approves, a suite of
 specialized agents automatically runs static analysis, simplification, test

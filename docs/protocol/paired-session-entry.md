@@ -325,9 +325,9 @@ do not use `run` again or start a new work item. In strict mode, re-run the
 permission probe first if it is missing or no longer matches.
 
 At a PLAN or EXEC round-limit HOLD (`run` and `resume` print a `NEXT: resume
---add-rounds N` line before it; after `reject --expect`, state.json
-`round_limit_hold` shows it), report the open findings and offer these
-choices: `resume --add-rounds N` (1-10; the same run continues
+--add-rounds N` line before it; after `reject --expect`, it is one when state.json
+`round_limit_hold.hold_reason` equals the current `hold_reason`, since that record
+is not cleared), report the open findings and offer these choices: `resume --add-rounds N` (1-10; the same run continues
 with N more rounds of that phase, starting with the author turn after a review
 or gate HOLD; a HOLD after a write keeps its review; the saved cap
 stays and the extension is recorded in `round_extensions`), `accept

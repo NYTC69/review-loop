@@ -26,10 +26,10 @@
       "needle": ".review-loop/sessions/"
     },
     {
-      "id": "readme_marks_codex_stage1_surface",
+      "id": "readme_marks_codex_surface",
       "kind": "contains",
       "path": "README.md",
-      "needle": "## Codex Stage 1"
+      "needle": "## Codex\n\nCodex installs the same plugin"
     },
     {
       "id": "readme_marks_claude_plugin_surface",
