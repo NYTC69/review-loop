@@ -17,7 +17,7 @@ description: >
 
 # Paired-session workflow (Claude Code)
 
-First, before any stage A check or question, read `docs/protocol/loading.md`
+First, before any stage A check or question, read `${CLAUDE_PLUGIN_ROOT}/docs/protocol/loading.md`
 and load the shared entry contract (`docs/protocol/paired-session-entry.md`) as
 its own Bash command, cwd in the user's workspace. The bundle must stay out of
 the product worktree (FIELD-18): first print a fresh bundle directory with its
@@ -112,6 +112,7 @@ TEST_COMMAND='the verified project command'
 A review-only request (`--review-only`, or the review-loop handoff of code already implemented)
 follows the shared contract's review-only entry: add `--review-only` (and `--base "$BASE"`
 only when the user named a base) to both blocks.
+Add `--auto-commit false` too when the review-loop entry handed it over.
 
 A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the
 shared contract's Review-PR entry. Host rules: `<support-root>` in the shared contract is

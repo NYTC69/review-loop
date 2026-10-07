@@ -7,6 +7,8 @@ top-level `README.md` Quick Start.
 
 ## Prerequisites
 
+- **macOS** — paired-session runs on macOS only; every entry refuses Linux and other hosts
+  (`paired-session needs macOS; Linux and other hosts are not supported`).
 - **Codex CLI 0.159.2 or later** — the paired-session Codex default uses
   `gpt-6.1-sol`, which needs 0.159.2+. The plugin install command below was
   verified on 0.155.1; older releases may require the `/plugins` UI path, so
@@ -18,6 +20,7 @@ top-level `README.md` Quick Start.
   reviewer, so both `codex` and `claude` must be on PATH. To run without Claude, set the roles in the
   paired-session operator profile (`~/.config/review-loop/paired-session.json`; see
   `paired_session/paired-session-config.example.json`).
+- **GitHub CLI (`gh`)** — needed only to review a pull request (a PR number or URL).
 
 ## Install path: marketplace + CLI install
 
@@ -113,13 +116,10 @@ session state but install through different package managers.
 | Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` | `skills/` (top-level) | `/review-loop`, `/review-loop:paired-session`, `/review-loop:review-pr`, … |
 | Codex CLI | `.codex-plugin/plugin.json` | `.agents/plugins/marketplace.json` | `.agents/skills/` | none — natural-language only |
 
-The top-level `skills/` tree (with `code-quality-loop`,
-`reorganize`, …) dispatches via Claude's Agent tool and is intentionally
-**not** exposed to Codex. The four `.agents/skills/` entries are the
+`code-quality-loop` and `reorganize` are Claude-only skills (no Codex port); on Codex, "review the pending
+changes" runs the review-only route (quality writers on by default). The four `.agents/skills/` entries are the
 Codex surface. Paired-session is the only review-loop entry in both runtimes; `entry: legacy`
 and an explicit legacy request are refused (the legacy workflow was removed in v2.13.0).
 
-There is also a fallback wrapper at `~/.codex/skills/review-loop/SKILL.md`
-that some users symlink for the legacy "skills only, no marketplace"
-flow. With the marketplace install in place, the wrapper is no longer
-needed and can be removed.
+If an old wrapper exists at `~/.codex/skills/review-loop/SKILL.md` (the legacy "skills only, no marketplace"
+flow), remove it: it duplicates the plugin's `review-loop` skill and may point at the removed legacy workflow.

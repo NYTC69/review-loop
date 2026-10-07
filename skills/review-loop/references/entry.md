@@ -22,7 +22,7 @@ Resolve `entry` (exact values `legacy` and `paired-session` only; the legacy wor
 `--review-only`, plus `--base <ref>` only when the user names a base). Code already implemented is detected
 from task-relevant changes only: unrelated dirty work is not a code-exists signal (a
 review-only run reviews and, with auto_commit, delivers every non-ignored change against its
-base).
+base). `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false` (absent or `true`: the review-only default, one local commit at `accept`).
 - Plan already exists: print `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again` and hand off with the plan text in the work item.
 - Existing session (an explicit resume of a `.review-loop/sessions/` session): refused. Print
   `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item` and end.

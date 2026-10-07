@@ -1,7 +1,7 @@
 ---
 name: code-quality-loop
 description: "Iterative review-fix loop on the uncommitted change: reviews, fixes, simplifies and consolidates tests, as a paired-session review-only run (`run --review-only`). The legacy loop was removed in v2.13.0: `entry: legacy`, `--legacy` and `--reorganize` are refused."
-argument-hint: "[max-rounds] [--skip-reorganize]"
+argument-hint: "[max-rounds]"
 ---
 
 # Code Quality Loop
@@ -30,9 +30,9 @@ continue as absent. Then:
        `code-quality-loop: max-rounds must be an integer of at least 2 on the paired route (round 1 reviews the existing change)`.
      - `--skip-reorganize`: print `code-quality-loop: --skip-reorganize has no effect; the paired route never reorganizes`.
      - `--reorganize`: refused,
-       `code-quality-loop: reorganize is not part of the paired route; run /review-loop:reorganize after the run`.
+       `code-quality-loop: reorganize is not part of the paired route; run /review-loop:reorganize <files> after the run`.
      - Any other argument: refused,
-       `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds] [--skip-reorganize]`.
+       `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds]`.
      - `auto_commit: false` in `.review-loop/config.md`: hand over `--auto-commit false` (absent or `true`: the
        review-only default, one local commit at `accept`).
      - `judgment_model` or `cheap_model` set in `.review-loop/config.md`: print, per key,
@@ -42,6 +42,6 @@ continue as absent. Then:
      `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
   4. Invoke the `paired-session` skill with `--code-quality-loop` and the mapped `--max-exec-rounds N` and
      `--auto-commit false` (if any), and end this skill. It follows the shared contract's Code-quality-loop entry: a review-only run on
-     the uncommitted change with the quality writers on, ending at DONE (or HOLD) with the delivery report.
+     the uncommitted change with the quality writers on, ending at DONE (or HOLD); `accept` writes the delivery report.
   5. If the paired-session skill reports `stage A failure: <reason>`, report
      `code-quality-loop: paired-session entry refused (<reason>)` and stop (nothing falls back).
