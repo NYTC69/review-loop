@@ -1,5 +1,7 @@
 # E2E lifecycle design 3/4: DOCS and SECURITY
 
+> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 Design only; lifecycle disabled. Inputs: [doc 1](e2e-1-stages-and-roles.md), [2a](e2e-2a-tree-binding.md), [2b-i](e2e-2b1-budgets.md), [2b-ii](e2e-2b2-findings-replay.md); legacy `docs/protocol/execution.md` §Quality-agent tool-use guard, §§3.6–3.7; R12-4 R1 M5/S1, R2 M8–M10. Commit/close is doc 4.
 
 Real-path note (ADR-11, D12): the real lifecycle will open as the worktree lifecycle W of [doc 6](e2e-6-worktree-lifecycle.md) (not yet implemented); the candidate-tree design here stays fake-only hardening.

@@ -1,5 +1,30 @@
 # Changelog
 
+### v2.13.3：v3.0 复查第一批（文档对照当前行为）
+
+legacy 删除后，全仓库复查文档是否与实际行为一致（ADR-17）。这一版是复查的第一批修复，不影响在跑的 run。
+
+**行为变化**
+- `.review-loop/config.md` 里的 `auto_commit: false` 现在也对 `/review-loop` 审现有代码（review-only）生效：两个宿主的入口都会传 `--auto-commit false`，accept 时不再提交。不设或设为 `true` 仍按 review-only 的默认，accept 时做一次本地提交（ADR-17 V6）。
+- `scripts/read_protocol.py --output` 只接受系统临时目录下的绝对路径；`scripts/delivery_scope.py` 删掉 `check` 子命令和"输出可写进未跟踪 `.review-loop/`"的例外。入口和 coordinator 本来就不用这些分支（ADR-17 V5）。
+
+**模型照着做的说明（skill、入口协议 PSE）**
+- 交付报告只在 ACCEPTED 时生成；`accept` 打印的 `COMMIT:`/`UNCOMMITTED:` 和 `REPORT:` 行要原样转给用户。
+- `--plan-only` 映射到 `run --stop-after-plan`，在 PSE 里统一写一次。
+- guide：`soft_limit_exec` 默认 4，补上 `resume --add-rounds N`；Codex 端注明只支持 macOS。
+- loading.md 改从插件根目录读取；reorganize 的 `diff` 包括未跟踪文件；code-quality-loop 的参数提示更正。
+- 3 处模型可见的 prompt 去掉 "legacy review-loop Step 3.x" 字样（指令不变）。
+
+**用户文档**
+- README 重写：产品介绍、"How a run goes"（阶段、角色、默认模型）、"Ending a run"、"Run control"、review-pr、Quality Polish、配置说明（项目配置与 operator profile 的分工）、测试命令、目录结构。
+- 配置模板的值全部改成注释，照抄不会改掉默认值；Codex 安装文档补上 macOS 和 `gh`；迁移指南的 legacy 对照表标为历史。
+- 本仓库 `.review-loop/config.md` 删掉不生效的 `reviewer_model`（ADR-17 V7）。
+
+**历史文档**
+- 22 个设计文档加"历史文档"说明头；13 个没有在线链接的旧文档移到 `docs/history/`，删掉 `tasks/` 下 2 份过时计划（ADR-17 V8）；efficient-mode、e2e-6、detach、1c 中错误的操作说明已更正。
+
+**审查**：每个单元都经 Codex 审查 APPROVE，并通过 fresh Opus 终审。
+
 ### v2.13.2：legacy 删除后的清理（LG-DEL-3）
 
 - `scripts/run-skill-lint`：删掉指向已删文件的检查路径（plan/execute、`.codex/agents`）。

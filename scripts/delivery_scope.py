@@ -458,12 +458,7 @@ def validate_output(repo: dict, path: Optional[str]) -> None:
         raise UsageError("output must not be inside Git administrative storage")
     if os.path.commonpath((repo["worktree"], full)) == repo["worktree"]:
         relative = os.path.relpath(full, repo["worktree"])
-        # Artifacts must not become part of their own observed candidate:
-        # an untracked path under the excluded session directory, or an
-        # ignored path, is never inventoried.
-        if (relative.replace(os.sep, "/").startswith(SESSION_DIR_PREFIX)
-                and not git(repo["worktree"], "ls-files", "--", relative)):
-            return
+        # Artifacts must not become part of their own observed candidate: an ignored path is never inventoried.
         if not git(repo["worktree"], "check-ignore", "--", "./" + relative, codes=(0, 1)):
             raise UsageError("output inside the worktree must be Git-ignored; use an ignored artifact directory or an external path")
 
@@ -489,8 +484,6 @@ def main(argv: Optional[list] = None) -> int:
     manifest = commands.add_parser("manifest", help="bind the current candidate to an immutable baseline")
     manifest.add_argument("--baseline", required=True)
     manifest.add_argument("--output")
-    check = commands.add_parser("check", help="check whether a stored candidate still matches the repository")
-    check.add_argument("--manifest", required=True)
     args = parser.parse_args(argv)
     try:
         repo = repository(args.repo)
@@ -499,21 +492,10 @@ def main(argv: Optional[list] = None) -> int:
             scope = scope_paths(repo["worktree"], args.scope)
             document = build_baseline(repo, scope, commit_state(repo, args.from_commit) if args.from_commit
                                       else capture_state(repo))
-        elif args.command == "manifest":
+        else:
             baseline = load_document(args.baseline, "delivery-baseline")
             match_repository(repo, baseline)
             document = build_manifest(baseline, capture_state(repo))
-        else:
-            candidate = load_document(args.manifest, "delivery-manifest")
-            match_repository(repo, candidate["baseline"])
-            current = capture_state(repo)
-            fresh = current == candidate["current"]
-            document = {"schema": SCHEMA, "kind": "delivery-check", "fresh": fresh,
-                        "candidate_fingerprint": candidate["fingerprint"],
-                        "current_fingerprint": fingerprint(current),
-                        "changed_components": sorted(key for key in current if current[key] != candidate["current"].get(key))}
-            emit(document, None)
-            return 0 if fresh else 1
         emit(document, args.output)
         return 0
     except UsageError as exc:

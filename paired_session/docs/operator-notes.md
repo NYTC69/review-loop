@@ -1,5 +1,7 @@
 # HOLD-only operator notes (2C part 1, design step A)
 
+> **Historical** (2C design, implemented as `note`). Current behaviour: [paired_session/README.md](../README.md) and the [PSE](../../docs/protocol/paired-session-entry.md) "Existing runs and HOLD".
+
 Status: design only. `note --text/--file` supplies an **in-scope clarification** to the next author turn. It neither changes the approved plan nor authorizes new scope. R12-1 R3 findings and the R14-2 plan define the boundaries below; a scope change requires the separate `--scope-change` successor-run path, which is not enabled by this document.
 
 | Run state / next role | `note` result | Saved state and evidence | Resume |

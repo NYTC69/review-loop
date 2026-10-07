@@ -1,5 +1,7 @@
 # D09 capability 1: the simplifier and test-consolidation writer passes (design)
 
+> **Historical** (D09 capability 1 design, implemented in v2.12.5-v2.12.6). Current behaviour: [paired_session/README.md](../README.md).
+
 Status: design only. Owner decision D09 (2026-10-05): code-quality-loop retires onto `run --review-only` (Q6 option A)
 and **capability 1 is kept**: the simplifier and test-consolidation writers are ported into paired-session. This also
 answers owner decision 4 of the migration map for the main pipeline. Capability 3 (comment/type analyzers) goes to

@@ -4,7 +4,7 @@
 
 **Goal:** Split the monolithic `review-loop` skill into three composable skills (`plan`, `execute`, `review-loop`) backed by shared protocol documents, for both Claude Code (plugin) and Codex (Stage 1) runtimes. Shared `.review-loop/sessions/{uuid}.md` remains the cross-runtime bridge.
 
-**Design spec:** `docs/superpowers/specs/2026-04-17-plan-execute-split-design.md` (Approved, Codex review round 10).
+**Design spec:** `docs/history/2026-04-17-plan-execute-split-design.md` (Approved, Codex review round 10).
 
 **Architecture:** Four new protocol docs under `docs/protocol/` act as the single source of truth for planning/execution/session-file/schema rules. Each SKILL.md (6 total across runtimes) declares a fixed `## Protocol Imports` list; the orchestrator reads those files at start. Runtime-specific SKILL.md wrappers only carry dispatch details, sandbox-bug workarounds, and Stage 1 scope limits.
 

@@ -334,3 +334,22 @@ entry; never edit history.
   - Q5 (paired-session's own older formats, e.g. lifecycle off as the CLI default): not part of LG-DEL; the v3.0 review decides (supervisor default, per the design's recommendation).
   - Agents: all 12 `agents/` files stay (role manifests hash them; changing them would break resume of in-flight runs).
 - **Consequences**: LG-DEL-1 starts after v2.12.9; each unit gets Codex review and a fresh Opus gate; each 2.13.x release needs CI + one real default-entry run like any release.
+
+### ADR-17: V3-1008 — the v3.0.0 review decisions
+- **Date**: 2026-10-08
+- **Status**: Accepted.
+- **Context**: After the legacy removal (v2.13.0-2.13.2), lanes A and B audited the whole repository read-only (`.compass/results/lanea/v3-audit-a.md`: ~75 findings on the live docs surface; `.compass/results/laneb/v3-audit-b.md`: historical docs and leftover code, incl. ADR-16 Q5). The 11 items that change behaviour, delete tests or delete files went on a decision sheet (`scratchpad/v3-sheet.html`, private artifact). Owner, 2026-10-08: "决策单全部按推荐走."
+- **Decision** (all recommendations):
+  - V1 `--lifecycle-mode` CLI default becomes `on` (the harness passes `off` explicitly; the one assertion pinning the old default changes).
+  - V2 a state-format version gate: runs saved before 3.0 are refused on resume/accept with "finish or abort them on 2.13.x"; the old-state compatibility shims (old gate vendor default, missing safety_mode → strict, budget migration, `skip_globs`/`--skip-globs`, …) are deleted with their tests.
+  - V3 the lifecycle-off route is deleted in 3.0 (polish round, `resume --polish`, FIELD-32 recheck, RLO hint), after V1 and V2.
+  - V4 the test-only fake lifecycle (~2,450 lines, 19 modules, `descriptor_mutation.py`) is deleted with its ~136 tests.
+  - V5 legacy branches in scripts are deleted (read_protocol `.review-loop/tmp`, delivery_scope `.review-loop/` output exception and `check`, the empty lint assertion `claude_reviewer_command_flags_present`), with the tests that pin them.
+  - V6 `auto_commit: false` in `.review-loop/config.md` is honoured by the `/review-loop` review-only route too (both hosts' entries pass it).
+  - V7 this repository's `.review-loop/config.md` drops `reviewer_model` (its contract becomes a not-contains).
+  - V8 historical docs: the 13 unlinked ones move to `docs/history/` (3 M7 docs, v2.9.0 checklist, 6 superpowers spec/plans, `m6-first-real-run.md`, and 2 legacy-era `tasks/` docs: the orchestration-overhead problem statement and the protocol-slimming plan) with links fixed; `tasks/ideas.md` and `tasks/review-loop-orchestration-overhead-plan.md` are deleted.
+  - V9 the 12 `## Migrated — README.md` snapshot blocks (CLAUDE.md, ARCHITECTURE.md, DESIGN.md) are dropped for pointers; the CLAUDE.md pitfall keeps only "move needle and text together".
+  - V10 SSOT: `paired_session/README.md` owns the coordinator CLI rules (accept/reject/override/round limits/exit codes); PSE keeps host behaviour and links to it.
+  - V11 all 12 `agents/*.md` are rewritten in 3.0 (drop `tier:`, report format "answer in the schema the caller gives", no orchestrator/session/launcher references); the release note says in-flight runs finish on 2.13.x.
+- **Authorization (owner, 2026-10-08)**: when a lane session's own permissions block `git rm`/`git mv` for a deletion or move that ADR-17 approves, the supervisor checks the lane's exact list against ADR-17 and runs it in the lane's worktree ("ADR-17 范围内长期授权"); anything outside ADR-17 still goes to the owner.
+- **Consequences**: Test deletions and rewrites listed in the two audits are owner-approved removals, not regression-red-line edits; every other previously passing test stays untouched. V2, V3 and V11 break resume of runs saved on 2.13.x, so they ship only in 3.0.0 with that release note.

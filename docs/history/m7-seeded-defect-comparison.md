@@ -1,5 +1,7 @@
 # M7 seeded-defect comparison (legacy vs paired-session)
 
+> **Historical** (M7 study design). Its tooling (`scripts/m7_*.py`) and the legacy arm were removed in v2.13.1, so it cannot be run as written.
+
 Role change (ADR-6 amendment D-READY, 2026-10-05): M7 no longer gates legacy retirement; it is an optional cost and quality study.
 
 Design only; nothing here has been run. Inputs: week-plan M7 (target 2026-10-02), workstream 2G (tokens), `docs/paired-session-migration.md` (v2.10.0 default flip planned after 3 stable real runs; superseded by the amended E-1 under D-EFF, 2026-10-04: CI green plus one real run through the default entry reaching ACCEPTED), and the luna blind benchmark. Two facts below are supervisor-provided and not verified in this repo (source: `/Users/yuanlei/3Cats/review-loop/.compass/results/2026-09-29_luna-reviewer-bench/SUMMARY.md`): the 7-case luna split (5 Opus CRITICAL/MAJOR, 2 Opus-clean) and the `diff_sha256` command (`git diff --cached <init> --binary | sha256`). Re-check both against that source before freezing.

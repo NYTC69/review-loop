@@ -1,9 +1,11 @@
 # Review-only / code-exists entry for paired-session (design, lg1)
 
+> **Historical** (D-LG1 design, shipped in v2.11.0). Legacy `execute --review-only` was removed in v2.13.1; current behaviour: the [PSE](../../docs/protocol/paired-session-entry.md) "Review-only entry".
+
 Design only; no product code. Owner decision D-LG1 (2026-10-05): build a paired-session entry instead of keeping legacy for
 review of existing code. Once it exists, legacy `execute --review-only`, the review-loop code-exists auto-route and later
 code-quality-loop can retire. It is also the frozen-diff review start that M7 still needs
-(`m7-seeded-defect-comparison.md:16-17`).
+(`docs/history/m7-seeded-defect-comparison.md:16-17`).
 
 Gap source: main-checkout `.compass/results/2026-10-05_legacy-gap.md` §1 ("Code-exists auto-route / review-only") and §6.
 Anchors are at `18479ba`. `C` = `paired_session/coordinator.py`; `PSE` = `docs/protocol/paired-session-entry.md`.

@@ -1,5 +1,7 @@
 # Scope change: terminal run and successor (2C part 3)
 
+> **Historical** (2C design, implemented as `note --scope-change` / `reject --scope-change`). Current behaviour: [paired_session/README.md](../README.md).
+
 Status: design only. This replaces the stopped in-run PLAN reopen design in R12-2/R12-2a/R13-2. No code is enabled here.
 
 ## Command and durable transition

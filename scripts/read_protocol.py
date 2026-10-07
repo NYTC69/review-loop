@@ -114,27 +114,20 @@ def checked_outside_root(create=False):
 
 
 def write_bundle(path, content):
-    """Atomically write a bundle only inside the task's ignored tmp area or the temp-area root."""
+    """Atomically write a bundle only under the per-user temp-area root, outside the product worktree."""
     workspace = Path.cwd().resolve()
     requested = Path(path)
-    if requested.is_absolute():
-        target = requested.resolve()
-    else:
-        if requested.parts[:2] != (".review-loop", "tmp"):
-            raise ValueError("--output must be inside .review-loop/tmp")
-        target = (workspace / requested).resolve()
-    allowed = (workspace / ".review-loop" / "tmp").resolve()
+    if not requested.is_absolute():
+        raise ValueError(f"--output must be an absolute path under {outside_root()}")
+    target = requested.resolve()
+    target.relative_to(outside_root())
+    checked_outside_root(create=True)
     try:
-        target.relative_to(allowed)
+        target.relative_to(workspace)
     except ValueError:
-        target.relative_to(outside_root())
-        checked_outside_root(create=True)
-        try:
-            target.relative_to(workspace)
-        except ValueError:
-            pass
-        else:
-            raise ValueError("--output outside .review-loop/tmp must not resolve into the workspace")
+        pass
+    else:
+        raise ValueError("--output must not resolve into the workspace")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -162,8 +155,8 @@ def main(argv=None):
                         help="only units still available in THIS live context; repeatable")
     parser.add_argument("--inventory", action="store_true", help="metadata only; does not count as reading instructions")
     parser.add_argument("--output", type=Path,
-                        help="atomically write output under task workspace .review-loop/tmp, or as an absolute "
-                             "path under <system temp>/review-loop-protocol-<uid>/ (outside the product worktree)")
+                        help="atomically write output to an absolute path under "
+                             "<system temp>/review-loop-protocol-<uid>/ (outside the product worktree)")
     args = parser.parse_args(argv)
     try:
         units = resolve(args.root, args.runtime, args.stage)

@@ -1,5 +1,7 @@
 # Real lifecycle activation gates
 
+> **Historical** (candidate-tree activation plan, not built). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 ## Scope and authority
 
 Superseded as the activation route by D12 (ADR-11, 2026-10-03): the real lifecycle will open as the
