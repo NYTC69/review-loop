@@ -1,5 +1,18 @@
 # Changelog
 
+### v2.13.1：删除 legacy 流程（LG-DEL-2）
+
+**删除（owner 10-07 ADR-16 批准，10-08 再次授权）**：
+- 命令和 skill：`/review-loop:legacy`、`/review-loop:plan`、`/review-loop:execute`，以及 Codex 的 plan/execute skill 和 Codex Stage 1 流程（`.codex/agents/`）。替代用法：已有计划或审查现有代码用 `/review-loop`；只写计划用 `/review-loop:paired-session --plan-only`。Codex 端明确要求 legacy 的请求会被拒绝并给出一句说明。
+- legacy 的协议文档 10 份、脚本 23 个（包括 reviewer launcher、并行审查调度、M7 研究工具、`run-skill-smoke`）、只测 legacy 的测试和 fixture。共删除 197 个文件。
+- review-pr 和 code-quality-loop 只保留 paired-session 入口；loader 只剩 `entry-review-loop` 和 `entry-paired-session` 两个 stage。
+- 现在 Claude 端 6 个 skill，Codex 端 4 个。12 个 agent 文件全部保留（在跑的 run 会对它们做哈希）。
+- guide、README 中提到已删内容的句子、CLAUDE.md 的 Codex 说明、迁移文档同步更新；完整的 README 重写在 v3.0 复查时做。
+
+**对使用方**：默认入口的行为不变，已经在 v2.13.0 里不会再走到 legacy。
+
+**审查**：Codex 审查 2 轮后 APPROVE_WITH_FINDINGS；fresh Opus 终审确认 paired-session 路径上没有任何引用指向已删文件，但打回了一处：被删的 loader 测试文件里有 2 个测试保护的是 paired-session 仍在用的行为，已原样移回 `tests/protocol_loading_test.py`。lint 契约删除 613 条只锁 legacy 的断言。
+
 ### v2.13.0：不再回退到 legacy（LG-DEL-1，删除 legacy 的第一步）
 
 **行为变化（owner 10-07，ADR-16）**：从这个版本起，任何请求都不会再落到 legacy 流程上。
