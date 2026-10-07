@@ -5,7 +5,7 @@ description: >
   and key features. Use when the user asks for help with review-loop.
 ---
 
-First, read `~/.claude/plugins/marketplaces/review-loop-marketplace/.claude-plugin/plugin.json` to get the current version number.
+First, read `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json` to get the current version number.
 
 Then display the following guide to the user, replacing `{VERSION}` with the version from plugin.json:
 
@@ -112,13 +112,13 @@ Create `.review-loop/config.md` in your project to customize:
 |-----|---------|-------------|
 | `entry` | absent (paired-session) | `paired-session` (`legacy` is refused since v2.13.0); routes every `/review-loop` (Claude) or review-loop skill (Codex) request, review-pr and code-quality-loop (see Entry above) |
 | `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (a hard cap that HOLDs) |
-| `soft_limit_exec` | 3 | Becomes `--max-exec-rounds` (a hard cap that HOLDs) |
+| `soft_limit_exec` | unset → 4 | Becomes `--max-exec-rounds` (a hard cap that HOLDs) |
 | `docs_file` | `CHANGELOG.md` | Becomes `--docs-file`; `""` to skip |
 | `skip_quality_polish` | false | Becomes `--skip-quality-polish` |
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |
 | `review_style` | "" | Tone and rules for the review roles and the POLISH-Q specialists |
 | `quality_focus` | "" | Quality priorities for the POLISH-Q specialists |
-| `auto_commit` | false | Not applied on the main pipeline (a warning; set it in the operator profile); `false` keeps a code-quality-loop run uncommitted |
+| `auto_commit` | — | Not applied on the main pipeline (`true` prints a warning; set it in the operator profile). A review-only run (`/review-loop` on existing code, code-quality-loop) makes one local commit at `accept` by default; `false` here keeps a code-quality-loop run uncommitted |
 | `handsfree` | false | Blocks stage A questions (any such question fails) and acceptance |
 
 Unset paired-session caps are plan 3 / exec 4 rounds. `reviewer_model` and `executor_model` only warn
@@ -147,7 +147,8 @@ review_focus: |
 ## Key features
 
 - **Independent review** — the reviewer, shadow and gate never share the author's session
-- **Hard caps** — plan and exec round limits end in a HOLD, never a silent stop
+- **Hard caps** — plan and exec round limits end in a HOLD, never a silent stop; on your request the same run
+  continues with `resume --add-rounds N` (1-10)
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
 - **Project-specific config** — tailor review priorities per project
 

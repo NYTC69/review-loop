@@ -45,6 +45,12 @@ Not on Codex:
 
 - The entry skills load their instructions via `docs/protocol/loading.md` and
   `scripts/read_protocol.py`, shared with Claude Code.
-- Codex repo skills live under `.agents/skills/` in the Codex workspace.
+- Codex loads the skills from the installed plugin (`codex plugin add review-loop@review-loop-marketplace`,
+  see `docs/install-codex.md`), not from the workspace.
+- macOS only: every entry refuses another host (`paired-session needs macOS; Linux and other hosts are not supported`).
+- A plan or exec round limit ends in a HOLD; on your request the same run continues with
+  `resume --add-rounds N` (1-10).
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
-  paired-session operator profile.
+  paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
+  `review_focus`, `review_style`, `quality_focus`, `handsfree`) is listed in
+  `docs/protocol/paired-session-entry.md` (Profile and settings).

@@ -11,7 +11,7 @@ description: >
 
 # review-loop — claude entry
 
-Read `docs/protocol/loading.md`. This entry hands off to paired-session, so its
+Read `<support-root>/docs/protocol/loading.md`. This entry hands off to paired-session, so its
 load must leave no file in the product worktree: first print a fresh bundle
 directory outside it with its own Bash call,
 `python3 -c 'import os, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), f"review-loop-protocol-{os.getuid()}", uuid.uuid4().hex[:12]))'`,

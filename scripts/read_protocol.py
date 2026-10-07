@@ -163,7 +163,7 @@ def main(argv=None):
     parser.add_argument("--inventory", action="store_true", help="metadata only; does not count as reading instructions")
     parser.add_argument("--output", type=Path,
                         help="atomically write output under task workspace .review-loop/tmp, or as an absolute "
-                             "path under <system temp>/review-loop-protocol/ (outside the product worktree)")
+                             "path under <system temp>/review-loop-protocol-<uid>/ (outside the product worktree)")
     args = parser.parse_args(argv)
     try:
         units = resolve(args.root, args.runtime, args.stage)

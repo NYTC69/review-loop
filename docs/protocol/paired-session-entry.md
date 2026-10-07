@@ -69,7 +69,7 @@ outside the workspace and run directory. CLI options override the profile.
 Models are operator-set (ADR-9); a role without one gets its vendor's default
 (`claude-opus-5-5` for Claude; `gpt-6.1-sol` for Codex), and the gate defaults
 to the author's vendor (ADR-10).
-Legacy keys in `.review-loop/config.md` that are set map to one-run options:
+The keys in `.review-loop/config.md` that are set map to one-run options:
 `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish
 true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /
 `--max-exec-rounds`, and `review_focus` / `review_style` / `quality_focus` → `--review-focus` /
@@ -185,8 +185,9 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   reasonable, dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again, before
   the quality writers. It runs once, on its own round outside `--max-exec-rounds`, and is skipped with the reason when the
   invocation budget has no room; findings still open stay advisory.
-- Result: DONE (or HOLD) as for any review-only run; show the delivery report (one line per quality
-  writer, one for the fix round) and accept or reject only on the user's explicit decision.
+- Result: DONE (or HOLD) as for any review-only run; report each quality writer's outcome and the fix
+  round (state.json `lifecycle.quality_writers` and `advisory_fix`) with the stage receipts, and accept or
+  reject only on the user's explicit decision. `accept` writes the delivery report (DONE and acceptance).
 
 ## Review-PR entry
 
@@ -271,8 +272,11 @@ profile before choosing the flow.
   stop. On exit 0, read `RUN_DIR/permission-probe.json` and tell the user if
   the status is PASS_RESIDUAL_RISK.
 
-Add the same `--config` and mapped one-run options to every call; add
-`--stop-after-plan` only to `run` when requested. Every command that can
+Add the same `--config` and mapped one-run options to every call. Plan only (the Claude skill's
+`--plan-only`, or a request on either host to stop after the plan): add `--stop-after-plan` only to `run`,
+never to `permission-probe`; the run HOLDs after PLAN approval (`PLAN approved; stopped by
+--stop-after-plan; resume enters EXEC`) with the approved plan in `RUN_DIR/plan.md`: show it, and `resume`
+only on the user's request. Every command that can
 dispatch model turns (`permission-probe`, `run`, `resume`, `reject --expect`)
 uses the host skill's long-command form. Wait for each such command to finish
 before starting the next; do not start a second run while one is active.
@@ -316,9 +320,10 @@ recovering an interrupted probe, use `resume` on the existing run directory;
 do not use `run` again or start a new work item. In strict mode, re-run the
 permission probe first if it is missing or no longer matches.
 
-At a PLAN or EXEC round-limit HOLD (the command prints a `NEXT: resume
---add-rounds N` line before it), report the open findings and offer the
-choices that line names: `resume --add-rounds N` (1-10; the same run continues
+At a PLAN or EXEC round-limit HOLD (`run` and `resume` print a `NEXT: resume
+--add-rounds N` line before it; after `reject --expect`, state.json
+`round_limit_hold` shows it), report the open findings and offer these
+choices: `resume --add-rounds N` (1-10; the same run continues
 with N more rounds of that phase, starting with the author turn after a review
 or gate HOLD; a HOLD after a write keeps its review; the saved cap
 stays and the extension is recorded in `round_extensions`), `accept
@@ -334,7 +339,10 @@ committed nor staged, and resumes (EXEC review and gate replay; the edit ships
 with the delivery). A commit moves HEAD and HOLDs: restore HEAD to the run's
 parent keeping the edit. A `.gitignore` already modified at the start does not
 count as the run's own coverage: restore it to HEAD if HEAD's version covers
-the categories, otherwise abort and start a new run after committing it.
+the categories, otherwise abort and start a new run after committing it. A
+review-only run is different: the reviewed change is the run's own (its
+baseline is the review base), so a covering `.gitignore` edit in that change
+counts at SECURITY; the start warning then needs no restore or abort.
 
 ## DONE and acceptance
 
@@ -342,13 +350,17 @@ With the saved `config.lifecycle_mode` `on`, DONE means the security stage
 passed and acceptance is pending; with `off` (a run started before v2.10.0),
 DONE has no finish, quality-polish, docs or security stages, so say so. Report
 the stage receipts, open findings, operator verification records still valid
-for the tree, and whether the operator profile's `auto_commit` will make one
-local commit on acceptance; offer `accept` or `reject`. Never accept or reject
+for the tree, and whether the run's frozen `config.auto_commit` (the operator
+profile, the CLI or the review-only default) will make one local commit on
+acceptance; offer `accept` or `reject`. Never accept or reject
 under handsfree, and never on your own judgment:
 - Accept only after the user explicitly accepts in this conversation. Run
   `accept --intent-only` with the user's reason as `--reason TEXT` (or no
   `--reason` if they give none), show the digest, then run
-  `accept --expect <digest>` with the same `--reason`.
+  `accept --expect <digest>` with the same `--reason`. Relay its `COMMIT:`
+  (the local commit, never pushed) or `UNCOMMITTED:` (the files to commit
+  yourself) line verbatim, and show the delivery report named by its
+  `REPORT:` line (`RUN_DIR/delivery-report.md`, written only at ACCEPTED).
 - Reject only on the user's explicit rejection with their note: run
   `reject --intent-only --text NOTE`, show the digest, then run
   `reject --expect <digest> --text NOTE` in the host's long-command form (it

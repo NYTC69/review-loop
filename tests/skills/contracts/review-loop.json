@@ -798,6 +798,18 @@
       "kind": "not_contains",
       "path": "skills/code-quality-loop/SKILL.md",
       "needle": "reviewer-runtime.md"
+    },
+    {
+      "id": "pse_delivery_report_only_after_accept",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "`REPORT:` line (`RUN_DIR/delivery-report.md`, written only at ACCEPTED)"
+    },
+    {
+      "id": "pse_plan_only_maps_to_stop_after_plan",
+      "kind": "contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "add `--stop-after-plan` only to `run`,\nnever to `permission-probe`"
     }
   ]
 }

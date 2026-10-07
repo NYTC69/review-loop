@@ -18,15 +18,20 @@ name files that do not yet exist. They do not expand globs or Git pathspec magic
 ```sh
 python3 scripts/delivery_scope.py --repo . capture \
   --scope scripts/example.py --scope tests/example_test.py \
-  --output .review-loop/sessions/example-baseline.json
+  --output "$RUN_DIR"/evidence/example-baseline.json
 
 python3 scripts/delivery_scope.py --repo . manifest \
-  --baseline .review-loop/sessions/example-baseline.json \
-  --output .review-loop/sessions/example-candidate-1.json
+  --baseline "$RUN_DIR"/evidence/example-baseline.json \
+  --output "$RUN_DIR"/evidence/example-candidate-1.json
 
 python3 scripts/delivery_scope.py --repo . check \
-  --manifest .review-loop/sessions/example-candidate-1.json
+  --manifest "$RUN_DIR"/evidence/example-candidate-1.json
 ```
+
+`capture --from-commit <commit>` records instead the state of a clean checkout of that commit (HEAD, index and
+worktree all equal to it, nothing untracked), read from Git objects. It is the baseline of a review-only run, whose
+live tree already holds the change under review, so that change counts as the task's own; the coordinator captures
+it with `--scope .` (`RUN_DIR/evidence/delivery-baseline-<id>.json`).
 
 The output parent directory must already exist. Artifacts inside the worktree
 must be Git-ignored or untracked under `.review-loop/`; external artifacts also
@@ -134,7 +139,7 @@ embedded baseline as well as current state and derived scope/attribution fields.
 `current_fingerprint` hashes the entire current state. These are integrity and
 identity checks, not signatures or attestations of authorship.
 
-Capture reads the complete inventory twice and requires equality. `check`
+A live capture reads the complete inventory twice and requires equality. `check`
 validates the stored artifact, recomputes derived fields, and recaptures the
 repository. Any observed HEAD, index, disk, mode, or untracked inventory change
 makes the candidate stale, including changes outside task scope. Index flags,
@@ -156,8 +161,8 @@ fingerprint alone cannot reconstruct overwritten user content.
 
 - Inventory includes all tracked paths and non-ignored untracked files, even
   outside declared scope, so pre-existing and later unrelated work stays visible.
-  Untracked content under `.review-loop/` (session files, tmp and delivery
-  artifacts) is excluded, matching the evidence ledger; tracked files there,
+  Untracked content under `.review-loop/` (local config, old session files and
+  tmp) is excluded; tracked files there,
   such as a committed `config.md`, stay in the inventory.
   Scope controls classification, not permission to discard outside changes.
 - Git ignore rules exclude untracked files. An explicit selector naming only

@@ -5,7 +5,7 @@ description: Use in exactly four cases - the user explicitly asks for paired-ses
 
 # Paired-session workflow (Codex)
 
-First, before any stage A check or question, read `docs/protocol/loading.md`
+First, before any stage A check or question, read `<support-root>/docs/protocol/loading.md`
 and load the shared entry contract (`docs/protocol/paired-session-entry.md`) as
 its own command, cwd in the user's workspace. The bundle must stay out of the
 product worktree (FIELD-18): first print a fresh bundle directory as its own

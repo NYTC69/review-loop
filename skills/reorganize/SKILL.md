@@ -13,7 +13,7 @@ Restructure the specified code files: rearrange module layout, reorder logically
 `$ARGUMENTS` specifies the target:
 - **File path**: `/reorganize src/engine.go` — reorganize a single file
 - **Directory path**: `/reorganize src/core/` — reorganize all code files in the directory
-- **`diff`**: `/reorganize diff` — reorganize all uncommitted files (via `git diff --name-only --diff-filter=d HEAD`)
+- **`diff`**: `/reorganize diff` — reorganize all uncommitted files (via `git diff --name-only --diff-filter=d HEAD`, plus untracked files from `git ls-files --others --exclude-standard`)
 
 If no argument is provided, prompt the user to specify a target.
 
@@ -21,7 +21,7 @@ If no argument is provided, prompt the user to specify a target.
 
 ### Step 1: Determine File List
 
-Resolve the file list from `$ARGUMENTS`. For directories, recursively collect all code files (excluding vendor, node_modules, generated files, etc.). For `diff`, collect all uncommitted modified files (staged + unstaged).
+Resolve the file list from `$ARGUMENTS`. For directories, recursively collect all code files (excluding vendor, node_modules, generated files, etc.). For `diff`, collect all uncommitted modified files (staged + unstaged) and the untracked, non-ignored files.
 
 Output:
 
