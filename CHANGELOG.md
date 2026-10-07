@@ -1,5 +1,16 @@
 # Changelog
 
+### v2.13.2：legacy 删除后的清理（LG-DEL-3）
+
+- `scripts/run-skill-lint`：删掉指向已删文件的检查路径（plan/execute、`.codex/agents`）。
+- README 和 `review-loop-config.example.md`：删掉 paired-session 不再读取的配置键和章节，包括模型相关的键、`codex_*`、`commit_message_prefix`、`cross_vendor_review`、`adversarial_gate_skip_paths`、"Reviewer Modes"，以及 legacy 的 Context File 和 soft-limit 提示。保留的键按 paired-session 的实际行为重新说明；模型由 operator profile 决定。
+- `docs/install-codex.md`：改为列出 Codex 端现有的 4 个 skill。ARCHITECTURE.md 的迁移快照加注"历史快照，所述流程已删除"。
+- lint 契约：针对已删除配置键的 mapping 和断言，合并为一条 `model_keys_not_applied`。
+
+**对使用方**：行为不变，只改文档和 lint。完整的 README 重写在 v3.0 复查时做。
+
+**审查**：Codex 第 1 轮 APPROVE；fresh Opus 终审 APPROVE，lint 0 FAIL，`tests/` 211 passed。
+
 ### v2.13.1：删除 legacy 流程（LG-DEL-2）
 
 **删除（owner 10-07 ADR-16 批准，10-08 再次授权）**：
