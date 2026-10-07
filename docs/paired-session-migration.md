@@ -28,14 +28,14 @@ The legacy code is removed only after every precondition below holds, so that no
 The owner answered the 18 legacy-map rows provisionally on 2026-10-05 (ADR-13, D-OWNER-1005) and finally on
 2026-10-07 (`DECISIONS.md` ADR-15, D11-1006); the final answers replace the provisional ones.
 
-Remaining work items before legacy is removed (ADR-15):
-1. L105 `review_focus`, `review_style`, `quality_focus`: port into the reviewer, gate and specialist prompts (in progress).
-2. L107 `adversarial_gate_skip_paths`: retired; `skip_globs` stays accepted for old profiles and saved runs but is ignored, and is no longer in the example profile.
+All ADR-15 rows are settled as of v2.12.9: L105 `review_focus`, `review_style`, `quality_focus` and L100 `resume --add-rounds` shipped;
+L107 `adversarial_gate_skip_paths` is retired (`skip_globs` stays accepted for old profiles and saved runs but is ignored, and is no longer in the example profile).
+The removal itself follows ADR-16 (routing in 2.13.0, deletion in 2.13.1, loader and lint in 2.13.2).
 
 L133 Linux is dropped (macOS only for now): no Linux run is planned.
 
 The retired rows need no paired-session equivalent (the capability goes away with legacy); the covered rows and the
-shipped port rows (L117, L120, L100) need no further work.
+shipped port rows (L117, L120, L100, L105) need no further work.
 
 M7, the seeded-defect comparison, no longer gates removal; it stays an optional cost and quality study.
 

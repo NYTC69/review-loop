@@ -303,3 +303,34 @@ entry; never edit history.
 - **Context**: After the 2026-10-06 backlog triage, P1 held only five 1C safety items: R22-1 F1 (workspace config selects operator-executed tools), F3 (ignored files and .git outside the review snapshot), F4 (Codex global MCP/notify/profile), F6 (global config monitor coverage) and M6 (installed Codex writes workspace trust into the global config). All are class C hardening under D-EFF (2026-10-04), whose strict mode is optional and frozen.
 - **Decision**: The owner, verbatim: "1C 那几项按残余关掉吧". The five items move to BACKLOG Done as accepted residuals; no further work is scheduled.
 - **Consequences**: P0 and P1 are empty. The realistic M6 case stays covered by an isolated CODEX_HOME per acceptance run (owner P0 2026-10-06) and the HYGIENE-1/2 warnings. Reopening any of them needs a field report of normal-use harm, per the owner threat model (users and models are assumed not to act maliciously).
+
+### ADR-15: D11-1006 — final owner answers to the 18 legacy-map rows
+- **Date**: 2026-10-07
+- **Status**: Accepted. Supersedes the provisional D11 answers in ADR-13; these are the confirmed answers.
+- **Context**: ADR-13 recorded the D11 answers as provisional, to be re-confirmed per work item. On 2026-10-06 the supervisor rebuilt the sheet with usage evidence from the two consumer repositories and current paired-session coverage (sheet `scratchpad/d11-sheet.html`, published as a private artifact). Yuan answered all rows on 2026-10-07.
+- **Decision** (owner answer block, verbatim):
+  ```
+  A: L89=retire; L108=retire; L75=covered; L78=covered; L80=retire; L90=retire; L99=retire; L102=retire; L119=retire
+  B: L105=port; L117=port; L120=port; L100=covered; L135=covered
+  C: L123=retire; L104=retire; L107=retire; L133=linux
+  changed from recommendation: L133
+  ```
+  - Retire (10): L89 the stage A fallback, L108 `cross_vendor_review`, L80 intermediate `--stop-after`, L90 handsfree reviewer decisions, L99 `judgment_model`/`cheap_model`, L102 `commit_message_prefix`, L119 dispute/triage, L123 Compass/MemPalace injection, L104 `handsfree`, L107 `adversarial_gate_skip_paths` (delete the unused `skip_globs`).
+  - Covered (4): L75 plan-exists auto-route, L78 `execute --plan`, L100 soft limits (amended 2026-10-07: lane B found no continue path at a round-limit HOLD — `reject` works only at DONE and the caps are frozen at creation; the owner chose to add one, `resume --add-rounds N`, so L100 becomes a port), L135 CI and off-macOS tests (GitHub Actions, D08).
+  - Port (3): L105 `review_focus`/`review_style`/`quality_focus` into the reviewer, gate and specialist prompts (changed from the 10-05 retire: both consumers set them); L117 the quality writers (shipped as D09 POLISH-Q, v2.12.5-6); L120 the full delivery report (shipped in v2.12.8).
+  - L133 Linux: **needed** (changed from the recommendation "macOS only"). The paired-session default entry opens to Linux after one real Linux run.
+  - **Amended 2026-10-07 (owner)**: L133 is dropped; review-loop declares macOS only for now. Dot's Linux environment could not host a real run (task 23: no Claude CLI, no writable/persistent home, unstable API reachability, no 60-minute guarantee), and the owner, verbatim: "如果他那边不能做, 我就放弃这个 work item. 暂不支持 linux. 反正我自己用不上." Legacy removal does not wait for Linux; after removal a non-macOS host gets a clear refusal instead of the legacy fallback.
+- **Consequences**: Work items: L105 (lane A), L107 and the migration-guide map update, L133 (a Linux readiness audit, then one real Linux run; the host for that run: a GitHub Actions Linux runner, owner 2026-10-07, with the Claude subscription OAuth token and the Codex auth of the isolated acceptance CODEX_HOME as repository secrets). Once L105, L107 and L133 land, the remaining legacy deletion has no open owner rows.
+
+### ADR-16: LG-DEL — how legacy is removed
+- **Date**: 2026-10-07
+- **Status**: Accepted.
+- **Context**: Lane A's design `.compass/results/2026-10-07_lgdel-design.md` (inventory of 24 Claude and 9 Codex paths that still reach legacy, a target per path, the deletion list, 478 legacy-only tests in 18 modules, a 3-unit split). The ADR-6 removal preconditions are met (review-pr LG2, code-quality-loop CQL-RETIRE, ADR-15 rows; L133 dropped).
+- **Decision** (owner answers 2026-10-07):
+  - Release: **ship the removal as 2.13.x first** (LG-DEL-1 routing 2.13.0, LG-DEL-2 deletion 2.13.1, LG-DEL-3 loader/lint 2.13.2), then the full docs review, then 3.0.0 (the supervisor had recommended holding everything for 3.0.0; the owner chose 2.13.x). User-facing refusal text therefore names the release that removed legacy (v2.13.0), not v3.0.0.
+  - `entry: legacy` after removal: refused with one line telling the user to remove the key.
+  - `/review-loop:plan`, `/review-loop:execute`, `/review-loop:legacy` and the Codex plan/execute skills: deleted; the guide and release notes name the replacements.
+  - Deletion scope approved: the legacy-only tests listed in the design §4.1 (18 modules, 478 tests), the 22 legacy smoke cases and `run-skill-smoke`, the M7 comparison tooling; keep the `run-skill-lint` engine and the paired-session contracts. This is an owner-approved removal, not a regression-red-line edit.
+  - Q5 (paired-session's own older formats, e.g. lifecycle off as the CLI default): not part of LG-DEL; the v3.0 review decides (supervisor default, per the design's recommendation).
+  - Agents: all 12 `agents/` files stay (role manifests hash them; changing them would break resume of in-flight runs).
+- **Consequences**: LG-DEL-1 starts after v2.12.9; each unit gets Codex review and a fresh Opus gate; each 2.13.x release needs CI + one real default-entry run like any release.
