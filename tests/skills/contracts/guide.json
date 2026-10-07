@@ -6,7 +6,7 @@
       "id": "codex_guide_review_only_hands_off",
       "kind": "contains",
       "path": ".agents/skills/guide/SKILL.md",
-      "needle": "A request to review existing code hands off the same way as `run --review-only`.\n`entry: legacy`, an existing plan or session,"
+      "needle": "A request to review existing code hands off the same way as `run --review-only`, and an existing\nplan becomes the work item"
     },
     {
       "id": "guide_execute_review_only_marked_legacy_only",

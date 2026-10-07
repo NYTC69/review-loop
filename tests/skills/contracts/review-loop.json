@@ -3485,49 +3485,13 @@
       "id": "entry_key_documented_in_config_example",
       "kind": "contains",
       "path": "review-loop-config.example.md",
-      "needle": "# \"legacy\" | \"paired-session\" (exact values only; anything else falls back to legacy with a warning)."
+      "needle": "# \"paired-session\" (exact values only: since v2.13.0 \"legacy\" is refused, and anything else is warned about and treated as absent)."
     },
     {
       "id": "config_example_entry_default_paired_session",
       "kind": "contains",
       "path": "review-loop-config.example.md",
       "needle": "the review-loop skill (Codex); default paired-session from v2.10.0."
-    },
-    {
-      "id": "entry_key_default_legacy_in_config_example",
-      "kind": "contains",
-      "path": "review-loop-config.example.md",
-      "needle": "# entry: legacy\n"
-    },
-    {
-      "id": "entry_invalid_value_falls_back_to_legacy_with_warning",
-      "kind": "contains",
-      "path": "skills/review-loop/references/entry.md",
-      "needle": "`review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow`"
-    },
-    {
-      "id": "entry_unreadable_or_duplicate_falls_back_to_legacy",
-      "kind": "contains",
-      "path": "skills/review-loop/references/entry.md",
-      "needle": "`review-loop: entry could not be read (<reason>); using legacy workflow`"
-    },
-    {
-      "id": "entry_implicit_legacy_notice_exact_text",
-      "kind": "contains",
-      "path": "skills/review-loop/references/entry.md",
-      "needle": "`review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow`"
-    },
-    {
-      "id": "entry_routing_fresh_and_code_exists_hand_off",
-      "kind": "contains",
-      "path": "skills/review-loop/references/entry.md",
-      "needle": "states hand off, \"No prior state\" and \"Code already implemented\" (a review-only request). On\neither, print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set,"
-    },
-    {
-      "id": "entry_routing_non_fresh_states_stay_legacy",
-      "kind": "contains",
-      "path": "skills/review-loop/references/entry.md",
-      "needle": "`review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`"
     },
     {
       "id": "entry_routing_hold_never_falls_back_to_legacy",
@@ -3540,11 +3504,6 @@
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
       "needle": "apply the Step 1.5 entry routing before Step 0.5 creates any session file or lock."
-    },
-    {
-      "id": "entry_implicit_legacy_notice_consistent",
-      "kind": "consistent_with",
-      "mapping_id": "entry_implicit_legacy_notice"
     },
     {
       "id": "legacy_deprecation_notice_on_both_hosts",
@@ -3565,11 +3524,6 @@
       "id": "entry_experimental_routing_notice_consistent",
       "kind": "consistent_with",
       "mapping_id": "entry_experimental_routing_notice"
-    },
-    {
-      "id": "entry_non_fresh_state_warning_consistent",
-      "kind": "consistent_with",
-      "mapping_id": "entry_non_fresh_state_warning"
     },
     {
       "id": "entry_exact_values_only_consistent",
@@ -3606,22 +3560,6 @@
       "needle": "From the first `bin/paired-session` command on, every refusal or HOLD is reported verbatim and never falls back to legacy."
     },
     {
-      "id": "entry_routing_decided_once_before_session_file",
-      "kind": "contains",
-      "path": "skills/review-loop/references/entry.md",
-      "needle": "This routing is decided once, before\nStep 0.5; once a legacy session file or lock exists, a re-detection or user\noverride never hands off."
-    },
-    {
-      "id": "entry_codex_implicit_legacy_notice_consistent",
-      "kind": "consistent_with",
-      "mapping_id": "entry_codex_implicit_legacy_notice"
-    },
-    {
-      "id": "entry_codex_legacy_control_phrase_consistent",
-      "kind": "consistent_with",
-      "mapping_id": "entry_codex_legacy_control_phrase"
-    },
-    {
       "id": "entry_codex_handoff_target_consistent",
       "kind": "consistent_with",
       "mapping_id": "entry_codex_handoff_target"
@@ -3647,19 +3585,13 @@
       "id": "codex_entry_fresh_work_and_code_target_hand_off",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "`paired-session`: fresh work and a review-only code target hand off (an existing plan or session does not)."
+      "needle": "`paired-session`: fresh work, an existing plan and a review-only code target hand off"
     },
     {
       "id": "codex_entry_hold_never_falls_back_to_legacy",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
       "needle": "A paired-session probe/run HOLD is reported and never falls back to legacy."
-    },
-    {
-      "id": "codex_entry_non_fresh_states_stay_legacy",
-      "kind": "contains",
-      "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "Plan-exists and explicit resume always stay legacy; print"
     },
     {
       "id": "review_only_routes_to_paired_session",
@@ -3671,7 +3603,7 @@
       "id": "codex_review_only_routes_to_paired_session",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "(for a code target, as a review-only request: `--review-only`, plus\n  `--base <ref>` only when the user names a base)"
+      "needle": "(for a code target, as a review-only request: `--review-only`, plus\n  `--base <ref>` only when the user names a base"
     },
     {
       "id": "review_only_unrelated_dirty_work_is_not_code_exists",
@@ -3728,12 +3660,6 @@
       "needle": "once, before allocating a UUID or acquiring the lock:"
     },
     {
-      "id": "codex_entry_decided_once_no_override_after_session_exists",
-      "kind": "contains",
-      "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "exists, a re-detection or user override never hands off."
-    },
-    {
       "id": "codex_entry_section_is_loaded_by_entry_review_loop_stage",
       "kind": "contains",
       "path": "docs/protocol/loading.json",
@@ -3755,7 +3681,7 @@
       "id": "claude_paired_session_description_keeps_bare_request_prohibition",
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
-      "needle": "Do not trigger on\n  a bare review-loop request in any other case (key invalid, `legacy`, or\n  /review-loop:legacy)."
+      "needle": "Do not trigger on\n  a bare review-loop request yourself (the review-loop entry routes it)"
     },
     {
       "id": "codex_paired_session_description_permits_configured_handoff",
@@ -3767,7 +3693,7 @@
       "id": "codex_paired_session_description_keeps_bare_request_prohibition",
       "kind": "contains",
       "path": ".agents/skills/paired-session/SKILL.md",
-      "needle": "Generic review-loop requests in every other case (key invalid, `legacy`, or explicit legacy) use the legacy entry."
+      "needle": "Generic review-loop requests go to the review-loop entry first, which routes them here"
     },
     {
       "id": "paired_session_skills_configured_handoff_permitted_consistent",
@@ -3858,25 +3784,19 @@
       "id": "review_pr_routes_on_entry",
       "kind": "contains",
       "path": "skills/review-pr/SKILL.md",
-      "needle": "## Step 0 \u2014 Entry: paired route or legacy"
+      "needle": "## Step 0 \u2014 Entry: paired route (the legacy workflow was removed in v2.13.0)"
     },
     {
       "id": "review_pr_legacy_argument",
       "kind": "contains",
       "path": "skills/review-pr/SKILL.md",
-      "needle": "- `--legacy` in `$ARGUMENTS`: drop it and run the legacy review (Step 1 on), whatever `entry` says."
+      "needle": "- `--legacy` in `$ARGUMENTS`: refused with `review-pr: the legacy workflow was removed in v2.13.0;"
     },
     {
       "id": "review_pr_paired_route_hands_off",
       "kind": "contains",
       "path": "skills/review-pr/SKILL.md",
       "needle": "Invoke the `paired-session` skill with `--review-pr` and the remaining arguments"
-    },
-    {
-      "id": "review_pr_legacy_route_refuses_pr_input",
-      "kind": "contains",
-      "path": "skills/review-pr/SKILL.md",
-      "needle": "review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route"
     },
     {
       "id": "pse_review_pr_entry_section",
@@ -3918,7 +3838,7 @@
       "id": "pse_review_pr_pr_input_never_falls_back",
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
-      "needle": "a failed stage A check for a PR or ref input refuses on every entry and never falls back to\n  legacy"
+      "needle": "a failed stage A check refuses on every entry and for every input, and never falls back to"
     },
     {
       "id": "pse_review_pr_codex_read_root_residual",
@@ -3930,7 +3850,7 @@
       "id": "codex_review_pr_skill_routes_on_entry",
       "kind": "contains",
       "path": ".agents/skills/review-pr/SKILL.md",
-      "needle": "- `entry` absent or `paired-session`: the paired route."
+      "needle": "- Otherwise the paired route. Print"
     },
     {
       "id": "claude_paired_session_takes_review_pr_handoff",
@@ -3948,7 +3868,7 @@
       "id": "migration_review_pr_follows_entry",
       "kind": "contains",
       "path": "docs/paired-session-migration.md",
-      "needle": "`/review-loop:review-pr` follows `entry`; `/review-loop:review-pr --legacy` (Claude) or"
+      "needle": "review-pr's `--legacy` and the Codex"
     },
     {
       "id": "codex_review_pr_skill_exists",
@@ -3961,14 +3881,9 @@
       "mapping_id": "review_pr_default_entry_notice"
     },
     {
-      "id": "review_pr_simplify_legacy_pointer_consistent",
+      "id": "review_pr_simplify_pointer_consistent",
       "kind": "consistent_with",
-      "mapping_id": "review_pr_simplify_legacy_pointer"
-    },
-    {
-      "id": "review_pr_codex_legacy_request_consistent",
-      "kind": "consistent_with",
-      "mapping_id": "review_pr_codex_legacy_request"
+      "mapping_id": "review_pr_simplify_pointer"
     },
     {
       "id": "pse_review_pr_cli_check_on_handoff",
@@ -3986,13 +3901,13 @@
       "id": "cql_routes_on_entry",
       "kind": "contains",
       "path": "skills/code-quality-loop/SKILL.md",
-      "needle": "## Step 0 \u2014 Entry: paired route or legacy"
+      "needle": "## Step 0 \u2014 Entry: paired route (the legacy workflow was removed in v2.13.0)"
     },
     {
       "id": "cql_legacy_argument",
       "kind": "contains",
       "path": "skills/code-quality-loop/SKILL.md",
-      "needle": "- `--legacy` in `$ARGUMENTS`: drop it and run the legacy loop (Initialization on), whatever `entry` says."
+      "needle": "- `--legacy` in `$ARGUMENTS`: refused with `code-quality-loop: the legacy workflow was removed in v2.13.0;"
     },
     {
       "id": "cql_paired_route_hands_off",
@@ -4010,11 +3925,6 @@
       "id": "cql_default_entry_notice_consistent",
       "kind": "consistent_with",
       "mapping_id": "cql_default_entry_notice"
-    },
-    {
-      "id": "cql_legacy_pointer_consistent",
-      "kind": "consistent_with",
-      "mapping_id": "cql_legacy_pointer"
     },
     {
       "id": "pse_cql_entry_section",
@@ -4132,6 +4042,68 @@
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
       "needle": "also add `--advisory-fix-round true` (one fix round for the non-blocking findings);"
+    },
+    {
+      "id": "entry_legacy_refused_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "entry_legacy_refused"
+    },
+    {
+      "id": "non_macos_refused_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "non_macos_refused"
+    },
+    {
+      "id": "plan_exists_as_work_item_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "plan_exists_as_work_item"
+    },
+    {
+      "id": "legacy_session_resume_refused_consistent",
+      "kind": "consistent_with",
+      "mapping_id": "legacy_session_resume_refused"
+    },
+    {
+      "id": "review_loop_entry_never_falls_back_to_legacy",
+      "kind": "not_contains",
+      "path": "skills/review-loop/references/entry.md",
+      "needle": "using legacy workflow"
+    },
+    {
+      "id": "codex_review_loop_entry_never_falls_back_to_legacy",
+      "kind": "not_contains",
+      "path": ".agents/skills/review-loop/references/entry.md",
+      "needle": "using legacy workflow"
+    },
+    {
+      "id": "review_pr_never_falls_back_to_legacy",
+      "kind": "not_contains",
+      "path": "skills/review-pr/SKILL.md",
+      "needle": "using the legacy review"
+    },
+    {
+      "id": "codex_review_pr_never_falls_back_to_legacy",
+      "kind": "not_contains",
+      "path": ".agents/skills/review-pr/SKILL.md",
+      "needle": "using the legacy review"
+    },
+    {
+      "id": "cql_never_falls_back_to_legacy",
+      "kind": "not_contains",
+      "path": "skills/code-quality-loop/SKILL.md",
+      "needle": "using the legacy loop"
+    },
+    {
+      "id": "pse_no_legacy_fallback",
+      "kind": "not_contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "falls back and runs legacy"
+    },
+    {
+      "id": "pse_no_entry_legacy_pointer",
+      "kind": "not_contains",
+      "path": "docs/protocol/paired-session-entry.md",
+      "needle": "set \"entry: legacy\" or"
     }
   ]
 }

@@ -1977,42 +1977,32 @@
         "needle": "acceptance criteria is not automatically CRITICAL. A material change to\nuser intent, observable behavior, safety, authorization, data integrity,\nor an explicit constraint"
       }
     ],
-    "entry_implicit_legacy_notice": [
-      {
-        "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow"
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow"
-      }
-    ],
     "entry_invalid_value_warning": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+        "needle": "review-loop: entry \"<v>\" is not valid (paired-session is the only entry); using paired-session"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: entry \"<v>\" is not valid (legacy|paired-session); using legacy workflow"
+        "needle": "review-loop: entry \"<v>\" is not valid (paired-session is the only entry); using paired-session"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-loop: entry \"<v>\" is not valid (paired-session is the only entry); using paired-session"
       }
     ],
     "entry_unreadable_warning": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+        "needle": "review-loop: entry could not be read (<reason>); using paired-session"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: entry could not be read (<reason>); using legacy workflow"
+        "needle": "review-loop: entry could not be read (<reason>); using paired-session"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-loop: entry could not be read (<reason>); using paired-session"
       }
     ],
     "entry_experimental_routing_notice": [
@@ -2029,20 +2019,6 @@
         "needle": "review-loop: paired-session entry (entry set in .review-loop/config.md)"
       }
     ],
-    "entry_non_fresh_state_warning": [
-      {
-        "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: entry is paired-session but"
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "review-loop: entry is paired-session but"
-      },
-      {
-        "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: entry is paired-session but"
-      }
-    ],
     "entry_exact_values_only": [
       {
         "path": "review-loop-config.example.md",
@@ -2051,10 +2027,6 @@
       {
         "path": "skills/review-loop/references/entry.md",
         "needle": "exact values `legacy` and `paired-session` only"
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "exact values `legacy` and `paired-session` are accepted"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
@@ -2069,30 +2041,6 @@
       {
         "path": "paired_session/docs/1d-entry-mapping.md",
         "needle": "`/review-loop:legacy <work item>` ignores `entry`"
-      }
-    ],
-    "entry_codex_implicit_legacy_notice": [
-      {
-        "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or ask for \"the legacy review-loop workflow\""
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "its implicit-entry notice names that phrase instead of the slash command"
-      }
-    ],
-    "entry_codex_legacy_control_phrase": [
-      {
-        "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "\"use the\n  legacy review-loop workflow\""
-      },
-      {
-        "path": "review-loop-config.example.md",
-        "needle": "use the legacy review-loop workflow"
-      },
-      {
-        "path": "paired_session/docs/1d-entry-mapping.md",
-        "needle": "use the legacy review-loop workflow"
       }
     ],
     "entry_codex_handoff_target": [
@@ -2118,18 +2066,14 @@
     "paired_session_skill_bare_request_prohibition_cases": [
       {
         "path": "skills/paired-session/SKILL.md",
-        "needle": "(key invalid, `legacy`, or"
+        "needle": "review-loop entry hands off because that key is absent or invalid (the default entry)"
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "(key invalid, `legacy`, or"
+        "needle": "review-loop entry hands off because that key is absent or invalid (the default entry)"
       }
     ],
     "legacy_deprecation_notice": [
-      {
-        "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled"
-      },
       {
         "path": "skills/legacy/SKILL.md",
         "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled"
@@ -2156,10 +2100,6 @@
       },
       {
         "path": "docs/paired-session-migration.md",
-        "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled"
-      },
-      {
-        "path": "skills/code-quality-loop/SKILL.md",
         "needle": "review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled"
       }
     ],
@@ -2188,15 +2128,15 @@
     "entry_default_notice": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+        "needle": "review-loop: paired-session entry (the default entry)"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+        "needle": "review-loop: paired-session entry (the default entry)"
       },
       {
         "path": "docs/paired-session-migration.md",
-        "needle": "review-loop: paired-session is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+        "needle": "review-loop: paired-session entry (the default entry)"
       }
     ],
     "paired_session_skill_lifecycle_mode_on": [
@@ -2248,7 +2188,7 @@
     "guide_entry_key_and_commands": [
       {
         "path": "skills/guide/SKILL.md",
-        "needle": "| `entry` | absent (paired-session) | `legacy` \\| `paired-session`; routes fresh and review-only `/review-loop` (Claude) or review-loop skill (Codex) work"
+        "needle": "| `entry` | absent (paired-session) | `paired-session` (`legacy` is refused since v2.13.0); routes every `/review-loop` (Claude) or review-loop skill (Codex) request, review-pr and code-quality-loop (see Entry above) |"
       },
       {
         "path": "skills/guide/SKILL.md",
@@ -2264,115 +2204,49 @@
       },
       {
         "path": "skills/guide/SKILL.md",
-        "needle": "`legacy` or `paired-session`, written unquoted (exact values only; anything else falls back to legacy with a warning)"
+        "needle": "`legacy` or `paired-session`, written unquoted (exact values only; since v2.13.0 `legacy` is refused"
       },
       {
         "path": "review-loop-config.example.md",
-        "needle": "\"legacy\" | \"paired-session\" (exact values only; anything else falls back to legacy with a warning)"
+        "needle": "\"paired-session\" (exact values only: since v2.13.0 \"legacy\" is refused, and anything else is warned about and treated as absent)"
       }
     ],
     "review_pr_default_entry_notice": [
       {
         "path": "skills/review-pr/SKILL.md",
-        "needle": "review-pr: paired-session report mode is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+        "needle": "review-pr: paired-session report mode (the default entry)"
       },
       {
         "path": ".agents/skills/review-pr/SKILL.md",
-        "needle": "review-pr: paired-session report mode is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
+        "needle": "review-pr: paired-session report mode (the default entry)"
       },
       {
         "path": "docs/paired-session-migration.md",
-        "needle": "review-pr: paired-session report mode is the default entry; set \"entry: legacy\" in .review-loop/config.md or"
-      }
-    ],
-    "review_pr_simplify_legacy_pointer": [
-      {
-        "path": "skills/review-pr/SKILL.md",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      },
-      {
-        "path": ".agents/skills/review-pr/SKILL.md",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      },
-      {
-        "path": "skills/paired-session/SKILL.md",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      },
-      {
-        "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      },
-      {
-        "path": "skills/guide/SKILL.md",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      },
-      {
-        "path": ".agents/skills/guide/SKILL.md",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      },
-      {
-        "path": "paired_session/coordinator.py",
-        "needle": "/review-loop:review-pr --legacy simplify"
-      }
-    ],
-    "review_pr_codex_legacy_request": [
-      {
-        "path": ".agents/skills/review-pr/SKILL.md",
-        "needle": "the legacy review-pr workflow"
-      },
-      {
-        "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "the legacy review-pr workflow"
-      },
-      {
-        "path": "skills/guide/SKILL.md",
-        "needle": "the legacy review-pr workflow"
-      },
-      {
-        "path": ".agents/skills/guide/SKILL.md",
-        "needle": "the legacy review-pr workflow"
-      },
-      {
-        "path": "docs/paired-session-migration.md",
-        "needle": "the legacy review-pr workflow"
+        "needle": "review-pr: paired-session report mode (the default entry)"
       }
     ],
     "cql_default_entry_notice": [
       {
-        "path": "docs/protocol/paired-session-entry.md",
-        "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "code-quality-loop: paired-session review-only run (the default entry)"
       },
       {
-        "path": "skills/code-quality-loop/SKILL.md",
-        "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "code-quality-loop: paired-session review-only run (the default entry)"
       },
       {
         "path": "docs/paired-session-migration.md",
-        "needle": "code-quality-loop: the paired-session review-only run is the default entry; set \"entry: legacy\" in .review-loop/config.md or pass --legacy for the legacy loop"
-      }
-    ],
-    "cql_legacy_pointer": [
-      {
-        "path": "skills/code-quality-loop/SKILL.md",
-        "needle": "/review-loop:code-quality-loop --legacy"
-      },
-      {
-        "path": "skills/paired-session/SKILL.md",
-        "needle": "/review-loop:code-quality-loop --legacy"
-      },
-      {
-        "path": "docs/protocol/paired-session-entry.md",
-        "needle": "/review-loop:code-quality-loop --legacy"
+        "needle": "code-quality-loop: paired-session review-only run (the default entry)"
       }
     ],
     "cql_loss_notice": [
       {
         "path": "skills/code-quality-loop/SKILL.md",
-        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)"
+        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs"
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)"
+        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs"
       }
     ],
     "cql_set_entry_notice": [
@@ -2393,6 +2267,128 @@
       {
         "path": "docs/protocol/paired-session-entry.md",
         "needle": "`# code-quality-loop: <one-line summary of the uncommitted change>`"
+      }
+    ],
+    "review_pr_simplify_pointer": [
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": ".agents/skills/review-pr/SKILL.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": "skills/guide/SKILL.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": ".agents/skills/guide/SKILL.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": "paired_session/coordinator.py",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)"
+      }
+    ],
+    "entry_legacy_refused": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "the legacy workflow was removed in v2.13.0; remove \"entry: legacy\" from .review-loop/config.md (paired-session is the only entry)"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "the legacy workflow was removed in v2.13.0; remove \"entry: legacy\" from .review-loop/config.md (paired-session is the only entry)"
+      },
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "the legacy workflow was removed in v2.13.0; remove \"entry: legacy\" from .review-loop/config.md (paired-session is the only entry)"
+      },
+      {
+        "path": ".agents/skills/review-pr/SKILL.md",
+        "needle": "the legacy workflow was removed in v2.13.0; remove \"entry: legacy\" from .review-loop/config.md (paired-session is the only entry)"
+      },
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "the legacy workflow was removed in v2.13.0; remove \"entry: legacy\" from .review-loop/config.md (paired-session is the only entry)"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "the legacy workflow was removed in v2.13.0; remove \"entry: legacy\" from .review-loop/config.md (paired-session is the only entry)"
+      }
+    ],
+    "non_macos_refused": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      },
+      {
+        "path": "skills/review-pr/SKILL.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      },
+      {
+        "path": ".agents/skills/review-pr/SKILL.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      },
+      {
+        "path": "skills/code-quality-loop/SKILL.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+      }
+    ],
+    "plan_exists_as_work_item": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again"
+      }
+    ],
+    "legacy_session_resume_refused": [
+      {
+        "path": "skills/review-loop/references/entry.md",
+        "needle": "review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item"
+      },
+      {
+        "path": ".agents/skills/review-loop/references/entry.md",
+        "needle": "review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item"
+      },
+      {
+        "path": "docs/paired-session-migration.md",
+        "needle": "review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item"
       }
     ]
   }

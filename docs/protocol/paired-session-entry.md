@@ -15,32 +15,31 @@ dispatch and limits.
 How this skill was entered decides failure handling (stage A = everything before
 the first command that runs `bin/paired-session`):
 - Default entry (a review-loop, review-pr or code-quality-loop handoff with the
-  `entry` key absent): a failed stage A check is reported back as
-  `stage A failure: <reason>`; the entry that handed off then prints its fallback
-  notice and runs legacy (review-pr only for its no-argument request; see the
-  Review-PR entry).
-- Explicit entry (an `entry: paired-session` handoff from any of those entries,
-  or the user asked for paired-session): a failed stage A check refuses with the
-  reason, except the host skill's long-command execution failure, which is
-  reported as HOLD with the reason. On an `entry: paired-session` handoff, print
-  other refusals with the handing-off entry's own name (`review-loop`,
+  `entry` key absent) and explicit entry (an `entry: paired-session` handoff from
+  any of those entries, or the user asked for paired-session) fail alike: the
+  legacy workflow was removed in v2.13.0, so nothing falls back. A failed stage A
+  check is reported back as `stage A failure: <reason>` and refuses, except the
+  host skill's long-command execution failure, which is reported as HOLD with the
+  reason. Print refusals with the handing-off entry's own name (`review-loop`,
   `review-pr` or `code-quality-loop`) as
-  `<entry>: paired-session entry refused (<reason>); set "entry: legacy" or <host legacy pointer>`.
+  `<entry>: paired-session entry refused (<reason>)`.
 - Every host setup step before the first coordinator command (loading this
   contract, creating the run directory, writing `WORKITEM.md`, resolving the
   plugin) belongs to stage A. If one fails or is denied, stop and report
   `stage A failure: <reason>`. Do not retry in another location or improvise,
   and never start or continue another workflow from this skill (no legacy
-  session file, lock or evidence snapshot): only the review-loop, review-pr or
-  code-quality-loop entry falls back, and only through its documented notice.
+  session file, lock or evidence snapshot).
 - From the first `bin/paired-session` command on, every refusal or HOLD is
   reported verbatim and never falls back to legacy.
 
 ## Stage A checks
 
-When the user invoked this skill directly, first check that every CLI the
-resolved roles need is on PATH (`command -v`; the default roles need `codex`
-and `claude`); the review-loop entry has already checked this on a handoff.
+On every entry, first check the host and the CLIs: a host that is not macOS
+(`uname -s` is not `Darwin`) is refused with
+`<entry>: paired-session needs macOS; Linux and other hosts are not supported`,
+and every CLI the resolved roles need must be on PATH (`command -v`; the default
+roles need `codex` and `claude`; the review-loop entry has already checked both on
+a handoff).
 Identify the intended Git worktree. Use a dedicated task worktree; preserve
 unrelated user changes and do not switch away from a dirty checkout. If a
 dedicated worktree is unavailable, ask before creating one. Determine the
@@ -153,7 +152,7 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   review (`bin/codex-run`, `docs/gate-review-notes.md`); text or paths a later
   fix round adds are scanned as before. A changed path shaped like a ledger id
   or a verdict (`docs/F001.md`, `APPROVE.txt`) is still refused: tell the user
-  to review that change with the legacy workflow.
+  to rename the path or review that change by hand.
 
 ## Code-quality-loop entry
 
@@ -163,8 +162,8 @@ above applies (the change is the whole non-ignored worktree against `HEAD`, the 
 and refusals). code-quality-loop takes no base, so no `--base` is passed.
 - Notices: the code-quality-loop skill owns its entry line and loss notice (its Step 0). If they are not already in this conversation's visible output, print them verbatim as the first output after this contract is loaded, before any stage A check or coordinator command:
   `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` (key set) or
-  `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop` (key absent), then
-  `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)`.
+  `code-quality-loop: paired-session review-only run (the default entry)` (key absent), then
+  `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
 - CLIs: the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI
   check of Stage A checks here; a missing CLI is a failed stage A check.
 - Test command: as for any review-only run (profile `test_command`, else the verified project command).
@@ -187,8 +186,7 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   the quality writers. It runs once, on its own round outside `--max-exec-rounds`, and is skipped with the reason when the
   invocation budget has no room; findings still open stay advisory.
 - Result: DONE (or HOLD) as for any review-only run; show the delivery report (one line per quality
-  writer, one for the fix round) and accept or reject only on the user's explicit decision. Legacy pointer:
-  `use /review-loop:code-quality-loop --legacy`.
+  writer, one for the fix round) and accept or reject only on the user's explicit decision.
 
 ## Review-PR entry
 
@@ -211,7 +209,7 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 - Aspects: `code errors comments types tests` select the specialists (`--aspects` with a comma list);
   `all` or none omits the flag. `simplify` is a writer and is not part of the paired review-pr: refuse
   it in stage A on every entry, with no fallback, as
-  `review-pr: simplify is not part of the paired review-pr (a writer that edits the checkout); <host legacy review-pr pointer>`,
+  `review-pr: simplify is not part of the paired review-pr (a writer that edits the checkout); run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`,
   never ignore it silently. `parallel` does not apply (the coordinator schedules its roles); say so in
   one line and continue.
 - Tests: no test command is the default for every review-pr input (Q-R3): pass `--no-test-command`
@@ -238,10 +236,8 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 - Cleanup: once the report has been shown and the run is terminal, ask before removing the clone, and
   remove it only with `materialize_pr.py --remove <workspace>`; otherwise name the clone. After a stage
   A failure that follows the materialization, name the clone the same way.
-- Failures: a failed stage A check for a PR or ref input refuses on every entry and never falls back to
-  legacy, since legacy review-pr cannot review a PR. Only the no-argument request may fall back on the
-  default entry (Entry and failure handling), and that fallback runs legacy review-pr without `simplify`
-  unless the user named it.
+- Failures: a failed stage A check refuses on every entry and for every input, and never falls back to
+  legacy (removed in v2.13.0; Entry and failure handling).
 - Residual, stated: report mode does not narrow the Codex read root. Codex read-only roles (the gate,
   with the default roles) can read the whole filesystem, credential files included; the efficient
   evidence guard only logs. A prompt injection in an untrusted PR could have a role quote such a file

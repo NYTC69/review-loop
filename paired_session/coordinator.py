@@ -5705,7 +5705,7 @@ class Coordinator:
             aspects = [name.strip() for name in requested.split(',') if name.strip()] if isinstance(requested, str) else list(requested)
             if 'simplify' in aspects:   # LG2-c: a writer, dropped from the paired review-pr (review-pr-port.md §2.4, §5)
                 raise ValueError('--aspects simplify is not part of a paired review-pr (simplify is a writer that edits the '
-                                 'checkout); legacy review-pr still has it: /review-loop:review-pr --legacy simplify')
+                                 'checkout); run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)')
             if not aspects or any(name not in worktree_lifecycle.REPORT_ASPECTS for name in aspects):
                 raise ValueError('--aspects takes a comma list of ' + ','.join(worktree_lifecycle.REPORT_ASPECTS))
             aspects = [name for name in worktree_lifecycle.REPORT_ASPECTS if name in aspects]

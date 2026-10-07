@@ -1,7 +1,7 @@
 ---
 name: review-pr
-description: "Comprehensive code review using specialized agents. Each agent focuses on a different quality aspect (code, errors, comments, types, tests, simplify). With `entry` absent or `paired-session` it runs the paired-session report mode (a PR, a ref or the local change; no writer, nothing posted); `entry: legacy` or `--legacy` runs the legacy review, sequential by default or in parallel on request."
-argument-hint: "[PR number|PR URL|ref] [aspects: code|errors|comments|types|tests|simplify|all] [parallel] [--legacy]"
+description: "Comprehensive code review using specialized agents. Each agent focuses on a different quality aspect (code, errors, comments, types, tests, simplify). It runs the paired-session report mode (a PR, a ref or the local change; no writer, nothing posted); the legacy review was removed in v2.13.0, so `entry: legacy` and `--legacy` are refused."
+argument-hint: "[PR number|PR URL|ref] [aspects: code|errors|comments|types|tests|all]"
 ---
 
 # Comprehensive Code Review
@@ -18,29 +18,27 @@ report-only dispatch below. A general-purpose Agent is not a read-only boundary.
 
 ---
 
-## Step 0 — Entry: paired route or legacy
+## Step 0 — Entry: paired route (the legacy workflow was removed in v2.13.0)
 
-Resolve `entry` in `.review-loop/config.md` as the review-loop entry does (exact values `legacy` and
-`paired-session`; an invalid value, a duplicate key or an unreadable config is legacy, with that entry's
-warning line). Then:
-- `--legacy` in `$ARGUMENTS`: drop it and run the legacy review (Step 1 on), whatever `entry` says.
-- `entry: legacy` (or an invalid entry): run the legacy review (Step 1 on), unchanged.
-- `entry` absent or `paired-session`: the paired route. Print
+Resolve `entry` in `.review-loop/config.md` (exact values `legacy` and `paired-session`): `legacy` is refused with
+`review-pr: the legacy workflow was removed in v2.13.0; remove "entry: legacy" from .review-loop/config.md (paired-session is the only entry)`; an invalid value prints `review-pr: entry "<v>" is not valid (paired-session is the only entry); using paired-session`,
+a duplicate key or an unreadable config prints `review-pr: entry could not be read (<reason>); using paired-session`, and
+both continue as absent. Then:
+- `--legacy` in `$ARGUMENTS`: refused with `review-pr: the legacy workflow was removed in v2.13.0; run /review-loop:review-pr without --legacy (report mode)`.
+- A host that is not macOS (`uname -s` is not `Darwin`): refused with `review-pr: paired-session needs macOS; Linux and other hosts are not supported`.
+- Otherwise the paired route. Print
   `review-pr: paired-session report mode (entry set in .review-loop/config.md)` when the key is set, or
-  `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy review`
+  `review-pr: paired-session report mode (the default entry)`
   when it is absent. Invoke the `paired-session` skill with `--review-pr` and the remaining arguments
   (input and aspects), and end this skill. It follows the shared contract's Review-PR entry: a PR or ref
   is reviewed in a temporary clone, no tests run unless you confirm a test command, the result is
   `review-report.md`, and nothing is posted unless you ask.
   - `simplify` is refused there before any coordinator command, with the pointer
-    `use /review-loop:review-pr --legacy simplify`.
-  - The no-argument request with the key absent: if the paired-session skill reports
-    `stage A failure: <reason>`, print
-    `review-pr: paired-session default entry unavailable (<reason>); using the legacy review` and
-    continue with Step 1, without `simplify` unless the user named it. With the key set, or for a PR or
-    ref input, report the failure and stop (never fall back).
-- A PR number, PR URL or ref on the legacy route: refuse with
-  `review-pr: the legacy review reads only the local diff; review a PR or ref on the paired route: drop --legacy, or with entry: legacy run /review-loop:paired-session --review-pr <input>`.
+    `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`.
+  - If the paired-session skill reports `stage A failure: <reason>`, report
+    `review-pr: paired-session entry refused (<reason>)` and stop (nothing falls back).
+
+The sections below are the legacy review, unreachable since v2.13.0 (deleted in v2.13.1).
 
 ---
 
@@ -287,7 +285,7 @@ If `simplify` was run, also note:
 # Only the code and tests specialists (the reviewer, shadow, gate and security stage always run)
 ```
 
-The examples below are the legacy route (`--legacy`, or `entry: legacy`), which reviews the local diff.
+The examples below are the legacy route, removed in v2.13.0 (`--legacy` and `entry: legacy` are refused; deleted in v2.13.1).
 
 **Full review (all applicable aspects, sequential):**
 ```

@@ -16,65 +16,46 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
 `.review-loop/config.md` once, before allocating a UUID or acquiring the lock:
 - The user explicitly asks for the legacy workflow (for example "use the
   legacy review-loop workflow"): ignore `entry`, do not read or validate it, and
-  print none of its notices; print only the deprecation notice below.
+  print none of its notices; print only the deprecation notice below. (This request
+  is the Codex counterpart of `/review-loop:legacy`; it goes with the legacy skills in v2.13.1.)
 - Absent: paired-session, the default entry; route it exactly as `paired-session` below,
-  but print `review-loop: paired-session is the default entry; set "entry: legacy" in .review-loop/config.md or ask for "the legacy review-loop workflow"` instead of the routed notice.
-- `legacy`: legacy, with no entry notice; print only the deprecation notice below.
-- Any other value (quoted or differently cased included): legacy. Print `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
-- Duplicate `entry` key, or config present but unreadable: legacy. Print `review-loop: entry could not be read (<reason>); using legacy workflow`
-- `paired-session`: fresh work and a review-only code target hand off (an existing plan or session does not). Print `review-loop: paired-session entry (entry set in .review-loop/config.md)`,
+  but print `review-loop: paired-session entry (the default entry)` instead of the routed notice.
+- `legacy`: refused. Print `review-loop: the legacy workflow was removed in v2.13.0; remove "entry: legacy" from .review-loop/config.md (paired-session is the only entry)` and end.
+- Any other value (quoted or differently cased included): print `review-loop: entry "<v>" is not valid (paired-session is the only entry); using paired-session` and route it as `paired-session`.
+- Duplicate `entry` key, or config present but unreadable: print `review-loop: entry could not be read (<reason>); using paired-session` and route it as `paired-session`.
+- `paired-session`: fresh work, an existing plan and a review-only code target hand off (the legacy workflow was removed in v2.13.0). Print `review-loop: paired-session entry (entry set in .review-loop/config.md)`,
   invoke the Codex `paired-session` skill (`.agents/skills/paired-session`) with
   the work item (for a code target, as a review-only request: `--review-only`, plus
-  `--base <ref>` only when the user names a base), and end this workflow (no legacy session file, lock or stage),
-  unless the skill reports a failed stage A check before its first
-  `bin/paired-session` command (below). Print the notice and hand off only after
-  this entry's own stage A checks (host, CLIs, outside-sandbox execution, Codex home)
-  pass; the question checks run in the paired-session skill after the handoff.
+  `--base <ref>` only when the user names a base; for an existing plan, first print
+  `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again` and pass the plan text as the work item), and end this workflow (no legacy session file, lock or stage).
   A paired-session probe/run HOLD is reported and never falls back to legacy.
-  Plan-exists and explicit resume always stay legacy; print
-  `review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`.
-  Decided once, before session creation; once a legacy session file or lock
-  exists, a re-detection or user override never hands off.
+  An explicit resume of a legacy session is refused: print
+  `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item` and end.
 
-Deprecation notice (the explicit legacy request and `entry: legacy` only; once, before the UUID and lock; it changes
+Deprecation notice (the explicit legacy request only; once, before the UUID and lock; it changes
 no routing): `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
 
-Stage A checks (before the first `bin/paired-session` command), read-only. The host, CLI,
-outside-sandbox and Codex-home rows run here before the handoff; the Questions row runs in
-the paired-session skill. With the key absent, a failed check falls back to legacy: print
-its notice and continue with the legacy entry above (allocate the UUID, acquire the lock,
-then `## Initialize / route`); no UUID or lock exists yet. With
-`entry: paired-session`, a failed check refuses: print
-`review-loop: paired-session entry refused (<reason>); set "entry: legacy" or ask for "the legacy review-loop workflow"`
-and end this workflow (except where a row says otherwise).
-- Host, key absent only: `uname -s` is not `Darwin` → `review-loop: paired-session default entry needs a verified host (macOS); using legacy workflow`.
-  With the key set there is no host check; in strict mode the permission probe decides, in efficient mode nothing does.
+Stage A checks (before the first `bin/paired-session` command), read-only, the same whether the key is set or
+absent; nothing falls back (there is no legacy route). A failed check refuses: print
+`review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
+- Host: `uname -s` is not `Darwin` → `review-loop: paired-session needs macOS; Linux and other hosts are not supported` (no reason wrapper).
 - CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
-  `codex` and `claude`). Missing → `review-loop: paired-session default entry needs <cli> for the <role> role; using legacy workflow`.
+  `codex` and `claude`); a missing one is refused with the reason `needs <cli> for the <role> role`.
 - Outside-sandbox execution: the coordinator needs full host permission outside the Codex
-  sandbox; if it cannot be granted → `review-loop: paired-session default entry unavailable (<reason>); using legacy workflow`;
-  with the key set, report HOLD with the reason, as the paired-session skill does today.
-  A declined outside-sandbox approval for the paired-session skill's first shell call is
-  also a failed stage A check (key absent: this unavailable notice and legacy; key set: HOLD).
-- Codex home: `${CODEX_HOME:-$HOME/.codex}` is not an existing directory → the same
-  unavailable notice with the coordinator's CODEX_HOME reason.
-- Questions: the paired-session skill asks its own stage A questions (dedicated worktree,
-  test command and its shape). A declined or unanswered question is a failed check and the
-  skill reports it before its first `bin/paired-session` command; with the key absent this
-  workflow then prints the unavailable notice with that reason and continues with the legacy
-  entry above. Under `--handsfree` or `handsfree: true` nobody answers, so such a question is a
-  failed check: `review-loop: paired-session default entry needs an answer (<question>) that handsfree cannot give; using legacy workflow`.
-- Host setup (run directory, `WORKITEM.md`, loading the shared contract, the plugin-version floor): a failure the
-  paired-session skill reports as `stage A failure: <reason>` is a failed check; with the key absent print
-  `review-loop: paired-session default entry unavailable (<reason>); using legacy workflow` and continue with the legacy entry above.
-After a handoff, legacy continues only through one of these notices: never allocate the legacy UUID, lock or session file
-for a handed-off work item without first printing the fallback notice, and never fall back silently.
+  sandbox; if it cannot be granted, or the approval for a paired-session shell call is declined → HOLD
+  with the reason, as the paired-session skill does.
+- Codex home: `${CODEX_HOME:-$HOME/.codex}` is not an existing directory → refused with the
+  coordinator's CODEX_HOME reason.
+- Questions and host setup (run directory, `WORKITEM.md`, loading the shared contract, the plugin-version floor):
+  the paired-session skill asks its own stage A questions (dedicated worktree, test command and its shape; under
+  `--handsfree` or `handsfree: true` nobody answers, so any such question fails) and reports a failure as
+  `stage A failure: <reason>`, which this entry prints as the refusal above.
 From the first `bin/paired-session` command on, every refusal or HOLD is reported verbatim and never falls back to legacy.
 
 ## Initialize / route
 For fresh work use the plan initialization, work-item parsing and Step 1.6
 historical-context retrieval from .agents/skills/plan/references/entry.md.
-On the legacy route, for an existing plan/code target or explicit resume use the corresponding
+On the legacy route (the explicit legacy request only), for an existing plan/code target or explicit resume use the corresponding
 mode in .agents/skills/execute/references/entry.md and the shared init table.
 Load plan-init or execute-init accordingly. On planning APPROVE continue
 execution in this same session. Preserve the one-fetch historical-context

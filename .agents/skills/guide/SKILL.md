@@ -27,25 +27,25 @@ From v2.10.0 a fresh review-loop request with no `entry` key in
 `.review-loop/config.md` hands off to the Codex `paired-session` skill, which
 runs the coordinator through plan, implementation, review, finish, polish,
 docs and security up to DONE; it accepts only on your explicit acceptance.
-A request to review existing code hands off the same way as `run --review-only`.
-`entry: legacy`, an existing plan or session, or asking for "the legacy
-review-loop workflow" keeps the legacy workflow described above. Runs are `efficient` by
+A request to review existing code hands off the same way as `run --review-only`, and an existing
+plan becomes the work item (PLAN drafts and reviews it again). Since v2.13.0 nothing routes to the
+legacy workflow described above: `entry: legacy` and resuming a legacy session are refused, a failed
+check before the coordinator starts refuses instead of falling back, and only asking for "the legacy
+review-loop workflow" still runs it until v2.13.1 removes it. Runs are `efficient` by
 default (every sandbox, no permission-probe PASS required); `--strict` or
 `"safety_mode": "strict"` in the operator profile adds the probe gate.
-The legacy workflow is deprecated since v2.12.0. It still runs unchanged; `entry: legacy`,
-asking for "the legacy review-loop workflow", and the plan and execute skills invoked on
-their own print a one-line deprecation notice. review-pr and code-quality-loop follow `entry`; removal
-waits for the open owner rows of the legacy map.
+The legacy workflow is deprecated since v2.12.0 and was removed from routing in v2.13.0; asking for
+"the legacy review-loop workflow" and the plan and execute skills invoked on their own still print a
+one-line deprecation notice until v2.13.1 deletes them.
 Details: `docs/paired-session-migration.md`.
 
 A request to review a pull request ("review PR 123", a PR URL), a branch or
-ref goes to the Codex `review-pr` skill, which follows `entry` the same way:
-the paired-session report mode reviews it in a temporary clone with no tests
+ref goes to the Codex `review-pr` skill, which runs the paired-session report mode
+(`entry: legacy` and asking for the legacy review-pr are refused): it reviews it in a temporary clone with no tests
 unless you confirm one, writes `review-report.md`, and fixes, commits or posts
 nothing; posting is a separate request with a secret scan and a second
 confirmation of the full body. `simplify` is not available there (Claude Code:
-`/review-loop:review-pr --legacy simplify`). For the legacy review, ask for
-"the legacy review-pr workflow".
+`run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`).
 
 ## Stage 1 Scope
 

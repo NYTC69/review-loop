@@ -15,18 +15,19 @@ class ReviewPrEntryTests(unittest.TestCase):
     locals().update({name: getattr(b2.NoTestReportRunTests, name)
                      for name in (*b2.HELPERS, 'notest', 'cli', 'coordinator', 'change')})
 
-    def test_simplify_is_refused_with_the_legacy_pointer(self):
+    def test_simplify_is_refused_with_the_code_quality_loop_pointer(self):   # LG-DEL-1 (ADR-16): was the legacy pointer
         self.change()
         for aspects in ('simplify', 'code,simplify'):
             with self.subTest(aspects=aspects):
                 self.run_dir = self.root / aspects.replace(',', '-')
                 with self.assertRaisesRegex(ValueError, r'--aspects simplify is not part of a paired review-pr .*'
-                                                        r'/review-loop:review-pr --legacy simplify'):
+                                                        r'run /review-loop:code-quality-loop on the change'):
                     self.coordinator(*b2.NO_TEST, '--aspects', aspects)
                 self.assertFalse((self.run_dir / 'state.json').exists())   # refused before any state
         refused = self.cli(*b2.NO_TEST, '--aspects', 'simplify')
         self.assertEqual(refused.returncode, 2)
-        self.assertIn('/review-loop:review-pr --legacy simplify', refused.stdout)
+        self.assertIn('run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)', refused.stdout)
+        self.assertNotIn('--legacy', refused.stdout)
 
     def test_an_empty_evidence_approval_is_static_in_a_no_test_report_run_only(self):
         self.change()

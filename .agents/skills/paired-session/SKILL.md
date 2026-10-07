@@ -1,6 +1,6 @@
 ---
 name: paired-session
-description: Use in exactly four cases - the user explicitly asks for paired-session, the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`, the review-loop entry hands off because that key is absent (the default entry), or the review-pr skill hands off on its paired route; this is the plan, implementation, independent-review, finish, polish, docs, security and acceptance workflow. Generic review-loop requests in every other case (key invalid, `legacy`, or explicit legacy) use the legacy entry.
+description: Use in exactly four cases - the user explicitly asks for paired-session, the review-loop entry hands off because .review-loop/config.md sets `entry: paired-session`, the review-loop entry hands off because that key is absent or invalid (the default entry), or the review-pr skill hands off on its paired route; this is the plan, implementation, independent-review, finish, polish, docs, security and acceptance workflow. Generic review-loop requests go to the review-loop entry first, which routes them here; `entry: legacy` is refused there since v2.13.0, and only the explicit request for the legacy review-loop workflow still runs it until v2.13.1.
 ---
 
 # Paired-session workflow (Codex)
@@ -26,10 +26,9 @@ while one is running, read `<support-root>/docs/protocol/paired-session-entry.md
 directly (the stage is that whole file), which writes nothing to the workspace.
 This file adds only the Codex host rules:
 
-- Legacy pointer: `ask for "the legacy review-loop workflow"`. Long-command
-  execution failure: a declined or ungranted outside-sandbox approval (a failed
-  stage A check for the first invocation; on the explicit entry, and for any
-  later invocation, HOLD with the reason, no fallback).
+- Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command
+  execution failure: a declined or ungranted outside-sandbox approval: HOLD with
+  the reason, on every entry and invocation (nothing falls back).
 - Outside-sandbox execution: the coordinator spawns provider CLIs and writes to
   `$CODEX_HOME` outside the product workspace; execute each invocation below
   with the host's full filesystem/network permission, outside the current
@@ -125,11 +124,10 @@ the user confirmed a test command, and add `--review-only --review-report --auto
 `--base "$BASE"` (the printed `merge_base`; no input: only a base the user named),
 `--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized input (the first invocation writes the
 printed JSON there with a second quoted heredoc, like the work item) and `--aspects "$ASPECTS"` when
-aspects were given. Legacy review-pr pointer: ask for
-"the legacy review-pr workflow" (it has no `simplify` on Codex: that writer is
-`/review-loop:review-pr --legacy simplify` in Claude Code).
+aspects were given. `simplify` pointer: `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)` (Claude Code).
 
 This skill is the explicit
 paired-session entry and the review-loop handoff target only when the config
-key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`
-or an invalid value, routing stays legacy.
+key `entry` is `paired-session` or absent and the work is fresh, an existing plan (as the work item) or a review-only
+code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
+legacy workflow was removed in v2.13.0.

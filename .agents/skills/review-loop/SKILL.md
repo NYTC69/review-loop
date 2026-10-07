@@ -20,7 +20,7 @@ complete reads of the output file and one Bash command per loader call follow `l
 a missing, unreadable, or incompletely read file blocks the action.
 `docs/protocol/loading.json` is the action/prerequisite map for both runtimes.
 
-Fresh work and a review-only code target may hand off to paired-session (the default when `entry` is absent; the code target as `run --review-only`) per the entry procedures.
+Every review-loop request hands off to paired-session per the entry procedures (fresh work; an existing plan as the work item; a code target as `run --review-only`; `entry: legacy` and a legacy session resume are refused): the legacy workflow was removed in v2.13.0. The legacy steps below run only on the explicit request for "the legacy review-loop workflow" (removed in v2.13.1).
 Detect fresh / plan-exists / code-exists / explicit-resume via the entry procedures. For fresh work run planning → planning-review; after approval continue execution → execution-review → gate → polish → docs → security → delivery. Do not stop after exec alone.
 
 Before initialization load `session-init` AND `review-loop-init`; before a resume

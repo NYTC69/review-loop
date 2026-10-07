@@ -3,6 +3,12 @@
 ## What paired-session is
 paired-session is a coordinator (`bin/paired-session`) that runs one author and one reviewer through PLAN and EXEC, applies fresh shadow/adversarial checks, and then, with `lifecycle_mode=on`, runs finish, quality polish, docs and security turns before DONE (acceptance pending). It owns isolated run artifacts outside the workspace, invocation limits and a permission probe. See [`paired_session/README.md`](../paired_session/README.md); the entry-switch design is [`paired_session/docs/v2.10-entry-switch.md`](../paired_session/docs/v2.10-entry-switch.md).
 
+## Status in v2.13.0: legacy removed from routing
+- Every `/review-loop` request (and the Codex review-loop request) hands off to paired-session: fresh work; an existing plan, used as the work item (PLAN drafts and reviews it again; `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again`); existing code as `run --review-only`.
+- Refused, with one line saying what to do instead: `entry: legacy`, a legacy session resume, `--legacy` on review-pr and code-quality-loop, code-quality-loop `--reorganize` (run `/review-loop:reorganize` after the run), and a host that is not macOS (on every entry).
+- A failed check before the coordinator starts refuses (or HOLDs) whether the `entry` key is set or not; nothing falls back to legacy.
+- `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` and the Codex plan/execute skills (and the Codex "legacy review-loop workflow" request) still run the legacy workflow with the deprecation notice until v2.13.1 deletes them (ADR-16).
+
 ## Status in v2.10.0
 - **paired-session is the default entry.** A fresh `/review-loop <work item>` (Claude) or a fresh review-loop request (Codex) with no `entry` key in `.review-loop/config.md` hands off to the `paired-session` skill, which runs the coordinator with `--lifecycle-mode on`.
 - A request to review code that already exists (code-exists) hands off as `run --review-only` (D-LG1): no PLAN phase; the EXEC review of the change against `HEAD`, or `--base <ref>` when you name a base, is round 1. Unrelated dirty work is not a code-exists signal.
@@ -51,47 +57,45 @@ M7, the seeded-defect comparison, no longer gates removal; it stays an optional 
 ## Status in v2.9.x (for reference)
 In v2.9.x the legacy workflow was the default and `entry: paired-session` was an experimental opt-in; without the key `/review-loop` printed a one-line implicit-entry notice.
 
-## Default and opt-out
-To keep the legacy workflow, add to `.review-loop/config.md` (the key is documented in `review-loop-config.example.md`):
-
-```
-entry: legacy
-```
-
-`entry: legacy` is also valid on v2.9.x, so you can set it before upgrading. The key is workspace-committed, so anyone who clones the repository is routed the same way. Other ways to the legacy workflow:
-- Claude: `/review-loop:legacy <work item>` runs the legacy workflow and ignores `entry` (it does not read or validate it and prints none of its notices).
-- Codex has no slash commands. Ask in natural language: "use the legacy review-loop workflow".
-- `/review-loop:plan` and `execute` stay legacy and are not affected by `entry`.
-- `/review-loop:review-pr` follows `entry`; `/review-loop:review-pr --legacy` (Claude) or "use the legacy review-pr workflow" (Codex) runs legacy review-pr once.
-
-`entry: paired-session` routes the same way as the missing key but prints the explicit-entry notice; a failed check before the coordinator starts then refuses instead of falling back (unavailable background or outside-sandbox execution is reported as HOLD). The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, runs with `--lifecycle-mode on`. `--plan-only` on it maps to `run --stop-after-plan`.
+## The `entry` key (from v2.13.0)
+`entry` is documented in `review-loop-config.example.md`. A missing key and `entry: paired-session` route the same way;
+the explicit value only changes the entry notice. `entry: legacy` is refused since v2.13.0 (remove the line); any other
+value, a duplicate key or an unreadable config prints a warning and routes as a missing key. A failed check before the
+coordinator starts refuses with the reason, whatever the key says (unavailable background or outside-sandbox execution
+is reported as HOLD); nothing falls back to legacy. Until v2.13.1 deletes them, `/review-loop:legacy <work item>`,
+`/review-loop:plan`, `/review-loop:execute` (Claude) and the Codex request "use the legacy review-loop workflow" still
+run the legacy workflow with the deprecation notice; review-pr's `--legacy` and the Codex "legacy review-pr workflow"
+request are refused. The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, runs with `--lifecycle-mode on`. `--plan-only` on it maps to `run --stop-after-plan`.
 
 ## What is and is not routed
 | Situation | Result |
 |---|---|
 | Fresh work item, `entry` absent or `paired-session` | paired-session |
-| `entry: legacy`, an invalid value, or an unreadable config | legacy (the invalid and unreadable cases print a warning; `entry: legacy` prints the deprecation notice) |
-| Plan already exists | legacy |
+| `entry: legacy` | refused (v2.13.0): remove the key |
+| An invalid value, a duplicate key or an unreadable config | a warning, then as a missing key |
+| Plan already exists | paired-session, with the plan as the work item (PLAN drafts and reviews it again) |
 | Code already implemented (task-relevant changes; unrelated dirty work does not count) | paired-session `run --review-only` |
-| Existing legacy session / explicit resume | legacy |
+| Existing legacy session / explicit resume | refused (v2.13.0): start a new run with the session's plan or work item |
 | `/review-loop:review-pr` (Claude) or a PR review request (Codex), `entry` absent or `paired-session` | paired-session report mode (Review-pr below) |
-| review-pr with `entry: legacy`, `--legacy` or "the legacy review-pr workflow" | legacy review-pr (local diff only) |
+| review-pr with `entry: legacy`, `--legacy` or "the legacy review-pr workflow" | refused (v2.13.0) |
 
-Before the handoff the entry checks the host (macOS, key absent only), the CLIs the roles need, background or outside-sandbox execution and the Codex home; the paired-session skill then establishes a dedicated worktree and a test command, asking only when it cannot. With the key absent, a failed check before the first `bin/paired-session` command falls back to legacy with a notice; with `entry: paired-session` it refuses. From the first `bin/paired-session` command on, a refusal or HOLD is reported and never falls back to legacy. Legacy sessions and plans cannot be imported into paired-session. A paired run is resumed only with `paired-session resume` and its original options; the two workflows never cross.
+Before the handoff the entry checks the host (macOS on every entry), the CLIs the roles need, background or outside-sandbox execution and the Codex home; the paired-session skill then establishes a dedicated worktree and a test command, asking only when it cannot. A failed check before the first `bin/paired-session` command refuses (or HOLDs), with the key set or absent; nothing falls back to legacy. From the first `bin/paired-session` command on, a refusal or HOLD is reported. Legacy sessions are not imported into paired-session; an existing plan enters as the work item. A paired run is resumed only with `paired-session resume` and its original options; the two workflows never cross.
 
 ## Notices and warnings you will see
-Printed by the `/review-loop` skill text (Claude wording; Codex names "the legacy review-loop workflow" instead of the slash command):
-- No `entry` key: `review-loop: paired-session is the default entry; set "entry: legacy" in .review-loop/config.md or use /review-loop:legacy for the legacy workflow`
+Printed by the `/review-loop` skill text (from v2.13.0; Claude and Codex alike):
+- No `entry` key: `review-loop: paired-session entry (the default entry)`
 - `entry: paired-session`: `review-loop: paired-session entry (entry set in .review-loop/config.md)`
-- Value other than exactly `legacy` or `paired-session` (quoted or differently cased included): `review-loop: entry "<v>" is not valid (legacy|paired-session); using legacy workflow`
-- Duplicate `entry` key or unreadable config: `review-loop: entry could not be read (<reason>); using legacy workflow`
-- A plan or a session already exists: `review-loop: entry is paired-session but <plan exists|existing session> detected; using legacy workflow`
-- A failed check before the coordinator starts, key absent: `review-loop: paired-session default entry ...; using legacy workflow` (the reason names the host, the missing CLI, the unanswered question or the unavailable execution)
-- A failed check before the coordinator starts, `entry: paired-session`: `review-loop: paired-session entry refused (<reason>); set "entry: legacy" or use /review-loop:legacy`
-- An explicit legacy choice (v2.12.0): the deprecation notice above (Deprecation status)
-- review-pr, no `entry` key: `review-pr: paired-session report mode is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy review`
+- `entry: legacy`: `review-loop: the legacy workflow was removed in v2.13.0; remove "entry: legacy" from .review-loop/config.md (paired-session is the only entry)`
+- Any other value (quoted or differently cased included): `review-loop: entry "<v>" is not valid (paired-session is the only entry); using paired-session`
+- Duplicate `entry` key or unreadable config: `review-loop: entry could not be read (<reason>); using paired-session`
+- A plan already exists: `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again`
+- A legacy session resume: `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item`
+- A host that is not macOS: `review-loop: paired-session needs macOS; Linux and other hosts are not supported`
+- A failed check before the coordinator starts: `review-loop: paired-session entry refused (<reason>)` (unavailable background or outside-sandbox execution: HOLD)
+- `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute` (until v2.13.1): the deprecation notice above (Deprecation status)
+- review-pr, no `entry` key: `review-pr: paired-session report mode (the default entry)`
 - review-pr, `entry: paired-session`: `review-pr: paired-session report mode (entry set in .review-loop/config.md)`
-- code-quality-loop, no `entry` key: `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop`
+- code-quality-loop, no `entry` key: `code-quality-loop: paired-session review-only run (the default entry)`
 - code-quality-loop, `entry: paired-session`: `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)`
 
 ## Review-pr
@@ -101,8 +105,8 @@ reviewed by the EXEC reviewer, the shadow, the gate, the selected specialists an
 `review-report.md` in the run directory. No role writes; nothing is fixed, committed or pushed. A PR or ref is reviewed in a
 temporary clone under the run root, removed only when you agree. No tests run unless you confirm a test command for the
 review. Posting the report as one `gh pr review --comment` is a separate request, after a secret scan and a second
-confirmation of the full body. Differences from legacy review-pr: `simplify` (a writer) is refused with a pointer to
-`--legacy`; `parallel` does not apply; findings arrive in the report at the end, not after each agent. The contract is the
+confirmation of the full body. Differences from legacy review-pr: `simplify` (a writer) is refused with the pointer
+`run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`; `parallel` does not apply; findings arrive in the report at the end, not after each agent. The contract is the
 Review-PR entry in `docs/protocol/paired-session-entry.md`; the design is `paired_session/docs/review-pr-port.md`.
 
 ## Author and reviewer roles are inverted

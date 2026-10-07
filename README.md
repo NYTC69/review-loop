@@ -24,7 +24,7 @@ interactive session (a headless session needs `--detach`); one absolute `CODEX_H
 
 From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 `.review-loop/config.md` hands off to the paired-session coordinator (the default
-entry); `entry: legacy` or `/review-loop:legacy` keeps the legacy workflow, and
+entry; since v2.13.0 `entry: legacy` is refused and nothing falls back to legacy), and
 `/review-loop:paired-session <work item>` is the explicit entry. See
 [`docs/paired-session-migration.md`](docs/paired-session-migration.md).
 The legacy workflow is deprecated since v2.12.0: it still runs unchanged and prints a
@@ -135,9 +135,8 @@ natural-language triggers like "run review-loop on this branch" or
 Codex.
 
 A fresh review-loop request hands off to the coordinator by default from
-v2.10.0; ask Codex to "use paired-session for this task" to name it explicitly,
-or "use the legacy review-loop workflow" for the legacy path (deprecated since
-v2.12.0; it prints a one-line notice).
+v2.10.0; ask Codex to "use paired-session for this task" to name it explicitly
+(the request for "the legacy review-loop workflow" still runs legacy until v2.13.1 removes it).
 It reads non-program workspace defaults from `.review-loop/paired-session.json`
 when no `--config` is given; the skill passes `~/.config/review-loop/paired-session.json`
 as `--config` when that file exists and you name no other profile. Program and role settings require an external operator
@@ -213,7 +212,8 @@ the one that matches where your work currently is:
 
 - **`/review-loop`** — the umbrella. With the default entry, fresh work goes to the paired-session
   coordinator and code already implemented to a paired-session review-only run (`run --review-only`);
-  an existing plan or a session resume stays on the legacy workflow described here.
+  an existing plan becomes the work item (PLAN drafts and reviews it again); resuming a legacy session is
+  refused (the legacy workflow described here was removed from routing in v2.13.0).
 - **`/review-loop:plan`** — planning phase only. Drives a work item to a
   reviewer-approved plan in `.review-loop/sessions/{uuid}.md`, then exits
   with a hand-off hint (`Next: review-loop:execute --session <uuid>`). Use
@@ -371,7 +371,7 @@ All options live in `.review-loop/config.md`. Every field is optional.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `entry` | absent = `paired-session` | `paired-session` or `legacy` (exact values; anything else falls back to legacy with a warning) |
+| `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
 | `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
 | `reviewer_model` | `""` | Path-specific reviewer override; in Codex Stage 1 this applies only to the default Claude CLI reviewer path |
 | `judgment_model` | `""` | Shared tier override for judgment-tier agents; Codex Stage 1 also uses it as the fallback model for the default Claude reviewer path |

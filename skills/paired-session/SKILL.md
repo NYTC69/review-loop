@@ -8,11 +8,11 @@ description: >
   Trigger in exactly five cases: (1) the user explicitly asks for paired-session
   or names this explicit coordinator entry; (2) the review-loop entry hands off
   because .review-loop/config.md sets `entry: paired-session`; (3) the review-loop
-  entry hands off because that key is absent (the default entry); (4)
+  entry hands off because that key is absent or invalid (the default entry); (4)
   /review-loop:review-pr hands off on its paired route (`--review-pr`); (5)
   /review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`). Do not trigger on
-  a bare review-loop request in any other case (key invalid, `legacy`, or
-  /review-loop:legacy).
+  a bare review-loop request yourself (the review-loop entry routes it), nor on `entry: legacy` (refused
+  there since v2.13.0) or /review-loop:legacy.
 ---
 
 # Paired-session workflow (Claude Code)
@@ -38,9 +38,8 @@ running; while one is running, read
 stage is that whole file), which writes nothing to the workspace. This file
 adds only the Claude Code host rules:
 
-- Legacy pointer: `use /review-loop:legacy`. Long-command execution failure:
-  unavailable background execution (a failed stage A check; on the explicit
-  entry, HOLD with the reason).
+- Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command execution failure:
+  unavailable background execution: HOLD with the reason, on every entry (nothing falls back).
 - Run directory: create a UUID; the run directory is
   `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop/runs/<UUID>/`, outside the
   product worktree and outside `~/.claude` (Claude Code treats paths there as
@@ -124,20 +123,20 @@ root above is the materializer's `--root`; the materializer runs as its own fore
 add `--review-only --review-report --auto-commit false`, `--base "$BASE"` (the printed `merge_base`;
 no input: only a base the user named), `--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized
 input (write the printed JSON there with the work item) and `--aspects "$ASPECTS"` when aspects were
-given. Legacy review-pr pointer: `use /review-loop:review-pr --legacy simplify` (for `simplify`) or
-`use /review-loop:review-pr --legacy`.
+given. `simplify` pointer: `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`.
 
 A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:code-quality-loop`) follows
 the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names
 (`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--auto-commit false` as handed over;
 `--max-invocations 45` unless the profile sets `max_invocations`) and the explicit `--test-command`;
 also add `--advisory-fix-round true` (one fix round for the non-blocking findings);
-`WORKSPACE` is the current worktree. Legacy pointer: `use /review-loop:code-quality-loop --legacy`. Its two
+`WORKSPACE` is the current worktree. Its two
 notice lines belong to the code-quality-loop skill; only if they are not already in this conversation's visible
 output, print them verbatim (the shared contract's Code-quality-loop entry quotes them) as the first output after
 loading that contract, before any stage A check. The work item's
 first line is `# code-quality-loop: <one-line summary of the uncommitted change>`.
 
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
-key `entry` is `paired-session` or absent and the work is fresh or a review-only code target; with `legacy`
-or an invalid value, routing stays legacy.
+key `entry` is `paired-session` or absent and the work is fresh, an existing plan (as the work item) or a review-only
+code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
+legacy workflow was removed in v2.13.0.

@@ -16,15 +16,12 @@ executor_model: inherit         # shared Claude/plugin executor override; "" and
 # codex_reviewer_model: ""            # model override for the local Codex reviewer when codex_reviewer_backend: codex
 # codex_executor_model: ""            # shared key remains `executor_model`; this is reserved/ignored in Stage 1
 # Entry for fresh `/review-loop <work item>` (Claude) or the review-loop skill (Codex); default paired-session from v2.10.0.
-# "legacy" | "paired-session" (exact values only; anything else falls back to legacy with a warning).
-# Fresh work and review-only requests (run --review-only) are routed; plan-exists and resume stay legacy. `/review-loop:legacy` ignores this key.
-# Absent key = paired-session (the default entry), which prints a one-line notice. Codex honors this key the same way;
-# its explicit legacy control is the request "use the legacy review-loop workflow".
+# "paired-session" (exact values only: since v2.13.0 "legacy" is refused, and anything else is warned about and treated as absent).
+# Fresh work, an existing plan (as the work item) and review-only requests (run --review-only) are routed; a legacy
+# session resume is refused. Absent key = paired-session (the default entry). Codex honors this key the same way.
 # The legacy workflow is deprecated since v2.12.0 (removal after the open legacy-map rows are decided;
 # review-pr and code-quality-loop are ported);
-# choosing it prints a one-line notice.
-# Set `entry: legacy` to keep the legacy workflow:
-# entry: legacy
+# since v2.13.0 nothing routes to it (/review-loop:legacy, :plan and :execute remain until v2.13.1).
 soft_limit_plan: 3              # after N rounds, ask user to continue if CRITICALs remain
 soft_limit_exec: 3
 auto_commit: false              # legacy only; paired-session reads auto_commit from the operator profile (E-4)

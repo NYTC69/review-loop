@@ -1,7 +1,7 @@
 ---
 name: code-quality-loop
-description: "Iterative review-fix loop on the uncommitted change: reviews, fixes, simplifies and consolidates tests. With `entry` absent or `paired-session` it runs a paired-session review-only run (`run --review-only`); `entry: legacy` or `--legacy` runs the legacy loop, which reviews, auto-fixes and repeats until clean or stuck, then reorganizes (for large changes), simplifies and consolidates tests."
-argument-hint: "[max-rounds] [--skip-reorganize | --reorganize] [--legacy]"
+description: "Iterative review-fix loop on the uncommitted change: reviews, fixes, simplifies and consolidates tests, as a paired-session review-only run (`run --review-only`). The legacy loop was removed in v2.13.0: `entry: legacy`, `--legacy` and `--reorganize` are refused."
+argument-hint: "[max-rounds] [--skip-reorganize]"
 ---
 
 # Code Quality Loop
@@ -12,20 +12,19 @@ At entry, read [the reviewer runtime contract](../../docs/protocol/reviewer-runt
 All report-only roles below use its isolated native CLI boundary. Fix actions,
 the simplifier, and test-consolidation authors remain writers.
 
-## Step 0 — Entry: paired route or legacy
+## Step 0 — Entry: paired route (the legacy workflow was removed in v2.13.0)
 
-Resolve `entry` in `.review-loop/config.md` as the review-loop entry does (exact values `legacy` and
-`paired-session`; an invalid value, a duplicate key or an unreadable config is legacy, with that entry's
-warning line). Then:
-- `--legacy` in `$ARGUMENTS`: drop it and run the legacy loop (Initialization on), whatever `entry` says.
-  Print the deprecation notice once, before Initialization:
-  `review-loop: legacy is deprecated since v2.12.0; the default paired-session entry covers fresh work, review of existing changes, review-pr and code-quality-loop; removal is planned after the open legacy-map rows are settled`
-- `entry: legacy` (or an invalid entry): run the legacy loop (Initialization on), unchanged, with the same
-  deprecation notice.
-- `entry` absent or `paired-session`: the paired route. This skill owns the notice lines of steps 1 and 3: print each verbatim as visible reply text (not only in a tool call), as the first output after resolving `entry` and before any other tool call or skill invocation, also on a headless run. The paired-session skill prints them only when they are missing.
+Resolve `entry` in `.review-loop/config.md` (exact values `legacy` and `paired-session`): `legacy` is refused with
+`code-quality-loop: the legacy workflow was removed in v2.13.0; remove "entry: legacy" from .review-loop/config.md (paired-session is the only entry)`; an invalid value prints
+`code-quality-loop: entry "<v>" is not valid (paired-session is the only entry); using paired-session`, a duplicate key or
+an unreadable config prints `code-quality-loop: entry could not be read (<reason>); using paired-session`, and both
+continue as absent. Then:
+- `--legacy` in `$ARGUMENTS`: refused with `code-quality-loop: the legacy workflow was removed in v2.13.0; run /review-loop:code-quality-loop without --legacy`.
+- A host that is not macOS (`uname -s` is not `Darwin`): refused with `code-quality-loop: paired-session needs macOS; Linux and other hosts are not supported`.
+- Otherwise the paired route. This skill owns the notice lines of steps 1 and 3: print each verbatim as visible reply text (not only in a tool call), as the first output after resolving `entry` and before any other tool call or skill invocation, also on a headless run. The paired-session skill prints them only when they are missing.
   1. Print `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` when the
      key is set, or
-     `code-quality-loop: the paired-session review-only run is the default entry; set "entry: legacy" in .review-loop/config.md or pass --legacy for the legacy loop`
+     `code-quality-loop: paired-session review-only run (the default entry)`
      when it is absent.
   2. Map the arguments; a refused one stops here with its line, before any handoff:
      - `[max-rounds]` N: an integer of at least 2 becomes `--max-exec-rounds N` (round 1 reviews the existing
@@ -34,26 +33,23 @@ warning line). Then:
        `code-quality-loop: max-rounds must be an integer of at least 2 on the paired route (round 1 reviews the existing change)`.
      - `--skip-reorganize`: print `code-quality-loop: --skip-reorganize has no effect; the paired route never reorganizes`.
      - `--reorganize`: refused,
-       `code-quality-loop: reorganize is not part of the paired route; run /review-loop:reorganize after the run, or /review-loop:code-quality-loop --legacy --reorganize`.
+       `code-quality-loop: reorganize is not part of the paired route; run /review-loop:reorganize after the run`.
      - Any other argument: refused,
-       `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds] [--skip-reorganize] [--legacy]`.
+       `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds] [--skip-reorganize]`.
      - `auto_commit: false` in `.review-loop/config.md`: hand over `--auto-commit false` (absent or `true`: the
        review-only default, one local commit at `accept`).
      - `judgment_model` or `cheap_model` set in `.review-loop/config.md`: print, per key,
        `code-quality-loop: <key> in .review-loop/config.md is not applied by paired-session; models come from the operator profile`.
        (`review_focus`, `review_style` and `quality_focus` are passed to the run by the paired-session skill.)
   3. Print
-     `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs (use /review-loop:code-quality-loop --legacy for those)`.
+     `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
   4. Invoke the `paired-session` skill with `--code-quality-loop` and the mapped `--max-exec-rounds N` and
      `--auto-commit false` (if any), and end this skill. It follows the shared contract's Code-quality-loop entry: a review-only run on
      the uncommitted change with the quality writers on, ending at DONE (or HOLD) with the delivery report.
-  5. With the key absent: if the paired-session skill reports `stage A failure: <reason>`, print
-     `code-quality-loop: paired-session default entry unavailable (<reason>); using the legacy loop` and run
-     the legacy loop (Initialization on) with the original arguments, without the deprecation notice. With the
-     key set, report the failure and stop (never fall back). Once a coordinator command has run, nothing
-     falls back.
+  5. If the paired-session skill reports `stage A failure: <reason>`, report
+     `code-quality-loop: paired-session entry refused (<reason>)` and stop (nothing falls back).
 
-The sections below are the legacy loop.
+The sections below are the legacy loop, unreachable since v2.13.0 (deleted in v2.13.1).
 
 ## Overview
 
