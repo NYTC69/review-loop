@@ -21,8 +21,8 @@ The legacy code is removed only after every precondition below holds, so that no
 |---|---|---|
 | `review-pr` ported to paired-session (D-LG2) | ported (LG2-a to LG2-d, entry routing LG2-c); closing check passed 2026-10-06 (PR NYTC69/review-loop#6: one real PR review through the default entry, REPORTED complete, no post) | `/review-loop:review-pr`; comment-analyzer, type-design-analyzer |
 | `code-quality-loop` retired onto `run --review-only` + POLISH-Q (Q6) | retired onto the review-only entry (CQL-RETIRE: `/review-loop:code-quality-loop` follows `entry`; `--legacy` keeps the legacy loop until legacy is deleted); capability 1 (the writers) shipped in v2.12.5, capability 3 (the analyzers) went with D-LG2, capabilities 2, 4, 5 and 6 are dropped | `/review-loop:code-quality-loop`; code-simplifier and test-consolidation writers |
-| Every legacy-map row has a final owner answer | answered 2026-10-07 (ADR-15): 10 retire, 4 covered, 3 port, L133 Linux needed | the rows marked "(ADR-15)" |
-| The port rows ship | L117 shipped (D09 POLISH-Q, v2.12.5-6), L120 shipped (v2.12.8), L105 in progress | the "port (ADR-15)" rows |
+| Every legacy-map row has a final owner answer | answered 2026-10-07 (ADR-15): 10 retire, 3 covered, 4 port (the owner moved L100 from covered to port the same day), L133 Linux needed | the rows marked "(ADR-15)", and L100 |
+| The port rows ship | L117 shipped (D09 POLISH-Q, v2.12.5-6), L120 shipped (v2.12.8), L100 `resume --add-rounds` (after v2.12.8), L105 in progress | the "port" rows |
 | L133 Linux: one real Linux paired-session run, then the default entry is opened to Linux | not run; the host is a GitHub Actions Linux runner (owner 2026-10-07, ADR-15) | `Linux (legacy works today)` |
 
 The owner answered the 18 legacy-map rows provisionally on 2026-10-05 (ADR-13, D-OWNER-1005) and finally on
@@ -34,7 +34,7 @@ Remaining work items before legacy is removed (ADR-15):
 3. L133 Linux: one real Linux paired-session run, then the default entry opens to Linux.
 
 The retired rows need no paired-session equivalent (the capability goes away with legacy); the covered rows and the
-shipped port rows (L117, L120) need no further work.
+shipped port rows (L117, L120, L100) need no further work.
 
 M7, the seeded-defect comparison, no longer gates removal; it stays an optional cost and quality study.
 
@@ -148,7 +148,7 @@ Status values:
 | `reviewer_model`, `executor_model` | `--reviewer-model` / `--author-model` or the operator profile; warned when set to anything other than empty or `inherit`, not applied | covered |
 | `codex_reviewer_model`, `codex_executor_model` | `--reviewer-model` / `--author-model` or the operator profile; silently ignored | covered |
 | `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | retire (ADR-15) (L99) |
-| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a hard HOLD, not a prompt; exec default 4 (legacy 3) | covered (ADR-15) (L100) |
+| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a HOLD at the cap, not a prompt; exec default 4 (legacy 3). At that HOLD, `resume --add-rounds N` (1-10) continues the same run with N more rounds of the phase (the saved cap stays; `round_extensions` records it) | port (owner 2026-10-07, after ADR-15's "covered"): `resume --add-rounds N` (L100) |
 | `auto_commit` | operator-profile `auto_commit`: one hook-free local commit on accept | covered |
 | `commit_message_prefix` | none: the commit message is fixed | retire (ADR-15) (L102) |
 | `docs_file` | `--docs-file` | covered |
@@ -186,7 +186,8 @@ Status values:
 | CI and off-macOS tests | GitHub Actions runs the tests on Linux and macOS (D08; the workflow lives on the `ci/**` branches); the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`) | covered (ADR-15) (L135) |
 
 **Owner answers:** the 18 rows marked (ADR-15) were answered provisionally on 2026-10-05 (D-OWNER-1005) and finally
-on 2026-10-07 (ADR-15, D11-1006): 10 retire, 4 covered, 3 port, L133 Linux needed. The owner's note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
+on 2026-10-07 (ADR-15, D11-1006): 10 retire, 4 covered, 3 port, L133 Linux needed; the same day the owner moved L100
+from covered to port (a continue command at the round-limit HOLD). The owner's note on L123: "mem palace早就被踢出去了, 我们现在完全不用他. 不用对齐这个."
 
 Push and PR delivery stays an owner decision (D8).
 
