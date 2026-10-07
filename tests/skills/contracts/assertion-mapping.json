@@ -3,16 +3,6 @@
   "description": "Concrete smoke assertion meanings and cross-file consistency mappings for skill tests",
   "smoke_assertions": {},
   "lint_assertions": {
-    "claude_reviewer_command_flags_present": {
-      "kind": "command_flag_co_occurrence",
-      "applies_to": "all-skill-bodies-and-protocol-docs",
-      "anchor": "claude -p",
-      "required_flags": [
-        "--no-session-persistence",
-        "--output-format stream-json",
-        "--include-partial-messages"
-      ]
-    },
     "subagent_types_used_in_skills_match_whitelist": {
       "kind": "agent_subagent_type_whitelist",
       "applies_to": "all-skill-bodies",

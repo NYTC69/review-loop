@@ -208,29 +208,32 @@ def test_invalid_loaded_fingerprint_fails_without_output(tmp_path):
     assert "invalid --loaded fingerprint" in result.stderr
 
 
-def test_output_file_avoids_stdout_truncation_and_is_complete(tmp_path):
-    root = tmp_path / "support"
+def test_output_file_avoids_stdout_truncation_and_is_complete(tmp_path):   # V5: the bundle goes to the temp-area root
+    root, temp = tmp_path / "work" / "support", tmp_path / "systemtmp"
+    temp.mkdir()
     body = "Instruction line.\n" * 5000
     write(root, "instructions.md", body)
     manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
+    target = user_root(temp) / "run" / "bundle.md"
 
-    result = run(root, "--output", ".review-loop/tmp/bundle.md")
+    result = run_with_tmpdir(root, temp, "--output", str(target))
 
     receipt = json.loads(result.stdout)
     expected = bundle("instructions", "instructions.md", body)
     assert receipt == {
-        "protocol_output": ".review-loop/tmp/bundle.md",
+        "protocol_output": str(target),
         "sha256": hashlib.sha256(expected.encode("utf-8")).hexdigest(),
         "bytes": len(expected.encode("utf-8")),
         "lines": len(expected.splitlines()),
     }
     assert result.stderr == ""
-    assert (tmp_path / ".review-loop/tmp/bundle.md").read_text() == expected
-    assert not list((tmp_path / ".review-loop/tmp").glob(".protocol-*.tmp"))
+    assert target.read_text() == expected
+    assert not list(target.parent.glob(".protocol-*.tmp"))
 
 
-@pytest.mark.parametrize("target", ["bundle.md", "../bundle.md", ".review-loop/elsewhere/bundle.md"])
-def test_output_file_must_stay_in_workspace_protocol_tmp(tmp_path, target):
+@pytest.mark.parametrize("target", ["bundle.md", "../bundle.md", ".review-loop/elsewhere/bundle.md",
+                                    ".review-loop/tmp/bundle.md"])
+def test_a_relative_output_path_is_refused(tmp_path, target):   # V5: the legacy .review-loop/tmp branch is gone
     root = tmp_path / "support"
     write(root, "instructions.md", "Instruction.\n")
     manifest(root, {"instructions": {"path": "instructions.md"}}, ["instructions"])
@@ -239,6 +242,7 @@ def test_output_file_must_stay_in_workspace_protocol_tmp(tmp_path, target):
 
     assert result.stdout == ""
     assert "read_protocol:" in result.stderr
+    assert not (tmp_path / ".review-loop").exists()
 
 
 def run_with_tmpdir(root: Path, tmpdir: Path, *args: str, expect: int = 0) -> subprocess.CompletedProcess:

@@ -3,7 +3,7 @@
 `scripts/delivery_scope.py` defines a shared, machine-readable delivery object.
 It records the pre-task state, explicit task scope, and current candidate without
 changing source files, the user's index, Git objects, or Git refs. The only write
-is an explicitly requested JSON artifact. This is the W01 object definition and freshness helper. The read-only W02
+is an explicitly requested JSON artifact. This is the W01 object definition. The read-only W02
 scanner is `scripts/security_preflight.py`; it validates this artifact but does not
 change its read-only capture contract or provide user approval. The paired-session
 coordinator calls both.
@@ -18,19 +18,16 @@ name files that do not yet exist. They do not expand globs or Git pathspec magic
 ```sh
 python3 scripts/delivery_scope.py --repo . capture \
   --scope scripts/example.py --scope tests/example_test.py \
-  --output .review-loop/sessions/example-baseline.json
+  --output /tmp/run/example-baseline.json
 
 python3 scripts/delivery_scope.py --repo . manifest \
-  --baseline .review-loop/sessions/example-baseline.json \
-  --output .review-loop/sessions/example-candidate-1.json
-
-python3 scripts/delivery_scope.py --repo . check \
-  --manifest .review-loop/sessions/example-candidate-1.json
+  --baseline /tmp/run/example-baseline.json \
+  --output /tmp/run/example-candidate-1.json
 ```
 
 The output parent directory must already exist. Artifacts inside the worktree
-must be Git-ignored or untracked under `.review-loop/`; external artifacts also
-work. Existing output
+must be Git-ignored; external artifacts (the coordinator writes them to the run
+directory) also work. Existing output
 paths and Git administrative storage are rejected. Without `--output`, JSON is
 written to stdout; redirect it only outside the observed worktree or into an
 ignored artifact directory. Otherwise shell redirection itself creates an
@@ -46,19 +43,18 @@ capture in version 1; widening it requires an explicit scope/baseline decision,
 not silently editing the artifact.
 
 Reviewers, security checks, and eventual delivery consumers can all name the
-candidate's `fingerprint`. `check` reports whether that exact candidate still
-matches the repository. It does not persist a passing claim or authorize any
-subsequent action. The existing workflow remains responsible for its gates.
+candidate's `fingerprint`. A candidate is still current when a new `manifest`
+from the same baseline has the same `current_fingerprint`. Neither persists a
+passing claim or authorizes any subsequent action. The existing workflow remains
+responsible for its gates.
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Capture/manifest succeeded, or candidate is fresh |
-| 1 | Valid candidate is stale |
+| 0 | Capture/manifest succeeded |
 | 2 | Invalid scope, artifact, output path, or repository binding |
 | 3 | Git/I/O failure, unsupported repository content, or unstable capture |
 
-Errors are JSON on stderr; `check` always emits its fresh/stale result on stdout
-when capture succeeds. Failed or unsupported capture produces no manifest.
+Errors are JSON on stderr. Failed or unsupported capture produces no manifest.
 
 ## Schema 1
 
@@ -134,15 +130,15 @@ embedded baseline as well as current state and derived scope/attribution fields.
 `current_fingerprint` hashes the entire current state. These are integrity and
 identity checks, not signatures or attestations of authorship.
 
-Capture reads the complete inventory twice and requires equality. `check`
-validates the stored artifact, recomputes derived fields, and recaptures the
-repository. Any observed HEAD, index, disk, mode, or untracked inventory change
-makes the candidate stale, including changes outside task scope. Index flags,
+Capture reads the complete inventory twice and requires equality. `manifest`
+validates the stored baseline and recomputes derived fields. Any observed HEAD,
+index, disk, mode, or untracked inventory change gives a new `current_fingerprint`,
+including changes outside task scope. Index flags,
 intent-to-add, and cache metadata are conservatively bound by the raw index
 digest; a harmless cache refresh can therefore require a new candidate.
 No lock is held across review, checking, and later actions. Matching reads are
 an optimistic consistency check, not an atomic filesystem snapshot or protection
-against changes after `check` returns.
+against changes after the capture returns.
 
 Git blob identities are computed locally without writing objects. The
 `<mode>:<oid>` representation matches Git's tree-entry shape; HEAD and index OIDs retain Git's native object
