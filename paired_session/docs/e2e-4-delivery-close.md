@@ -1,5 +1,7 @@
 # E2E lifecycle design 4/4: DELIVERY and CLOSE
 
+> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 Design only; lifecycle disabled. Inputs: [docs 1–3](e2e-1-stages-and-roles.md); legacy `execution.md` Delivery/Step 4, `session-file.md` `completed_stages`, Compass close `Mutate`; R12-4 R1 M7/M8, R2 M7/M11.
 
 Real-path note (ADR-11, D12): the real lifecycle will open as the worktree lifecycle W of [doc 6](e2e-6-worktree-lifecycle.md) (not yet implemented); the candidate-tree design here stays fake-only hardening.

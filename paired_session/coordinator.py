@@ -6766,7 +6766,7 @@ class Coordinator:
         self.save()
 
     def worktree_docs_turn(self) -> None:
-        """ADR-11 DOCS (legacy Step 3.6): a fresh docs writer; its allowlisted writes get a fresh docs review with an
+        """ADR-11 DOCS: a fresh docs writer; its allowlisted writes get a fresh docs review with an
         observed test, a protected path HOLDs, and any other write replays EXEC (reviewer, then gate)."""
         self._close_writer_replay_rounds()   # D09 F3: the writer replay's own rounds end where DOCS begins
         life, workspace = self.state['lifecycle'], self.workspace
@@ -6837,12 +6837,12 @@ class Coordinator:
         self.save()
 
     def _docs_review_turn(self, tree: str, paths: list[str]) -> dict:
-        """Fresh docs reviewer over the full diff (legacy 3.6 reviewer-only fast replay). A HOLD, an unusable review
+        """Fresh docs reviewer over the full diff (a reviewer-only fast replay). A HOLD, an unusable review
         or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again."""
         self.materialize_review_context()
         prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
-                  f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff (legacy review-loop '
-                  'Step 3.6): the docs must describe the implemented behavior, APIs and logic accurately, and the '
+                  f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff: '
+                  'the docs must describe the implemented behavior, APIs and logic accurately, and the '
                   'changed code comments must match the code. Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
                   f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'
@@ -6941,7 +6941,7 @@ class Coordinator:
 
     def worktree_security_turn(self) -> None:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
-        (legacy Step 3.7) run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
+        run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
         hit or finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
         if self.state['config'].get('review_report'):
             return self._report_security_turn()
@@ -7184,7 +7184,7 @@ class Coordinator:
         return review
 
     def _sensitive_paths(self) -> list[dict]:
-        """sensitive_policy over the tracked and non-ignored untracked paths (legacy 3.7.1)."""
+        """sensitive_policy over the tracked and non-ignored untracked paths (the rule set frozen in testdata/legacy-sensitive-3.7.1-v2.8.4.md)."""
         hits = []
         for name in sorted(set(filter(None, self._git(['ls-files', '-z', '-co', '--exclude-standard']).split('\0')))):
             try:
@@ -7297,7 +7297,7 @@ class Coordinator:
         self.save()
 
     def worktree_polish_turn(self) -> None:
-        """ADR-11 POLISH-Q (legacy Step 3.5): fresh report-only specialists over the FINISH-approved tree."""
+        """ADR-11 POLISH-Q: fresh report-only specialists over the FINISH-approved tree."""
         life = self.state['lifecycle']
         if git_snapshot(self.workspace)[0] != life['candidate_oid']:
             raise RuntimeError('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
@@ -7773,7 +7773,7 @@ class Coordinator:
                        if row.get('owner_role', '').startswith('specialist:')})
 
     def _specialist_budget(self, name: str) -> dict:
-        """Room for two dispatches (invoke may retry); legacy 3.5.2 caps one Step 3.5 run, here one epoch."""
+        """Room for two dispatches (invoke may retry) per epoch."""
         life, caps = self.state['lifecycle'], budget_policy.BUDGET_CAPS
         if life.setdefault('counts_epoch', life['epoch']) != life['epoch']:
             life.update(counts_epoch=life['epoch'], specialist_counts={})

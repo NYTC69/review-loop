@@ -69,6 +69,11 @@ def manifest(repo, source):
     return output, json.loads(output.read_text())
 
 
+def recaptured(repo, source):
+    """A fresh candidate from the same baseline (V5: replaces the removed `check` subcommand)."""
+    return run(repo, "manifest", "--baseline", source)
+
+
 def paths(rows):
     return {row["path"] for row in rows}
 
@@ -101,7 +106,7 @@ def test_dirty_same_file_and_prestaged_unrelated_are_separate_and_read_only(repo
     assert result["ownership_ambiguities"] == ["task.txt"]
     assert result["outside_scope_delta"] == []
     assert result["current"]["index"] == base["state"]["index"]
-    assert run(repo, "check", "--manifest", target)["fresh"] is True
+    assert recaptured(repo, source)["current_fingerprint"] == result["current_fingerprint"]
     assert admin_contents(repo) == metadata
 
 
@@ -133,9 +138,9 @@ def test_index_only_delta_and_index_only_staleness(repo):
     assert row["before"]["index"] != row["after"]["index"]
     assert result["index_file_changed"] is True
     git(repo, "add", "task.txt")
-    stale = run(repo, "check", "--manifest", target, expect=1)
-    assert stale["fresh"] is False and "index" in stale["changed_components"]
-    assert "worktree" not in stale["changed_components"]
+    stale = recaptured(repo, source)["current"]
+    assert stale["index"] != result["current"]["index"]
+    assert stale["worktree"] == result["current"]["worktree"]
     assert base["state"]["index"] == result["baseline"]["state"]["index"]
 
 
@@ -155,7 +160,7 @@ def test_candidate_staleness_binds_all_observed_state(repo, mutation):
         git(repo, "update-index", "--assume-unchanged", "unrelated.txt")
     else:
         git(repo, "commit", "--allow-empty", "-qm", "new head")
-    assert run(repo, "check", "--manifest", target, expect=1)["fresh"] is False
+    assert recaptured(repo, source)["current_fingerprint"] != result["current_fingerprint"]
 
 
 def test_raw_binary_unusual_names_and_symlink_targets(repo):
@@ -175,7 +180,7 @@ def test_raw_binary_unusual_names_and_symlink_targets(repo):
     assert link["mode"] == "120000"
     assert link["sha256"] == hashlib.sha256(os.fsencode(str(outside))).hexdigest()
     outside.write_text("changing the target does not change the link\n")
-    assert run(repo, "check", "--manifest", target)["fresh"] is True
+    assert recaptured(repo, source)["current_fingerprint"] == result["current_fingerprint"]
 
 
 def test_tracked_directory_replaced_by_external_symlink_never_reads_target(repo):
@@ -288,8 +293,7 @@ def test_untracked_session_directory_is_excluded_but_tracked_config_is_not(repo)
     write(repo, ".review-loop/config.md", "auto_commit: false\n")
     git(repo, "add", ".review-loop/config.md")
     git(repo, "commit", "-qm", "config")
-    sessions = repo / ".review-loop" / "sessions"
-    sessions.mkdir(parents=True)
+    sessions = repo.parent   # V5: artifacts go outside the repository; the .review-loop/ output exception is gone
     write(repo, ".review-loop/sessions/s.md", "round 1\n")
     out = sessions / "baseline.json"
     run(repo, "capture", "--scope", "task.txt", "--output", out)

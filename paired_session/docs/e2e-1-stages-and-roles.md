@@ -1,5 +1,7 @@
 # E2E lifecycle design 1/4: stages and role ownership
 
+> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 Status: design only. This is the stage/role contract for M3/M4, not an enabled coordinator mode. The remaining documents define (2) reviewed-tree binding, (3) DOCS and SECURITY, and (4) DELIVERY and CLOSE. Source: Yuan's A1 week plan, the archived `r12-4-draft.md` and `r12-4-findings.md` in `.compass/results/2026-09-23_self-audit-roadmap/`, and the legacy protocol sections cited below.
 
 Real-path note (ADR-11, D12): the real lifecycle will open as the worktree lifecycle W of [doc 6](e2e-6-worktree-lifecycle.md) (not yet implemented); the candidate-tree design here stays fake-only hardening.

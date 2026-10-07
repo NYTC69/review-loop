@@ -1,5 +1,7 @@
 # E2E lifecycle design 2a/4: reviewed-tree binding
 
+> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 Status: design only; lifecycle disabled. Covers R12-4 R2 M5/M6/M12 and R1 M9/S2.
 Sources: doc 1, archived `r12-4-draft.md` §EXEC/DELIVERY/Resume and `r12-4-findings.md` R1/R2;
 legacy `docs/protocol/session-file.md` §`completed_stages` and `execution.md` §Steps 3.6/3.7/4.

@@ -1,8 +1,8 @@
 # E2E lifecycle design 6: worktree lifecycle W (D12 legacy parity)
 
-Status: decided design (ADR-11), **partly implemented**: W1a accepts `lifecycle_mode=on` on the real path;
+Status: decided design (ADR-11), **implemented**: W1a accepts `lifecycle_mode=on` on the real path;
 W1b runs FINISH; W2a runs the POLISH-Q specialists and their fix leg (the simplifier and test-consolidation
-writers are not implemented and not scheduled in W2a); W2b runs DOCS (writer, docs review with an observed
+writers came later: D09, v2.12.5); W2b runs DOCS (writer, docs review with an observed
 test); W3a runs SECURITY (scans and a fresh security reviewer) and reaches DONE (acceptance pending);
 W3b accepts a W DONE (`accept --expect`; with `auto_commit` true one hook-free local commit) and reject
 reopens EXEC: W now runs end to end, FINISH → POLISH-Q → DOCS → SECURITY → DONE → accept. Sources: ADR-11, the lane A
@@ -14,8 +14,8 @@ provenance, delivery is a local commit only, and external delivery stays behind 
 
 ## Scope
 
-The real lifecycle will open under exactly the safety bar already accepted for real EXEC: a permission
-probe PASS bound to the author, reviewer and gate flags, the sandboxed author in the dedicated live
+The real lifecycle runs under the safety bar of real EXEC: in strict mode a permission probe PASS bound
+to the author, reviewer and gate flags (the efficient default since v2.10.0 needs none), the sandboxed author in the dedicated live
 worktree, fresh read-only reviewers, and the Step 3.4 gate on. FINISH, POLISH-Q, DOCS and SECURITY run
 as further turns of the real drive loop **in the same worktree** with the same roles, flags and probe.
 They do not use the candidate-tree route of docs 2a–4. That route, with Q, sealed publication and
@@ -156,16 +156,16 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
 
 - Kept: `--adversarial-gate off` and `resume --polish` cannot enter the lifecycle; legacy DONE/ACCEPTED
   states cannot either.
-- Kept, mechanism replaced in W1a: fake-format lifecycle states stay refused on the real path. Today
-  `Coordinator.__init__` refuses every saved `lifecycle_mode=on` state; W1a adds a format marker so only
-  W-format state resumes.
+- Kept, mechanism replaced in W1a: fake-format lifecycle states stay refused on the real path; a format
+  marker lets only W-format state resume (before W1a `Coordinator.__init__` refused every saved
+  `lifecycle_mode=on` state).
 - Added in W1a: `lifecycle_mode=on` comes only from the CLI or an operator profile, meaning a `--config`
   outside every author-writable root as decided by `program_binding` (a profile under the workspace,
-  run_dir or author-tmp is a workspace profile). Today a workspace `.review-loop/paired-session.json` value
-  is stopped only by the blanket refusal; W1a adds an explicit check that keeps the "lifecycle remains
-  disabled" message substring.
-- Added in W1a: lifecycle runs refuse `--accept-unverified-claude-author` and `--accept-probe-skip`; a
-  verified probe-cache reuse is allowed.
+  run_dir or author-tmp is a workspace profile). Before W1a a workspace `.review-loop/paired-session.json`
+  value was stopped only by the blanket refusal; W1a added an explicit check that keeps the "lifecycle
+  remains disabled" message substring.
+- Added in W1a, strict only since D-EFF: strict lifecycle runs refuse `--accept-unverified-claude-author` and
+  `--accept-probe-skip`; a verified probe-cache reuse is allowed.
 - Added in W1a, moved by W1b–W3a: a W run reaches DONE only after a READY SECURITY receipt, and until W3b
   `accept` refuses a W DONE, so a real run never silently skips a stage.
 - Added in W3a-2: after the SECURITY clean scan a fresh security reviewer (reviewer role, EXEC reviewer
@@ -230,6 +230,6 @@ and ignore consent. Their `fake_dispatch_guard` refusals and assertions do not c
 ## Implementation batches and follow-ups
 
 W1a activation and refusal rewiring; W1b FINISH; W2a POLISH-Q; W2b DOCS (including the `docs_file`
-lifecycle default); W3a SECURITY; W3b DELIVERY. The README says the lifecycle runs only after W3b. When
-W lands, the 1D mapping rows for `skip_quality_polish`, `docs_file` and `auto_commit`
-(`1d-entry-mapping.md`) describe the pre-W state and must be updated.
+lifecycle default); W3a SECURITY; W3b DELIVERY. All of them have landed; the 1D mapping rows for
+`skip_quality_polish`, `docs_file` and `auto_commit` (`1d-entry-mapping.md`, now historical) describe the
+pre-W state.

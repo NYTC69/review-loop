@@ -1,5 +1,7 @@
 # E2E lifecycle design 2b-ii: finding ownership and replay
 
+> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 Design only; lifecycle disabled. Consume [doc 1](e2e-1-stages-and-roles.md), [doc 2a](e2e-2a-tree-binding.md), [doc 2b-i](e2e-2b1-budgets.md). Sources: archived `r16-2-r1/r2/r3-review.txt`, `r12-4-findings.md` and legacy `docs/protocol/execution.md` §§3.4–3.7. Old findings/receipts never become current-tree approvals by silence.
 
 ## Owner identity and ledger

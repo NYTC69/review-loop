@@ -1,5 +1,7 @@
 # E2E lifecycle design 2b-i: caps and operator liveness
 
+> **Historical** (fake-only candidate-tree lifecycle design, M3/M4). The real lifecycle is W, [doc 6](e2e-6-worktree-lifecycle.md), the default since v2.10.0.
+
 Status: design only; lifecycle disabled. Consume [doc 1](e2e-1-stages-and-roles.md) and [doc 2a](e2e-2a-tree-binding.md) as accepted. Sources: `docs/protocol/execution.md` §Step 3.4, §Step 3.5.4; archived `r12-4-findings.md` R1 M4/R2 M3 and `r17-3-r1/r2/r3-review.txt` in `.compass/results/2026-09-23_self-audit-roadmap/`. Finding ownership/blind replay belong to doc 2b-ii.
 
 ## Counting and fixed caps

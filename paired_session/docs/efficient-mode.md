@@ -15,7 +15,7 @@ Categories A and B are mandatory in every mode. Only category C is dropped from 
 
 ## 1. Choosing the mode
 
-- `safety_mode` is chosen by the command that creates the run state, usually `permission-probe`, and saved in `state['config']`.
+- `safety_mode` is chosen by the command that creates the run state (`run` by default; `permission-probe`, which comes first, in strict mode) and saved in `state['config']`.
   - Pass `--strict` from `permission-probe` on.
   - A request that differs from the saved mode is refused by `run`, `resume`, `reject` and `permission-probe`, with one exception: `--strict` after only probe turns (none `active` or `uncertain_active` either) upgrades the run. This is a tightening, and the probe report stays valid because the flags are identical.
   - Commands that dispatch no turn (`status`, `abort`, `accept`, `note`, `attach-verification`) print a NOTE and keep the saved mode.
@@ -33,7 +33,7 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 | Role | Claude | Codex |
 |---|---|---|
 | Author | `--permission-mode acceptEdits`; path-scoped `--allowedTools Edit(//<workspace>/**)`; the `--disallowedTools` deny rules for the context, the probe cache and `~/.claude` `~/.codex` `~/.ssh` `~/.aws`; `--settings` with the Bash OS sandbox: `denyWrite` the run dir, the credential env-var and file deny lists, no network | `-c approval_policy="never" -c sandbox_mode="workspace-write"`, writable roots = author-tmp, no network, `exclude_slash_tmp`, `TMPDIR=author-tmp`, `--ignore-rules` |
-| Reviewer, gate, shadow, probe | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | `-c sandbox_mode="read-only"`, `--ignore-rules` |
+| Reviewer, gate, shadow, probe | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | `--config default_permissions="paired_session_readonly"`: a permission profile with root and workspace read, only the dispatch's own `$TMPDIR` scratch root writable and no network (it replaces `sandbox_mode="read-only"`); `--ignore-rules` |
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
@@ -132,7 +132,7 @@ turn's processes, then restores the workspace by hand.
 ### c. Test results never come from a model's claim
 
 - An EXEC approval needs an observed successful run of the configured test command (`observed_test_succeeded`). The exit code and output come from the vendor CLI's event stream, not from the model's `self_run_evidence`. This holds in both modes.
-- **Owner question:** outside the fake lifecycle, the coordinator does not run the test command itself. The owner's wording, "coordinator-run test command", would be a new step: run the configured test after the author turn and gate EXEC on that result. Not built here.
+- **Owner question:** EXEC approval is not gated on a test run of the coordinator's own. The coordinator runs the configured test command itself only for the quality writers' baseline and checks (`_test_run`, D09). The owner's wording, "coordinator-run test command", would be a new step: run the configured test after the author turn and gate EXEC on that result. Not built here.
 
 ### d. Git guard (B)
 

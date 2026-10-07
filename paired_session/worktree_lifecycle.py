@@ -10,10 +10,10 @@ except ModuleNotFoundError:
 
 FORMAT = 'worktree'
 DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
-LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',   # legacy Step 3.5.1
+LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-reviewer',
                    **dict.fromkeys(('.ts', '.tsx', '.js', '.jsx', '.html', '.vue', '.svelte'),
                                    'frontend-security-reviewer')}
-QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')   # legacy Steps 3.5.3 and 3.5.5
+QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')
 SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM': 'MAJOR', 'SECURITY': 'SECURITY',
             'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
 WAIVERS = (('accept_unverified_claude_author', '--accept-unverified-claude-author'),
@@ -116,8 +116,8 @@ def writer_prompt(writer, body, paths, test_command, reserved):
 
 def docs_prompt(docs_file, allowlist, run_id, workitem):
     return ('Role: docs writer, fresh. Phase: DOCS.\n'
-            'The reviewed change in this worktree is ready for delivery. Bring the documentation in line with it '
-            '(legacy review-loop Step 3.6): update docs that describe changed behavior, APIs or logic, and fix stale '
+            'The reviewed change in this worktree is ready for delivery. Bring the documentation in line with it: '
+            'update docs that describe changed behavior, APIs or logic, and fix stale '
             'comments in the changed files. Documentation paths you may write: ' + (', '.join(allowlist) or 'none') +
             '. Any other write (a comment or code fix) sends the change back through EXEC review and the gate; agent, '
             'skill, protocol, config, manifest and Git files and symlinks are refused. ' +
@@ -207,7 +207,7 @@ def writer_report_lines(state):
 
 
 def specialists(paths):
-    """Language reviewers for the changed paths (legacy 3.5.1 map), then the code and test quality reviewers."""
+    """Language reviewers for the changed paths, then the code and test quality reviewers."""
     languages = sorted({LANGUAGE_AGENTS[ext] for ext in (Path(path).suffix for path in paths) if ext in LANGUAGE_AGENTS})
     return (*languages, *QUALITY_AGENTS)
 
@@ -281,7 +281,7 @@ def specialist_prompt(name, body, test_command, owned, protocol, change='the unc
     ledger = owned_ledger(owned)
     return (body + '\n\n'
             f'Role: specialist {name}, fresh. Phase: POLISH-Q.\n'
-            'You are a report-only quality specialist (legacy review-loop Step 3.5). Review only the changed paths of '
+            'You are a report-only quality specialist. Review only the changed paths of '
             f'{change}, with the instructions above. Do not modify any file. Report '
             'every finding in full_review using only the schema severities: report HIGH and MEDIUM as MAJOR and LOW '
             'as MINOR; CRITICAL and MAJOR block delivery.\n' + protocol + '\n' +
