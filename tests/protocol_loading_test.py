@@ -13,6 +13,9 @@ import pytest
 
 
 READER = Path(__file__).resolve().parents[1] / "scripts" / "read_protocol.py"
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from read_protocol import resolve  # noqa: E402 -- repository-local script import
 
 
 def write(root: Path, relative: str, text: str) -> Path:
@@ -312,3 +315,21 @@ def test_a_shared_or_open_protocol_temp_root_is_refused(tmp_path):
 
     assert "must be a directory owned by this user with mode 0700" in result.stderr
     assert not (user_root(temp) / "x").exists()
+
+
+# Restored from the deleted tests/protocol_loading_graph_test.py (LG-DEL-2 gate): they cover the production
+# loading map that the review-loop and paired-session entries still load.
+def test_codex_umbrella_keeps_handsfree_flag_override():
+    text = "\n".join(u["body"] for u in resolve(ROOT, "codex", "entry-review-loop"))
+    assert "when present it overrides the config" in text
+
+
+def test_every_declared_bundle_resolves_and_only_references_repo_files():
+    config = json.loads((ROOT / "docs/protocol/loading.json").read_text())
+    for stage, branches in config["stages"].items():
+        for runtime in branches:
+            units = resolve(ROOT, runtime, stage)
+            assert units
+            assert len({u["unit"] for u in units}) == len(units)
+            for unit in units:
+                (ROOT / unit["path"]).resolve().relative_to(ROOT)
