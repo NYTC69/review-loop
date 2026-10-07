@@ -10231,7 +10231,8 @@ def parser() -> argparse.ArgumentParser:
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
-    p.add_argument('--skip-globs', action='append', default=[])
+    p.add_argument('--skip-globs', action='append', default=[],
+                   help='retired (L107): accepted for old profiles and saved runs, ignored; the gate always runs')
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
     p.add_argument('--advisory-fix-round', type=config_bool, default=False,
                    help='worktree lifecycle: one author round for the non-blocking findings left after POLISH-Q (ADVFIX)')

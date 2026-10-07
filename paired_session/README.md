@@ -185,7 +185,8 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `off` on the CLI; the paired-session skill passes
 `on` for every new run (D-4). The frozen config also records exact
-`docs_file`/`docs_allowlist` paths, `skip_globs` and `skip_quality_polish`;
+`docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` is retired,
+L107: still accepted and frozen for old profiles and saved runs, never read, so it never skips the gate);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
 worktree lifecycle of `docs/e2e-6-worktree-lifecycle.md` (D12, ADR-11):
 `lifecycle_mode=on` from the command line or an
