@@ -215,7 +215,7 @@ DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
 
 In 3.0.0, the lifecycle-off advisory POLISH round is removed. The hidden
-`--polish-round off` CLI/profile option is accepted as a no-op; other values are refused.
+`--polish-round on|off` CLI/profile option is deprecated: removed in 3.0.0; ignored.
 `--lifecycle-mode off` converges directly to DONE; lifecycle-on POLISH-Q remains available.
 
 Quality writers (D09, `docs/d09-cap1-writer-passes.md`): after a clean POLISH-Q,

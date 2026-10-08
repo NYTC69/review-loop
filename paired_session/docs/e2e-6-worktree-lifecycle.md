@@ -47,7 +47,7 @@ depends on it.
   DOCS may rewrite it ("a replayed DOCS stage replaces its own entry"). Any other touched allowlisted path
   leaves only abort, or a rerun with that path outside `--docs-file`/`--docs-allowlist`.
 - Adopted (doc 1 §Gate): with lifecycle on, EXEC convergence routes to FINISH and never enters the legacy
-  `start_polish_or_done` advisory round. Legacy `--polish-round on` maps to POLISH-Q; open advisory
+  `start_polish_or_done` advisory round. Legacy `--polish-round on|off` is deprecated (removed in 3.0.0; ignored); open advisory
   findings feed POLISH-Q. Implemented deviation (W2a-2): the fix leg reuses the persistent EXEC author turn
   with the open specialist blockers as its delivered review; the owning specialists then re-review on the
   new tree (only an owner closes its finding), and the write replays EXEC review and gate, then FINISH and
@@ -180,7 +180,7 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   until W3b, like `accept`.
 - Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot and HOLDs (stale EXEC approval)
   when the tree differs; the docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs` (removed in 3.0),
-  `skip_quality_polish`, `polish_round`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when
+  `skip_quality_polish`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when
   it changes HEAD, its branch or the staged index against a baseline persisted per attempt (tags, remotes,
   stash and other branches are shared across worktrees and not checked; HEAD equal to the run parent is a
   W3b delivery check). The FINISH receipt binds the tree the coordinator observes when it writes it.

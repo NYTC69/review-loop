@@ -2205,8 +2205,6 @@ class Coordinator:
             raise ValueError(OLD_STATE_REFUSAL)
         if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode; the CLI sets 'on' for a new
             args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else 'off'   # run (_execute_locked)
-        if getattr(args, 'polish_round', 'off') != 'off':
-            raise ValueError('the off-route polish round was removed in 3.0.0')
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
@@ -8632,8 +8630,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
-    # removed in 3.0.0; `off` is accepted as a no-op (hidden compatibility option).
-    p.add_argument('--polish-round', default='off', help=argparse.SUPPRESS)
+    # removed in 3.0.0; ignored (hidden deprecated compatibility option, on or off).
+    p.add_argument('--polish-round', choices=['on', 'off'], default='off', help=argparse.SUPPRESS)
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
                    help="'on' (the worktree lifecycle W, the CLI default for a new run) or 'off' (the older route without "
                         "FINISH, POLISH-Q, DOCS and SECURITY); an existing run keeps the mode it was created with")
@@ -9119,9 +9117,6 @@ def main(argv=None) -> int:
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
-        return 2
-    if args.polish_round != 'off':
-        print('the off-route polish round was removed in 3.0.0')
         return 2
     args = normalize_cli_paths(args)
     args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
