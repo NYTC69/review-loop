@@ -29,6 +29,10 @@
 
 ## P2 — normal
 
+- **DOCS writer can write unverified claims into CHANGELOG.** (added 2026-10-08)
+  - Evidence: ws41 (v3.0.0 rc1 release-gate review-only run 6303c298) — the DOCS writer added "Additional iterator and singleton checks passed" to CHANGELOG.md; no such test exists. The docs-reviewer flagged it (F005 MINOR), but MINOR does not block, so accept committed it.
+  - Fix idea: the docs-writer prompt states only facts from the run evidence (changed files, test results it can cite); a docs-reviewer finding that a written claim is false is at least MAJOR.
+
 Protocol-hardening work is Workstream 2 and follows Workstream 1 productization. Candidate implementations and offline reviews are groundwork, not closure evidence for real-run items. Deprecating legacy invocation means replacing the default call surface; the old implementation remains an explicit control path until all four replacement criteria pass. Workstream 2 must cover every open paired-session P1/P2/P3 item across this backlog, regardless of where the item appears, and crosswalk findings from runs #1–#10 and later audits to those items. Add any untracked run finding before declaring Workstream 2 complete. Keep each item open until its own acceptance evidence is recorded.
 
 - [new] Reuse a stable author permission-probe workspace per product worktree. (added 2026-09-27, R20-0b deferment)

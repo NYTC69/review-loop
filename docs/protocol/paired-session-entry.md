@@ -365,3 +365,5 @@ under handsfree, and never on your own judgment:
 - Use `--override-rejection` only when the user asks for it with a reason.
 
 Do not imply user acceptance or delivery authorization from DONE.
+Do not raise the invocation cap on your own: use `resume --max-invocations N`
+only when the user asks.

@@ -2322,6 +2322,9 @@ class Coordinator:
             if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
+                if (getattr(self.args, 'max_invocations_explicit', False) and
+                        self.args.max_invocations != self.state['config']['max_invocations']):
+                    raise ValueError('resume configuration differs: max_invocations')
                 saved = self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ()))
                 for key, value in saved.items():
                     if key == 'gate_prompt' and str(value).startswith('<bundled-default>:'):
@@ -3105,8 +3108,14 @@ class Coordinator:
             raise ValueError('resume configuration differs: quality_writers')
         if getattr(self.args, 'resume_timeout', None) is not None and self.args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
+        invocation_cap_override = getattr(self.args, 'max_invocations_explicit', False)
         exec_timeout_override = getattr(self.args, 'exec_turn_timeout_explicit', False)
         if self.args.action == 'resume':
+            saved_cap = self.state['config']['max_invocations']
+            if not invocation_cap_override:
+                self.args.max_invocations = saved_cap
+            elif self.args.max_invocations < saved_cap:
+                raise ValueError(f'--max-invocations cannot lower saved value {saved_cap}')
             original_timeout = self.state['config']['timeout']
             requested_timeout = getattr(self.args, 'resume_timeout', None)
             if requested_timeout is not None:
@@ -3141,6 +3150,8 @@ class Coordinator:
         for key, value in self.state['config'].items():
             if (key == 'timeout' and self.args.action == 'resume' and
                     getattr(self.args, 'resume_timeout', None) is not None):
+                continue
+            if key == 'max_invocations' and self.args.action == 'resume' and invocation_cap_override:
                 continue
             if key == 'exec_turn_timeout' and self.args.action == 'resume' and exec_timeout_override:
                 continue
@@ -6522,7 +6533,7 @@ class Coordinator:
             raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
         if 1 + len(owners) > self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']:
             raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
-                               'raise --max-invocations or abort')
+                               'resume with a higher --max-invocations, or abort')
         self.author_turn()
         if self.state['status'] == 'ACTIVE':
             self.state['next'] = 'polish-recheck'
@@ -6582,7 +6593,7 @@ class Coordinator:
         done = self.state['lifecycle']['specialist_done']
         if (need := len([name for name in names if name not in done])) > (
                 self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
-            raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; raise --max-invocations or abort')
+            raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; resume with a higher --max-invocations, or abort')
         if names:
             self.materialize_review_context()
         for name in names:
@@ -8496,7 +8507,15 @@ class Coordinator:
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
+        old_cap = self.state['config']['max_invocations']
+        if self.args.max_invocations > old_cap:
+            cap_raise = {'old': old_cap, 'new': self.args.max_invocations,
+                         'timestamp': datetime.now().astimezone().isoformat()}
+            self.state.setdefault('invocation_cap_raises', []).append(cap_raise)
+            self.state['config']['max_invocations'] = self.args.max_invocations
         self.save()
+        if self.args.max_invocations > old_cap:
+            self.progress('invocation-cap-raise', **cap_raise)
         if uncertain and getattr(self, '_probe_gate_required', False):
             passed, reason = self.probe_passed()
             if not passed:
@@ -8699,13 +8718,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
     p.add_argument('--max-plan-rounds', type=int, default=3)
     p.add_argument('--max-exec-rounds', type=int, default=4)
-    p.add_argument('--max-invocations', type=int, default=25)
+    p.set_defaults(max_invocations_explicit=False)
+    p.add_argument('--max-invocations', type=int, default=25, action=StoreExplicitInteger)
     p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT_SECONDS,
-                   help=f'per-dispatch timeout for every non-EXEC turn and the coordinator\'s own test runs '
+                   help=f'per-dispatch timeout for turns other than EXEC/FINISH/DOCS author turns, and for the coordinator\'s own test runs '
                         f'(default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS} seconds)')
     p.set_defaults(exec_turn_timeout_explicit=False)
     p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
-                   help=f'EXEC author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
+                   help=f'EXEC/FINISH/DOCS author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
                         f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
     p.add_argument('--add-rounds', type=int, choices=range(1, 11), metavar='N', default=None,
                    help='resume only, at a PLAN or EXEC round-limit HOLD: N (1-10) more rounds of that phase; the saved cap stays (L100)')
