@@ -151,10 +151,7 @@ class WiDeadlineTests(unittest.TestCase):
         state = json.loads(state_path.read_text())
         state['started_at'] -= 100001
         state_path.write_text(json.dumps(state))
-        polish = self.command('--shadow', 'off', '--polish-round', 'off', '--skip-probe', '--polish')
-        polish[2] = 'resume'
-        for action, run in (('reject', lambda: self.run_operator_action('reject', '--text', 'redo it')),
-                            ('resume --polish', lambda: subprocess.run(polish, cwd=self.root, text=True, capture_output=True))):
+        for action, run in (('reject', lambda: self.run_operator_action('reject', '--text', 'redo it')),):
             with self.subTest(action=action):
                 refused = run()
                 self.assertNotEqual(refused.returncode, 0)
@@ -170,10 +167,6 @@ class WiDeadlineTests(unittest.TestCase):
         done = self.run_coordinator('--wi-deadline', '100000', '--shadow', 'off', '--polish-round', 'off')
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         state_path = self.run_dir / 'state.json'
-        polish = self.command('--shadow', 'off', '--polish-round', 'off', '--skip-probe', '--polish')
-        polish[2] = 'resume'
-        polished = subprocess.run(polish, cwd=self.root, text=True, capture_output=True)
-        self.assertEqual(polished.returncode, 0, polished.stdout + polished.stderr)
         before = json.loads(state_path.read_text())
         rejected = self.run_operator_action('reject', '--text', 'redo it')   # intent-only, then --expect: the digest must still match
         self.assertNotIn('refused', rejected.stdout + rejected.stderr)

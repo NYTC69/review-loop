@@ -4191,8 +4191,6 @@ class Coordinator:
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
-        if lifecycle_stage is None and (routed := self._gate_recheck()):   # FIELD-32
-            return routed
         snapshot, manifest = git_snapshot(self.workspace)
         if expected is not None and snapshot != expected:
             return self.hold('the tree changed before DONE; resume replays EXEC review and gate')
@@ -4211,37 +4209,6 @@ class Coordinator:
         self.write_usage()
         self._progress_terminal('DONE')
         return 'DONE'
-
-    def _gate_recheck(self) -> Optional[str]:
-        """FIELD-32: the legacy-format route never reaches DONE with a tree the gate did not see while gate findings at
-        MEDIUM or above were open after its last pass (a fix made in polish, or in the last EXEC round): one more gate pass
-        on the final tree first. Its blockers follow the normal flow, and on the last round the round-limit HOLD. The worktree
-        lifecycle replays the gate after every write already; report mode has no writer."""
-        if self.state['config'].get('review_report') or worktree_lifecycle.is_worktree(self.state):
-            return None
-        _, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
-        if not gate:
-            return None
-        sequence = gate['sequence']
-        pending = [row['id'] for row in self.state['finding_ledger']   # open right after that pass, whatever happened since
-                   if row.get('source') == 'adversarial-gate' and row['severity'] in ('CRITICAL', 'HIGH', 'MEDIUM')
-                   and row['origin_round'] <= sequence and not any(item.get('status') in ('fixed', 'withdrawn')
-                                                                   and item.get('round', 0) <= sequence
-                                                                   for item in row['status_history'])]
-        tree = git_snapshot(self.workspace)[0]
-        if not pending or tree == gate.get('snapshot_before'):
-            return None
-        self.state.setdefault('gate_rechecks', []).append({'after_gate_sequence': sequence, 'tree': tree, 'findings': pending})
-        self.state.update(next='gate', gate_ran=False)
-        if self.state.get('acceptance_state') == 'PENDING':   # resume --polish of a DONE run: not the approved tree any more,
-            self.state['acceptance_state'] = 'IN_PROGRESS'    # as author_turn does, so the stale-DONE guard lets the gate run
-        limit = self.args.max_invocations - self.state.get('q_reserved', 0)
-        if self.state['invocations_used'] >= limit:
-            return self.hold(f"the tree changed after the last gate pass while its findings {', '.join(pending)} were open, "
-                             f"and no invocation is left for the final gate pass ({self.state['invocations_used']} of {limit} "
-                             'used); raise --max-invocations and resume')
-        self.save()
-        return 'ACTIVE'
 
     def set_effective_verdict(self, verdict: str) -> None:
         if self.state.get('exec_comparisons'):
@@ -4285,49 +4252,12 @@ class Coordinator:
         self.save()
         return 'ACTIVE'
 
-    def import_gate_findings(self) -> None:
-        existing = {(row['source'], row['file'], row['summary']) for row in self.state['finding_ledger']}
-        for path in sorted(self.evidence.glob('*-gate.receipt.json')):
-            receipt = json.loads(path.read_text())
-            for finding_index, finding in enumerate(receipt.get('answer', {}).get('findings', [])):
-                if str(finding.get('severity', '')).lower() not in ('medium', 'low'):
-                    continue
-                summary = finding.get('recommendation') or str(finding.get('body', '')).splitlines()[0]
-                signature = ('adversarial-gate', finding.get('file', ''), summary)
-                if signature not in existing:
-                    self.record_findings('adversarial-gate', 'EXEC', receipt.get('sequence', 0),
-                                         [finding], finding_indexes=[finding_index])
-                    existing.add(signature)
-                else:
-                    row = next(item for item in self.state['finding_ledger']
-                               if (item['source'], item['file'], item['summary']) == signature)
-                    if not row.get('body'):
-                        row['body'] = finding.get('body', '')
-        self.write_ledger()
-
     def resume_polish(self) -> str:
+        """Retain the refusal surface for the option removed in 3.0.0."""
         if self.state['config'].get('review_report'): raise ValueError('report mode refuses resume --polish')
-        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
-        if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
-            return self.rejection_limit_hold()
-        self.refuse_rejected_tree(stale_done=True)
-        if self.state.get('active'):
-            return self.hold('uncertain in-flight CLI turn; inspect evidence before resume --polish')
-        if self.state['status'] != 'DONE':
-            return self.hold('resume --polish requires an older run in DONE state')
-        blocking = self.blocking_open_findings()
-        if blocking:
-            return self.hold('resume --polish rejected with open blocking findings: ' +
-                             ', '.join(row['id'] for row in blocking))
+        if worktree_lifecycle.is_worktree(self.state): raise ValueError('lifecycle refuses resume --polish')
         self._refuse_past_deadline('resume --polish')
-        self.import_gate_findings()
-        self.state['status'] = 'ACTIVE'
-        self.state['phase'] = 'EXEC'
-        self.state['active'] = None
-        self.state['uncertain_active'] = None
-        self.state.pop('hold_reason', None)
-        self.start_polish_or_done(force=True)
-        return self.drive() if self.state['status'] == 'ACTIVE' else self.state['status']
+        raise ValueError('resume --polish was removed in 3.0.0')
 
     def _role_vendor(self, role: str) -> str:
         if role == 'author':
@@ -8537,7 +8467,7 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
-        # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
+        # The one entry of every real author dispatch (run, resume, reject): author_turn and
         # polish_author_turn are reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
         if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
@@ -8917,7 +8847,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--acknowledge-codex-trust', metavar='RUN_ID',
                    help='after inspecting an uncertain trust-only change, acknowledge this run ID on resume')
     p.add_argument('--polish', action='store_true',
-                   help='with resume, run only the one-time polish round on an older DONE run')
+                   help='removed in 3.0.0; retained only to report a refusal')
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--accept-unverified-codex-cli', action='store_true',

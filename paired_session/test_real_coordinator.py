@@ -1472,7 +1472,6 @@ sys.exit(result.returncode)
         before = co.state_path.read_bytes()
         self.assertEqual(co.resume(), 'ACCEPTED')
         self.assertEqual(co.resume(retry_uncertain=True), 'ACCEPTED')
-        self.assertEqual(co.resume_polish(), 'ACCEPTED')
         self.assertEqual(co.state_path.read_bytes(), before)
 
     def test_active_done_stale_resume_names_tracked_and_untracked_drift(self):
@@ -1590,20 +1589,6 @@ sys.exit(result.returncode)
                 saved = json.loads(path.read_text())
                 self.assertEqual(saved['sequence'], before['sequence'])
                 self.assertEqual(saved['approved_snapshot'], before['approved_snapshot'])
-
-    def test_resume_polish_cannot_reapprove_a_changed_done_tree(self):
-        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
-                                         '--polish-round', 'off')
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        (self.workspace / 'after-done.txt').write_text('unreviewed content')
-        resumed = self.run_operator_action('resume', '--polish', '--shadow', 'off',
-                                           '--adversarial-gate', 'off', '--polish-round', 'off')
-        self.assertEqual(resumed.returncode, 2)
-        self.assertIn('stale:', resumed.stdout)
-        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'DONE')
-        intent = self.issue_operator_intent('accept')
-        self.assertEqual(intent.returncode, 2)
-        self.assertIn('stale', intent.stdout)
 
     def test_resume_after_stale_polish_hold_cannot_reapprove_changed_tree(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
@@ -1876,11 +1861,6 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['turns'][-1]['role'], 'gate')
         self.assertEqual(co.state['turns'][-2]['role'], 'reviewer')
 
-    def test_rejected_tree_blocks_resume_polish(self):
-        co = self.rejected_done_coordinator()
-        with self.assertRaisesRegex(ValueError, 'rejected'):
-            co.resume_polish()
-
     def test_rejected_tree_blocks_retry_uncertain(self):
         co = self.rejected_done_coordinator()
         with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}):
@@ -1999,10 +1979,6 @@ sys.exit(result.returncode)
         self.assertEqual(resumed.returncode, 2)
         self.assertIn('accept or abort', resumed.stdout)
         self.assertEqual(json.loads(path.read_text())['sequence'], held['sequence'])
-        polished = self.run_operator_action('resume', '--polish', '--shadow', 'off',
-                                            '--adversarial-gate', 'off', '--polish-round', 'off')
-        self.assertEqual(polished.returncode, 2)
-        self.assertIn('accept or abort', polished.stdout)
         accepted = self.run_operator_action('accept')
         self.assertEqual(accepted.returncode, 2, accepted.stdout + accepted.stderr)
         accepted = self.run_operator_action('accept', '--override-rejection', '--reason', 'Reviewed author rationale.')
@@ -4450,63 +4426,6 @@ sys.exit(result.returncode)
                              (self.run_dir / 'evidence').glob('*-polish-author.prompt.txt'))
         self.assertIn(gate_rows[0]['id'], polish_author)
 
-    def test_resume_polish_copies_old_real_run_imports_gate_and_reuses_sessions(self):
-        # Generate a completed, pre-polish run using only fake CLIs. A live run
-        # is mutable and may already have consumed its one-time polish round.
-        fixture_options = ('--polish-round', 'off', '--shadow', 'off',
-                           '--max-invocations', '40', '--gate-vendor', 'claude')   # explicit: default moved by owner decision 2026-09-30 (a codex gate would add a gate-probe turn)
-        generated = self.run_coordinator(*fixture_options,
-                                         env={'FAKE_GATE_MINOR': '1'})
-        self.assertEqual(generated.returncode, 0, generated.stderr + generated.stdout)
-        source = self.run_dir
-        fixture = json.loads((source / 'state.json').read_text())
-        self.assertEqual(fixture['status'], 'DONE')
-        self.assertFalse(fixture['polish']['completed'])
-        self.assertTrue(fixture['gate_ran'])
-        self.assertTrue(any(row['source'] == 'adversarial-gate'
-                            for row in fixture['finding_ledger']))
-        source_state = (source / 'state.json').read_bytes()
-        source_ledger = (source / 'findings-ledger.json').read_bytes()
-        self.run_dir = self.root / 'copied-old-run'
-        shutil.copytree(source, self.run_dir)
-        state_path = self.run_dir / 'state.json'
-        state = json.loads(state_path.read_text())
-        original_turns = len(state['turns'])
-        author_session = state['sessions']['author']
-        reviewer_session = state['sessions']['reviewer']
-        state['workspace'] = str(self.workspace)
-        state['workitem'] = str(self.workitem)
-        state['base_commit'] = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'], cwd=self.workspace, check=True,
-            text=True, stdout=subprocess.PIPE).stdout.strip()
-        state['finding_ledger'] = [row for row in state['finding_ledger']
-                                   if row['source'] != 'adversarial-gate']
-        state['config']['codex_bin'] = str(self.fake_codex_cli())
-        state['config']['claude_bin'] = str(self.fake_claude_cli())
-        del state['config']['author_subagents']  # older runs predate this key
-        rc.atomic_json(state_path, state)
-        probe_command = self.command(*fixture_options)
-        probe_command[2] = 'permission-probe'
-        probe_result = subprocess.run(probe_command, cwd=self.root, text=True,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(probe_result.returncode, 0, probe_result.stdout + probe_result.stderr)
-        command = self.command(*fixture_options, '--polish')
-        command[2] = 'resume'
-        result = subprocess.run(command, cwd=self.root, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        final = json.loads(state_path.read_text())
-        self.assertEqual(final['status'], 'DONE')
-        self.assertEqual(final['sessions']['author'], author_session)
-        self.assertEqual(final['sessions']['reviewer'], reviewer_session)
-        self.assertEqual(len(final['turns']), original_turns + 4)
-        self.assertTrue(any(row['source'] == 'adversarial-gate'
-                            for row in final['finding_ledger']))
-        self.assertTrue(final['polish']['completed'])
-        self.assertTrue((self.run_dir / 'open-findings.md').exists())
-        self.assertEqual((source / 'state.json').read_bytes(), source_state)
-        self.assertEqual((source / 'findings-ledger.json').read_bytes(), source_ledger)
-
     def test_large_observed_output_is_not_delivered_and_round_render_is_bounded(self):
         result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
                                       '--adversarial-gate', 'off',
@@ -5166,7 +5085,7 @@ sys.exit(result.returncode)
         self.assertIn('Effective workflow verdict: **REVISE**', comparison_text)
 
     def test_done_and_done_resumes_reject_open_blocking_findings(self):
-        for action in ('done', 'resume', 'polish'):
+        for action in ('done', 'resume'):
             with self.subTest(action=action):
                 args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
                     '--workitem', str(self.workitem), '--run-dir', str(self.root / ('done-' + action))])
@@ -5179,10 +5098,8 @@ sys.exit(result.returncode)
                     'body': '', 'status': 'open', 'status_history': []})
                 if action == 'done':
                     result = co.done()
-                elif action == 'resume':
-                    result = co.resume()
                 else:
-                    result = co.resume_polish()
+                    result = co.resume()
                 self.assertEqual(result, 'HOLD')
                 self.assertIn('F900', co.state['hold_reason'])
 
@@ -5447,16 +5364,6 @@ sys.exit(result.returncode)
             'snapshot_before': 'snapshot', 'answer': {'status': 'APPROVE', 'verified_claims': [],
             'full_review': [], 'prior_findings': [], 'self_run_evidence': [{'command': 'test'}]}})
         self.assertIsNone(co._recorded_shadow_result('EXEC', 2))
-
-    def test_gate_finding_import_preserves_each_receipt_index(self):
-        co = self.coordinator()
-        rc.atomic_json(co.evidence / '007-exec-gate.receipt.json', {
-            'sequence': 7, 'answer': {'findings': [
-                {'severity': 'medium', 'file': 'a.py', 'recommendation': 'first'},
-                {'severity': 'low', 'file': 'b.py', 'recommendation': 'second'}]}})
-        co.import_gate_findings()
-        imported = [row for row in co.state['finding_ledger'] if row['source'] == 'adversarial-gate']
-        self.assertEqual([row['finding_index'] for row in imported], [0, 1])
 
     def test_resume_promotes_active_receipt_to_uncertain_without_replay(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),

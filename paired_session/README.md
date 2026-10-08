@@ -552,8 +552,7 @@ process group is gone and archives it, then HOLDs with the deadline reason
 instead of dispatching, so `note --scope-change` works afterwards. A wall clock
 that moved back (below) is treated the same way. A `DONE` run past
 its deadline stays acceptable: `accept` and `reject --scope-change` work, while
-`reject` and `resume --polish` are refused because their next dispatch could
-only HOLD. If the wall clock moves back by more than 60 seconds
+`reject` is refused because its next dispatch could only HOLD. If the wall clock moves back by more than 60 seconds
 since the last dispatch, the run HOLDs until the clock is past that time again;
 elapsed time is never refunded. A scope-change successor starts without a
 deadline; pass the time it may use as its own `--wi-deadline`.
@@ -577,8 +576,10 @@ bin/paired-session reject --workspace /path/to/worktree \
 Before accepting or rejecting, request an operator intent for the exact action.
 It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
 index, state and rejection text hashes; accept refuses a changed approved tree,
-and the mutation rechecks the intent under both leases. `resume --polish` also
-refuses when the workspace no longer matches the snapshot approved at DONE.
+and the mutation rechecks the intent under both leases. `resume --polish` was
+removed in 3.0.0; the option remains parsed only to refuse it. Lifecycle-off
+DONE no longer runs the FIELD-32 final gate recheck; lifecycle-on gate replay
+after writes remains in place.
 
 ```sh
 bin/paired-session accept --intent-only --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN"
