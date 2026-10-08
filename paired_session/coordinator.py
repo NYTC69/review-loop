@@ -118,6 +118,38 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
 def claude_cli_version(binary: str) -> str:
     try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
+
+def cli_release_version(value: str):
+    """The stable release formats printed by Claude and Codex (no prereleases)."""
+    match = re.fullmatch(r'(?:codex-cli )?(\d+)\.(\d+)\.(\d+)(?: \(Claude Code\))?', value.strip())
+    return tuple(map(int, match.groups())) if match else None
+
+def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
+    """CLI-UPD: recognize release updates within the already bound installation."""
+    changed = {key for key in set(old) | set(new) if old.get(key) != new.get(key)}
+    if not changed or changed - {'claude_bin', 'codex_bin'}: return None
+    updates = []
+    for key in sorted(changed):
+        before, after = old.get(key, {}), new.get(key, {})
+        old_path, new_path = Path(before.get('path', '')), Path(after.get('path', ''))
+        old_version = None
+        if key == 'claude_bin':
+            # Native Claude releases are siblings under one versions directory.
+            if old_path.parent.name != 'versions' or old_path.parent != new_path.parent: return None
+            old_version = cli_release_version(old_path.name)
+            path_version = cli_release_version(new_path.name)
+            if old_version is None or path_version is None or path_version <= old_version: return None
+        elif old_path != new_path:
+            return None
+        new_version = cli_release_version(claude_cli_version(str(new_path)))
+        if new_version is None or (old_version is not None and (new_version <= old_version or new_version != path_version)):
+            return None
+        # Codex's in-place updater removes the old executable; its old version
+        # cannot be recovered from the frozen path/hash alone.
+        updates.append({'program': key, 'old': dict(before), 'new': dict(after),
+                        'old_version': '.'.join(map(str, old_version)) if old_version else None,
+                        'new_version': '.'.join(map(str, new_version))})
+    return updates
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
@@ -2698,8 +2730,17 @@ class Coordinator:
             self.state['operator_programs'] = current
             self.save()
         elif frozen is not None and frozen != current:
-            issue = ('configured operator program or PATH changed since permission probe (changed: '
-                     + ', '.join(sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))) + ')')   # FIELD-10: name it
+            updates = normal_cli_updates(frozen, current) if issue is None and not self.strict else None
+            if updates:
+                self.state.setdefault('program_updates', []).extend(updates)
+                self.state['operator_programs'] = current
+                self.save()
+            else:
+                prefix = ('configured operator program or PATH changed since permission probe' if self.strict else
+                          'operator program or PATH changed since run start')
+                issue = (prefix + ' (changed: '
+                         + ', '.join(sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))) + ')')
+                if not self.strict: issue += '; run `permission-probe` to re-freeze, then resume'
         if issue and hold and self.state.get('status') != 'DONE': self.hold(issue)
         return current, issue
     def reviewer_flags(self) -> dict:
