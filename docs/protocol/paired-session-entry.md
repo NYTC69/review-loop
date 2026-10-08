@@ -310,11 +310,7 @@ Later commands on an existing run (`resume`, `permission-probe
 `attach-verification`) pass the saved `state.json` `config.lifecycle_mode`
 value and the run's original workspace, work item, run directory, profile and
 options, never the current default. Report DONE/HOLD and the run directory. On
-HOLD, inspect its state, findings, and receipts before resuming. In both modes
-a reviewer, gate or shadow turn that changes the workspace is void: the
-coordinator restores the workspace and re-dispatches it once, and a second
-change or a failed restore is a HOLD; an author turn that changes HEAD or the
-branch (a commit, reset or checkout) is a HOLD. If `uncertain_active` is
+HOLD, inspect its state, findings, and receipts before resuming. If `uncertain_active` is
 present, do not rerun the probe or resume automatically: check its pid and
 receipts; if the child is still alive, wait for it to stop. If its phase is
 `PROBE` or `AUTHOR_PERMISSION_PROBE`, ask before rerunning the disposable probe
@@ -324,16 +320,11 @@ recovering an interrupted probe, use `resume` on the existing run directory;
 do not use `run` again or start a new work item. In strict mode, re-run the
 permission probe first if it is missing or no longer matches.
 
-At a PLAN or EXEC round-limit HOLD (`run` and `resume` print a `NEXT: resume
---add-rounds N` line before it; after `reject --expect`, it is one when state.json
-`round_limit_hold.hold_reason` equals the current `hold_reason`, since that record
-is not cleared), report the open findings and offer these choices: `resume --add-rounds N` (1-10; the same run continues
-with N more rounds of that phase, starting with the author turn after a review
-or gate HOLD; a HOLD after a write keeps its review; the saved cap
-stays and the extension is recorded in `round_extensions`), `accept
---override-rejection --reason TEXT` (lifecycle off only), a successor run with
-`note --scope-change`, or `abort`. Add rounds only on the user's request,
-with the number they choose; never on your own initiative.
+For coordinator HOLD, acceptance, rejection, override and round-limit rules, use
+[the operator reference](../../paired_session/README.md#acceptance-rejection-and-round-limits).
+At a round-limit HOLD, report the open findings and offer the documented exits.
+Add rounds only on the user's request, with the number they choose; never on
+your own initiative.
 
 A run start that prints `WARNING: the tracked .gitignore does not cover ...`
 will HOLD at SECURITY (`security preflight review-required`). Tell the user
@@ -351,8 +342,10 @@ counts at SECURITY; the start warning then needs no restore or abort.
 ## DONE and acceptance
 
 With the saved `config.lifecycle_mode` `on`, DONE means the security stage
-passed and acceptance is pending; with `off` (a run started before v2.10.0),
-DONE has no finish, quality-polish, docs or security stages, so say so. Report
+passed and acceptance is pending; with `off`, convergence goes straight to
+DONE without finish, quality-polish, docs or security stages, so say so.
+The old off-route POLISH round is removed in 3.0.0; the hidden CLI/profile
+option `--polish-round on|off` remains an accepted deprecated no-op (removed in 3.0.0; ignored). Report
 the stage receipts, open findings, operator verification records still valid
 for the tree, and whether the run's frozen `config.auto_commit` (the operator
 profile, the CLI or the review-only default) will make one local commit on

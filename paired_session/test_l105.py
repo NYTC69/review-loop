@@ -2,7 +2,6 @@
 roles. The entry maps them to --review-focus / --review-style / --quality-focus; the run freezes them; review_focus and
 review_style go to the persistent reviewer, the shadow and the gate, quality_focus and review_style to the POLISH-Q
 specialists, never to the author. The text is operator configuration, not review history, for the fresh scan."""
-import json
 import unittest
 from unittest import mock
 
@@ -83,13 +82,6 @@ class GuidanceTests(unittest.TestCase):
         self.assertEqual(resumed.state['config']['review_style'], STYLE)
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: review_focus'):
             self.coordinator('--review-focus', 'something else', action='resume')
-        state_path = self.run_dir / 'state.json'                                  # a run saved before L105 has none
-        state = json.loads(state_path.read_text())
-        for key in ('review_focus', 'review_style', 'quality_focus'):
-            del state['config'][key]
-        state_path.write_text(json.dumps(state))
-        old = self.coordinator(*GUIDE, action='resume')
-        self.assertNotIn('Project review guidance', old._review_prompt('reviewer', rc.git_snapshot(self.workspace)[0]))
 
 
 class SpecialistGuidanceTests(unittest.TestCase):

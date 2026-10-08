@@ -546,6 +546,18 @@ def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path,
 PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re-runs the turn on a fresh baseline)'
 
 
+STATE_VERSION = 2   # V3-B6 (ADR-17 V2): a run saved by review-loop 2.13.x or earlier (version 1) is refused, never migrated
+OLD_STATE_REFUSAL = ('run was created by an older paired-session build; start a new run, or finish or abort this one with '
+                     'review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)')
+
+
+def saved_state_is_old(run_dir) -> bool:
+    """V3-B6: the run (or --supersedes parent) in run_dir was saved by another state format; checked before any of its
+    keys is read. A missing or unreadable state is not old: its own readers report it."""
+    try: return json.loads((Path(run_dir).expanduser() / 'state.json').read_text()).get('version') != STATE_VERSION
+    except (OSError, ValueError, AttributeError): return False
+
+
 PLUGIN_UPDATE_FIELDS = ('version', 'installPath', 'gitCommitSha', 'lastUpdated')   # field21: what a normal plugin update rewrites
 
 
@@ -1940,19 +1952,6 @@ def author_schema() -> dict:
     }, 'required': ['status', 'body'], 'additionalProperties': False}
 
 
-def polish_author_schema() -> dict:
-    response = {'type': 'object', 'properties': {
-        'id': {'type': 'string'},
-        'disposition': {'type': 'string', 'enum': ['fixed', 'declined']},
-        'reason': {'type': 'string'},
-    }, 'required': ['id', 'disposition', 'reason'], 'additionalProperties': False}
-    return {'type': 'object', 'properties': {
-        'status': {'type': 'string', 'enum': ['READY', 'HOLD']},
-        'body': {'type': 'string'},
-        'findings': {'type': 'array', 'items': response},
-    }, 'required': ['status', 'body', 'findings'], 'additionalProperties': False}
-
-
 def workitem_reviewer_commands(text: str) -> list[str]:
     commands = []
     for match in re.finditer(r'(?ms)^```reviewer-commands[ \t]*\n(.*?)^```[ \t]*$', text):
@@ -2231,9 +2230,13 @@ class ReadOnlyTurnVoided(ValueError):
 
 class Coordinator:
     def __init__(self, args: argparse.Namespace):
-        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode (a run older than the key is off);
-            saved = Path(args.run_dir).expanduser() / 'state.json'   # the CLI sets 'on' for a new run (_execute_locked)
-            args.lifecycle_mode = (json.loads(saved.read_text()).get('config', {}).get('lifecycle_mode') or 'off') if saved.exists() else 'off'
+        saved = Path(args.run_dir).expanduser() / 'state.json'
+        saved_state = json.loads(saved.read_text()) if saved.exists() else None
+        if (saved_state is not None and saved_state.get('version') != STATE_VERSION or   # V3-B6: before any key of it,
+                getattr(args, 'supersedes', None) and saved_state_is_old(Path(args.supersedes).resolve())):   # or of a parent, is read
+            raise ValueError(OLD_STATE_REFUSAL)
+        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode; the CLI sets 'on' for a new
+            args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else 'off'   # run (_execute_locked)
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
@@ -2270,7 +2273,7 @@ class Coordinator:
             self.state = saved_state
             self._review_report_args(saved_state['config'])
             if args.action in ('note', 'reject'): self._refuse_report_feedback()
-            args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
+            args.safety_mode = saved_state['config']['safety_mode']
             if requested and requested != args.safety_mode:
                 probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
                 probe_only = (all(t.get('phase') in probe for t in saved_state.get('turns', []))
@@ -2290,12 +2293,7 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
-            if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
-                raise ValueError('run was created by an older paired-session build; start a new run')
             worktree_lifecycle.refuse_saved(self.state, args)
-            self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
-            self.state.setdefault('item_blockers', [])
-            self.state.setdefault('item_blockers_complete', False)
             if (self.state.get('supersedes') != (str(Path(args.supersedes).resolve()) if args.supersedes else None) or
                     (self.state.get('effective_task_sha256') and
                      self.state['effective_task_sha256'] != hashlib.sha256(self.workitem.read_bytes()).hexdigest())):
@@ -2318,9 +2316,6 @@ class Coordinator:
                         self.state.get('item_blockers') != spec.get('item_blockers') or spec['item_blockers'] != pending_item_blockers(old, parent) or
                         self.state.get('item_blockers_complete') != spec.get('item_blockers_complete')):
                     raise ValueError('saved successor item identity or blockers differ')
-            if 'reason' in self.state and 'hold_reason' not in self.state:
-                self.state['hold_reason'] = self.state.pop('reason')
-                self.save()
             self._review_only_args(self.state['config'])
             if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
@@ -2342,29 +2337,6 @@ class Coordinator:
                 raise ValueError('scope change is pending; finish that request')
             if self.state.get('status') == 'ABORTED' and not scope_request:
                 raise ValueError('run was ABORTED by scope change; start its successor')
-            if 'base_commit' not in self.state:
-                self.state['base_commit_backfilled'] = True
-            self.state.setdefault('base_commit', self._head_commit())
-            self.state.setdefault('reviews_completed', 0)
-            ledger_path = self.run_dir / 'findings-ledger.json'
-            self.state.setdefault('finding_ledger', json.loads(ledger_path.read_text())
-                                  if ledger_path.exists() else [])
-            highest_id = max((int(row['id'][1:]) for row in self.state['finding_ledger']
-                              if re.fullmatch(r'F\d+', row.get('id', ''))), default=0)
-            self.state.setdefault('next_finding_id', highest_id + 1)
-            self.state.setdefault('exec_comparisons', [])
-            self.state.setdefault('review_verdicts', [])
-            self.state.setdefault('reviewed_reviewer_sequences', [])
-            self.state.setdefault('pending_reviewer_result_sequence', None)
-            self.state.setdefault('acceptance_state', 'ACCEPTED' if self.state.get('status') == 'ACCEPTED' else
-                                  'PENDING' if self.state.get('status') == 'DONE' else 'IN_PROGRESS')
-            self.state.setdefault('polish', {'active': False, 'completed': False,
-                                             'author_turns': 0, 'reviewer_turns': 0,
-                                             'fix_used': False})
-            if self.state.get('invocation_budget_version', 0) < 1:
-                self.state['invocations_used'] = self._migrate_invocation_budget()
-                self.state['invocation_budget_version'] = 1
-                self.save()
         else:
             if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 raise ValueError(f'{self.args.action} requires an existing coordinator run')
@@ -2390,7 +2362,7 @@ class Coordinator:
             self.internal.mkdir(exist_ok=True)
             atomic_text(self.context / 'workitem.md', self.workitem.read_text())
             self.state = {
-                'version': 1, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
+                'version': STATE_VERSION, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
                 'workspace': str(self.workspace), 'workitem': str(self.workitem),
                 'config': frozen_config,
                 'sessions': {
@@ -2400,7 +2372,7 @@ class Coordinator:
                 'started': {'author': False, 'reviewer': False}, 'plan_rounds': 0,
                 'exec_rounds': 0, 'plan_reviews': 0, 'exec_reviews': 0,
                 'review_findings': [], 'gate_ran': False,
-                'sequence': 0, 'invocations_used': 0, 'invocation_budget_version': 1,
+                'sequence': 0, 'invocations_used': 0,
                 'turns': [], 'active': None,
                 'started_at': time.time(),
                 'last_end': {}, 'waiting_model_calls': 0, 'base_commit': self._head_commit(),
@@ -2410,8 +2382,6 @@ class Coordinator:
                 'review_verdicts': [],
                 'reviewed_reviewer_sequences': [], 'pending_reviewer_result_sequence': None,
                 'acceptance_state': 'IN_PROGRESS', 'approved_snapshot': None, 'rejected_digests': [],
-                'polish': {'active': False, 'completed': False, 'author_turns': 0,
-                           'reviewer_turns': 0, 'fix_used': False},
                 'test_command_explicit': not isinstance(args.test_command, DefaultTestCommand),   # D09 §3
             }
             if self._pr_pins:
@@ -2427,7 +2397,7 @@ class Coordinator:
                 spec = json.loads((parent / 'evidence/successor-spec.json').read_text())
                 task_hash = hashlib.sha256(self.workitem.read_bytes()).hexdigest()
                 if (old.get('status') != 'ABORTED' or old.get('abort_kind') != 'scope-change' or
-                        not old.get('base_commit') or old.get('base_commit_backfilled') or
+                        not old.get('base_commit') or
                         old.get('scope_chain_depth', 0) >= 1 or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
                         spec['run_dir'] != str(self.run_dir) or spec['workspace'] != str(self.workspace) or
                         frozen_config.get('allowed_models') != old['config'].get('allowed_models') or
@@ -2462,53 +2432,6 @@ class Coordinator:
                     self._capture_security_baseline())
                 self.state['lifecycle']['ignore_coverage_at_start'] = self._start_ignore_coverage()
             self.save()
-
-    def _migrate_invocation_budget(self) -> int:
-        """Conservatively migrate old turn logs, exempting only explicit rate-limit rejections."""
-        turns = self.state.get('turns', [])
-        counted_sequences = set()
-        used = 1 if (self.state.get('active') or self.state.get('uncertain_active')) else 0
-        for receipt in (self.state.get('active'), self.state.get('uncertain_active')):
-            if receipt and type(receipt.get('sequence')) is int:
-                counted_sequences.add(receipt['sequence'])
-        for turn in turns:
-            returncode = turn.get('returncode')
-            if type(returncode) is int and returncode != 0:
-                sequence = turn.get('sequence')
-                phase = str(turn.get('phase', '')).lower()
-                role = turn.get('role', '')
-                if type(sequence) is not int or not role:
-                    used += 1
-                    continue
-                prefix = self.evidence / f'{sequence:03d}-{phase}-{role}'
-                try:
-                    stderr = read_text_tail(prefix.with_suffix('.stderr.log'))
-                except OSError:
-                    stderr = ''
-                try:
-                    stdout = read_text_tail(prefix.with_suffix('.stdout.jsonl'))
-                except OSError:
-                    stdout = ''
-                classified = None
-                if returncode > 0 and not turn.get('timed_out', False):
-                    classified = classify_rate_limit_failure(returncode, stderr, stdout)
-                if classified:
-                    turn['error_kind'] = classified['kind']
-                    turn['reset_hint'] = classified['reset_hint']
-                    turn['invocation_budget_counted'] = False
-                    continue
-            turn['invocation_budget_counted'] = True
-            used += 1
-            if type(turn.get('sequence')) is int:
-                counted_sequences.add(turn['sequence'])
-        for receipt in [*self.state.get('abandoned_turns', []), *self.state.get('spawn_failures', [])]:
-            sequence = receipt.get('sequence')
-            if (receipt.get('invocation_budget_counted', True) and
-                    (type(sequence) is not int or sequence not in counted_sequences)):
-                used += 1
-                if type(sequence) is int:
-                    counted_sequences.add(sequence)
-        return used
 
     def _restore_role_policy(self, explicit) -> dict:
         """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
@@ -2597,18 +2520,17 @@ class Coordinator:
         return getattr(self.args, 'safety_mode', 'strict') != 'efficient'
 
     def _saved_config(self) -> dict:
-        """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
-        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived',
-                'safety_mode': 'strict', **self.state['config']}   # D-EFF: a run saved before safety_mode is strict
+        """The frozen run configuration (a copy)."""
+        return dict(self.state['config'])
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
                 'gate_vendor', 'gate_vendor_source', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
-                'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
+                'gate_prompt', 'reviewer_command', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
+                'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
                 'safety_mode', 'quality_writers', 'advisory_fix_round')
         config = {key: getattr(self.args, key) for key in keys}
         config.update({key: (getattr(self.args, key, None) or '').strip() for key, _ in GUIDANCE_KEYS})   # L105
@@ -2704,14 +2626,7 @@ class Coordinator:
 
     def reviewer_commands(self) -> list[str]:
         current = workitem_reviewer_commands(self.workitem.read_text())
-        frozen = self.state.get('config', {}).get('workitem_reviewer_commands')
-        if frozen is None:
-            if self.args.action != 'permission-probe':
-                reason = 'reviewer allowlist is not frozen; run permission-probe before continuing'
-                self.hold(reason)
-                raise RuntimeError(reason)
-            self.state['config']['workitem_reviewer_commands'] = frozen = current
-            self.save()
+        frozen = self.state['config']['workitem_reviewer_commands']
         if current != frozen:
             reason = 'work-item reviewer allowlist changed; run permission-probe before continuing'
             self.hold(reason)
@@ -3197,11 +3112,7 @@ class Coordinator:
                     raise ValueError('--resume-timeout must be between the saved timeout and '
                                      f'{MAX_RESUME_TIMEOUT_SECONDS} seconds')
                 self.args.timeout = requested_timeout
-            saved_config = self.state.get('config', {})
-            saved_exec_timeout = saved_config.get('exec_turn_timeout')
-            if saved_exec_timeout is None:
-                saved_exec_timeout = resolve_exec_turn_timeout(
-                    None, saved_config.get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
+            saved_exec_timeout = self.state['config']['exec_turn_timeout']
             requested_exec_timeout = (getattr(self.args, 'exec_turn_timeout', None)
                                       if exec_timeout_override else None)
             if requested_exec_timeout is None:
@@ -3218,7 +3129,7 @@ class Coordinator:
         self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
         validate_role_models(self.args)
         for key, _ in GUIDANCE_KEYS:   # L105: fixed at run start; a resume without the flag keeps the saved text
-            if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'].get(key, ''))
+            if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'][key])
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
             self.args.wi_deadline = self.state['config'].get('wi_deadline')
         elif 'wi_deadline' not in self.state['config']:
@@ -3517,7 +3428,7 @@ class Coordinator:
 
     def _progress_phase(self, role: str, phase: str) -> None:
         rounds = self.state.get(f'{phase.lower()}_rounds', 0) + (role == 'author')
-        label = 'gate' if role == 'gate' else 'polish' if phase == 'POLISH' else f'{phase} r{rounds}'
+        label = 'gate' if role == 'gate' else f'{phase} r{rounds}'
         if phase == 'PLAN' and role == 'author' and (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':
             label = 'PLAN rewrite'   # FIELD-11b: the extra turn is no PLAN round
         if label != self._progress_label:
@@ -3533,7 +3444,7 @@ class Coordinator:
 
     def _progress_terminal(self, status: str, reason: str = '') -> None:
         reason = ' '.join(reason.split())
-        if reason.startswith(('implementer: ', 'polish implementer: ')): reason = reason.split(':')[0] + ': (author text withheld)'
+        if reason.startswith('implementer: '): reason = reason.split(':')[0] + ': (author text withheld)'
         self.progress('terminal', status=status, reason=reason[:120], invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
 
     def _progress_dispatch(self, role: str, phase: str, fresh: bool, call):
@@ -3797,7 +3708,7 @@ class Coordinator:
             note = Path(file).expanduser().read_bytes().decode('utf-8') if file else text or ''
             if not note.strip() or '```reviewer-commands' in note: raise ValueError('empty or command-bearing scope note')
             raw = json.loads(self.state_path.read_text())
-            if not raw.get('base_commit') or raw.get('base_commit_backfilled'): raise ValueError('parent has no trustworthy base_commit')
+            if not raw.get('base_commit'): raise ValueError('parent has no trustworthy base_commit')
             task = self.workitem.read_text() + '\n\n## Operator scope change\n' + note + '\n'
             if target.exists():
                 raise ValueError('successor run dir already exists')
@@ -3818,8 +3729,8 @@ class Coordinator:
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
-        atomic_json(config_path, {k: v for k, v in {'quality_writers': 'off', **self._saved_config()}.items()   # D09: a run saved
-                    if k in CONFIGURABLE_DESTS and v is not None and   # before the key is off, and so is its successor
+        atomic_json(config_path, {k: v for k, v in self._saved_config().items()
+                    if k in CONFIGURABLE_DESTS and v is not None and
                     not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:')) and
                     not (k == 'auto_commit' and self.state['config'].get('auto_commit_source'))})   # FIELD-25 gate: re-derived
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
@@ -3869,7 +3780,7 @@ class Coordinator:
         if self.state.get('pending_author_result_sequence') is not None:
             raise ValueError('author READY receipt pending; resume first')
         phase = self.state['phase']
-        if (phase not in ('PLAN', 'EXEC') or self.state['polish']['active'] or self.state.get('active') or
+        if (phase not in ('PLAN', 'EXEC') or self.state.get('active') or
                 self.state.get('uncertain_active') or self.state['invocations_used'] >= self.args.max_invocations or
                 (phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
                 (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit())):
@@ -3933,7 +3844,7 @@ class Coordinator:
                                           'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
         if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
             record['operator_verifications'] = verified
-        if self.state.get('review_only'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25: no commit here
+        record['uncommitted'] = self._uncommitted_files()   # no commit on the lifecycle-off route
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -4005,7 +3916,7 @@ class Coordinator:
                   'override_rejection': False, 'delivery': delivery}
         if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
             record['operator_verifications'] = verified
-        if self.state.get('review_only') and not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25
+        if not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -4186,7 +4097,7 @@ class Coordinator:
             self.hold('rejected-tree', terminal_kind=self.state.get('terminal_hold_kind'))
             raise ValueError(self.state['hold_reason'])
         if (stale_done and not allow_author and self.state.get('acceptance_state') == 'PENDING'
-                and not self.state['polish']['active'] and self.state['approved_snapshot'] != digest):
+                and self.state['approved_snapshot'] != digest):
             old, new = dict(self.state.get('approved_manifest', [])), dict(manifest)
             changed = {k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
             tracked = set(subprocess.check_output(['git', 'ls-files', '-z'], cwd=self.workspace).decode().split('\0'))
@@ -4306,8 +4217,6 @@ class Coordinator:
         if blocking:
             return self.hold('DONE refused with open blocking findings: ' +
                              ', '.join(row['id'] for row in blocking))
-        if lifecycle_stage is None and (routed := self._gate_recheck()):   # FIELD-32
-            return routed
         snapshot, manifest = git_snapshot(self.workspace)
         if expected is not None and snapshot != expected:
             return self.hold('the tree changed before DONE; resume replays EXEC review and gate')
@@ -4327,42 +4236,11 @@ class Coordinator:
         self._progress_terminal('DONE')
         return 'DONE'
 
-    def _gate_recheck(self) -> Optional[str]:
-        """FIELD-32: the legacy-format route never reaches DONE with a tree the gate did not see while gate findings at
-        MEDIUM or above were open after its last pass (a fix made in polish, or in the last EXEC round): one more gate pass
-        on the final tree first. Its blockers follow the normal flow, and on the last round the round-limit HOLD. The worktree
-        lifecycle replays the gate after every write already; report mode has no writer."""
-        if self.state['config'].get('review_report') or worktree_lifecycle.is_worktree(self.state):
-            return None
-        _, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
-        if not gate:
-            return None
-        sequence = gate['sequence']
-        pending = [row['id'] for row in self.state['finding_ledger']   # open right after that pass, whatever happened since
-                   if row.get('source') == 'adversarial-gate' and row['severity'] in ('CRITICAL', 'HIGH', 'MEDIUM')
-                   and row['origin_round'] <= sequence and not any(item.get('status') in ('fixed', 'withdrawn')
-                                                                   and item.get('round', 0) <= sequence
-                                                                   for item in row['status_history'])]
-        tree = git_snapshot(self.workspace)[0]
-        if not pending or tree == gate.get('snapshot_before'):
-            return None
-        self.state.setdefault('gate_rechecks', []).append({'after_gate_sequence': sequence, 'tree': tree, 'findings': pending})
-        self.state.update(next='gate', gate_ran=False)
-        if self.state.get('acceptance_state') == 'PENDING':   # resume --polish of a DONE run: not the approved tree any more,
-            self.state['acceptance_state'] = 'IN_PROGRESS'    # as author_turn does, so the stale-DONE guard lets the gate run
-        limit = self.args.max_invocations - self.state.get('q_reserved', 0)
-        if self.state['invocations_used'] >= limit:
-            return self.hold(f"the tree changed after the last gate pass while its findings {', '.join(pending)} were open, "
-                             f"and no invocation is left for the final gate pass ({self.state['invocations_used']} of {limit} "
-                             'used); raise --max-invocations and resume')
-        self.save()
-        return 'ACTIVE'
-
     def set_effective_verdict(self, verdict: str) -> None:
         if self.state.get('exec_comparisons'):
             self.state['exec_comparisons'][-1]['effective_verdict'] = verdict
 
-    def start_polish_or_done(self, force=False) -> str:
+    def start_polish_or_done(self) -> str:
         if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
             if blocking := self.blocking_open_findings():   # repair round: author fix, then reviewer and a new gate
                 self.state['gate_ran'] = False
@@ -4384,65 +4262,14 @@ class Coordinator:
             self.state['next'] = 'finish'
             self.save()
             return 'ACTIVE'
-        findings = self.nonblocking_open_findings()
-        if (self.args.polish_round == 'off' and not force) or not findings:
-            return self.done()
-        polish = self.state['polish']
-        if polish.get('completed'):
-            return self.done()
-        polish.update({'active': True, 'completed': False, 'author_turns': 0,
-                       'reviewer_turns': 0, 'fix_used': False,
-                       'finding_ids': [row['id'] for row in findings]})
-        self.state['delivered_review'] = self.advisory_message(findings, 'polish-round')
-        self.state['next'] = 'author'
-        self.state['status'] = 'ACTIVE'
-        self.state.pop('hold_reason', None)
-        self.save()
-        return 'ACTIVE'
-
-    def import_gate_findings(self) -> None:
-        existing = {(row['source'], row['file'], row['summary']) for row in self.state['finding_ledger']}
-        for path in sorted(self.evidence.glob('*-gate.receipt.json')):
-            receipt = json.loads(path.read_text())
-            for finding_index, finding in enumerate(receipt.get('answer', {}).get('findings', [])):
-                if str(finding.get('severity', '')).lower() not in ('medium', 'low'):
-                    continue
-                summary = finding.get('recommendation') or str(finding.get('body', '')).splitlines()[0]
-                signature = ('adversarial-gate', finding.get('file', ''), summary)
-                if signature not in existing:
-                    self.record_findings('adversarial-gate', 'EXEC', receipt.get('sequence', 0),
-                                         [finding], finding_indexes=[finding_index])
-                    existing.add(signature)
-                else:
-                    row = next(item for item in self.state['finding_ledger']
-                               if (item['source'], item['file'], item['summary']) == signature)
-                    if not row.get('body'):
-                        row['body'] = finding.get('body', '')
-        self.write_ledger()
+        return self.done()
 
     def resume_polish(self) -> str:
+        """Retain the refusal surface for the option removed in 3.0.0."""
         if self.state['config'].get('review_report'): raise ValueError('report mode refuses resume --polish')
-        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
-        if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
-            return self.rejection_limit_hold()
-        self.refuse_rejected_tree(stale_done=True)
-        if self.state.get('active'):
-            return self.hold('uncertain in-flight CLI turn; inspect evidence before resume --polish')
-        if self.state['status'] != 'DONE':
-            return self.hold('resume --polish requires an older run in DONE state')
-        blocking = self.blocking_open_findings()
-        if blocking:
-            return self.hold('resume --polish rejected with open blocking findings: ' +
-                             ', '.join(row['id'] for row in blocking))
+        if worktree_lifecycle.is_worktree(self.state): raise ValueError('lifecycle refuses resume --polish')
         self._refuse_past_deadline('resume --polish')
-        self.import_gate_findings()
-        self.state['status'] = 'ACTIVE'
-        self.state['phase'] = 'EXEC'
-        self.state['active'] = None
-        self.state['uncertain_active'] = None
-        self.state.pop('hold_reason', None)
-        self.start_polish_or_done(force=True)
-        return self.drive() if self.state['status'] == 'ACTIVE' else self.state['status']
+        raise ValueError('resume --polish was removed in 3.0.0')
 
     def _role_vendor(self, role: str) -> str:
         if role == 'author':
@@ -4527,21 +4354,6 @@ class Coordinator:
     def _author_prompt(self) -> str:
         contract = self.author_control_contract()
         phase = self.state['phase']
-        if self.state['polish']['active']:
-            fixing = self.state['polish']['fix_used'] and self.state['polish']['author_turns'] > 0
-            task = ('Fix the delivered CRITICAL polish regression and rerun relevant checks.' if fixing else
-                    'Polish round: address what is cheap and correct; for every delivered id answer '
-                    'fixed or declined with a one-line reason.')
-            prior = self.state.get('delivered_review', '')
-            return '\n'.join([
-                f'Role: persistent {self.args.author_vendor} implementer. Phase: POLISH.',
-                f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
-                contract,
-                'Delivered advisory findings:\n' + prior,
-                AUTHOR_HISTORY_RULE,
-                'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
-                'Return only JSON matching the supplied schema.',
-            ])
         first = self.state[f'{phase.lower()}_rounds'] == 0
         if phase == 'PLAN':
             task = ('Write a concrete implementation and verification plan as body. Do not edit the workspace.' if first
@@ -4688,7 +4500,7 @@ class Coordinator:
 
     def _review_prompt(self, role: str, snapshot: str) -> str:
         base_phase = self.state['phase']
-        phase = 'POLISH' if self.state['polish']['active'] else base_phase
+        phase = base_phase
         if role == 'shadow':
             return '\n'.join([
                 f'Role: shadow, fresh isolated read-only whole-delta reviewer. Phase: {phase}.',
@@ -4706,14 +4518,14 @@ class Coordinator:
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
             ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json)
-        fresh_note = 'Use your persistent thread history across PLAN, EXEC, and POLISH.'
+        fresh_note = 'Use your persistent thread history across PLAN and EXEC.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
         if self.args.exercise_revisions and reviews == 0:
             exercise = ('Exercise rule: return REVISE on the first PLAN review because Verification was omitted.' if base_phase == 'PLAN'
                         else 'Exercise rule: return REVISE on the first EXEC review for the intentionally omitted bool rejection.')
-        elif self.args.exercise_revisions and base_phase == 'EXEC' and not self.state['polish']['active']:
-            exercise = 'Exercise rule: on this APPROVE include one non-blocking MINOR finding for polish.'
+        elif self.args.exercise_revisions and base_phase == 'EXEC':
+            exercise = 'Exercise rule: on this APPROVE include one non-blocking MINOR advisory finding.'
         if base_phase == 'PLAN':
             inline = ''
             rewrite = self.state.get('plan_history_rewrite') or {}
@@ -5236,9 +5048,9 @@ class Coordinator:
                                 bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
             if saved is None and args.auto_commit:
                 args.auto_commit_source = 'review-only-default'   # an accept the commit checks refuse delivers uncommitted
-        if saved is not None:   # D09 §4: frozen (a run saved before the key: off); only resume refuses a different
-            args.quality_writers_requested = getattr(args, 'quality_writers', None)   # value (_validate_resume_args),
-            args.quality_writers = saved.get('quality_writers') or 'off'   # operator actions keep the saved one
+        if saved is not None:   # D09 §4: frozen; only resume refuses a different value (_validate_resume_args),
+            args.quality_writers_requested = getattr(args, 'quality_writers', None)   # operator actions keep the saved one
+            args.quality_writers = saved['quality_writers']
         elif getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
             args.quality_writers = 'both' if args.review_only else 'off'
 
@@ -6053,7 +5865,7 @@ class Coordinator:
             if receipt['model_identity'] == 'MISMATCH':
                 raise ValueError(f'model identity mismatch: {role} configured {receipt["model"]}, '
                                  f'CLI reported {reported_model}')
-            approves_exec = (phase in ('EXEC', 'POLISH') and
+            approves_exec = (phase == 'EXEC' and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'approve')))
             if approves_exec and self.args.test_command is None and self.state['config'].get('review_report'):   # LG2-b2
@@ -6111,9 +5923,6 @@ class Coordinator:
         atomic_text(path, render_markdown(actor, phase, payload, result['snapshot'], evidence_file))
 
     def author_turn(self) -> None:
-        if self.state['polish']['active']:
-            self.polish_author_turn()
-            return
         if self.state.get('acceptance_state') == 'PENDING': self.state['acceptance_state'] = 'IN_PROGRESS'
         phase = self.state['phase']
         pending = self.state.get('pending_author_result_sequence')
@@ -7305,40 +7114,6 @@ class Coordinator:
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.'])
 
-    def polish_author_turn(self) -> None:
-        polish = self.state['polish']
-        fixing = polish['fix_used'] and polish['author_turns'] > 0
-        schema = author_schema() if fixing else polish_author_schema()
-        result = self.invoke('author', 'POLISH', self._author_prompt(), schema)
-        self.render(result, 'implementer', 'POLISH')
-        answer = result['answer']
-        if answer['status'] == 'HOLD':
-            self.hold('polish implementer: ' + answer['body'])
-            return
-        if fixing:
-            if polish['author_turns'] >= 2:
-                self.hold('polish author turn limit reached')
-                return
-        else:
-            expected = set(polish['finding_ids'])
-            supplied = [row['id'] for row in answer['findings']]
-            if len(supplied) != len(set(supplied)) or set(supplied) != expected:
-                self.hold('polish author response must cover every advisory id exactly once')
-                return
-            by_id = {row['id']: row for row in self.state['finding_ledger']}
-            for response in answer['findings']:
-                finding = by_id[response['id']]
-                finding['author_disposition'] = response['disposition']
-                finding['author_reason'] = response['reason']
-                finding['status_history'].append({
-                    'round': result['sequence'], 'status': 'author-' + response['disposition'],
-                    'evidence': response['reason']})
-            self.write_ledger()
-        polish['author_turns'] += 1
-        self.state['delivered_review'] = ''
-        self.state['next'] = 'reviewer'
-        self.save()
-
     def exec_round_limit(self) -> int:
         """D09 F3 (owner 2026-10-06, "回放单独计数"): a writer replay round and its one fix round have their own fixed
         budget, never --max-exec-rounds. While the replay is open (until DOCS) the limit is the round it started at plus
@@ -7379,9 +7154,6 @@ class Coordinator:
             rounds['used'] = 1 + min(1, max(0, self.state['exec_rounds'] - rounds['start'] - 1))
 
     def reviewer_turn(self) -> None:
-        if self.state['polish']['active']:
-            self.polish_reviewer_turn()
-            return
         phase = self.state['phase']
         failed = (self.state.get('plan_history_rewrite') or {}) if phase == 'PLAN' else {}
         if failed.get('status') == 'failed':   # FIELD-11b: a resume does not draw a new reviewer to get past a failed rewrite
@@ -7474,7 +7246,7 @@ class Coordinator:
             at_phase_limit = True   # as at the final round: one fix round, never a second for advisory findings
         advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
                          and self.findings_are_advisory(answer['full_review'])
-                         and (phase == 'POLISH' or at_phase_limit)
+                         and at_phase_limit
                          and (phase == 'PLAN' or
                               (self.configured_test_succeeded(result['answer'])
                                and not self.configured_test_failed(result['answer'])
@@ -7680,72 +7452,6 @@ class Coordinator:
                         'sequence': receipt['sequence'], 'role': 'shadow',
                         'open_finding_ids': receipt.get('open_finding_ids')}
         return None
-
-    def polish_reviewer_turn(self) -> None:
-        polish = self.state['polish']
-        if polish['reviewer_turns'] >= (2 if polish['fix_used'] else 1):
-            self.hold('polish reviewer turn limit reached')
-            return
-        self.materialize_review_context()
-        snapshot, _ = git_snapshot(self.workspace)
-        prompt = self._review_prompt('reviewer', snapshot)
-        result = self.invoke('reviewer', 'POLISH', prompt, review_schema())
-        answer = result['answer']
-        missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                           result.get('open_finding_ids'), 'persistent-reviewer')
-        if missing:
-            retry = prompt + ('\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
-                              '. This is the one allowed protocol retry; include every open id.')
-            result = self.invoke('reviewer', 'POLISH', retry, review_schema())
-            answer = result['answer']
-            missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                               result.get('open_finding_ids'), 'persistent-reviewer')
-            if missing:
-                self.hold('polish reviewer omitted open finding dispositions after retry: ' +
-                          ', '.join(missing))
-                return
-        reviewer_raw_verdict = answer['status']
-        answer['full_review'] = self.record_findings('persistent-reviewer', 'POLISH',
-                                                     result['sequence'], answer['full_review'])
-        self.render(result, 'supervisor', 'POLISH')
-        self.capture_review_baseline()
-        polish['reviewer_turns'] += 1
-        if answer['status'] == 'HOLD':
-            self.hold('polish reviewer HOLD')
-            return
-        blocking = self.blocking_open_findings()
-        advisory_exit = (answer['status'] == 'REVISE'
-                         and self.findings_are_advisory(answer['full_review'])
-                         and self.configured_test_succeeded(result['answer'])
-                         and not self.configured_test_failed(result['answer'])
-                         and bool(answer.get('self_run_evidence')) and not blocking)
-        if advisory_exit:
-            self.mark_advisory_findings(answer['full_review'])
-            answer['status'] = 'APPROVE'
-        self.record_review_verdict(result['sequence'], 'POLISH', reviewer_raw_verdict,
-                                   'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status'])
-        if answer['status'] == 'APPROVE':
-            if not answer['self_run_evidence']:
-                self.hold('POLISH APPROVE rejected: empty self_run_evidence')
-                return
-            if blocking:
-                self.hold('POLISH APPROVE rejected with open blocking findings: ' +
-                          ', '.join(row['id'] for row in blocking))
-                return
-            polish['active'] = False
-            polish['completed'] = True
-            self.done()
-            return
-        new_critical = [row for row in answer['full_review'] if row['severity'] == 'CRITICAL']
-        if answer['status'] == 'REVISE' and new_critical and not polish['fix_used']:
-            polish['fix_used'] = True
-            self.state['delivered_review'] = json.dumps({
-                'source': 'polish-reviewer', 'status': 'REVISE', 'findings': new_critical,
-            }, ensure_ascii=False)
-            self.state['next'] = 'author'
-            self.save()
-            return
-        self.hold('polish review did not approve; only one CRITICAL regression fix is allowed')
 
     def gate_turn(self) -> None:
         self.materialize_review_context()
@@ -8652,8 +8358,8 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
-        # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
-        # polish_author_turn are reachable only from _drive_loop, which only drive() calls.
+        # The one entry of every real author dispatch (run, resume, reject): author_turn
+        # is reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
         if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
                 and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
@@ -8965,7 +8671,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
-    p.add_argument('--polish-round', choices=['on', 'off'], default='on')
+    # removed in 3.0.0; ignored (hidden deprecated compatibility option, on or off).
+    p.add_argument('--polish-round', choices=['on', 'off'], default='off', help=argparse.SUPPRESS)
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
                    help="'on' (the worktree lifecycle W, the CLI default for a new run) or 'off' (the older route without "
                         "FINISH, POLISH-Q, DOCS and SECURITY); an existing run keeps the mode it was created with")
@@ -8973,8 +8680,6 @@ def parser() -> argparse.ArgumentParser:
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
-    p.add_argument('--skip-globs', action='append', default=[],
-                   help='retired (L107): accepted for old profiles and saved runs, ignored; the gate always runs')
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
     for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
                             ('--review-style', 'tone and rules for every review role (config.md review_style)'),
@@ -9034,7 +8739,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--acknowledge-codex-trust', metavar='RUN_ID',
                    help='after inspecting an uncertain trust-only change, acknowledge this run ID on resume')
     p.add_argument('--polish', action='store_true',
-                   help='with resume, run only the one-time polish round on an older DONE run')
+                   help='removed in 3.0.0; retained only to report a refusal')
     p.add_argument('--skip-probe', action='store_true',
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--accept-unverified-codex-cli', action='store_true',
@@ -9073,7 +8778,7 @@ CONFIGURABLE_DESTS = {
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
-    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
+    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_quality_polish', 'auto_commit', 'external_delivery',
     'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
 }
 
@@ -9082,7 +8787,7 @@ ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_mode
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
-def old_gate_vendor(author_vendor: str) -> str:   # legacy opposite-vendor rule: only saved runs without gate_vendor (ADR-10 M3) and M4
+def old_gate_vendor(author_vendor: str) -> str:   # the opposite-vendor rule, now used only by M4
     return 'claude' if author_vendor == 'codex' else 'codex'
 
 
@@ -9248,7 +8953,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
             p.set_defaults(allowed_models=value)
             continue
         action = actions[key]
-        if action.dest in ('reviewer_command', 'docs_allowlist', 'skip_globs'):
+        if action.dest in ('reviewer_command', 'docs_allowlist'):
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise ValueError(f'config {key} must be an array of strings')
         else:
@@ -9440,6 +9145,15 @@ def main(argv=None) -> int:
     cli_parser = parser()
     if '-h' in raw_argv or '--help' in raw_argv:
         cli_parser.parse_args(raw_argv)
+    early = argparse.ArgumentParser(add_help=False, allow_abbrev=False)   # V3-B6: the old-run gate comes before the
+    early.add_argument('action', nargs='?')                               # profile and any other read of the saved run
+    early.add_argument('--run-dir')
+    early.add_argument('--supersedes')
+    known = early.parse_known_args(raw_argv)[0]
+    if known.action not in ('status', 'stop', 'snapshot') and any(
+            run and saved_state_is_old(run) for run in (known.run_dir, known.supersedes)):
+        print('REFUSED: ' + OLD_STATE_REFUSAL)
+        return 2
     try:
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
     except ValueError as exc:

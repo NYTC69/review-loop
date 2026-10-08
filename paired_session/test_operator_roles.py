@@ -436,22 +436,6 @@ class RoleModelTests(unittest.TestCase):
             with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, 'role models are fixed'):
                 self.h.coordinator(*saved_flags, flag, value)      # run/resume compare every role key
 
-    def test_a_saved_run_without_gate_vendor_derives_it_the_old_way(self):
-        flags = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex']   # default moved by owner decision 2026-09-30
-        self.h.coordinator(*flags)
-        state = self.state()
-        self.assertEqual(state['config']['gate_vendor'], 'codex')
-        del state['config']['gate_vendor']
-        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
-        # The CLI author default (codex) would derive gate=claude; the saved author (claude) says codex.
-        restored = self.restored()
-        self.assertEqual((restored.author_vendor, restored.gate_vendor), ('claude', 'codex'))
-        self.assertEqual(self.h.coordinator(*flags)._role_vendor('gate'), 'codex')
-        with self.assertRaisesRegex(ValueError, 'role models are fixed for this run: gate_vendor'):
-            self.h.coordinator(*flags, '--gate-vendor', 'claude', '--gate-model', 'gpt-6-luna')
-        with self.assertRaisesRegex(ValueError, 'role models are fixed for this run: gate_vendor'):
-            self.restored('--gate-vendor', 'claude', explicit={'gate_vendor'})
-
     def test_a_cli_reported_model_mismatch_holds_the_run(self):
         result = self.h.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                         env={'FAKE_CODEX_MODEL': 'gpt-6-astra'})
@@ -647,22 +631,6 @@ class RoleModelTests(unittest.TestCase):
         self.assertIn('GATE: codex gpt-6.1-sol (gate_vendor_source: default)', result.stdout)
         gates = [t for t in self.state()['turns'] if t['role'] == 'gate']
         self.assertTrue(gates and all(t['vendor'] == 'codex' and t['model'] == 'gpt-6.1-sol' for t in gates))
-
-    def test_a_legacy_saved_run_restores_as_legacy_derived_and_its_successor_keeps_the_derived_vendor(self):   # G-b M2/M3
-        self.h.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
-        state = self.state()
-        del state['config']['gate_vendor'], state['config']['gate_vendor_source']
-        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
-        restored = self.restored()                  # the new default would be claude (the author); the old derivation says codex
-        self.assertEqual((restored.gate_vendor, restored.gate_vendor_source), ('codex', 'legacy-derived'))
-        self.assertIn('Start:', self.main('note', '--scope-change', '--text', 'narrow it').stdout)
-        config_path = self.h.run_dir / 'evidence' / 'successor-config.json'
-        self.assertEqual(json.loads(config_path.read_text())['gate_vendor'], 'codex')
-        target = self.h.run_dir.with_name(self.h.run_dir.name + '-successor')
-        self.main('run', '--workitem', str(self.h.run_dir / 'evidence' / 'successor-workitem.md'),
-                  '--run-dir', str(target), '--supersedes', str(self.h.run_dir), '--config', str(config_path))
-        successor = self.state_at(target)['config']
-        self.assertEqual((successor['gate_vendor'], successor['gate_model']), ('codex', 'gpt-6.1-sol'))
 
     def test_a_gate_model_of_the_other_vendor_is_refused_before_state_unless_the_vendor_is_explicit(self):   # G-b M4
         bob = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6.1-sol']

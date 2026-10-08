@@ -7,7 +7,9 @@ the paired-session skill (the default entry, `docs/v2.10-entry-switch.md`);
 the legacy workflow was removed in v2.13.0 (`entry: legacy` is refused; `/review-loop:legacy` was deleted in v2.13.1).
 
 The coordinator runs one author and reviewer through PLAN/EXEC, then applies
-fresh shadow/adversarial checks and a delivery sequence. It owns isolated run
+fresh shadow/adversarial checks and a delivery sequence. This README owns the
+coordinator CLI rules; host interaction lives in
+[paired-session entry](../docs/protocol/paired-session-entry.md). It owns isolated run
 artifacts, workspace snapshots, invocation limits, and a permission preflight.
 Reviewer receipts record the requested model beside the provider-reported
 identity and classify it as `MATCH`, `MISMATCH`, or `UNREPORTED`. A match requires
@@ -49,13 +51,13 @@ the turn receipt.
 ## MINOR-only review revisions
 
 A persistent reviewer REVISE containing only MINOR/LOW findings is accepted as
-`APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round, or in POLISH. Its raw
+`APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round. Its raw
 REVISE and effective workflow verdict are recorded separately. Those findings
 remain open and are labeled advisory in the findings ledger and report until a
 later reviewer confirms they are fixed; the next phase receives them as
 non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
 loop. CRITICAL, MAJOR, SECURITY-flagged, and observed test failures are never
-downgraded; EXEC and POLISH require a successful observed configured test.
+downgraded; EXEC requires a successful observed configured test.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
@@ -187,8 +189,8 @@ and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 versions defaulted to `off`); a saved run keeps the mode it was created with, so
 `resume`, `accept` and the other run commands need no flag. The paired-session skill
 passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
-`docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` is retired,
-L107: still accepted and frozen for old profiles and saved runs, never read, so it never skips the gate);
+`docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
+in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
 worktree lifecycle of `docs/e2e-6-worktree-lifecycle.md` (D12, ADR-11):
 `lifecycle_mode=on` from the command line or an
@@ -214,6 +216,28 @@ efficient run needs neither and records neither). Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
 
+In 3.0.0, the lifecycle-off advisory POLISH round is removed. The hidden
+`--polish-round on|off` CLI/profile option is deprecated and ignored; it no
+longer enables a POLISH round.
+`--lifecycle-mode off` converges directly to DONE; lifecycle-on POLISH-Q remains available.
+
+`--review-focus TEXT` supplies priorities to the reviewer, shadow and gate;
+`--quality-focus TEXT` supplies POLISH-Q priorities; `--review-style TEXT`
+supplies tone and rules to all review roles. These values are fixed at run start.
+`--author-subagents on|off` (default on) controls a Claude author's Agent tool;
+read-only roles cannot spawn subagents.
+`run --stop-after-plan` HOLDs once after PLAN approval, with `RUN_DIR/plan.md`;
+a later `resume` enters EXEC. `--review-only` refuses `--stop-after-plan`.
+
+`run --review-only` reviews the existing workspace change against `--base REF`
+(default HEAD, an ancestor of HEAD), skips PLAN and may dispatch author fixes.
+Add `--review-report` for a report without writers: it ends at REPORTED, writes
+`review-report.md`, and refuses accept, reject and note. Report-only options are
+`--review-pr-pins FILE` (frozen PR metadata), `--no-test-command` (static, untested
+approval; conflicts with an explicit test command), and `--aspects LIST`
+(comma-separated code,errors,comments,types,tests; default all). See
+[report-mode details](docs/review-pr-port.md).
+
 Quality writers (D09, `docs/d09-cap1-writer-passes.md`): after a clean POLISH-Q,
 `--quality-writers both|simplify|tests|off` (any profile may set it; frozen;
 default `both` for `--review-only`, `off` otherwise) runs a fresh author session
@@ -238,34 +262,6 @@ findings still open (MINOR, LOW, a gate's MEDIUM/LOW), before the quality writer
 dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again. Once per
 run, on its own round outside `--max-exec-rounds`; without invocation headroom it is skipped with the reason.
 Findings still open afterwards stay advisory. The delivery report says ran (N of M addressed), skipped or off.
-
-The disabled E2E candidate-tree module can materialize a clean HEAD into an
-external scratch checkout with a separate scratch Git directory and index. It
-returns the baseline tree OID, frozen parent/ref, live-index hash and whether
-the candidate is on a different filesystem from the other roots. Same-device
-materialization is useful for offline tests but cannot activate lifecycle.
-Immutable review/test checkouts and OS enforcement are separate steps; this
-module is not called by the live route.
-The baseline now rejects hidden/sparse live index state, linked worktree or
-common-Git scratch paths, ambiguous prefixes and transforming Git attributes.
-Each checkout file is compared byte-for-byte to its indexed blob before ingest.
-The offline baseline now batches blob and attribute checks, including legacy
-`crlf`, and checks NFC/casefold aliases at each directory component. Scratch
-Git uses fixed case/symlink settings and pins the source commit under a private
-scratch ref. Offline ingest stages only authorized adds/deletes/modes/symlinks,
-including ignored files, as no-filter blobs in a temporary scratch index. It
-adopts a verified index, returns a manifest/tree OID, and rejects later byte,
-path, ref or live-index drift. Every cumulative manifest path is rechecked
-against the frozen grant, even if the scratch index was changed before ingest.
-The adopted tree is rebuilt from an empty scratch index using independently
-hashed candidate bytes; it never trusts a copied cache-tree or Git replace
-ref. Verification repeats that fresh-index proof before a review may rely on
-the OID. These helpers still require a stopped writer and installed OS denial
-of metadata writes before any real candidate-tree activation.
-It does not dispatch writers or prove installed OS sandboxing. Before any live
-caller may use ingest, it must positively stop the writer process group and
-deny that writer OS access to the scratch Git directory and index. Same-device
-candidates remain ineligible for activation.
 
 ```sh
 bin/paired-session run \
@@ -527,7 +523,7 @@ and test command:
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every non-EXEC-author turn, including
-PLAN, POLISH, persistent/fresh reviewer, shadow and gate turns, and the
+PLAN, persistent/fresh reviewer, shadow and gate turns, and the
 coordinator's own test-command runs. The cap is a one-day sanity bound; it sits
 above the 14400-second EXEC cap because a general timeout above 14400 is a
 supported setting (the EXEC default then stays at 14400). EXEC author turns use the separate `--exec-turn-timeout`; when omitted,
@@ -535,8 +531,7 @@ it defaults to `max(7200, --timeout)` capped at 14400 seconds. On resume, only
 an explicit CLI `--exec-turn-timeout` may raise the saved EXEC timeout, never
 lower it; project-config defaults do not count as an explicit raise. The value
 is saved for later turns and resumes. An already-running turn keeps the timeout
-it received when it started. When resuming legacy run state without this setting, the coordinator derives it
-from `max(7200, saved --timeout)`, capped at 14400 seconds. The existing
+it received when it started. The existing
 `resume --resume-timeout N` option raises the general per-turn timeout up to
 7200 seconds for phases that use `--timeout`.
 
@@ -557,33 +552,43 @@ process group is gone and archives it, then HOLDs with the deadline reason
 instead of dispatching, so `note --scope-change` works afterwards. A wall clock
 that moved back (below) is treated the same way. A `DONE` run past
 its deadline stays acceptable: `accept` and `reject --scope-change` work, while
-`reject` and `resume --polish` are refused because their next dispatch could
-only HOLD. If the wall clock moves back by more than 60 seconds
+`reject` is refused because its next dispatch could only HOLD. If the wall clock moves back by more than 60 seconds
 since the last dispatch, the run HOLDs until the clock is past that time again;
 elapsed time is never refunded. A scope-change successor starts without a
 deadline; pass the time it may use as its own `--wi-deadline`.
 
-A run ending in `DONE` is awaiting explicit operator acceptance. Use `accept` to
+## Acceptance, rejection and round limits
+
+At a current PLAN or EXEC round-limit HOLD, `resume --add-rounds N` (1-10)
+continues the same run with N more rounds of that phase. The saved cap stays;
+`round_extensions` records the addition. A review/gate HOLD resumes with the
+next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
+that change's pending review. This also covers writer rollback HOLDs.
+`run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
+inspect whether `round_limit_hold.hold_reason` equals the current `hold_reason`.
+Other exits are `note --scope-change`, `abort`, or, with lifecycle off only,
+`accept --override-rejection --reason TEXT`. Ordinary notes cannot extend a cap.
+
+A run ending in `DONE` is awaiting explicit operator acceptance. In either lifecycle
+mode, acceptance writes the Chinese `delivery-report.md` only at ACCEPTED and
+prints `REPORT: <path>`. A local commit prints `COMMIT: ...; not pushed`; a
+review-only acceptance leaving changes uncommitted prints `UNCOMMITTED: ...`. Use `accept` to
 record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
 no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope
 feedback to one more EXEC author turn. That turn goes through the configured
 review again and forces a gate review. Rejections are saved and limited to two
 by default; exhausting the limit puts the run on `HOLD`, which can still be
-explicitly accepted without another provider run.
-
-```sh
-bin/paired-session accept --workspace /path/to/worktree \
-  --workitem /path/to/WORKITEM.md --run-dir /path/to/worktree-run-id
-bin/paired-session reject --workspace /path/to/worktree \
-  --workitem /path/to/WORKITEM.md --run-dir /path/to/worktree-run-id \
-  --text 'Please address this in-scope acceptance feedback'
-```
+explicitly accepted without another provider run only with lifecycle off. Lifecycle-on
+acceptance requires DONE; at HOLD, use note and resume when an author turn is
+available, a scope-change successor, or abort.
 
 Before accepting or rejecting, request an operator intent for the exact action.
 It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
 index, state and rejection text hashes; accept refuses a changed approved tree,
-and the mutation rechecks the intent under both leases. `resume --polish` also
-refuses when the workspace no longer matches the snapshot approved at DONE.
+and the mutation rechecks the intent under both leases. `resume --polish` was
+removed in 3.0.0; the option remains parsed only to refuse it. Lifecycle-off
+DONE no longer runs the FIELD-32 final gate recheck; lifecycle-on gate replay
+after writes remains in place.
 
 ```sh
 bin/paired-session accept --intent-only --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN"
@@ -596,13 +601,15 @@ bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" 
 digest covers it, so give the same `--reason` to `accept --intent-only` and to
 `accept`. `accept` refuses `--text` and `--file` (they belong to `reject` and
 `note`). `accept` also refuses while a CLI turn is active or uncertain (in the
-legacy and the worktree lifecycle alike): once its process group is gone,
+lifecycle-off and lifecycle-on routes alike): once its process group is gone,
 settle a probe turn with `permission-probe --retry-uncertain` (a DONE run stays
 DONE) and any other turn with `resume --retry-uncertain`, or abort.
 
-Runs created without the acceptance snapshot and rejected-digest fields refuse
-mutating commands: `run was created by an older paired-session build; start a new run`.
-`status` reads such a run without migrating or modifying its state. Snapshots keep
+A run saved by an older build (review-loop 2.13.x or earlier: state `version` 1)
+refuses state-changing run commands, `abort` included, and is refused as a `--supersedes` parent, before loading its configuration:
+`run was created by an older paired-session build; start a new run, or finish or abort this one with review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)`.
+Such a run is never migrated. `stop` and `snapshot` bypass this version gate.
+`status` and `status --brief` read it without modifying its state. Snapshots keep
 counting tracked and untracked non-ignored files; stale refusals report both path
 counts and tell the operator to restore the approved tree or start a new run.
 
@@ -610,18 +617,18 @@ Operator rejection, including the tree held at the rejection limit, permanently
 records that tree's digest. An unchanged author answer enters `HOLD rejected-tree`
 before review. Status includes the author's rationale, truncated to 2,000 characters,
 and a pointer to that author receipt. The operator may add `note` guidance, change
-the workspace and resume a new author ingest, or explicitly rule on the exact held tree:
+the workspace and resume a new author ingest, or, with lifecycle off only, explicitly rule on the exact held tree:
 
 ```sh
 bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
   --override-rejection --reason 'I inspected the author rationale and accept this tree.'
 ```
 
-The override requires `HOLD rejected-tree`, a non-empty reason and an unchanged
+With lifecycle off only, the override requires `HOLD rejected-tree`, a non-empty
+reason and an unchanged
 held snapshot. It records operator UID/time, reason, digest and rationale pointer
 in state, events and acceptance evidence. The same command is the owner's ruling
-at a PLAN or EXEC round-limit HOLD (`PLAN round limit reached`, `EXEC round limit
-reached`, `EXEC round limit reached after adversarial gate`; RLO, v2.9.5): the
+at a current PLAN or EXEC round-limit HOLD (lifecycle off only): the
 HOLD records its tree, the override needs that HOLD to be the current one (any
 later HOLD cause, an operator-rejected tree, a changed tree, an active or
 uncertain turn or an empty reason is refused), and `acceptance.json` adds the
@@ -653,11 +660,13 @@ Blocking findings without a label never HOLD; they are counted in
 `unlabeled_blocking_findings` (run total, and per reviewer/gate turn receipt) so a
 reviewer that never labels is visible.
 
-An idle `HOLD` run waiting for its next author turn accepts an in-scope
-clarification with `note --text '...'` or `note --file /path/to/note`. It reaches
-that author turn on `resume`; a newer note replaces a pending one. Notes are
-refused while waiting for a reviewer/gate and on a
-DONE run (use `reject`). The note cannot authorize new scope. For a scope
+An idle `HOLD` run accepts an in-scope clarification with `note --text '...'`
+or `note --file /path/to/note` when an author turn is available in PLAN or EXEC.
+An EXEC HOLD waiting for its reviewer also accepts a note for the next author
+turn; review roles never receive it. A newer note replaces a pending one.
+Notes are refused at PLAN-reviewer or gate waits, round-limit HOLDs, and DONE
+(use `reject`). A note file must be outside the workspace and run directory.
+The note cannot authorize new scope. For a scope
 change, use `note --scope-change --text/--file` on an idle active or ordinary
 HOLD run, or `reject --scope-change` before accepting a DONE run (also allowed
 after the rejection limit). The old run ends as `ABORTED(scope-change)` and
@@ -684,7 +693,7 @@ The record (command, cwd inside the workspace, exit code, log sha256, time,
 operator UID and a non-empty note) is bound to the current workspace snapshot
 digest; the log, which must lie outside the workspace and run dir and match
 `--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
-EXEC and POLISH reviewer, shadow and gate prompts show the command, cwd, exit
+EXEC reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
 operator-verified evidence for this exact tree. It is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the
@@ -700,12 +709,9 @@ reason only). `accept` lists the records still current for the accepted tree in
 ACCEPTED, or when the shown text would fail the fresh-role history scan. It is
 evidence only: no verdict is derived from it.
 
-Each run now records an item UUID. A successor inherits it and copies the
-parent's OPEN blocking findings into its protected successor spec and state,
-with their original run/ID provenance. These records do not enter fresh-role
-prompts or change the legacy reviewer gate. A legacy successor spec lacking
-the item fields is marked `item_blockers_complete=false`; it cannot later be
-treated as verified lifecycle handoff evidence.
+Each run records an item UUID. A scope-change successor inherits it and copies
+the parent's OPEN blocking findings into its protected successor spec and state,
+with their original run/ID provenance. These records do not enter fresh-role prompts.
 
 Per-request provider usage is copied into the active turn receipt as stream
 events arrive. If a provider turn fails, times out, or is killed after reporting
@@ -726,6 +732,24 @@ bin/paired-session resume \
   --run-dir /path/to/worktree-run-id \
   --test-command 'python3 -m unittest'
 ```
+
+`run`, `resume`, `reject` and `permission-probe` support `--detach`: the caller
+returns after launch, and the coordinator continues with a separate log. `stop`
+sends SIGTERM to that detached coordinator and stops its active CLI child;
+inspect the interrupted turn before retrying. See [detached commands](docs/detach.md).
+Plain `status` reads state under the run lease; while a coordinator owns it,
+it prints `HOLD: another coordinator currently owns this run` and exits 2.
+Use lease-free `status --brief [N]` (default 20 events) during a run.
+Progress is saved to `RUN_DIR/progress.jsonl`; `--quiet-progress` suppresses
+live event lines while keeping that file and the final status line.
+
+Exit codes: `run`, `resume` and `reject` return 0 at DONE, ACCEPTED or REPORTED,
+and 2 otherwise. A permission probe returns 0 on PASS, 2 on failure.
+Completed `accept` calls return 0 even if delivery returns HOLD; inspect the
+printed status. Successful operator actions and reads return 0; refusals and
+lease/OS errors return 2. `abort` returns 2 after putting a run on HOLD, or 0 for an already
+ACCEPTED, CLOSED or REPORTED run. Detached launch success returns 0 before the
+run finishes; a stopped detached command exits 130.
 
 `bin/paired-session --help` lists all supported options. `snapshot` is read-only.
 Each run directory belongs to one task and must not be shared between tasks.

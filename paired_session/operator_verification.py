@@ -2,7 +2,7 @@
 
 The operator attaches a check it ran outside the author sandbox (command, cwd, exit code, log copy, note). The record is
 bound to the workspace snapshot digest, voided for good once the tree differs or its log copy changes, and shown (without
-the note) to the EXEC/POLISH reviewer, shadow and gate prompts only for that exact tree. It is prompt evidence only: no
+the note) to the EXEC reviewer, shadow and gate prompts only for that exact tree. It is prompt evidence only: no
 verdict path reads it."""
 import copy
 import hashlib

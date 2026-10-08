@@ -50,36 +50,10 @@ class D09C1aTests(unittest.TestCase):
         self.assertEqual(rc.Coordinator(self.args(action='resume')).state['config']['quality_writers'], 'tests')   # kept
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: quality_writers'):
             rc.Coordinator(self.args('--quality-writers', 'off', action='resume'))
-        self.created(name='saved-before-the-key')   # a run saved before C1-a has no quality_writers: it is off
-        saved = self.state()
-        del saved['config']['quality_writers']
-        (self.run_dir / 'state.json').write_text(json.dumps(saved))
-        with self.assertRaisesRegex(ValueError, 'resume configuration differs: quality_writers'):
-            rc.Coordinator(self.args('--quality-writers', 'both', action='resume'))
-        for extra in ((), ('--quality-writers', 'off')):
-            self.assertEqual(rc.Coordinator(self.args(*extra, action='resume')).args.quality_writers, 'off')
         self.assertIs(self.created(name='explicit-test').state['test_command_explicit'], True)   # the harness passes one
         argv = [arg for arg in self.command('--lifecycle-mode', 'on')[2:] if arg not in ('--test-command', 'python3 -m unittest')]
         argv[argv.index('--run-dir') + 1] = str(self.root / 'default-test')
         self.assertIs(rc.Coordinator(rc.parser().parse_args(argv)).state['test_command_explicit'], False)
-
-    def test_a_successor_of_a_run_saved_before_the_key_stays_off(self):   # a review-only parent would otherwise give both
-        (self.workspace / 'change.py').write_text(CODE)
-        done = self.run_coordinator('--review-only')
-        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
-        saved = self.state()
-        del saved['config']['quality_writers']
-        (self.run_dir / 'state.json').write_text(json.dumps(saved))
-        parent_dir = self.run_dir
-        parent = rc.Coordinator(rc.parser().parse_args(self.command('--review-only')[2:]))
-        parent.args.action = 'reject'
-        start = parent.scope_change('Also reject floats.', None).split('Start: ', 1)[1].split()
-        option = lambda name: start[start.index(name) + 1]
-        self.assertEqual(json.loads(Path(option('--config')).read_text())['quality_writers'], 'off')
-        self.run_dir, self.workitem = Path(option('--run-dir')), Path(option('--workitem'))
-        argv = self.command('--config', option('--config'), '--supersedes', str(parent_dir))[2:]
-        child = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv)).state
-        self.assertEqual((child['config']['review_only'], child['config']['quality_writers']), (True, 'off'))
 
     def test_operator_actions_keep_the_saved_value_after_a_profile_change(self):   # gate d09-c1a BLOCKER 1
         done = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60')
@@ -87,12 +61,8 @@ class D09C1aTests(unittest.TestCase):
         profile = self.workspace / '.review-loop' / 'paired-session.json'   # ignored by the covering .gitignore
         profile.parent.mkdir()
         profile.write_text(json.dumps({'quality_writers': 'both'}))   # the operator follows the report hint mid-run
-        for run in ('new', 'saved-before-the-key'):
+        for run in ('new',):
             with self.subTest(run=run):
-                if run == 'saved-before-the-key':
-                    saved = self.state()
-                    del saved['config']['quality_writers']
-                    (self.run_dir / 'state.json').write_text(json.dumps(saved))
                 for action in ('note', 'attach-verification', 'reject', 'accept'):   # built: no refusal, the saved value
                     argv = self.command('--lifecycle-mode', 'on', '--max-invocations', '60')[2:]
                     argv[0] = action

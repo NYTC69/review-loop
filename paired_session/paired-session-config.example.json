@@ -10,7 +10,6 @@
   "gate_effort": "medium",
   "shadow": "on",
   "adversarial_gate": "on",
-  "polish_round": "on",
   "lifecycle_mode": "on",
   "docs_allowlist": [],
   "skip_quality_polish": false,
