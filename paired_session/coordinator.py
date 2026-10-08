@@ -1807,7 +1807,7 @@ def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path,
                      writable_roots: tuple = (), configured: tuple = (), fallbacks: Optional[list] = None) -> Optional[str]:
     """v297-eg-wire, the hybrid (owner 2026-10-04): the typed-operation evidence guard (evidence_guard.py) decides every call it can
     resolve: PROTECTED holds, ALLOW passes even where the old substring match would have held. A call it cannot resolve falls back to
-    the pre-v2.9.7 substring guard, exactly as before, and its reason (cut to 300 characters) is appended to `fallbacks` (the receipt
+    the legacy substring guard with bounded evidence-path matching, and its reason (cut to 300 characters) is appended to `fallbacks` (the receipt
     counts them). Secret-named variables never expand, so no secret value reaches a reason; other values may, as in the stdout evidence.
     Known limit: the guard runs after the turn, so a symlink made and removed inside the turn is not seen."""
     ctx = evidence_guard.Context(evidence, rounds, cwd, {k: v for k, v in (env or {}).items() if not SECRET_ENV_NAME.search(k)},
@@ -1869,15 +1869,21 @@ def _saved_configured_commands(run_dir: Path) -> list:
 
 
 def _legacy_sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path) -> Optional[str]:
-    """The pre-v2.9.7 substring guard, unchanged: the hybrid's fallback for calls the typed guard cannot resolve."""
-    evidence_text = str(evidence)
-    rounds_text = str(rounds)
+    """Literal run prefixes, bare evidence paths and role isolation for unresolved calls."""
+    prefixes = tuple((str(spelling), reason)
+                     for directory, reason in ((evidence, 'evidence directory'), (rounds, 'review output directory'))
+                     for spelling in {directory.absolute(), directory.resolve()})
     for call in calls:
         serialized = json.dumps(call.get('input', {}), ensure_ascii=False)
-        if evidence_text in serialized or re.search(r'(?<![A-Za-z])evidence/', serialized):
+        for prefix, reason in prefixes:
+            # Retain literal absolute/resolved spellings of the protected run directories.
+            if prefix in serialized:
+                return reason
+        # Bare paths can refer to the run after an unresolved cd/HOME change; nested
+        # workspace paths such as tests/evidence/ and pn/evidence/ are not evidence reads.
+        # A parent hop (including x/../evidence/) can still land in the run directory.
+        if re.search(r'(?:(?<![\w/.-])(?:\./|~/)?|(?<=\.\./))evidence/', serialized):
             return 'evidence directory'
-        if rounds_text in serialized:
-            return 'review output directory'
         if role in ('author', 'reviewer', 'gate') and re.search(r'rounds/[^"\s]*(?:shadow|permission-probe)-', serialized):
             return 'shadow output'
         if role in ('author', 'reviewer', 'shadow', 'probe') and re.search(r'rounds/[^"\s]*adversarial-', serialized):
@@ -4725,7 +4731,10 @@ class Coordinator:
             workitem_text = ''   # No frozen work item yet at run creation.
 
         def workitem_name(whole, text):
-            return bool(BARE_MODEL_NAME_RE.fullmatch(whole) and repo_word(whole).search(workitem_text)
+            named = repo_word(whole).search(workitem_text) or re.search(
+                r'(?<![\w./-])(?:[A-Za-z0-9]+-)+' + re.escape(whole) +
+                r'(?:-[A-Za-z0-9]+)*(?![\w/-]|\.[\w])', workitem_text, re.I)
+            return bool(BARE_MODEL_NAME_RE.fullmatch(whole) and named
                         and name != 'context/plan.md' and self._plan_tool_name(whole, text))
 
         def mask(text, exists):
@@ -6153,9 +6162,11 @@ class Coordinator:
         prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
                   f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff: '
                   'the docs must describe the implemented behavior, APIs and logic accurately, and the '
-                  'changed code comments must match the code. A documentation statement that is false or not supported '
-                  'by the diff or an observed result (for example a claimed test or check that does not exist) is at '
-                  'least MAJOR. Do not modify any file. Documentation written by the '
+                  'changed code comments must match the code. A false or unsupported statement written by the DOCS stage '
+                  '(in the paths listed below as Documentation written by the DOCS stage) is at least MAJOR. '
+                  'Any claimed test, check or result that does not exist is also at least MAJOR, regardless of who '
+                  'wrote it. Judge other inaccurate documentation with normal severity judgement. '
+                  'Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
                   f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'
                   'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))

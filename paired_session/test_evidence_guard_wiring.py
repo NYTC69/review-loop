@@ -31,7 +31,11 @@ class EvidenceGuardWiringTests(unittest.TestCase):
         for command in ('cat tests/evidence/a.txt', 'pytest -q tests/evidence/', "rg -n 'evidence/|rounds/' src", "grep -R 'evidence/' tests",
                         f"rg -n '{self.evidence}' src"):
             with self.subTest(command=command):
-                self.assertIsNotNone(rc._legacy_sensitive_access([{'tool': 'Bash', 'input': {'command': command}}], 'reviewer', self.evidence, self.rounds))
+                legacy = rc._legacy_sensitive_access([{'tool': 'Bash', 'input': {'command': command}}], 'reviewer', self.evidence, self.rounds)
+                if 'tests/evidence/' in command:
+                    self.assertIsNone(legacy)
+                else:
+                    self.assertIsNotNone(legacy)
                 self.assertIsNone(self.access(command))
         result = self.h.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--test-command', 'ls tests/evidence/',   # relative: the call's cwd
                                         env={'FAKE_SENSITIVE_READ': str(self.h.workspace / 'tests' / 'evidence' / 'a.txt')})
@@ -78,7 +82,7 @@ class EvidenceGuardWiringTests(unittest.TestCase):
                 self.assertEqual(len(fallbacks), 2)
 
     def test_a_codex_native_command_has_no_known_cwd(self):   # its event carries no workdir: relative operands fall back
-        result = self.h.run_coordinator('--shadow', 'off', '--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol', '--test-command', 'ls tests/evidence/')
+        result = self.h.run_coordinator('--shadow', 'off', '--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol', '--test-command', 'ls evidence/')
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         state = json.loads((self.h.run_dir / 'state.json').read_text())
         self.assertIn('gate accessed isolated evidence directory', state['hold_reason'])
@@ -114,10 +118,10 @@ class EvidenceGuardWiringTests(unittest.TestCase):
             fallbacks = []
             self.assertEqual(rc.sensitive_access([call], 'author', self.evidence, self.rounds, cwd, {}, (self.h.workspace,), (), fallbacks), desired)
             self.assertEqual(fallbacks, [])   # decided by the guard on the proven cwd
-        self.assertEqual(rc._legacy_sensitive_access(calls[1:], 'author', self.evidence, self.rounds), 'evidence directory')   # today: a false HOLD
+        self.assertIsNone(rc._legacy_sensitive_access(calls[1:], 'author', self.evidence, self.rounds))   # workspace false HOLD fixed
 
     def test_an_unproven_codex_cwd_behaves_exactly_as_today(self):
-        same_name, other = 'cat tests/evidence/a.txt', str(self.h.root.as_uri())
+        same_name, other = 'cat evidence/a.txt', str(self.h.root.as_uri())
         for label, items, commands, kw in (
                 ('another turn', [{'command': same_name, 'turn': 'T2'}], [same_name], {}),
                 ('outside the window', [{'command': same_name, 'at': '2026-09-21T00:00:09Z'}], [same_name], {}),
@@ -173,7 +177,7 @@ class EvidenceGuardWiringTests(unittest.TestCase):
         inside = self.h.workspace / 'codex.cache'
         inside.mkdir()
         (inside / 'config.toml').write_text((self.h.test_home / '.codex' / 'config.toml').read_text())
-        result = self.h.run_coordinator('--shadow', 'off', '--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol', '--test-command', 'ls tests/evidence/',
+        result = self.h.run_coordinator('--shadow', 'off', '--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol', '--test-command', 'ls evidence/',
                                         env={'FAKE_CODEX_ROLLOUT_CWD': '1', 'CODEX_HOME': str(inside)})
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertTrue(sorted((inside / 'sessions').glob('rollout-*.jsonl')))   # the record exists, and is not trusted

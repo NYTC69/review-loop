@@ -12,7 +12,7 @@ class DocsObservedFactsTests(unittest.TestCase):
         for docs_file in ('CHANGELOG.md', None):
             with self.subTest(docs_file=docs_file):
                 prompt = wl.docs_prompt(docs_file, ['README.md'], 'run-v302w', 'Update docs.')
-                self.assertIn('Write only facts supported by the diff, the worktree or a command you ran in this turn',
+                self.assertIn('Write only facts supported by the diff, the worktree, a command you ran or results you read yourself in this turn',
                               prompt)
                 self.assertIn('never claim tests, checks or results that were not observed', prompt)
                 self.assertNotIn('review results', prompt)
@@ -40,8 +40,8 @@ class DocsObservedFactsTests(unittest.TestCase):
         role, phase, prompt, _ = invoke.call_args.args
         self.assertEqual((role, phase), ('reviewer', 'DOCS'))
         self.assertTrue(invoke.call_args.kwargs['fresh'])
-        self.assertIn('A documentation statement that is false or not supported by the diff or an observed result '
-                      '(for example a claimed test or check that does not exist) is at least MAJOR.', prompt)
+        self.assertIn('A false or unsupported statement written by the DOCS stage '
+                      '(in the paths listed below as Documentation written by the DOCS stage) is at least MAJOR.', prompt)
 
 
 if __name__ == '__main__':
