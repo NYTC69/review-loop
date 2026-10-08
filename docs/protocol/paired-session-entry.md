@@ -351,8 +351,10 @@ counts at SECURITY; the start warning then needs no restore or abort.
 ## DONE and acceptance
 
 With the saved `config.lifecycle_mode` `on`, DONE means the security stage
-passed and acceptance is pending; with `off` (a run started before v2.10.0),
-DONE has no finish, quality-polish, docs or security stages, so say so. Report
+passed and acceptance is pending; with `off`, convergence goes straight to
+DONE without finish, quality-polish, docs or security stages, so say so.
+The old off-route POLISH round is removed in 3.0.0; the hidden CLI/profile
+option `--polish-round off` remains an accepted no-op. Report
 the stage receipts, open findings, operator verification records still valid
 for the tree, and whether the run's frozen `config.auto_commit` (the operator
 profile, the CLI or the review-only default) will make one local commit on

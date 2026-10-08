@@ -49,13 +49,13 @@ the turn receipt.
 ## MINOR-only review revisions
 
 A persistent reviewer REVISE containing only MINOR/LOW findings is accepted as
-`APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round, or in POLISH. Its raw
+`APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round. Its raw
 REVISE and effective workflow verdict are recorded separately. Those findings
 remain open and are labeled advisory in the findings ledger and report until a
 later reviewer confirms they are fixed; the next phase receives them as
 non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
 loop. CRITICAL, MAJOR, SECURITY-flagged, and observed test failures are never
-downgraded; EXEC and POLISH require a successful observed configured test.
+downgraded; EXEC requires a successful observed configured test.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
@@ -213,6 +213,10 @@ a strict run refuses
 efficient run needs neither and records neither). Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
+
+In 3.0.0, the lifecycle-off advisory POLISH round is removed. The hidden
+`--polish-round off` CLI/profile option is accepted as a no-op; other values are refused.
+`--lifecycle-mode off` converges directly to DONE; lifecycle-on POLISH-Q remains available.
 
 Quality writers (D09, `docs/d09-cap1-writer-passes.md`): after a clean POLISH-Q,
 `--quality-writers both|simplify|tests|off` (any profile may set it; frozen;
@@ -522,7 +526,7 @@ and test command:
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every non-EXEC-author turn, including
-PLAN, POLISH, persistent/fresh reviewer, shadow and gate turns, and the
+PLAN, persistent/fresh reviewer, shadow and gate turns, and the
 coordinator's own test-command runs. The cap is a one-day sanity bound; it sits
 above the 14400-second EXEC cap because a general timeout above 14400 is a
 supported setting (the EXEC default then stays at 14400). EXEC author turns use the separate `--exec-turn-timeout`; when omitted,
@@ -681,7 +685,7 @@ The record (command, cwd inside the workspace, exit code, log sha256, time,
 operator UID and a non-empty note) is bound to the current workspace snapshot
 digest; the log, which must lie outside the workspace and run dir and match
 `--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
-EXEC and POLISH reviewer, shadow and gate prompts show the command, cwd, exit
+EXEC reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
 operator-verified evidence for this exact tree. It is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the

@@ -254,17 +254,7 @@ def main():
     elif vendor == 'claude':
         session = str(uuid.uuid4())
 
-    if 'Role: persistent' in prompt and 'Phase: POLISH' in prompt:
-        if 'for every delivered id answer' in prompt:
-            ids = sorted(set(__import__('re').findall(r'\bF\d{3,}\b', prompt)))
-            disposition = 'declined' if os.environ.get('FAKE_POLISH_DECLINE') else 'fixed'
-            answer = {'status': 'READY', 'body': 'Polish choices completed.',
-                      'findings': [{'id': finding_id, 'disposition': disposition,
-                                    'reason': 'deferred by fake' if disposition == 'declined'
-                                              else 'cheap fake fix applied'} for finding_id in ids]}
-        else:
-            answer = {'status': 'READY', 'body': 'Fixed the polish regression.'}
-    elif 'Role: persistent' in prompt:
+    if 'Role: persistent' in prompt:
         if 'Phase: PLAN' in prompt:
             if os.environ.get('FAKE_PLAN_MUTATE'):
                 (Path.cwd() / 'plan-leak.txt').write_text('forbidden during plan\n')
@@ -444,7 +434,7 @@ def main():
         phase = ('SECURITY' if 'Q-SECURITY:' in prompt else
                  'Q' if 'Q-FINAL:' in prompt or 'Phase: Q.' in prompt else
                  'SECURITY' if 'Phase: SECURITY' in prompt else
-                 'POLISH' if 'Phase: POLISH' in prompt else
+                 'POLISH-Q' if 'Phase: POLISH-Q' in prompt else
                  'DOCS' if 'Role: docs reviewer, fresh. Phase: DOCS.' in prompt else
                  'EXEC' if 'Phase: EXEC' in prompt else 'PLAN')
         configured_test = ('Run this test command exactly as written in one Bash call: '
@@ -502,10 +492,6 @@ def main():
             revise = True
             findings = [{'severity': 'MINOR', 'security': True, 'file': 'sum_ints.py',
                          'summary': 'security-specific note', 'failure_scenario': 'unsafe input path'}]
-        if role == 'reviewer' and phase == 'POLISH' and os.environ.get('FAKE_POLISH_MINOR_REVISE'):
-            revise = True
-            findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
-                         'summary': 'advisory polish item', 'failure_scenario': 'style remains untidy'}]
         if os.environ.get('FAKE_PLAN_CODE_FINDING') and phase == 'PLAN':
             revise = True
             findings = [{'severity': 'CRITICAL', 'file': 'workspace',
@@ -528,12 +514,6 @@ def main():
             findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
                          'summary': 'cheap advisory cleanup',
                          'failure_scenario': 'style remains untidy'}]
-        if (os.environ.get('FAKE_POLISH_CRITICAL') and 'Phase: POLISH' in prompt and
-                'polish regression' not in prompt):
-            revise = True
-            findings = [{'severity': 'CRITICAL', 'file': 'sum_ints.py',
-                         'summary': 'polish regression',
-                         'failure_scenario': 'polish broke bool rejection'}]
         specialist = prompt.split('Role: specialist ', 1)[1].split(',', 1)[0] if 'Role: specialist ' in prompt else None
         block_once = os.environ.get('FAKE_SPECIALIST_BLOCK_ONCE')
         if (specialist and specialist == os.environ.get('FAKE_SPECIALIST_BLOCK') and   # worktree-lifecycle POLISH-Q
@@ -549,8 +529,7 @@ def main():
             revise = True
             findings = [{'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs describe the wrong behavior',
                          'failure_scenario': 'a reader trusts the stale changelog entry'}]
-        disposition = ('still_open' if os.environ.get('FAKE_POLISH_DECLINE') and
-                       'Phase: POLISH' in prompt else 'fixed')
+        disposition = 'fixed'
         prior = [{'id': finding_id, 'disposition': disposition,
                   'evidence': 'fake verified disposition'} for finding_id in open_ids]
         docs_open = os.environ.get('FAKE_DOCS_FINDING_STILL_OPEN_ONCE')   # the EXEC reviewer keeps a docs finding
@@ -576,11 +555,8 @@ def main():
         if phase == 'EXEC' and os.environ.get('FAKE_EXEC_NO_EVIDENCE'):   # an approval that lists no self-run evidence
             extra_observed_commands = [*answer['self_run_evidence'], *(extra_observed_commands or [])]
             answer['self_run_evidence'] = []
-        if 'Phase: POLISH' in prompt:
+        if 'Phase: POLISH-Q' in prompt:
             answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
-            if os.environ.get('FAKE_POLISH_NO_EVIDENCE'):
-                answer['self_run_evidence'] = []
-                extra_observed_commands = [{'command': configured_test or 'python3 -m unittest'}]
             once = os.environ.get('FAKE_SPECIALIST_NO_TOOLS_ONCE')
             if specialist and (specialist in os.environ.get('FAKE_SPECIALIST_NO_TOOLS', '').split(',') or
                                (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)):

@@ -1607,19 +1607,6 @@ sys.exit(result.returncode)
         self.assertEqual(after['approved_snapshot'], before['approved_snapshot'])
         self.assertEqual(after['sequence'], before['sequence'])
 
-    def test_polish_hold_after_author_write_remains_resumable(self):
-        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
-                                         '--polish-round', 'off')
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        flags = ('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
-        co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
-        (self.workspace / 'polish-output.txt').write_text('polish author output')
-        co.state.update(status='HOLD', next='reviewer', hold_reason='polish reviewer failed')
-        co.state['polish'].update(active=True, completed=False)
-        co.save()
-        with patch.object(co, 'drive', return_value='HOLD') as drive:
-            self.assertEqual(co.resume(), 'HOLD')
-        drive.assert_called_once_with()
 
     def test_abort_after_changed_done_tree_cannot_reapprove_it(self):
         completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
@@ -4223,9 +4210,6 @@ sys.exit(result.returncode)
         self.assertIn('(advisory)', (self.run_dir / 'findings-ledger.md').read_text())
         self.assertIn('advisory exec polish', (self.run_dir / 'findings-ledger.md').read_text())
         self.assertIn('APPROVE_WITH_ADVISORY', (self.run_dir / 'review-comparison.md').read_text())
-        polish_prompt = next(path.read_text() for path in (self.run_dir / 'evidence').glob(
-            '*-polish-author.prompt.txt'))
-        self.assertIn('advisory exec polish', polish_prompt)
         count = len(state['turns'])
         command = self.command('--shadow', 'off', '--adversarial-gate', 'off',
                                '--max-exec-rounds', '1', '--skip-probe')
@@ -4276,18 +4260,6 @@ sys.exit(result.returncode)
         self.assertEqual(len(completed['review_verdicts']), 1)
         self.assertEqual(completed['review_verdicts'][0]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
 
-    def test_polish_minor_revise_at_reviewer_cap_is_advisory_done(self):
-        result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1',
-                                           'FAKE_POLISH_MINOR_REVISE': '1'})
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertTrue(state['polish']['completed'])
-        self.assertEqual(state['polish']['reviewer_turns'], 1)
-        polish = next(row for row in state['review_verdicts'] if row['phase'] == 'POLISH')
-        self.assertEqual((polish['reviewer_raw_verdict'], polish['effective_verdict']),
-                         ('REVISE', 'APPROVE_WITH_ADVISORY'))
-        self.assertTrue(any(row.get('advisory') and row['status'] == 'open'
-                            for row in state['finding_ledger']))
 
     def test_mixed_minor_major_does_not_take_advisory_exit(self):
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
@@ -4334,14 +4306,6 @@ sys.exit(result.returncode)
         self.assertEqual(state['status'], 'HOLD')
         self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
 
-    def test_polish_minor_revise_requires_nonempty_self_run_evidence(self):
-        result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1',
-                                           'FAKE_POLISH_MINOR_REVISE': '1',
-                                           'FAKE_POLISH_NO_EVIDENCE': '1'})
-        self.assertEqual(result.returncode, 2)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['status'], 'HOLD')
-        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
 
     def test_last_plan_minor_revise_advances_as_approve(self):
         result = self.run_coordinator('--max-plan-rounds', '1',
@@ -4394,24 +4358,6 @@ sys.exit(result.returncode)
             self.assertIn('node verify-real-data.mjs', prompt)
         self.assertIn('node verify-real-data.mjs', co.reviewer_flags()['reviewer_commands'])
 
-    def test_polish_round_decline_and_critical_fix_are_bounded(self):
-        declined = self.run_coordinator('--exercise-revisions', env={'FAKE_POLISH_DECLINE': '1'})
-        self.assertEqual(declined.returncode, 0, declined.stderr + declined.stdout)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertTrue(state['polish']['completed'])
-        self.assertEqual((state['polish']['author_turns'], state['polish']['reviewer_turns']), (1, 1))
-        self.assertEqual(sum(t['phase'] == 'POLISH' and t['role'] == 'shadow' for t in state['turns']), 0)
-        open_report = (self.run_dir / 'open-findings.md').read_text()
-        self.assertIn('declined: deferred by fake', open_report)
-
-        self.run_dir = self.root / 'critical-polish'
-        fixed = self.run_coordinator('--exercise-revisions', env={'FAKE_POLISH_CRITICAL': '1'})
-        self.assertEqual(fixed.returncode, 0, fixed.stderr + fixed.stdout)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertTrue(state['polish']['fix_used'])
-        self.assertEqual((state['polish']['author_turns'], state['polish']['reviewer_turns']), (2, 2))
-        self.assertEqual(sum(t['phase'] == 'POLISH' for t in state['turns']), 4)
-        self.assertEqual(sum(t['role'] == 'gate' for t in state['turns']), 1)
 
     def test_nonblocking_gate_finding_gets_id_and_enters_polish(self):
         result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1'})
@@ -4421,10 +4367,6 @@ sys.exit(result.returncode)
                      if row['source'] == 'adversarial-gate']
         self.assertEqual(len(gate_rows), 1)
         self.assertRegex(gate_rows[0]['id'], r'^F\d{3}$')
-        self.assertTrue(state['polish']['completed'])
-        polish_author = next(path.read_text() for path in
-                             (self.run_dir / 'evidence').glob('*-polish-author.prompt.txt'))
-        self.assertIn(gate_rows[0]['id'], polish_author)
 
     def test_large_observed_output_is_not_delivered_and_round_render_is_bounded(self):
         result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
@@ -6537,7 +6479,6 @@ sys.exit(result.returncode)
         self.assertEqual(state['plan_rounds'], 2)
         self.assertEqual(state['exec_rounds'], 2)
         self.assertTrue(state['gate_ran'])
-        self.assertTrue(state['polish']['completed'])
         self.assertEqual(sum(t['role'] == 'shadow' for t in state['turns']), 2)
         self.assertTrue((self.run_dir / 'open-findings.md').is_file())
 

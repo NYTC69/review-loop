@@ -18,7 +18,7 @@ SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM':
             'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
 WAIVERS = (('accept_unverified_claude_author', '--accept-unverified-claude-author'),
            ('accept_probe_skip', '--accept-probe-skip'))
-PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_quality_polish', 'polish_round',   # E-4: operator-only
+PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_quality_polish',   # E-4: operator-only
                 'auto_commit', 'external_delivery')
 
 
