@@ -1,6 +1,6 @@
 {
   "name": "review-loop",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 4 skills, a paired-session Plan-Execute-Review-Polish pipeline.",
   "author": {
     "name": "NYTC69",

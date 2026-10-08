@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.0.1：resume 可以提高调用上限；修正超时说明
+
+**修复**
+- `resume --max-invocations N` 现在可以提高已保存的调用上限（只升不降，同值也接受；profile/项目配置的默认值不算显式提高）。以前 POLISH-Q 预算不足时提示"raise --max-invocations"，但 resume 会以 `resume configuration differs` 拒绝，实际只能 abort。提高记录在 state 的 `invocation_cap_raises` 和进度事件里；宿主只在用户要求时才提高，之后的命令要传提高后的值。report 模式的单独预算不受影响。
+- lifecycle 模式下，resume 时提高 `--exec-turn-timeout`、`--resume-timeout` 或调用上限后，下一次派发会因冻结清单的配置哈希变化而 HOLD（`frozen role dispatch changed`）。现在 resume 只重算配置哈希，agent 正文、角色参数和 gate prompt 的变化仍会被拦住。之后不带 `--resume-timeout` 的 resume 沿用已保存的 timeout。
+
+**文档**
+- `paired_session/README.md` 和 CLI 帮助：`--exec-turn-timeout` 用于 EXEC、FINISH、DOCS 三个阶段的 author turn（以前写成只用于 EXEC）。
+- BACKLOG 新增：DOCS writer 可能把未核实的说法写进 CHANGELOG（ws41 实例）。
+
+**审查**：Codex 审查 APPROVE；fresh Opus 终审第一次 NEEDS_CHANGES（lifecycle 模式下提高后无法派发），修复后复审 APPROVE。
+
 ### v3.0.0：legacy 彻底退役后的第一个大版本（全仓库复查完成）
 
 legacy review-loop 已在 2.13.x 删除；这一版完成全仓库复查（ADR-17），文档与当前行为一致，并删掉只为旧格式保留的兼容代码。
