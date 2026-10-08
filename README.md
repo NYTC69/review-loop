@@ -192,6 +192,42 @@ shadow, the gate and the stage reviewers start fresh each time. Default roles: C
 and the gate (`gpt-6.1-sol`), Claude the reviewer and the shadow (`claude-opus-5-5`); the operator profile changes
 roles and models.
 
+The same flow as a diagram (every arrow back means the change is reviewed again; dotted arrows are optional steps):
+
+```mermaid
+flowchart TD
+  U["your request"] --> E{"entry"}
+  E -->|"new work / existing plan"| SA
+  E -->|"code already written: review-only"| SA
+  E -->|"review-pr: report only"| SA
+  SA["Stage A: macOS, CLIs, worktree, test command, WORKITEM.md"] --> M{"safety mode"}
+  M -->|"efficient (default)"| RUN["coordinator run"]
+  M -->|"--strict"| PB["permission-probe"] --> RUN
+  RUN -->|"main pipeline"| PLAN["PLAN: author drafts, reviewer reviews; revise until approved"]
+  RUN -->|"review-only / review-pr (see below)"| REV
+  PLAN -.->|"--plan-only"| HP["HOLD: plan for you to read"]
+  PLAN --> AUTH["EXEC: author implements or fixes"]
+  AUTH --> REV["EXEC review: persistent reviewer + fresh shadow"]
+  REV -->|"blocking finding"| AUTH
+  REV --> G["GATE: fresh adversarial review"]
+  G -->|"valid critical / high"| AUTH
+  G --> F["FINISH: fresh finisher runs the tests"]
+  F -->|"tree changed"| REV
+  F --> Q["POLISH-Q: language + quality specialists"]
+  Q -->|"specialist blocker: fix, then specialist re-reviews"| AUTH
+  Q -.->|"optional: advisory fix round (default off)"| AUTH
+  Q -.->|"optional: simplifier / test-writer (main: off; review-only: both by default)"| REV
+  Q --> D["DOCS: docs writer, then docs reviewer"]
+  D -->|"write outside the docs / docs-review REVISE"| REV
+  D --> S["SECURITY: secret + .gitignore scan, security reviewer"]
+  S -->|"finding: you fix it outside the run, then resume"| REV
+  S --> DONE["DONE: acceptance pending"]
+  DONE -->|"accept"| ACC["ACCEPTED: local commit or UNCOMMITTED list + delivery report"]
+  DONE -->|"reject with a note"| AUTH
+```
+
+A review-pr run follows EXEC review, shadow, GATE, POLISH-Q and SECURITY to REPORTED: no PLAN, author fixes, FINISH, quality writers, DOCS or acceptance.
+
 ## Ending a run
 
 A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and says why). Nothing is delivered at DONE:
