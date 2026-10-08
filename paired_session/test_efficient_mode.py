@@ -106,25 +106,7 @@ class EfficientModeTests(unittest.TestCase):
         self.assertEqual(self.state()['config']['safety_mode'], 'efficient')   # never upgraded through such a profile
         self.assertTrue(self.h.coordinator('--strict').strict)                # the CLI still may
 
-    def test_a_run_saved_before_safety_mode_resumes_strict(self):
-        self.h.coordinator()
-        state = self.state()
-        del state['config']['safety_mode']
-        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
-        self.assertTrue(self.h.coordinator().strict)
-        profile = self.h.root / 'efficient-profile.json'
-        profile.write_text(json.dumps({'safety_mode': 'efficient'}))
-        argv = [*self.h.command()[2:], '--config', str(profile)]
-        argv.remove('--strict')
-        with self.assertRaisesRegex(ValueError, 'safety_mode is fixed for this run: it was created strict'):
-            rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
-
     def test_mode_edges_from_the_eff_a_review(self):
-        self.h.coordinator()
-        state = self.state()
-        del state['config']['safety_mode']
-        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
-        self.assertEqual(self.h.coordinator()._saved_config()['safety_mode'], 'strict')   # an old parent's successor config stays strict
         self.other_run('active-plan')
         self.h.coordinator()
         state = self.state()

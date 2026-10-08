@@ -514,6 +514,18 @@ def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path,
 PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re-runs the turn on a fresh baseline)'
 
 
+STATE_VERSION = 2   # V3-B6 (ADR-17 V2): a run saved by review-loop 2.13.x or earlier (version 1) is refused, never migrated
+OLD_STATE_REFUSAL = ('run was created by an older paired-session build; start a new run, or finish or abort this one with '
+                     'review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)')
+
+
+def saved_state_is_old(run_dir) -> bool:
+    """V3-B6: the run (or --supersedes parent) in run_dir was saved by another state format; checked before any of its
+    keys is read. A missing or unreadable state is not old: its own readers report it."""
+    try: return json.loads((Path(run_dir).expanduser() / 'state.json').read_text()).get('version') != STATE_VERSION
+    except (OSError, ValueError, AttributeError): return False
+
+
 PLUGIN_UPDATE_FIELDS = ('version', 'installPath', 'gitCommitSha', 'lastUpdated')   # field21: what a normal plugin update rewrites
 
 
@@ -2199,9 +2211,13 @@ class ReadOnlyTurnVoided(ValueError):
 
 class Coordinator:
     def __init__(self, args: argparse.Namespace):
-        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode (a run older than the key is off);
-            saved = Path(args.run_dir).expanduser() / 'state.json'   # the CLI sets 'on' for a new run (_execute_locked)
-            args.lifecycle_mode = (json.loads(saved.read_text()).get('config', {}).get('lifecycle_mode') or 'off') if saved.exists() else 'off'
+        saved = Path(args.run_dir).expanduser() / 'state.json'
+        saved_state = json.loads(saved.read_text()) if saved.exists() else None
+        if (saved_state is not None and saved_state.get('version') != STATE_VERSION or   # V3-B6: before any key of it,
+                getattr(args, 'supersedes', None) and saved_state_is_old(Path(args.supersedes).resolve())):   # or of a parent, is read
+            raise ValueError(OLD_STATE_REFUSAL)
+        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode; the CLI sets 'on' for a new
+            args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else 'off'   # run (_execute_locked)
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
@@ -2238,7 +2254,7 @@ class Coordinator:
             self.state = saved_state
             self._review_report_args(saved_state['config'])
             if args.action in ('note', 'reject'): self._refuse_report_feedback()
-            args.safety_mode = saved_state.get('config', {}).get('safety_mode', 'strict')
+            args.safety_mode = saved_state['config']['safety_mode']
             if requested and requested != args.safety_mode:
                 probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
                 probe_only = (all(t.get('phase') in probe for t in saved_state.get('turns', []))
@@ -2258,12 +2274,7 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
-            if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
-                raise ValueError('run was created by an older paired-session build; start a new run')
             worktree_lifecycle.refuse_saved(self.state, args)
-            self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
-            self.state.setdefault('item_blockers', [])
-            self.state.setdefault('item_blockers_complete', False)
             if (self.state.get('supersedes') != (str(Path(args.supersedes).resolve()) if args.supersedes else None) or
                     (self.state.get('effective_task_sha256') and
                      self.state['effective_task_sha256'] != hashlib.sha256(self.workitem.read_bytes()).hexdigest())):
@@ -2286,9 +2297,6 @@ class Coordinator:
                         self.state.get('item_blockers') != spec.get('item_blockers') or spec['item_blockers'] != pending_item_blockers(old, parent) or
                         self.state.get('item_blockers_complete') != spec.get('item_blockers_complete')):
                     raise ValueError('saved successor item identity or blockers differ')
-            if 'reason' in self.state and 'hold_reason' not in self.state:
-                self.state['hold_reason'] = self.state.pop('reason')
-                self.save()
             self._review_only_args(self.state['config'])
             if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
@@ -2310,29 +2318,6 @@ class Coordinator:
                 raise ValueError('scope change is pending; finish that request')
             if self.state.get('status') == 'ABORTED' and not scope_request:
                 raise ValueError('run was ABORTED by scope change; start its successor')
-            if 'base_commit' not in self.state:
-                self.state['base_commit_backfilled'] = True
-            self.state.setdefault('base_commit', self._head_commit())
-            self.state.setdefault('reviews_completed', 0)
-            ledger_path = self.run_dir / 'findings-ledger.json'
-            self.state.setdefault('finding_ledger', json.loads(ledger_path.read_text())
-                                  if ledger_path.exists() else [])
-            highest_id = max((int(row['id'][1:]) for row in self.state['finding_ledger']
-                              if re.fullmatch(r'F\d+', row.get('id', ''))), default=0)
-            self.state.setdefault('next_finding_id', highest_id + 1)
-            self.state.setdefault('exec_comparisons', [])
-            self.state.setdefault('review_verdicts', [])
-            self.state.setdefault('reviewed_reviewer_sequences', [])
-            self.state.setdefault('pending_reviewer_result_sequence', None)
-            self.state.setdefault('acceptance_state', 'ACCEPTED' if self.state.get('status') == 'ACCEPTED' else
-                                  'PENDING' if self.state.get('status') == 'DONE' else 'IN_PROGRESS')
-            self.state.setdefault('polish', {'active': False, 'completed': False,
-                                             'author_turns': 0, 'reviewer_turns': 0,
-                                             'fix_used': False})
-            if self.state.get('invocation_budget_version', 0) < 1:
-                self.state['invocations_used'] = self._migrate_invocation_budget()
-                self.state['invocation_budget_version'] = 1
-                self.save()
         else:
             if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
                 raise ValueError(f'{self.args.action} requires an existing coordinator run')
@@ -2358,7 +2343,7 @@ class Coordinator:
             self.internal.mkdir(exist_ok=True)
             atomic_text(self.context / 'workitem.md', self.workitem.read_text())
             self.state = {
-                'version': 1, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
+                'version': STATE_VERSION, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
                 'workspace': str(self.workspace), 'workitem': str(self.workitem),
                 'config': frozen_config,
                 'sessions': {
@@ -2368,7 +2353,7 @@ class Coordinator:
                 'started': {'author': False, 'reviewer': False}, 'plan_rounds': 0,
                 'exec_rounds': 0, 'plan_reviews': 0, 'exec_reviews': 0,
                 'review_findings': [], 'gate_ran': False,
-                'sequence': 0, 'invocations_used': 0, 'invocation_budget_version': 1,
+                'sequence': 0, 'invocations_used': 0,
                 'turns': [], 'active': None,
                 'started_at': time.time(),
                 'last_end': {}, 'waiting_model_calls': 0, 'base_commit': self._head_commit(),
@@ -2395,7 +2380,7 @@ class Coordinator:
                 spec = json.loads((parent / 'evidence/successor-spec.json').read_text())
                 task_hash = hashlib.sha256(self.workitem.read_bytes()).hexdigest()
                 if (old.get('status') != 'ABORTED' or old.get('abort_kind') != 'scope-change' or
-                        not old.get('base_commit') or old.get('base_commit_backfilled') or
+                        not old.get('base_commit') or
                         old.get('scope_chain_depth', 0) >= 1 or spec.get('base_commit') != old['base_commit'] or spec['task_sha256'] != task_hash or
                         spec['run_dir'] != str(self.run_dir) or spec['workspace'] != str(self.workspace) or
                         frozen_config.get('allowed_models') != old['config'].get('allowed_models') or
@@ -2430,53 +2415,6 @@ class Coordinator:
                     self._capture_security_baseline())
                 self.state['lifecycle']['ignore_coverage_at_start'] = self._start_ignore_coverage()
             self.save()
-
-    def _migrate_invocation_budget(self) -> int:
-        """Conservatively migrate old turn logs, exempting only explicit rate-limit rejections."""
-        turns = self.state.get('turns', [])
-        counted_sequences = set()
-        used = 1 if (self.state.get('active') or self.state.get('uncertain_active')) else 0
-        for receipt in (self.state.get('active'), self.state.get('uncertain_active')):
-            if receipt and type(receipt.get('sequence')) is int:
-                counted_sequences.add(receipt['sequence'])
-        for turn in turns:
-            returncode = turn.get('returncode')
-            if type(returncode) is int and returncode != 0:
-                sequence = turn.get('sequence')
-                phase = str(turn.get('phase', '')).lower()
-                role = turn.get('role', '')
-                if type(sequence) is not int or not role:
-                    used += 1
-                    continue
-                prefix = self.evidence / f'{sequence:03d}-{phase}-{role}'
-                try:
-                    stderr = read_text_tail(prefix.with_suffix('.stderr.log'))
-                except OSError:
-                    stderr = ''
-                try:
-                    stdout = read_text_tail(prefix.with_suffix('.stdout.jsonl'))
-                except OSError:
-                    stdout = ''
-                classified = None
-                if returncode > 0 and not turn.get('timed_out', False):
-                    classified = classify_rate_limit_failure(returncode, stderr, stdout)
-                if classified:
-                    turn['error_kind'] = classified['kind']
-                    turn['reset_hint'] = classified['reset_hint']
-                    turn['invocation_budget_counted'] = False
-                    continue
-            turn['invocation_budget_counted'] = True
-            used += 1
-            if type(turn.get('sequence')) is int:
-                counted_sequences.add(turn['sequence'])
-        for receipt in [*self.state.get('abandoned_turns', []), *self.state.get('spawn_failures', [])]:
-            sequence = receipt.get('sequence')
-            if (receipt.get('invocation_budget_counted', True) and
-                    (type(sequence) is not int or sequence not in counted_sequences)):
-                used += 1
-                if type(sequence) is int:
-                    counted_sequences.add(sequence)
-        return used
 
     def _restore_role_policy(self, explicit) -> dict:
         """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
@@ -2565,9 +2503,8 @@ class Coordinator:
         return getattr(self.args, 'safety_mode', 'strict') != 'efficient'
 
     def _saved_config(self) -> dict:
-        """ADR-10 M3: a saved run without gate_vendor keeps the old opposite-author derivation; no source key restores as legacy-derived."""
-        return {'gate_vendor': old_gate_vendor(self.state['config']['author_vendor']), 'gate_vendor_source': 'legacy-derived',
-                'safety_mode': 'strict', **self.state['config']}   # D-EFF: a run saved before safety_mode is strict
+        """The frozen run configuration (a copy)."""
+        return dict(self.state['config'])
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
@@ -2576,7 +2513,7 @@ class Coordinator:
                 'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'polish_round', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
-                'skip_globs', 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
+                'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
                 'safety_mode', 'quality_writers', 'advisory_fix_round')
         config = {key: getattr(self.args, key) for key in keys}
         config.update({key: (getattr(self.args, key, None) or '').strip() for key, _ in GUIDANCE_KEYS})   # L105
@@ -2672,14 +2609,7 @@ class Coordinator:
 
     def reviewer_commands(self) -> list[str]:
         current = workitem_reviewer_commands(self.workitem.read_text())
-        frozen = self.state.get('config', {}).get('workitem_reviewer_commands')
-        if frozen is None:
-            if self.args.action != 'permission-probe':
-                reason = 'reviewer allowlist is not frozen; run permission-probe before continuing'
-                self.hold(reason)
-                raise RuntimeError(reason)
-            self.state['config']['workitem_reviewer_commands'] = frozen = current
-            self.save()
+        frozen = self.state['config']['workitem_reviewer_commands']
         if current != frozen:
             reason = 'work-item reviewer allowlist changed; run permission-probe before continuing'
             self.hold(reason)
@@ -3156,11 +3086,7 @@ class Coordinator:
                     raise ValueError('--resume-timeout must be between the saved timeout and '
                                      f'{MAX_RESUME_TIMEOUT_SECONDS} seconds')
                 self.args.timeout = requested_timeout
-            saved_config = self.state.get('config', {})
-            saved_exec_timeout = saved_config.get('exec_turn_timeout')
-            if saved_exec_timeout is None:
-                saved_exec_timeout = resolve_exec_turn_timeout(
-                    None, saved_config.get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
+            saved_exec_timeout = self.state['config']['exec_turn_timeout']
             requested_exec_timeout = (getattr(self.args, 'exec_turn_timeout', None)
                                       if exec_timeout_override else None)
             if requested_exec_timeout is None:
@@ -3177,7 +3103,7 @@ class Coordinator:
         self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
         validate_role_models(self.args)
         for key, _ in GUIDANCE_KEYS:   # L105: fixed at run start; a resume without the flag keeps the saved text
-            if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'].get(key, ''))
+            if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'][key])
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
             self.args.wi_deadline = self.state['config'].get('wi_deadline')
         elif 'wi_deadline' not in self.state['config']:
@@ -3756,7 +3682,7 @@ class Coordinator:
             note = Path(file).expanduser().read_bytes().decode('utf-8') if file else text or ''
             if not note.strip() or '```reviewer-commands' in note: raise ValueError('empty or command-bearing scope note')
             raw = json.loads(self.state_path.read_text())
-            if not raw.get('base_commit') or raw.get('base_commit_backfilled'): raise ValueError('parent has no trustworthy base_commit')
+            if not raw.get('base_commit'): raise ValueError('parent has no trustworthy base_commit')
             task = self.workitem.read_text() + '\n\n## Operator scope change\n' + note + '\n'
             if target.exists():
                 raise ValueError('successor run dir already exists')
@@ -3777,8 +3703,8 @@ class Coordinator:
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
-        atomic_json(config_path, {k: v for k, v in {'quality_writers': 'off', **self._saved_config()}.items()   # D09: a run saved
-                    if k in CONFIGURABLE_DESTS and v is not None and   # before the key is off, and so is its successor
+        atomic_json(config_path, {k: v for k, v in self._saved_config().items()
+                    if k in CONFIGURABLE_DESTS and v is not None and
                     not (k == 'gate_prompt' and str(v).startswith('<bundled-default>:')) and
                     not (k == 'auto_commit' and self.state['config'].get('auto_commit_source'))})   # FIELD-25 gate: re-derived
         spec = {'run_dir': str(target), 'workspace': str(self.workspace), 'original_workitem': str(self.workitem),
@@ -5195,9 +5121,9 @@ class Coordinator:
                                 bool(args.review_only) and args.lifecycle_mode == 'on' and not getattr(args, 'review_report', None))
             if saved is None and args.auto_commit:
                 args.auto_commit_source = 'review-only-default'   # an accept the commit checks refuse delivers uncommitted
-        if saved is not None:   # D09 §4: frozen (a run saved before the key: off); only resume refuses a different
-            args.quality_writers_requested = getattr(args, 'quality_writers', None)   # value (_validate_resume_args),
-            args.quality_writers = saved.get('quality_writers') or 'off'   # operator actions keep the saved one
+        if saved is not None:   # D09 §4: frozen; only resume refuses a different value (_validate_resume_args),
+            args.quality_writers_requested = getattr(args, 'quality_writers', None)   # operator actions keep the saved one
+            args.quality_writers = saved['quality_writers']
         elif getattr(args, 'quality_writers', None) is None:   # D09 §4 (owner 2026-10-06): both for review-only, else off
             args.quality_writers = 'both' if args.review_only else 'off'
 
@@ -8932,8 +8858,6 @@ def parser() -> argparse.ArgumentParser:
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
     p.add_argument('--docs-allowlist', action='append', default=[])
-    p.add_argument('--skip-globs', action='append', default=[],
-                   help='retired (L107): accepted for old profiles and saved runs, ignored; the gate always runs')
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
     for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
                             ('--review-style', 'tone and rules for every review role (config.md review_style)'),
@@ -9032,7 +8956,7 @@ CONFIGURABLE_DESTS = {
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
-    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_globs', 'skip_quality_polish', 'auto_commit', 'external_delivery',
+    'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_quality_polish', 'auto_commit', 'external_delivery',
     'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
 }
 
@@ -9041,7 +8965,7 @@ ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_mode
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
-def old_gate_vendor(author_vendor: str) -> str:   # legacy opposite-vendor rule: only saved runs without gate_vendor (ADR-10 M3) and M4
+def old_gate_vendor(author_vendor: str) -> str:   # the opposite-vendor rule, now used only by M4
     return 'claude' if author_vendor == 'codex' else 'codex'
 
 
@@ -9207,7 +9131,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
             p.set_defaults(allowed_models=value)
             continue
         action = actions[key]
-        if action.dest in ('reviewer_command', 'docs_allowlist', 'skip_globs'):
+        if action.dest in ('reviewer_command', 'docs_allowlist'):
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise ValueError(f'config {key} must be an array of strings')
         else:
@@ -9399,6 +9323,15 @@ def main(argv=None) -> int:
     cli_parser = parser()
     if '-h' in raw_argv or '--help' in raw_argv:
         cli_parser.parse_args(raw_argv)
+    early = argparse.ArgumentParser(add_help=False, allow_abbrev=False)   # V3-B6: the old-run gate comes before the
+    early.add_argument('action', nargs='?')                               # profile and any other read of the saved run
+    early.add_argument('--run-dir')
+    early.add_argument('--supersedes')
+    known = early.parse_known_args(raw_argv)[0]
+    if known.action not in ('status', 'stop', 'snapshot') and any(
+            run and saved_state_is_old(run) for run in (known.run_dir, known.supersedes)):
+        print('REFUSED: ' + OLD_STATE_REFUSAL)
+        return 2
     try:
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
     except ValueError as exc:

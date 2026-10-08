@@ -187,8 +187,8 @@ and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 versions defaulted to `off`); a saved run keeps the mode it was created with, so
 `resume`, `accept` and the other run commands need no flag. The paired-session skill
 passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
-`docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` is retired,
-L107: still accepted and frozen for old profiles and saved runs, never read, so it never skips the gate);
+`docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
+in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
 worktree lifecycle of `docs/e2e-6-worktree-lifecycle.md` (D12, ADR-11):
 `lifecycle_mode=on` from the command line or an
@@ -595,9 +595,10 @@ legacy and the worktree lifecycle alike): once its process group is gone,
 settle a probe turn with `permission-probe --retry-uncertain` (a DONE run stays
 DONE) and any other turn with `resume --retry-uncertain`, or abort.
 
-Runs created without the acceptance snapshot and rejected-digest fields refuse
-mutating commands: `run was created by an older paired-session build; start a new run`.
-`status` reads such a run without migrating or modifying its state. Snapshots keep
+A run saved by an older build (review-loop 2.13.x or earlier: state `version` 1)
+refuses every run command, `abort` included, and is refused as a `--supersedes` parent, before any of its state is read:
+`run was created by an older paired-session build; start a new run, or finish or abort this one with review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)`.
+Such a run is never migrated. `status` and `status --brief` read it without modifying its state. Snapshots keep
 counting tracked and untracked non-ignored files; stale refusals report both path
 counts and tell the operator to restore the approved tree or start a new run.
 

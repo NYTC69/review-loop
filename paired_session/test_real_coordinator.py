@@ -1292,23 +1292,6 @@ sys.exit(result.returncode)
         with self.assertRaisesRegex(ValueError, 'cannot lower saved value'):
             rc.Coordinator(rc.parser().parse_args(base + ['--exec-turn-timeout', '8999']))
 
-    def test_legacy_state_timeout_fallback_and_config_default_is_not_cli_raise(self):
-        co = self.coordinator('--timeout', '20000')
-        state = json.loads(co.state_path.read_text())
-        state['config'].pop('exec_turn_timeout')
-        co.state_path.write_text(json.dumps(state))
-        config_dir = self.workspace / '.review-loop'
-        config_dir.mkdir(exist_ok=True)
-        (config_dir / 'paired-session.json').write_text(json.dumps({'exec_turn_timeout': 9000}))
-        argv = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
-                '--run-dir', str(self.run_dir), '--timeout', '20000', '--skip-probe',
-                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]
-        resumed = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
-        self.assertEqual(resumed.args.exec_turn_timeout, 14400)
-        with patch.object(resumed, 'drive', return_value='HOLD'):
-            self.assertEqual(resumed.resume(), 'HOLD')
-        self.assertEqual(json.loads(resumed.state_path.read_text())['config']['exec_turn_timeout'], 14400)
-
     def test_legacy_reject_cannot_override_exec_timeout_from_cli_or_project_config(self):
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                       '--polish-round', 'off')
@@ -1358,19 +1341,6 @@ sys.exit(result.returncode)
         self.assertEqual(authors[0]['timeout_seconds'], 9000)
         self.assertEqual(json.loads(config.read_text())['exec_turn_timeout'], 12000)
 
-    def test_legacy_resume_allows_only_bounded_exec_timeout_raise(self):
-        co = self.coordinator('--timeout', '31')
-        state = json.loads(co.state_path.read_text())
-        state['config'].pop('exec_turn_timeout')
-        co.state_path.write_text(json.dumps(state))
-        argv = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
-                '--run-dir', str(self.run_dir), '--timeout', '31', '--skip-probe',
-                '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]
-        raised = rc.Coordinator(rc.parser().parse_args(argv + ['--exec-turn-timeout', '8000']))
-        self.assertEqual(raised.args.exec_turn_timeout, 8000)
-        with self.assertRaisesRegex(ValueError, 'cannot lower saved value'):
-            rc.Coordinator(rc.parser().parse_args(argv + ['--exec-turn-timeout', '7000']))
-
     def test_project_exec_default_does_not_raise_saved_timeout(self):
         co = self.coordinator()
         config_dir = self.workspace / '.review-loop'
@@ -1393,10 +1363,9 @@ sys.exit(result.returncode)
 
     def test_old_acceptance_format_refuses_all_mutations_but_status_is_read_only(self):
         co = self.coordinator()
-        for missing in ('approved_snapshot', 'rejected_digests'):
-            with self.subTest(missing=missing):
-                old = dict(co.state)
-                old.pop(missing)
+        for version in (1, None):   # V3-B6: saved by review-loop 2.13.x, or with no version at all
+            with self.subTest(version=version):
+                old = dict(co.state, version=version)
                 co.state_path.write_text(json.dumps(old))
                 before = co.state_path.read_bytes()
                 for action, extra in [('resume', []), ('resume', ['--polish']),
@@ -1780,7 +1749,7 @@ sys.exit(result.returncode)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
         state = json.loads(path.read_text())
-        state.pop('approved_snapshot')
+        state['version'] = 1   # V3-B6: a run saved by review-loop 2.13.x
         path.write_text(json.dumps(state))
         before = path.read_bytes()
         for action in ('resume', 'accept', 'reject', 'note'):
@@ -1795,7 +1764,7 @@ sys.exit(result.returncode)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
         state = json.loads(path.read_text())
-        state.pop('approved_snapshot')
+        state['version'] = 1   # V3-B6: a run saved by review-loop 2.13.x
         path.write_text(json.dumps(state))
         before = path.read_bytes()
         for action in ('resume', 'accept', 'reject', 'note'):
@@ -1842,7 +1811,7 @@ sys.exit(result.returncode)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
         state = json.loads(path.read_text())
-        state.pop('approved_snapshot')
+        state['version'] = 1   # V3-B6: a run saved by review-loop 2.13.x
         path.write_text(json.dumps(state))
         before = path.read_bytes()
         for action in ('resume', 'accept', 'reject', 'note'):
@@ -1857,7 +1826,7 @@ sys.exit(result.returncode)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
         state = json.loads(path.read_text())
-        state.pop('approved_snapshot')
+        state['version'] = 1   # V3-B6: a run saved by review-loop 2.13.x
         path.write_text(json.dumps(state))
         before = path.read_bytes()
         for action in ('resume', 'accept', 'reject', 'note'):
@@ -1872,7 +1841,7 @@ sys.exit(result.returncode)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         path = self.run_dir / 'state.json'
         state = json.loads(path.read_text())
-        state.pop('approved_snapshot')
+        state['version'] = 1   # V3-B6: a run saved by review-loop 2.13.x
         path.write_text(json.dumps(state))
         before = path.read_bytes()
         for action in ('resume', 'accept', 'reject', 'note'):
@@ -2999,33 +2968,6 @@ sys.exit(result.returncode)
             1, 'HTTP 429 Too Many Requests\nRetry-After: 32\n', '')
         self.assertEqual(retry_after['reset_hint'], 'Retry-After: 32')
 
-    def test_legacy_invocation_budget_migration_exempts_only_logged_rate_limits(self):
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.root / 'legacy-budget-run'),
-            '--codex-bin', str(FAKE), '--claude-bin', str(FAKE)])
-        co = rc.Coordinator(args)
-        turns = [
-            {'sequence': 1, 'role': 'reviewer', 'phase': 'EXEC', 'returncode': 1},
-            {'sequence': 2, 'role': 'author', 'phase': 'EXEC', 'returncode': 1,
-             'invocation_budget_counted': False},
-            {'sequence': 3, 'role': 'reviewer', 'phase': 'EXEC', 'returncode': 0},
-        ]
-        co.state['sequence'] = 3
-        co.state['turns'] = turns
-        del co.state['invocations_used']
-        del co.state['invocation_budget_version']
-        (co.evidence / '001-exec-reviewer.stderr.log').write_text(
-            'HTTP 429 Too Many Requests. Try again at 10:00\n')
-        (co.evidence / '002-exec-author.stderr.log').write_text('permission denied\n')
-        rc.atomic_json(co.state_path, co.state)
-
-        migrated = rc.Coordinator(args)
-        self.assertEqual(migrated.state['sequence'], 3)
-        self.assertEqual(migrated.state['invocations_used'], 2)
-        self.assertEqual(migrated.state['turns'][0]['error_kind'], 'rate_limited')
-        self.assertFalse(migrated.state['turns'][0]['invocation_budget_counted'])
-        self.assertTrue(migrated.state['turns'][1]['invocation_budget_counted'])
-
     def test_codex_readonly_roles_do_not_inherit_execpolicy_bypass_grants(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
@@ -3210,20 +3152,6 @@ sys.exit(result.returncode)
         self.assertEqual(refreshed.state['config']['workitem_reviewer_commands'],
                          ['node injected-reviewer.js'])
         self.assertFalse(refreshed.probe_passed()[0], 'refresh invalidates the prior probe digest')
-
-    def test_legacy_run_without_frozen_reviewer_allowlist_holds_until_probe(self):
-        co = self.coordinator()
-        co.state['config'].pop('workitem_reviewer_commands')
-        co.save()
-        with self.workitem.open('a') as output:
-            output.write('\n```reviewer-commands\nnode legacy-command.js\n```\n')
-        co.args.action = 'resume'
-        with self.assertRaisesRegex(RuntimeError, 'allowlist is not frozen; run permission-probe'):
-            co.reviewer_commands()
-        self.assertEqual(co.state['status'], 'HOLD')
-        co.args.action = 'permission-probe'
-        self.assertIn('node legacy-command.js', co.reviewer_commands())
-        self.assertIn('workitem_reviewer_commands', co.state['config'])
 
     def test_optional_reviewer_command_is_an_exact_rule(self):
         run_dir = self.root / 'extra-command-run'
@@ -3422,11 +3350,10 @@ sys.exit(result.returncode)
 
     def test_lifecycle_config_is_frozen_while_default_route_stays_off(self):
         co = self.coordinator('--docs-file', 'docs/guide.md', '--docs-allowlist', 'docs/other.md',
-                              '--skip-globs', 'generated/**', '--skip-quality-polish', 'true')
+                              '--skip-quality-polish', 'true')
         saved = co.state['config']
         self.assertEqual(saved['lifecycle_mode'], 'off')
         self.assertTrue(saved['skip_quality_polish'])
-        self.assertEqual(saved['skip_globs'], ['generated/**'])
         self.assertEqual(saved['docs_file'], str(self.workspace / 'docs/guide.md'))
         self.assertEqual(saved['docs_allowlist'], sorted([str(self.workspace / 'docs/guide.md'),
                                                           str(self.workspace / 'docs/other.md')]))
@@ -3434,7 +3361,7 @@ sys.exit(result.returncode)
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()),
             '--docs-file', 'docs/changed.md', '--docs-allowlist', 'docs/other.md',
-            '--skip-globs', 'generated/**', '--skip-quality-polish', 'true'])
+            '--skip-quality-polish', 'true'])
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: docs_file'):
             rc.Coordinator(args)
 
@@ -6261,57 +6188,6 @@ sys.exit(result.returncode)
                 with patch.object(reloaded, 'author_turn') as author_turn:
                     self.assertEqual(reloaded.drive(), 'HOLD')
                 author_turn.assert_not_called()
-
-    def test_migration_counts_uncertain_and_abandoned_invocations_once(self):
-        co = self.coordinator()
-        co.state['invocations_used'] = 0
-        co.state['invocation_budget_version'] = 0
-        co.state['uncertain_active'] = {'sequence': 20, 'invocation_budget_counted': True}
-        co.state['abandoned_turns'] = [
-            {'sequence': 21, 'invocation_budget_counted': True},
-            {'sequence': 22, 'invocation_budget_counted': True},
-        ]
-        co.state['spawn_failures'] = [{'sequence': 23, 'invocation_budget_counted': False}]
-        self.assertEqual(co._migrate_invocation_budget(), 3)
-
-    def test_migration_keeps_timed_out_429_invocation_counted(self):
-        co = self.coordinator()
-        co.state['invocations_used'] = 0
-        co.state['invocation_budget_version'] = 0
-        co.state['turns'] = [{
-            'sequence': 24, 'phase': 'PLAN', 'role': 'author',
-            'returncode': -9, 'timed_out': True,
-        }]
-        (co.evidence / '024-plan-author.stderr.log').write_text('429 too many requests\n')
-
-        self.assertEqual(co._migrate_invocation_budget(), 1)
-        self.assertTrue(co.state['turns'][0]['invocation_budget_counted'])
-
-    def test_migration_keeps_positive_returncode_timed_out_429_counted(self):
-        co = self.coordinator()
-        co.state['invocations_used'] = 0
-        co.state['invocation_budget_version'] = 0
-        co.state['turns'] = [{
-            'sequence': 26, 'phase': 'PLAN', 'role': 'author',
-            'returncode': 7, 'timed_out': True,
-        }]
-        (co.evidence / '026-plan-author.stderr.log').write_text('429 too many requests\n')
-
-        self.assertEqual(co._migrate_invocation_budget(), 1)
-        self.assertTrue(co.state['turns'][0]['invocation_budget_counted'])
-        self.assertNotEqual(co.state['turns'][0].get('error_kind'), 'rate_limited')
-
-    def test_migration_keeps_legacy_sigkilled_429_invocation_counted(self):
-        co = self.coordinator()
-        co.state['invocations_used'] = 0
-        co.state['invocation_budget_version'] = 0
-        co.state['turns'] = [{
-            'sequence': 25, 'phase': 'PLAN', 'role': 'author', 'returncode': -9,
-        }]
-        (co.evidence / '025-plan-author.stderr.log').write_text('429 too many requests\n')
-
-        self.assertEqual(co._migrate_invocation_budget(), 1)
-        self.assertTrue(co.state['turns'][0]['invocation_budget_counted'])
 
     def test_probe_retries_after_real_group_leader_exits_but_descendant_lives(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),

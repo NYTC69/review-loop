@@ -3,6 +3,10 @@
 ## What paired-session is
 paired-session is a coordinator (`bin/paired-session`) that runs one author and one reviewer through PLAN and EXEC, applies fresh shadow/adversarial checks, and then, with `lifecycle_mode=on`, runs finish, quality polish, docs and security turns before DONE (acceptance pending). It owns isolated run artifacts outside the workspace, invocation limits and a permission probe. See [`paired_session/README.md`](../paired_session/README.md); the entry-switch design is [`paired_session/docs/v2.10-entry-switch.md`](../paired_session/docs/v2.10-entry-switch.md).
 
+## Status in 3.0.0: runs saved by 2.13.x are refused
+- The saved run format changed (state `version` 2). A run saved by review-loop 2.13.x or earlier is refused by every run command (`resume`, `accept`, `reject`, `note`, `abort`, ...) with one line: start a new run, or finish or abort it with review-loop 2.13.x (for example a pinned copy at `~/paired-runs/review-loop-v2.13.<n>`). `status` still reads it. Accept or abort open runs before upgrading.
+- `skip_globs` / `--skip-globs` were removed; a profile that still sets `skip_globs` is refused as an unsupported key.
+
 ## Status in v2.13.0: legacy removed from routing
 - Every `/review-loop` request (and the Codex review-loop request) hands off to paired-session: fresh work; an existing plan, used as the work item (PLAN drafts and reviews it again; `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again`); existing code as `run --review-only`.
 - Refused, with one line saying what to do instead: `entry: legacy`, a legacy session resume, `--legacy` on review-pr and code-quality-loop, code-quality-loop `--reorganize` (run `/review-loop:reorganize` after the run), and a host that is not macOS (on every entry).
@@ -35,7 +39,7 @@ The owner answered the 18 legacy-map rows provisionally on 2026-10-05 (ADR-13, D
 2026-10-07 (`DECISIONS.md` ADR-15, D11-1006); the final answers replace the provisional ones.
 
 All ADR-15 rows are settled as of v2.12.9: L105 `review_focus`, `review_style`, `quality_focus` and L100 `resume --add-rounds` shipped;
-L107 `adversarial_gate_skip_paths` is retired (`skip_globs` stays accepted for old profiles and saved runs but is ignored, and is no longer in the example profile).
+L107 `adversarial_gate_skip_paths` is retired (its paired-session key `skip_globs` / `--skip-globs` was removed in 3.0; a profile that still sets it is refused).
 The removal itself follows ADR-16 (routing in 2.13.0, deletion in 2.13.1, loader and lint in 2.13.2).
 
 L133 Linux is dropped (macOS only for now): no Linux run is planned.
@@ -166,7 +170,7 @@ Status values:
 | `handsfree` | stage A questions fail; `accept` / `reject` are never run | retire (ADR-15) (L104) |
 | `review_focus`, `review_style`, `quality_focus` | `--review-focus` / `--review-style` / `--quality-focus`, frozen at run start (L105) | port (ADR-15); shipped in v2.12.9 |
 | `skip_quality_polish` | `--skip-quality-polish` | covered |
-| `adversarial_gate_skip_paths` | none: `skip_globs` is retired (accepted for old profiles and saved runs, ignored), so it never skips the gate; the lifecycle refuses `--adversarial-gate off` | retire (ADR-15) (L107) |
+| `adversarial_gate_skip_paths` | none: `skip_globs` was removed in 3.0, so nothing skips the gate; the lifecycle refuses `--adversarial-gate off` | retire (ADR-15) (L107) |
 | `cross_vendor_review` | the default roles are cross-vendor; no same-vendor detection | retire (ADR-15) (L108) |
 | `context_persist_threshold` | none needed: state lives in the run directory | covered |
 | `entry` | none needed: goes away with legacy | covered |
