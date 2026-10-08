@@ -16,13 +16,13 @@
       "id": "executor_plan_excludes_round_response_log",
       "kind": "contains",
       "path": "agents/executor.md",
-      "needle": "Return point-by-point responses separately from the plan body"
+      "needle": "do not accumulate review transcripts or superseded proposals in it."
     },
     {
       "id": "executor_planning_response_section",
       "kind": "contains",
       "path": "agents/executor.md",
-      "needle": "## Response to Reviewer\n- {finding id or quoted finding}: {response and resulting plan change, or reason for no change}"
+      "needle": "Explain how each substantive review finding was addressed or why no change is needed."
     },
     {
       "id": "claude_plugin_agent_type_guard_doc_present",
@@ -150,43 +150,43 @@
       "id": "reviewer_agent_blocking_rubric_section",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "## Blocking rubric"
+      "needle": "## Finding judgment"
     },
     {
       "id": "reviewer_agent_rubric_six_fields",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "- `Cheaper response:` why a lighter response"
+      "needle": "user impact, practical likelihood, fix cost, and why a cheaper response is insufficient."
     },
     {
       "id": "reviewer_agent_rubric_gate_named",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "`scripts/finding_triage.py check`"
+      "needle": "Answer in the schema the caller gives."
     },
     {
       "id": "reviewer_agent_non_blocking_list",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "unreachable scenarios, unsupported assumption chains, negligible\ncombined risk, or clearly disproportionate complexity for extremely rare\nlow-impact benefit"
+      "needle": "Unreachable scenarios, unsupported assumption chains, negligible combined risk, and"
     },
     {
       "id": "reviewer_agent_rare_harm_stays_blocking",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "comparable harm remains blocking"
+      "needle": "irreversible data loss, destructive action, or comparable harm still merits escalation."
     },
     {
       "id": "reviewer_agent_disclosed_simplification_not_critical",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "is not automatically CRITICAL"
+      "needle": "criteria is not automatically a serious defect."
     },
     {
       "id": "reviewer_agent_missing_disclosure_minor",
       "kind": "contains",
       "path": "agents/reviewer.md",
-      "needle": "is a MINOR\n  record correction, not an automatic CRITICAL"
+      "needle": "is a minor record correction."
     },
     {
       "id": "reviewer_agent_no_technically_correct",
