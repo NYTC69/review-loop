@@ -51,7 +51,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 - **v3 review: `accept` on a main-pipeline run without a commit prints neither `COMMIT:` nor `UNCOMMITTED:`.** — Done: v3.0.0 records and reports uncommitted files when acceptance makes no commit.
 
-- **DOCS writer can write unverified claims into CHANGELOG.** — Done: v3.0.2 restricts DOCS claims to supported facts and makes false or unsupported claims blocking MAJOR findings.
+- **DOCS writer can write unverified claims into CHANGELOG.** — Done: v3.0.2 restricts DOCS claims to supported facts and makes false or unsupported claims blocking MAJOR findings. Narrowed in v3.0.4 to statements the DOCS stage wrote and to claimed tests/checks/results that do not exist.
 
 - [new] Reuse a stable author permission-probe workspace per product worktree. — Accepted residual: Fresh strict-probe workspaces remain; stable reuse is deferred indefinitely under the efficient-default threat model. Reopen on normal-use harm.
 

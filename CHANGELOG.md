@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.0.4：3.0.2/3.0.3 终审建议收尾；evidence guard 不再误拦工作区里的 evidence/ 目录
+
+**修复**
+- evidence guard 的兜底检查（typed guard 解析不了的调用才会走到）不再把工作区里嵌套的 `evidence/` 路径（如 `tests/evidence/a.txt`）当成读取 run 的证据目录。本次 run 证据目录和审查输出目录的绝对路径，以及裸写的 `evidence/`、`./evidence/`、`~/evidence/`、`../evidence/` 照样拦；shadow 和对抗审查输出的角色隔离检查不变。
+- 工作项只写了带连字符的模型 id（例如 `gpt-6-astra`）时，代码里裸写的 `ASTRA` 也按"工作项讲的就是这个模型"豁免。署名写法、以模型命名的目录照样拦。
+- docs reviewer 的"至少 MAJOR"规则收窄：只管 DOCS 阶段写的说法，以及声称存在但实际没有的测试、检查或结果；用户原有文档里的其他不准确之处按正常严重度判断。
+- DOCS writer 的提示里，"本轮自己读到的结果"也算有依据的事实，前后两句措辞一致了。
+
+**文档**
+- README 流程图里 GATE 退回的条件改为"critical / high with complete six-part body"，与代码一致。
+- BACKLOG 清理：已完成和已过时的条目移到 Done 区；两条只影响 strict probe 的条目按"合理防护"原则作为可接受的残余关闭。
+
 ### v3.0.3：产品代码里合法出现的模型名不再被 gate 当成审查历史
 
 **修复**
