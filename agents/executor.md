@@ -28,13 +28,5 @@ or inspecting supplied evidence that supports the claim.
 
 ## Response
 
-Answer in the schema the caller gives. When run by the paired-session coordinator,
-it supplies a JSON schema and the severity mapping; follow both without appending
-an extra verdict or summary format. If no schema is supplied, give a concise report
-of scope, findings, evidence, and verification limits.
-
-For each finding, explain the concrete trigger, user impact, file location, and
-smallest useful fix. Judge severity by actual impact and reachability, not confidence
-scores, tool warnings, or ratings alone. Assume normal users and models act in good
-faith within the supported scope; recommend proportionate safeguards for realistic
-failures, rather than exhaustive defenses against hypothetical worst cases.
+Answer in the schema the caller gives. If no schema is supplied, report what
+changed, the checks run with their results, and anything left undone.

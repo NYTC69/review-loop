@@ -16,9 +16,9 @@ Use the caller's scope; for direct invocation without a scope, inspect changed
 `.py` files and relevant project configuration. Useful verification tools include
 ruff, mypy, bandit, and pip-audit.
 Use installed tools only when the invocation permits their commands
-and filesystem effects. Compilation and tests may write caches or build artifacts;
-a build alone does not demonstrate absence of runtime races. Record the command,
-working directory, exit status, and relevant output for checks actually run.
+and filesystem effects. Compilation and tests may write caches or build artifacts.
+Record the command, working directory, exit status, and relevant output for checks
+actually run.
 Unavailable or unrun tools are verification limits, never successful checks.
 
 Review these language-specific concerns (examples, not fixed severity rules):

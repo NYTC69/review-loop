@@ -137,6 +137,7 @@ A role may answer without using its tools. Two defenses:
 - `python3 -m unittest discover -s paired_session -p 'test_*.py'` (the coordinator; fake CLIs, no provider call;
   the full suite is long, so run single modules while iterating).
 - `git diff --check`.
+
 paired-session runs on macOS only. Every push that changes a file bumps the versions (Plugin cache & version bump).
 
 ## README snapshots

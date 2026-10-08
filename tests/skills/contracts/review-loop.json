@@ -153,13 +153,13 @@
       "needle": "## Finding judgment"
     },
     {
-      "id": "reviewer_agent_rubric_six_fields",
+      "id": "reviewer_agent_finding_judgment_fields",
       "kind": "contains",
       "path": "agents/reviewer.md",
       "needle": "user impact, practical likelihood, fix cost, and why a cheaper response is insufficient."
     },
     {
-      "id": "reviewer_agent_rubric_gate_named",
+      "id": "reviewer_agent_caller_schema_response",
       "kind": "contains",
       "path": "agents/reviewer.md",
       "needle": "Answer in the schema the caller gives."
