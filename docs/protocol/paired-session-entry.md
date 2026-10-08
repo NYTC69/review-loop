@@ -366,4 +366,4 @@ under handsfree, and never on your own judgment:
 
 Do not imply user acceptance or delivery authorization from DONE.
 Do not raise the invocation cap on your own: use `resume --max-invocations N`
-only when the user asks.
+only when the user asks. After a raise, later commands pass the raised value.

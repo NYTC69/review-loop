@@ -1,5 +1,7 @@
 """V301: only an explicit resume may raise the saved invocation cap."""
+import copy
 import json
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -68,6 +70,78 @@ class InvocationCapTests(unittest.TestCase):
         saved = self.resume_without_drive(co)
         self.assertEqual(saved['config']['max_invocations'], 3)
         self.assertNotIn('invocation_cap_raises', saved)
+
+    def lifecycle_raise(self, flag, value, key):
+        original = ('--lifecycle-mode', 'on', '--max-invocations', '3',
+                    '--timeout', '10', '--exec-turn-timeout', '7200')
+        co = self.coordinator(*original)
+        manifest = copy.deepcopy(co.state['role_dispatch_manifest'])
+        resumed = self.restored('resume', *original, flag, str(value))
+        self.resume_without_drive(resumed)
+        expected = copy.deepcopy(manifest)
+        expected['config_sha256'] = resumed.state['role_dispatch_manifest']['config_sha256']
+        self.assertEqual(resumed.state['role_dispatch_manifest'], expected)
+        self.assertNotEqual(expected['config_sha256'], manifest['config_sha256'])
+        resumed._invoke_once('author', 'PLAN', 'Role prompt.', {})
+        self.assertEqual(resumed.state['invocations_used'], 1)
+        self.assertEqual(resumed.state['config'][key], value)
+        # Follow-up resume uses original --timeout, but no new raise options.
+        later_flags = ('--lifecycle-mode', 'on', '--timeout', '10')
+        later = self.restored('resume', *later_flags)
+        with patch.object(later, '_refresh_resumed_config_digest') as refresh:
+            self.resume_without_drive(later)
+            refresh.assert_not_called()
+        later._invoke_once('author', 'PLAN', 'Role prompt.', {})
+        self.assertEqual(later.state['invocations_used'], 2)
+        self.assertEqual(getattr(later.args, key), value)
+        # Operator commands restore raised settings, including original timeout flags.
+        for action in ('accept', 'reject', 'note'):
+            operator = self.restored(action, *original, '--max-invocations',
+                                     str(later.state['config']['max_invocations']))
+            self.assertEqual(getattr(operator.args, key), value)
+            operator._verify_frozen_role_dispatch()
+        return later
+
+    def test_lifecycle_invocation_raise_and_followups(self):
+        self.lifecycle_raise('--max-invocations', 5, 'max_invocations')
+
+    def test_lifecycle_exec_timeout_raise_and_followups(self):
+        self.lifecycle_raise('--exec-turn-timeout', 9000, 'exec_turn_timeout')
+
+    def test_lifecycle_general_timeout_raise_and_followups(self):
+        self.lifecycle_raise('--resume-timeout', 20, 'timeout')
+
+    def test_lifecycle_raises_preserve_agent_body_and_role_flag_checks(self):
+        agents = self.root / 'role-sources'
+        shutil.copytree(rc.HERE.parent / 'agents', agents)
+        frozen_role_manifest = rc.frozen_role_manifest
+
+        def manifest_from_copied_agents(config, flags, agents_dir, prompt, bodies):
+            return frozen_role_manifest(config, flags, agents, prompt, bodies)
+
+        with patch.object(rc, 'frozen_role_manifest', side_effect=manifest_from_copied_agents):
+            co = self.coordinator('--lifecycle-mode', 'on', '--max-invocations', '3')
+            frozen = copy.deepcopy(co.state['role_dispatch_manifest'])
+            # Drift before the raise must not be laundered by refreshing the config digest.
+            body = agents / 'executor.md'
+            original_body = body.read_text()
+            body.write_text(original_body + '\nChanged agent instructions.\n')
+            resumed = self.restored('resume', '--lifecycle-mode', 'on', '--max-invocations', '5')
+            self.resume_without_drive(resumed)
+            self.assertEqual(resumed.state['role_dispatch_manifest']['agent_body_sha256'],
+                             frozen['agent_body_sha256'])
+            with self.assertRaisesRegex(RuntimeError, 'frozen role dispatch changed'):
+                resumed._invoke_once('author', 'PLAN', 'Role prompt.', {})
+            self.assertEqual(resumed.state['invocations_used'], 0)
+            # A later edit remains detectable too.
+            body.write_text(body.read_text() + '\nAnother edit after the raise.\n')
+            with self.assertRaisesRegex(RuntimeError, 'frozen role dispatch changed'):
+                self.restored('resume')._invoke_once('author', 'PLAN', 'Role prompt.', {})
+            body.write_text(original_body)
+            resumed._verify_frozen_role_dispatch()
+            resumed.state['role_dispatch_manifest']['role_flags']['author']['model'] = 'gpt-6-sol'
+            with self.assertRaisesRegex(RuntimeError, 'frozen role dispatch changed'):
+                resumed._verify_frozen_role_dispatch()
 
     def test_non_resume_actions_keep_frozen_cap(self):
         self.coordinator('--max-invocations', '3')

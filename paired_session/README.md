@@ -523,24 +523,26 @@ and test command:
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every turn except author turns in EXEC,
-FINISH and DOCS, including PLAN, persistent/fresh reviewer, shadow and gate turns, and the
-coordinator's own test-command runs. The cap is a one-day sanity bound; it sits
-above the 14400-second author cap because a general timeout above 14400 is a
-supported setting (the author default then stays at 14400). Author turns in EXEC,
-FINISH and DOCS use the separate `--exec-turn-timeout`; when omitted,
-it defaults to `max(7200, --timeout)` capped at 14400 seconds. On resume, only
-an explicit CLI `--exec-turn-timeout` may raise the saved author timeout, never
-lower it; project-config defaults do not count as an explicit raise. The value
-is saved for later turns and resumes. An already-running turn keeps the timeout
-it received when it started. The existing
-`resume --resume-timeout N` option raises the general per-turn timeout up to
-7200 seconds for phases that use `--timeout`.
+FINISH and DOCS, including PLAN, persistent/fresh reviewer, shadow and gate
+turns, and the coordinator's own test-command runs. The cap is a one-day
+sanity bound; it sits above the 14400-second author cap because a general
+timeout above 14400 is a supported setting (the author default then stays at
+14400). Author turns in EXEC, FINISH and DOCS use the separate
+`--exec-turn-timeout`; when omitted, it defaults to `max(7200, --timeout)`
+capped at 14400 seconds. On resume, only an explicit CLI `--exec-turn-timeout`
+may raise the saved author timeout, never lower it; project-config defaults do
+not count as an explicit raise. The value is saved for later turns and
+resumes. An already-running turn keeps the timeout it received when it
+started. The existing `resume --resume-timeout N` option raises the general
+per-turn timeout up to 7200 seconds for phases that use `--timeout`.
 
 An explicit CLI `resume --max-invocations N` may raise the saved invocation cap;
 a lower value is refused and the same value is accepted. Profile/project defaults
 do not count as an explicit raise. The new cap is saved for later turns and resumes;
 raises are recorded in state `invocation_cap_raises` and progress events. The host
 may raise this cap only when the user asks. Other actions keep the saved cap frozen.
+Raising the cap does not lift a report-mode `report budget` HOLD; report runs
+have a separate budget.
 
 `--wi-deadline SECONDS` (off by default) bounds the whole work item in wall-clock
 time, counted from the run's start; HOLDs, operator waits and coordinator

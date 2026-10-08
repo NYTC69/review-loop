@@ -2615,6 +2615,15 @@ class Coordinator:
         self.state['role_dispatch_manifest_sha256'] = hashlib.sha256(json.dumps(
             manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
+    def _refresh_resumed_config_digest(self) -> None:
+        """Update only the config binding after an authorized resume raise; keep role flags and agent bodies frozen."""
+        manifest = self.state.get('role_dispatch_manifest')
+        if manifest is not None:
+            manifest['config_sha256'] = hashlib.sha256(json.dumps(
+                self.state['config'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            self.state['role_dispatch_manifest_sha256'] = hashlib.sha256(json.dumps(
+                manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
     def _verify_frozen_role_dispatch(self) -> None:
         if self.state.get('role_dispatch_unverified'):
             raise RuntimeError('role dispatch manifest is unverified; lifecycle is unavailable')
@@ -3123,6 +3132,8 @@ class Coordinator:
                     raise ValueError('--resume-timeout must be between the saved timeout and '
                                      f'{MAX_RESUME_TIMEOUT_SECONDS} seconds')
                 self.args.timeout = requested_timeout
+            else:
+                self.args.timeout = original_timeout
             saved_exec_timeout = self.state['config']['exec_turn_timeout']
             requested_exec_timeout = (getattr(self.args, 'exec_turn_timeout', None)
                                       if exec_timeout_override else None)
@@ -8505,6 +8516,8 @@ class Coordinator:
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
+        resume_config_changed = any(self.state['config'][key] != getattr(self.args, key)
+                                    for key in ('timeout', 'exec_turn_timeout', 'max_invocations'))
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
         old_cap = self.state['config']['max_invocations']
@@ -8513,6 +8526,8 @@ class Coordinator:
                          'timestamp': datetime.now().astimezone().isoformat()}
             self.state.setdefault('invocation_cap_raises', []).append(cap_raise)
             self.state['config']['max_invocations'] = self.args.max_invocations
+        if resume_config_changed:
+            self._refresh_resumed_config_digest()
         self.save()
         if self.args.max_invocations > old_cap:
             self.progress('invocation-cap-raise', **cap_raise)
