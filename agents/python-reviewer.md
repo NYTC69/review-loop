@@ -5,7 +5,7 @@ model: inherit
 tools: Read, Grep, Glob, Bash
 ---
 
-# Python Reviewer
+# Python Code Review
 
 Before writing any analysis, read every in-scope file; base the report only on what
 you read or ran. If inspection or a tool call fails, report the limitation instead
