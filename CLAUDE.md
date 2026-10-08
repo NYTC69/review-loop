@@ -12,13 +12,15 @@
 
 **History:** first seen with Executor (`tools: all`) in commit `8506809`, then with `code-simplifier` (2026-04-06) and `rust-reviewer` (issue #3). Each time the conclusion was "plugin agent types are sandboxed", so the protocol switched to `subagent_type: general-purpose` with the agent body inlined in the prompt.
 
-**Rule**: Every writer-agent invocation uses `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. The agents resolve real tools, so this is a protocol convention rather than a workaround; moving the protocol to native agent types is a separate change — do not mix it into unrelated work. Report-only reviewers instead run as paired-session reviewer-role turns (`docs/protocol/reviewer-runtime.md`); a writable general-purpose agent cannot serve as a permission boundary.
+**Rule**: the paired-session coordinator runs every role as a CLI turn of its own (see Agent Invocation Pattern); no skill spawns a role through the Agent tool today. If one ever does, use `subagent_type: general-purpose` with the agent body inlined. Never use `subagent_type: review-loop:<name>`. A writable general-purpose agent cannot serve as a permission boundary for a report-only reviewer.
 
-### README.md must stay intact (lint SSOT dependency)
+### Lint needles pin doc sentences
 
-`run-skill-lint`'s `guide:readme_marks_*` and `shared-schema:*` assertions treat several phrases inside `README.md` as the single source of truth (SSOT). Trimming or rewriting README content these assertions reach makes lint FAIL (5 cases observed during compass adopt Round 1). The compass-adopt migration handled this by **double-storing** the migrated blocks: ARCHITECTURE.md / CLAUDE.md / DESIGN.md gained `## Migrated — README.md:<lines>` blocks, but the README body was reverted to its full 370-line form so existing lint needles still resolve.
+The `scripts/run-skill-lint` contracts (`tests/skills/contracts/*.json`) pin exact sentences in README.md, the skills,
+the protocol docs and a few other files.
 
-**Rule**: do not trim or restructure README.md without first updating both the `guide` skill and the lint contract to point their needles at the new SSOT (e.g. the migrated blocks in CLAUDE.md). The `## Migrated —` blocks are intentional duplication, not a cleanup target.
+**Rule**: move needle and text together: when you change a pinned sentence, update its assertion or mapping in the
+same commit and name the change in the commit or report.
 
 ### This repository uses the paired-session entry
 
@@ -39,7 +41,7 @@ review-loop is a **dual-runtime plugin**. The Claude Code plugin path
 (`.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` + top-level
 `skills/`) and the Codex plugin path
 (`.codex-plugin/plugin.json` + `.agents/plugins/marketplace.json` + `.agents/skills/`)
-are independent install surfaces that share repo content (config + sessions).
+are independent install surfaces that share repo content (config).
 
 The Codex marketplace surface specifically requires:
 
@@ -74,8 +76,6 @@ natural-language only. Full step-by-step + verification:
   v2.13.1 with the rest of the legacy workflow; the paired-session coordinator dispatches every role itself.
 - The Codex paired-session skill runs the coordinator outside the Codex sandbox (full host permission); a
   sandboxed rehearsal is not a valid substitute for that path.
-- In `codex exec --ephemeral`, subagent calls should use fresh self-contained
-  prompts instead of relying on forked parent-thread context.
 - `.review-loop/config.md` is shared by both hosts; legacy `.review-loop/sessions/*.md` files are left on disk
   and never read.
 
@@ -83,8 +83,8 @@ natural-language only. Full step-by-step + verification:
   `docs/protocol/loading.md` and `scripts/read_protocol.py` to read exact
   authoritative sections before the relevant action (stages `entry-review-loop` and `entry-paired-session`).
   Shared protocol files remain the SSOT; a link alone is not an eager import. New agents and new or
-  compacted contexts reload prerequisites. Runtime entry details live in each
-  skill's `references/entry.md`. Loading does not change stage/gate semantics.
+  compacted contexts reload prerequisites. The review-loop skills keep their entry
+  procedures in `references/entry.md`. Loading does not change stage/gate semantics.
   The two paired-session entry skills load their shared contract,
   `docs/protocol/paired-session-entry.md`, the same way (stage
   `entry-paired-session`) and keep only host rules in their `SKILL.md`.
@@ -109,127 +109,37 @@ else:
     → skip silently, continue
 ```
 
-This principle applies to: MemPalace context retrieval (Step 1.6), any future Graphify integration, or any other optional tool.
+This principle applies to any optional integration (MemPalace, Graphify or another tool); none is wired today.
 
 ## Agent Invocation Pattern
 
-Claude/plugin-side writer agents follow this pattern:
-
-```
-Agent tool parameters:
-  subagent_type: general-purpose
-  prompt: |
-    {contents of agents/<agent-name>.md body}
-
-    <task-specific instructions here>
-```
-
-This applies to writer roles such as executor, code-simplifier and test-consolidation authors. Report-only reviewer/specialist roles are dispatched by the paired-session coordinator (`docs/protocol/reviewer-runtime.md`).
+The coordinator (`paired_session/coordinator.py`) starts every role as its own Codex or Claude CLI turn with that
+role's sandbox and a JSON answer schema:
+- author, finisher, docs writer and the POLISH-Q writers write in the workspace; the code-simplifier writer inlines
+  `agents/code-simplifier.md`;
+- the reviewer (persistent across rounds), the shadow, the gate and the stage reviewers are read-only; the POLISH-Q
+  specialists inline their `agents/<name>.md` body (`_specialist_turn`);
+- `agents/executor.md` and `agents/reviewer.md` are hashed into the frozen role manifest, and every `agents/*.md` is
+  hashed: changing one aborts resume of an in-flight run, so agent edits ship only in a release that says so.
 
 ### Agent hallucination guard
 
-Even with `general-purpose`, agents may not use tools and fabricate output. Two defenses:
+A role may answer without using its tools. Two defenses:
 
-1. **Agent-side**: All language agents (rust/go/python/frontend-security) open their `.md` body with an instruction to run the analysis commands and read every in-scope file before any analysis, and to base the report only on that output.
-2. **Orchestrator-side**: After every agent call, check `tool_uses` in the Agent metadata. If `tool_uses: 0`, discard result and retry once. If retry also fails, skip and report. The paired-session coordinator applies the same guard to its specialist turns (a turn without tool calls is discarded and retried once).
+1. **Agent-side**: All language agents (rust/go/python/frontend-security) open their `.md` body with an instruction to read every in-scope file before any analysis and to base the report only on that.
+2. **Coordinator-side**: a specialist or security turn without tool calls is discarded and retried once; a second empty turn fails closed (HOLD). An EXEC approval also needs the reviewer's own run evidence (`self_run_evidence`), except in a review-pr
+   report run without a test command (a static approval).
 
-<!-- 迁移自 README.md:1-4 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
-## Migrated — README.md:1-4
+## Development checks
 
-Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
+- `scripts/run-skill-lint` (0 FAIL; contracts in `tests/skills/contracts/`).
+- `python3 -m pytest -q tests` (the scripts).
+- `python3 -m unittest discover -s paired_session -p 'test_*.py'` (the coordinator; fake CLIs, no provider call;
+  the full suite is long, so run single modules while iterating).
+- `git diff --check`.
+paired-session runs on macOS only. Every push that changes a file bumps the versions (Plugin cache & version bump).
 
-# review-loop
+## README snapshots
 
-A Claude Code plugin for AI-driven code review, with a Codex Stage 1 repo-skill path alongside the Claude/plugin implementation.
-
-<!-- 迁移自 README.md:5-25 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
-## Migrated — README.md:5-25
-
-Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
-
-## Quick Start
-
-```
-/plugin marketplace add NYTC69/review-loop
-/plugin install review-loop@review-loop-marketplace
-```
-
-Start a new session. The `/review-loop` command is now available in all your projects.
-
-**Optional** — copy the config template to customize per-project defaults:
-
-```bash
-mkdir -p .review-loop
-cp ~/.claude/plugins/cache/review-loop/review-loop-config.example.md .review-loop/config.md
-```
-
-> **After updating the plugin** — Claude Code caches plugins at session
-> start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
-> to reload plugins while keeping your conversation context. This is a
-> Claude Code caching behavior, not a review-loop limitation.
-
-<!-- 迁移自 README.md:43-56 via compass:adopt 于 2026-04-19 plan=a8d9343ef0c1 -->
-## Migrated — README.md:43-56
-
-Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
-
-## Skill Tests
-
-The repository includes a first-version skill testing framework for
-`review-loop` and `guide`.
-
-- `scripts/run-skill-lint` runs static contract checks
-- `scripts/run-skill-smoke` runs the small real smoke suite
-- `scripts/run-skill-tests` runs both in order
-
-Test output uses `PASS`, `FAIL`, and `SKIP`.
-
-- Aggregate results: `tests/skills/.last-run.json`
-- Per-case artifacts: `tests/skills/.artifacts/`
-
-<!-- 迁移自 README.md:224-261 via compass:adopt 于 2026-04-19 plan=e2439220c6bd -->
-## Migrated — README.md:224-261
-
-Snapshot of README.md as of 2026-04-19 (compass adopt); README.md is current.
-
-## Configuration
-
-All options live in `.review-loop/config.md`. Every field is optional.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `reviewer` | `codex` | Shared Claude/plugin reviewer mode; Codex Stage 1 does not use this key to choose the reviewer backend |
-| `reviewer_model` | `""` | codex: `--model` flag; subagent: Agent `model` param (empty = inherit) |
-| `executor_model` | `inherit` | Shared Claude/plugin executor-model key; ignored by Codex Stage 1 |
-| `soft_limit_plan` | `3` | After N rounds, ask user to continue if CRITICALs remain |
-| `soft_limit_exec` | `3` | Same for execution phase |
-| `auto_commit` | `false` | Stage changed files and commit after delivery |
-| `commit_message_prefix` | `feat` | Conventional commit type prefix |
-| `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
-| `handsfree` | `false` | Default to hands-free mode (decisions go to Reviewer) |
-| `review_focus` | `""` | Project-specific review priorities (free text) |
-| `quality_focus` | `""` | `quality_focus` applies only when Step 3.5 Quality Polish actually runs |
-| `review_style` | `""` | Tone and rules for all reviews (free text) |
-| `skip_quality_polish` | `false` | `skip_quality_polish: true` mints `polish` as a no-op completion and still continues through docs and security |
-| `adversarial_gate_skip_paths` | `["**/SKILL.md", "docs/protocol/**", "tests/skills/contracts/**"]` | Step 3.4 terminal adversarial gate — skip when every Step 3 changed file matches one of these glob patterns |
-
-For Codex Stage 1, `reviewer_model` controls the default Claude CLI reviewer
-path, `codex_reviewer_backend` selects the local Codex fallback reviewer path,
-and `codex_reviewer_model` overrides the model used by that Codex fallback
-reviewer path. When neither `reviewer_model` nor `judgment_model` is set,
-that default Claude reviewer path backstops to `claude-opus-5-5`. The
-`reviewer` and `executor_model` entries above still
-describe shared Claude/plugin-side behavior and do not actively control
-Stage 1 Codex behavior.
-
-### Natural language config examples
-
-```yaml
-review_focus: |
-  - Security: auth checks, input validation, SQL injection
-  - Performance: N+1 queries, missing indexes
-
-quality_focus: "strict clippy lints, skip comment analysis"
-
-review_style: "be terse, flag any unwrap() as CRITICAL"
-```
+The `## Migrated — README.md` snapshot blocks of 2026-04-19 were dropped (ADR-17 V9). The user documentation is
+README.md (setup, commands, configuration, tests) and `review-loop-config.example.md` (the config keys).
