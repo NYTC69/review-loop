@@ -61,10 +61,13 @@ class FrozenProductNameTests(unittest.TestCase):
         self.assertEqual(self.markers('MODELS = ("Opus", "Claude")'), ['Claude'])
 
     def test_names_require_the_same_whole_word(self):
-        for text in ('Astral reader', 'Astra-only reader', 'gpt-6-astra reader'):
+        for text in ('Astral reader', 'Astra-only reader'):
             with self.subTest(workitem=text):
                 self.freeze(text)
                 self.assertIn('Astra', self.markers('Astra'))
+
+        self.freeze('gpt-6-astra reader')
+        self.assertEqual(self.markers('Astra'), [])
 
     def test_other_history_markers_and_directory_paths_remain_visible(self):
         self.freeze('Implement Astra and Opus.')
