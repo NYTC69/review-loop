@@ -10,6 +10,7 @@
   3. Legacy removal (ADR-16: design `.compass/results/2026-10-07_lgdel-design.md`; ships as 2.13.0 routing / 2.13.1 deletion / 2.13.2 loader+lint): route every remaining legacy path to paired-session or retire it (plan-exists, legacy session resume, invalid/unreadable config, failed pre-checks with the key absent, `entry: legacy`, `--legacy`, standalone `/review-loop:plan` and `/review-loop:execute`, the Codex Stage 1 legacy workflow), then delete the legacy skills, protocol docs, agents and lint/README needles together. Owner confirms the deletion plan before it runs.
   4. Full repository review after removal, docs first (owner 2026-10-07: README gets its full rewrite here; only small README fixes ship before, with v2.12.9): README audit `.compass/results/2026-10-07_readme-audit.md` lists the rewrite items (#7, #9-#15, #17-#24); every README, guide, skill, protocol doc and example config checked against current behaviour; every mismatch fixed.
      - 2026-10-08: audits done (lane A `v3-audit-a.md`, lane B `v3-audit-b.md`); owner decisions ADR-17 (all recommendations). Units: lane A V3-FIX-1..6 (docs, README in two parts) then V11 agents; lane B V3-B1 (prompts, historical headers), then V5/V8/V7, V4 fake-lifecycle deletion, V1 → V2 → V3 code changes.
+     - 2026-10-08: review complete for 3.0.0 — lane A V3-FIX-1..9 (docs, README, agents rewrite V11), lane B V1-V8 + V2 version gate (551c6d8) + V3 scope A (owner amendment: only the four named off features; 9738660, a984bc7, e339d07) + V3-FIX-3 paired_session/README as CLI SSOT (87cc1f2) + UNCOMMITTED (3d174de). Every unit Codex-reviewed and Opus-gated.
   5. Release v3.0.0 (CI + real default-entry runs, announce to both consumers).
 
 - **efficient mode: a normal Claude/Codex CLI auto-update mid-run should not HOLD running paired-sessions (operator_programs guard).** (added 2026-10-08)
@@ -22,6 +23,9 @@
 - **v3 review: `accept` on a main-pipeline run without a commit prints neither `COMMIT:` nor `UNCOMMITTED:`.** (added 2026-10-08)
   - Evidence: ws38 (v2.13.4 rc1 release-gate run, default entry, `auto_commit` off) accepted with only `REPORT:`; PSE ("Relay its `COMMIT:` … or `UNCOMMITTED:` … line verbatim") assumes one of them. `coordinator.py` fills `acceptance.uncommitted` only for review-only runs (~3895, ~3967).
   - Fix (lane B after V3): list the uncommitted files whenever no commit was made, on every pipeline; keep the PSE wording.
+  - **Fixed in 3.0.0** (3d174de; Opus gate APPROVE).
+
+- **Post-3.0: delete the whole lifecycle-off route** (owner 2026-10-08, ADR-17 V3 amendment, option B). `--lifecycle-mode` accepts only `on`; migrate the ~450 off-route test methods (test_real_coordinator 196, …) to worktree-lifecycle fixtures; 13 test changes outside the approved list need an owner decision. Plan: `.compass/results/laneb/v3-plan.md` (9 slices, S0 fixture migration first).
 
 ## P2 — normal
 

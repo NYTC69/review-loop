@@ -1,5 +1,25 @@
 # Changelog
 
+### v3.0.0：legacy 彻底退役后的第一个大版本（全仓库复查完成）
+
+legacy review-loop 已在 2.13.x 删除；这一版完成全仓库复查（ADR-17），文档与当前行为一致，并删掉只为旧格式保留的兼容代码。
+
+**升级前必读（不兼容变化）**
+- **在跑的 run 请用 2.13.x 收尾。** 3.0.0 引入 state 格式版本门：2.13.x 及更早保存的 run，用 3.0.0 执行 resume/accept/reject/note/abort/attach-verification/permission-probe 都会被拒绝，只打印一行提示（`status`/`stop`/`snapshot` 仍可用）。请用固定副本（例如 `~/paired-runs/review-loop-v2.13.5`）把它们跑完或中止，再切到 3.0.0 开新 run。
+- 12 个 `agents/*.md` 重写，冻结的 role manifest 哈希随之改变，这也是旧 run 不能在 3.0.0 上 resume 的原因之一。
+- `skip_globs` / `--skip-globs` 删除：profile 里还写这个键会报 unsupported key，命令行参数直接报错。
+- lifecycle-off 路线删掉四个功能（owner 选择方案 A）：off 路线的 polish round、`resume --polish`（只剩拒绝提示）、FIELD-32 最终 gate 复检。`--lifecycle-mode off` 仍作为最小路线保留（新 run 默认 `on`）；`--polish-round on|off` 和 profile 里的 `polish_round` 不再起作用，接受但忽略。整条 off 路线的删除排在 3.0 之后。
+
+**行为变化**
+- `accept` 没有提交时，所有流程都会打印 `UNCOMMITTED:` 行并在交付报告里列出要自己提交的文件（以前只有 review-only 这样做）。
+- 删除旧 state 的兼容代码（缺键补默认值、字段迁移、invocation 预算迁移、未冻结的 reviewer allowlist 等），由版本门取代。
+
+**文档**
+- `paired_session/README.md` 成为 coordinator CLI 规则的唯一权威说明，逐条对照代码更正；入口协议 PSE 中对应段落精简为宿主行为加链接。
+- agents：writer 类 agent 的结尾说明改为按调用方 schema 回答；各 specialist 保留审查要点，去掉 Orchestrator、session 文件、Step 3.x 等旧说法。
+
+**审查**：每个单元都经 Codex 审查，并通过 fresh Opus 终审；V3 终审一次 REQUEST_CHANGES（示例配置里的 `polish_round: on` 会被拒绝），修复后复审 APPROVE。
+
 ### v2.13.5：efficient 模式的 run 不再因 CLI 自动升级而 HOLD
 
 **修复**
