@@ -1,5 +1,17 @@
 # Changelog
 
+### v2.13.5：efficient 模式的 run 不再因 CLI 自动升级而 HOLD
+
+**修复**
+- run 进行中 Claude 或 Codex CLI 自动升级后，efficient 模式的 run 不再 HOLD（owner 2026-10-08；此前 Claude CLI 从 2.1.281 升到 2.1.293，poker-news-bot 的三个 run 都停住了，要手动 `permission-probe` 再 `resume`）。
+  - 识别为正常升级的情况：Claude 在同一个 `~/.local/share/claude/versions/` 目录下换成更高的版本；Codex 原地更新、路径不变，新版本号能读出来。
+  - 升级会记进 state 的 `program_updates`（新旧路径、sha256、版本），重新冻结后继续跑。
+  - 其他变化仍然 HOLD：降级、换了安装目录、版本号读不出、PATH 或其他程序变了。strict 模式不变。
+  - efficient 模式的 HOLD 提示改为说明程序在 run 开始后变了，以及怎么恢复（`permission-probe` 后 `resume`）。
+- 已经在跑的 run 仍用原来的版本，需要新开的 run 才会用到这个修复。
+
+**审查**：Codex 审查两轮没有代码问题，fresh Opus 终审 APPROVE；新增 13 个测试，没有改动已有测试。
+
 ### v2.13.4：v3.0 复查第二批（删掉测试专用的 fake lifecycle，CLI 默认走 worktree 生命周期）
 
 ADR-17 复查的第二批。在跑的 run 不受影响：已保存的 run 继续按它保存的模式 resume。
