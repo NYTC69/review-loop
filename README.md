@@ -210,7 +210,7 @@ flowchart TD
   AUTH --> REV["EXEC review: persistent reviewer + fresh shadow"]
   REV -->|"blocking finding"| AUTH
   REV --> G["GATE: fresh adversarial review"]
-  G -->|"valid critical / high"| AUTH
+  G -->|"critical / high with complete six-part body"| AUTH
   G --> F["FINISH: fresh finisher runs the tests"]
   F -->|"tree changed"| REV
   F --> Q["POLISH-Q: language + quality specialists"]
