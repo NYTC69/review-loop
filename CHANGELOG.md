@@ -1,5 +1,13 @@
 # Changelog
 
+### v3.0.2：DOCS writer 只写有证据的事实；README 加流程图
+
+**修复**
+- DOCS writer 不再在 CHANGELOG 等文档里写没观察到的测试、检查或审查结果（v3.0.0 发版验证 run 里出现过一句虚构的"额外检查已通过"）。run 的条目只写工作项和改动；最终审查、SECURITY 和提交信息留给交付报告。docs reviewer 发现文档里有错误或没有依据的说法时，至少判 MAJOR（会阻塞）。
+
+**文档**
+- README 的 "How a run goes" 加了一张 Mermaid 流程图（GitHub 直接显示）：从请求到交付的每个阶段、可选环节和所有"回到 EXEC 重新审查"的箭头，并说明 review-pr 只出报告的路线。
+
 ### v3.0.1：resume 可以提高调用上限；修正超时说明
 
 **修复**
