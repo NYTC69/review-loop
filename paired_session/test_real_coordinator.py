@@ -29,6 +29,22 @@ SPEC.loader.exec_module(rc)
 FAKE = Path(__file__).with_name('fake_cli.py')
 
 
+def old_lifecycle_default(workspace, extra):
+    """V3-B5 (ADR-17 V1): the CLI default became 'on'. The harness tests were written for the old 'off' default, so it
+    passes '--lifecycle-mode off' unless the test names the mode itself or a profile it uses sets it (a profile must still
+    be able to set or be refused for setting it)."""
+    if '--lifecycle-mode' in extra:
+        return []
+    configs = [Path(extra[i + 1]) for i, value in enumerate(extra[:-1]) if value == '--config']
+    for profile in configs or [Path(workspace) / '.review-loop' / 'paired-session.json']:
+        try:
+            if 'lifecycle_mode' in json.loads(profile.read_text()):
+                return []
+        except (OSError, ValueError, TypeError):
+            pass
+    return ['--lifecycle-mode', 'off']
+
+
 def unique_json_object(pairs):
     result = {}
     for key, value in pairs:
@@ -1043,7 +1059,7 @@ sys.exit(result.returncode)
                 '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', tsc.scaled_arg(10),
                 '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
                 '--test-command', 'python3 -m unittest', '--strict',   # D-EFF: the subprocess and main() paths pin strict too
-                *extra]
+                *old_lifecycle_default(self.workspace, extra), *extra]
 
     def run_coordinator(self, *extra, env=None, skip_probe=True):
         merged = os.environ.copy()

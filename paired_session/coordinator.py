@@ -2199,6 +2199,9 @@ class ReadOnlyTurnVoided(ValueError):
 
 class Coordinator:
     def __init__(self, args: argparse.Namespace):
+        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode (a run older than the key is off);
+            saved = Path(args.run_dir).expanduser() / 'state.json'   # the CLI sets 'on' for a new run (_execute_locked)
+            args.lifecycle_mode = (json.loads(saved.read_text()).get('config', {}).get('lifecycle_mode') or 'off') if saved.exists() else 'off'
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
@@ -8922,7 +8925,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
-    p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
+    p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
+                   help="'on' (the worktree lifecycle W, the CLI default for a new run) or 'off' (the older route without "
+                        "FINISH, POLISH-Q, DOCS and SECURITY); an existing run keeps the mode it was created with")
     p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
@@ -9258,6 +9263,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         raise ValueError('--scope-change requires note or reject')
     if args.action == 'status':
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
+    if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
+        args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)
     if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')

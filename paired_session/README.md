@@ -157,9 +157,9 @@ For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
 workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
-so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It enables the
-worktree lifecycle; for a run created with lifecycle off, pass
-`--lifecycle-mode off` (or use a profile without the key). A workspace
+so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It sets
+`lifecycle_mode: on`, which is also the CLI default for a new run; to create a run
+with lifecycle off, pass `--lifecycle-mode off`. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
 when that profile is selected, before any run state is created; `permission-probe`
@@ -183,8 +183,10 @@ every model id must be well formed and, when `allowed_models` is set, listed for
 that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
-`lifecycle_mode` defaults to `off` on the CLI; the paired-session skill passes
-`on` for every new run (D-4). The frozen config also records exact
+`lifecycle_mode` defaults to `on` for a new run started from the CLI (earlier
+versions defaulted to `off`); a saved run keeps the mode it was created with, so
+`resume`, `accept` and the other run commands need no flag. The paired-session skill
+passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` is retired,
 L107: still accepted and frozen for old profiles and saved runs, never read, so it never skips the gate);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
@@ -270,7 +272,7 @@ bin/paired-session run \
   --workspace /path/to/disposable-worktree \
   --workitem /path/to/WORKITEM.md \
   --run-dir /path/to/worktree-run-id \
-  --test-command 'python3 -m unittest'
+  --test-command 'python3 -m unittest' --lifecycle-mode on
 ```
 
 In strict mode, before `run` or `resume`, perform the author permission probe with the same
@@ -282,7 +284,7 @@ bin/paired-session permission-probe \
   --workspace /path/to/disposable-worktree \
   --workitem /path/to/WORKITEM.md \
   --run-dir /path/to/worktree-run-id \
-  --test-command 'python3 -m unittest'
+  --test-command 'python3 -m unittest' --lifecycle-mode on
 ```
 
 The probe is bound to the author binary and relevant configuration; changing
