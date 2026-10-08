@@ -60,25 +60,25 @@
       "id": "plugin_version_pinned_plugin_json",
       "kind": "contains",
       "path": ".claude-plugin/plugin.json",
-      "needle": "\"version\": \"2.13.4\""
+      "needle": "\"version\": \"2.13.5\""
     },
     {
       "id": "plugin_version_pinned_marketplace_metadata",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "multi-language static analysis\",\n    \"version\": \"2.13.4\""
+      "needle": "multi-language static analysis\",\n    \"version\": \"2.13.5\""
     },
     {
       "id": "plugin_version_pinned_marketplace_plugins_first",
       "kind": "contains",
       "path": ".claude-plugin/marketplace.json",
-      "needle": "\"version\": \"2.13.4\",\n      \"author\""
+      "needle": "\"version\": \"2.13.5\",\n      \"author\""
     },
     {
       "id": "plugin_version_pinned_codex_plugin_json",
       "kind": "contains",
       "path": ".codex-plugin/plugin.json",
-      "needle": "\"version\": \"2.13.4\""
+      "needle": "\"version\": \"2.13.5\""
     },
     {
       "id": "codex_marketplace_manifest_name",

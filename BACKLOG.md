@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-07
+**Last updated**: 2026-10-08
 
 ## P0 — blocker / must-do-now
 
@@ -11,6 +11,17 @@
   4. Full repository review after removal, docs first (owner 2026-10-07: README gets its full rewrite here; only small README fixes ship before, with v2.12.9): README audit `.compass/results/2026-10-07_readme-audit.md` lists the rewrite items (#7, #9-#15, #17-#24); every README, guide, skill, protocol doc and example config checked against current behaviour; every mismatch fixed.
      - 2026-10-08: audits done (lane A `v3-audit-a.md`, lane B `v3-audit-b.md`); owner decisions ADR-17 (all recommendations). Units: lane A V3-FIX-1..6 (docs, README in two parts) then V11 agents; lane B V3-B1 (prompts, historical headers), then V5/V8/V7, V4 fake-lifecycle deletion, V1 → V2 → V3 code changes.
   5. Release v3.0.0 (CI + real default-entry runs, announce to both consumers).
+
+- **efficient mode: a normal Claude/Codex CLI auto-update mid-run should not HOLD running paired-sessions (operator_programs guard).** (added 2026-10-08)
+  - **Fixed in v2.13.5** (CLI-UPD 007cd02: recognisable Claude/Codex upgrades recorded in `program_updates` and re-frozen; Opus gate APPROVE). Keep open until a real efficient run survives an auto-update.
+  - Owner 2026-10-08 (poker-news-bot): "记进 review-loop 待办. 让他们修."
+  - Evidence: 2026-10-08 the Claude CLI auto-updated 2.1.281 -> 2.1.293; poker-news-bot runs runs2128/WI-124, runs2128/WI-125 and runs2131/WI-127 (all `safety_mode=efficient`, lifecycle off) HOLDed with "configured operator program or PATH changed since permission probe (changed: claude_bin...)" from `coordinator.py` `_program_state` (~line 2707); each needed a manual `permission-probe` + `resume`. The text misleads the operator: efficient runs never needed a probe, yet the only recovery is to run one.
+  - Fix: in efficient mode treat a benign CLI upgrade like FIELD-24's plugin update — the same claude/codex install path resolving to a newer official release (version increases, binary under the vendor's normal install root, no other `operator_programs` key changed) — record it (e.g. `global_config_changes.program_update`), keep the round and re-freeze the snapshot; strict still HOLDs. Reword the efficient HOLD text (e.g. "operator program changed since run start; run `permission-probe` to re-freeze, then resume").
+  - Acceptance: a CLI auto-update during an efficient run's author/reviewer turn no longer HOLDs; an unrelated binary swap, a PATH change or a downgrade still HOLDs; strict unchanged.
+
+- **v3 review: `accept` on a main-pipeline run without a commit prints neither `COMMIT:` nor `UNCOMMITTED:`.** (added 2026-10-08)
+  - Evidence: ws38 (v2.13.4 rc1 release-gate run, default entry, `auto_commit` off) accepted with only `REPORT:`; PSE ("Relay its `COMMIT:` … or `UNCOMMITTED:` … line verbatim") assumes one of them. `coordinator.py` fills `acceptance.uncommitted` only for review-only runs (~3895, ~3967).
+  - Fix (lane B after V3): list the uncommitted files whenever no commit was made, on every pipeline; keep the PSE wording.
 
 ## P2 — normal
 
