@@ -7,7 +7,9 @@ the default mode (ADR-11 amendment), so the permission-probe gate (rows 4, 4b) a
 opt-in (row 3b) apply only to `--strict` runs; the sandboxes and the per-turn detective controls apply in both modes.
 The worktree lifecycle W is the real default route since v2.10.0, so rows 12, 16 and 17 are no longer fake-only: the
 SECURITY preflight, the stage budgets and the FINISH/DOCS writers run on real runs, and `lifecycle_mode=on` is not
-refused on the real CLI.
+refused on the real CLI. The fake lifecycle was removed in V3-B4 (ADR-17 V4): the fake-only parts of rows 12, 14,
+16 (the `_fake_lifecycle` keyword) and 17, the fake tests named in other rows (e.g. row 22) and the candidate-test
+sandbox platform note describe code and tests that no longer exist.
 
 Status: `enforced` / `offline-only` (code and tests exist but no caller on the real path, or the effect is not evidenced on the real CLI, or no dedicated test) / `fake-only` (reachable only with the fake-CLI lifecycle) / `design-only` (doc or convention, no code).
 

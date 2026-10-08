@@ -194,7 +194,7 @@ Status values:
 | macOS | the full path | covered |
 | Linux (legacy works today) | since v2.13.0 a non-macOS host is refused on every entry (`paired-session needs macOS; Linux and other hosts are not supported`); no real Linux run recorded | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback (L133) |
 | Windows | unsupported in both | covered |
-| CI and off-macOS tests | GitHub Actions runs the tests on Linux and macOS (D08; the workflow lives on the `ci/**` branches); the macOS-sandbox tests skip elsewhere (`DARWIN_SANDBOX`) | covered (ADR-15) (L135) |
+| CI and off-macOS tests | GitHub Actions runs the tests on Linux and macOS (D08; the workflow lives on the `ci/**` branches); the macOS-only tests are skipped on Linux | covered (ADR-15) (L135) |
 
 **Owner answers:** the 18 rows marked (ADR-15) were answered provisionally on 2026-10-05 (D-OWNER-1005) and finally
 on 2026-10-07 (ADR-15, D11-1006, with the owner's same-day changes: L100 moved from covered to port, a continue

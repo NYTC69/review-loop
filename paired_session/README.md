@@ -157,9 +157,9 @@ For operator-selected programs, role/vendor settings and test commands, copy
 `paired-session-config.example.json` to an operator-owned path outside the
 workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
-so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It enables the
-worktree lifecycle; for a run created with lifecycle off, pass
-`--lifecycle-mode off` (or use a profile without the key). A workspace
+so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It sets
+`lifecycle_mode: on`, which is also the CLI default for a new run; to create a run
+with lifecycle off, pass `--lifecycle-mode off`. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
 when that profile is selected, before any run state is created; `permission-probe`
@@ -183,8 +183,10 @@ every model id must be well formed and, when `allowed_models` is set, listed for
 that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
-`lifecycle_mode` defaults to `off` on the CLI; the paired-session skill passes
-`on` for every new run (D-4). The frozen config also records exact
+`lifecycle_mode` defaults to `on` for a new run started from the CLI (earlier
+versions defaulted to `off`); a saved run keeps the mode it was created with, so
+`resume`, `accept` and the other run commands need no flag. The paired-session skill
+passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` is retired,
 L107: still accepted and frozen for old profiles and saved runs, never read, so it never skips the gate);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
@@ -265,24 +267,12 @@ caller may use ingest, it must positively stop the writer process group and
 deny that writer OS access to the scratch Git directory and index. Same-device
 candidates remain ineligible for activation.
 
-The disabled `security_repair_policy` helper checks a proposed SECURITY
-repair against the frozen legacy ignore-pattern table and a caller-supplied
-candidate-file inventory. Its `SecurityRepair` result lists exact fixer paths,
-approved ignore patterns, any operator-consent digest, and an EXEC replay
-requirement. It does not authorize a writer by itself. A future dispatcher must
-derive the file inventory from the current candidate OID, prove each grant is
-an exact no-follow file leaf, and enforce the observed write boundary: every
-SECURITY OID change replays EXEC and the gate even if no repair was planned.
-It must verify appended `.gitignore` lines against `approved_patterns`, route
-`ReservedDocsRepair` to the replayed DOCS writer, and require both a fresh
-SECURITY review and disposition by the original finding owner on the new OID.
-
 ```sh
 bin/paired-session run \
   --workspace /path/to/disposable-worktree \
   --workitem /path/to/WORKITEM.md \
   --run-dir /path/to/worktree-run-id \
-  --test-command 'python3 -m unittest'
+  --test-command 'python3 -m unittest' --lifecycle-mode on
 ```
 
 In strict mode, before `run` or `resume`, perform the author permission probe with the same
@@ -294,7 +284,7 @@ bin/paired-session permission-probe \
   --workspace /path/to/disposable-worktree \
   --workitem /path/to/WORKITEM.md \
   --run-dir /path/to/worktree-run-id \
-  --test-command 'python3 -m unittest'
+  --test-command 'python3 -m unittest' --lifecycle-mode on
 ```
 
 The probe is bound to the author binary and relevant configuration; changing
@@ -781,83 +771,6 @@ in the permission probe. Options for the operator:
 Do not loosen the sandbox to make such an item pass; the probe PASS and the
 safety rows in `docs/1c-safety-controls.md` are bound to the sandbox as probed.
 
-### Fake closeout item admission (offline only)
+### Removed: the fake lifecycle
 
-`fake_lifecycle_drive(backlog_item=N)` may freeze an item from a Compass view generated
-within ten minutes. The view must name this repo-root tracked `BACKLOG.md`, contain
-one open item with that ID, and match its unique normalized title and section.
-Workspace/index drift, ambiguous items and symlink paths refuse before PLAN.
-The run records the exact HEAD, BACKLOG blob and hashes of the view and adapter.
-This admission does not close an item: Q construction, fresh Q checks and DELIVERY
-remain required. The worktree lifecycle has no closeout stage (D-3).
-
-`closeout_adapter.close_blob` produces an **unreviewed Q proposal** from the exact
-frozen BACKLOG bytes, a C1 object ID and closing date. It moves only the selected
-item and its children, restores an empty source sentinel, updates Last updated
-and retains the newest five Done blocks. It writes no file and supplies no
-approval. Q still needs isolated materialization and fresh review/test/SECURITY
-receipts before accept or delivery. Closeout intake is write-once at a fresh
-lifecycle parent, and BACKLOG is excluded from the declared writer grants.
-
-`fake_materialize_q(c1, day)` is an offline object proposal after the P SECURITY
-pass. It checks the P tree, C1 parent/tree and current adapter hash, rejects
-non-child body text or a missing final newline, and uses a temporary index to
-write a BACKLOG-only Q tree in scratch Git. Its status is always UNREVIEWED.
-It changes neither live HEAD/index/BACKLOG, the P root/index, nor lifecycle state.
-Fresh Q tests/reviews/gate/SECURITY and attributed acceptance remain mandatory;
-this method cannot commit, publish or close. C1 message/author/intent verification
-belongs to the later bundle-verification step. The worktree lifecycle does not use it.
-
-The fake Q source reviewer preserves its raw verdict in the turn and records an
-independent effective verdict/advisory proof. Nonempty REVISE with only
-non-security MINOR/LOW uses the existing advisory rule; empty REVISE, major and
-security findings refuse. This source remains UNREVIEWED until fresh Q bundle
-checks; proof advisories are copied, not shared with the mutable answer list.
-
-### Fake-only Q receipt bundle
-
-The offline lifecycle harness retains Q's proposal/test/reviewer source as
-`UNREVIEWED`. `fake_q_complete` dispatches separate gate, final and SECURITY
-reviews at the same Q OID, requires observed configured-test success and binds
-phase, workspace and increasing turn sequences. P FINISH/POLISH-Q/DOCS receipts
-must be current no-ops. A distinct protected `REVIEWED` bundle is evidence for
-future delivery; it does not itself publish commits or CLOSE. A failed or
-uncertain Q attempt requires abort and a new run. Real candidate-tree activation
-remains disabled (the worktree lifecycle does not use this bundle);
-sandbox/cache/process-isolation gates are still required.
-
-Non-security reviewer MINOR/LOW and gate low findings are retained in Q proof
-advisories. Their raw verdict stays in the provider receipt; only the coordinator
-classifies them as nonblocking. Major/security and gate medium-or-higher findings
-refuse the bundle. This follows P SECURITY's blocking set; no advisory authorizes
-real activation or bypasses tests/tree binding.
-
-Q final/SECURITY and source APPROVE or nonempty REVISE with only non-security
-MINOR/LOW findings use APPROVE_WITH_ADVISORY. Empty REVISE remains blocked.
-Q source and bundle advisories stay OPEN in the finding ledger before acceptance.
-
-The fake DELIVERY intake re-reads protected Q bundle and provider turn receipts,
-current program hashes, source tests, Q tree and P no-op receipts before any
-Git write. A pending, relabeled, later-turn or failed-test proof refuses intake.
-
-Fake delivery prepares a deterministic unpublished C2 (parent C1, tree Q),
-with signing/hooks disabled, and an intent digest binding objects, Q proofs,
-HEAD/index/live snapshot and operator provenance. `accept --expect` must match
-that digest; this acceptance publishes no ref. CAS/reconciliation is a later step.
-
-Preparation permits only the normal fake-router HOLD (or existing DONE/ACCEPTED);
-other HOLDs/terminal states refuse. Delivery accept requires DONE/PENDING before
-rechecking intent. Fake delivery rejection is explicitly refused until P'/Q'
-recovery is wired; use abort/new run or an explicit scope-change instead.
-
-Fake delivery seals Git hook/config inventory before PLAN and binds it into the operator intent. Active hooks refuse until the hook runner exists. C1 has a fixed coordinator author, committer, start time and item message; delivery refuses metadata or inventory drift. The worktree lifecycle does not use fake delivery.
-
-Fake publication uses a protected acceptance journal. Its PREPARED/PUBLISHED phases are incomplete delivery states, not CLOSE receipts. Post-CAS verification checks frozen proof files, current programs, exact candidate bytes and the C1/C2 chain without assuming the old HEAD; final live-index reconciliation is a separate required check.
-
-Fake publication imports C1/C2 through `index-pack --strict`, records the journal before the single old-value CAS, and keeps the live index lock while checking out through an alternate index and replacing the live index. Final verification compares read-only index entries to Q (it cannot run `write-tree` while holding that same lock). Publication errors record a digest-bound HOLD; post-CAS replay is a separate required recovery step.
-
-A publication journal or structured publication HOLD quarantines ordinary operator commands (including scope-change, probe, note, accept and resume). Read-only status remains available. Use the locked publication recovery path; pending journal phases are not acceptance or CLOSE.
-
-Fake-only Python drive helpers now prepare reviewed delivery, require explicit operator acceptance, reconcile sealed publication, and produce an idempotent CLOSE receipt with C1/C2 and exact Q facts. The public CLI still refuses real candidate-tree activation (the worktree lifecycle does not use these helpers); external actions are unavailable, including explicit true requests. Recovery releases ordinary-command quarantine only after exact reconciliation and lock removal. Mid-stage resume and full PLAN-to-close fault coverage remain acceptance gates.
-
-Fake OID and Q tests require the macOS OS write sandbox; unavailable isolation refuses dispatch. Writes are limited to the candidate root and a fresh test temporary directory, excluding candidate Git/Compass/BACKLOG metadata. `/dev/null` permits data writes for the system Python launcher. Network and hardlink creation are denied; receipts record the sandbox engine, profile and roots. Real candidate-tree activation remains refused. An initial Q reviewer test failure is not erased by a later pass.
+The offline fake lifecycle (the candidate-tree Q, delivery publication and closeout harness, with its modules `delivery_*`, `closeout_*`, `q_proposal`, `q_evidence`, `candidate_test_sandbox`, `finish_dispatch`, `security_repair_policy`, `hook_inventory_*` and `safe_temp`) was removed in V3-B4 (ADR-17 V4); the worktree lifecycle never used it.

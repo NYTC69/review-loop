@@ -163,7 +163,6 @@ turn's processes, then restores the workspace by hand.
 ## 6. Lifecycle hook (D-7)
 
 - D-7 ("lifecycle refuses probe waivers") is W1a's `worktree_lifecycle.refuse_waivers`. Since lane A INT-2c it applies only when `Coordinator.strict` is true; an efficient lifecycle run notes a waiver as unneeded and records none, like any efficient run.
-- The fake-lifecycle candidate-test sandbox (`candidate_test_sandbox.run`) is a sandbox requirement, not a probe gate. It stays in both modes.
 
 ## 7. Tests
 
