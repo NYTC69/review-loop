@@ -11,7 +11,7 @@ import argparse
 import calendar
 import copy
 from contextlib import contextmanager, nullcontext
-from datetime import date, datetime
+from datetime import datetime
 import errno
 import itertools
 import fcntl
@@ -35,21 +35,15 @@ from typing import Optional
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
-    from paired_session import closeout_policy
-    from paired_session import q_proposal
-    from paired_session import q_evidence
     from paired_session import claude_author_probe as cap
-    from paired_session import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import evidence_guard
     from paired_session import ignored_config
     from paired_session import readonly_guard
-    from paired_session import finish_dispatch
     from paired_session import lifecycle_spine
     from paired_session import operator_verification as opv
     from paired_session import sensitive_policy
-    from paired_session import security_repair_policy
     from paired_session import worktree_lifecycle
     from paired_session import review_report
     from paired_session import timeout_scale
@@ -57,21 +51,15 @@ try:
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
-    import closeout_policy
-    import q_proposal
-    import q_evidence
     import claude_author_probe as cap
-    import delivery_intent, delivery_seal, delivery_close, candidate_test_sandbox
     import codex_capability_guard
     import docs_policy
     import evidence_guard
     import ignored_config
     import readonly_guard
-    import finish_dispatch
     import lifecycle_spine
     import operator_verification as opv
     import sensitive_policy
-    import security_repair_policy
     import worktree_lifecycle
     import review_report
     import timeout_scale
@@ -2210,14 +2198,15 @@ class ReadOnlyTurnVoided(ValueError):
 
 
 class Coordinator:
-    def __init__(self, args: argparse.Namespace, *, _fake_lifecycle=False):
+    def __init__(self, args: argparse.Namespace):
+        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode (a run older than the key is off);
+            saved = Path(args.run_dir).expanduser() / 'state.json'   # the CLI sets 'on' for a new run (_execute_locked)
+            args.lifecycle_mode = (json.loads(saved.read_text()).get('config', {}).get('lifecycle_mode') or 'off') if saved.exists() else 'off'
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
-            if _fake_lifecycle and not lifecycle_spine.fake_guard(args):
-                raise ValueError('lifecycle remains disabled until every stage and isolation check is implemented')
         if getattr(args, 'resume_timeout', None) is not None and args.action != 'resume':
             raise ValueError('--resume-timeout is accepted only with resume')
         if getattr(args, 'acknowledge_codex_trust', None) and args.action != 'resume': raise ValueError('--acknowledge-codex-trust requires resume')
@@ -2225,8 +2214,7 @@ class Coordinator:
         if not 1 <= getattr(args, 'timeout', DEFAULT_TIMEOUT_SECONDS) <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any state exists
             raise ValueError(TIMEOUT_RANGE_ERROR)
         self.args = args
-        self._fake_lifecycle = bool(_fake_lifecycle and args.lifecycle_mode=='on' and lifecycle_spine.fake_guard(args))
-        self._fake_dispatching = False
+        self._fake_lifecycle = False   # V4: the fake lifecycle was removed; test_worktree_lifecycle still reads the flag
         self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
         self.workitem = Path(args.workitem).expanduser().resolve()
@@ -2262,7 +2250,7 @@ class Coordinator:
                 else:
                     saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
                     upgraded = saved_state
-        if args.lifecycle_mode == 'on' and not _fake_lifecycle:   # W1a: the real path is the worktree lifecycle (ADR-11)
+        if args.lifecycle_mode == 'on':   # W1a: the real path is the worktree lifecycle (ADR-11)
             worktree_lifecycle.refuse_waivers(args)   # INT-2c: after the safety_mode resolution (D-7 is strict only), before its write
         if upgraded: atomic_json(self.state_path, upgraded)   # a refused command leaves the frozen mode unchanged
         if not self.state_path.exists():
@@ -2272,7 +2260,7 @@ class Coordinator:
             self.state = json.loads(self.state_path.read_text())
             if not {'approved_snapshot', 'rejected_digests'} <= self.state.keys():
                 raise ValueError('run was created by an older paired-session build; start a new run')
-            if not self._fake_lifecycle: worktree_lifecycle.refuse_saved(self.state, args)
+            worktree_lifecycle.refuse_saved(self.state, args)
             self.state.setdefault('item_uuid', str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.run_dir))))
             self.state.setdefault('item_blockers', [])
             self.state.setdefault('item_blockers_complete', False)
@@ -2396,9 +2384,7 @@ class Coordinator:
             }
             if self._pr_pins:
                 self.state['review_pr'] = self._pr_pins   # LG2-c: review-report.md and review_post.py read them
-            if self._fake_lifecycle:
-                self.state['lifecycle'] = lifecycle_spine.initial(self.state['item_uuid'], self.state['base_commit'])
-            elif args.lifecycle_mode == 'on':
+            if args.lifecycle_mode == 'on':
                 self.state['lifecycle'] = worktree_lifecycle.initial(self.state['item_uuid'], self.state['base_commit'])
             self._freeze_role_dispatch()
             if scope is not None:
@@ -2606,7 +2592,7 @@ class Coordinator:
         config['gate_prompt'] = (
             '<bundled-default>:' + hashlib.sha256(gate_prompt.read_bytes()).hexdigest()
             if gate_prompt == DEFAULT_GATE_PROMPT.resolve() else str(gate_prompt))
-        worktree = self.args.lifecycle_mode == 'on' and not self._fake_lifecycle
+        worktree = self.args.lifecycle_mode == 'on'
         def frozen_doc_path(value):
             if any(char in value for char in '*?['): raise ValueError('lifecycle doc paths must be exact')
             path = (self.workspace / value).expanduser().resolve()
@@ -2680,7 +2666,7 @@ class Coordinator:
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
             raise RuntimeError('frozen role dispatch changed; abort or start a new run')
-        if (not current['role_flags']['author']['tmp_isolated'] and not self._fake_lifecycle and
+        if (not current['role_flags']['author']['tmp_isolated'] and
                 not worktree_lifecycle.is_worktree(self.state)):   # W accepts the real-EXEC author TMP (ADR-11)
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
@@ -3221,519 +3207,6 @@ class Coordinator:
         with self._save_lock:
             atomic_json(self.state_path, self.state)
 
-    def fake_lifecycle_event(self, event, value):
-        if any(self.state.get(key) for key in ('fake_candidate_pending', 'fake_ingest_receipt',
-                                               'fake_candidate_chain', 'fake_route_consumed')):
-            raise ValueError('chain-only lifecycle events are router-owned')
-        self._fake_lifecycle_event(event, value)
-
-    def _fake_lifecycle_event(self, event, value):
-        if not self._fake_lifecycle or 'lifecycle' not in self.state:
-            raise ValueError('fake lifecycle state is unavailable')
-        action = {'begin': lifecycle_spine.begin, 'receipt': lifecycle_spine.complete}.get(event)
-        if action is None: raise ValueError('unknown fake lifecycle event')
-        if (event == 'begin' and self.state.get('q_reserved') and
-                self.state['invocations_used'] + self.state['q_reserved'] + 2 > self.args.max_invocations):
-            raise ValueError('P budget exhausted before stage begin; abort and start a new run '
-                             'with larger --max-invocations')
-        self.state['lifecycle'] = action(self.state['lifecycle'], value)
-        self.save()
-
-    def _verify_reserved_docs_replay(self, baseline, revision, hits):
-        life = self.state['lifecycle']
-        marker = life['reserved_docs_constraint']
-        fail = 'reserved docs constraint requires replayed DOCS receipt and retest'
-        saved = json.loads((self.evidence / (marker['id'] + '-reserved-docs.json')).read_text())
-        rows = life['receipts'][marker['receipt_count']:]
-        test = self.state.get('fake_candidate_test') or {}
-        chain = self.state.get('fake_candidate_chain') or {}
-        if (hits or saved != json.loads(json.dumps(marker)) or marker['epoch'] >= life['epoch'] or
-                marker['docs_file'] != Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix() or
-                not rows or test.get('oid') != revision.tree_oid or test.get('returncode') != 0 or
-                test.get('epoch') != life['epoch'] or chain.get('oid') != revision.tree_oid or
-                chain.get('test_id') != test.get('id')):
-            raise ValueError(fail)
-        stored_test = json.loads((self.evidence / (test['id'] + '-oid-test.json')).read_text())
-        if stored_test != json.loads(json.dumps(test)):
-            raise ValueError(fail)
-        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
-        def blob(oid):
-            return next(((mode, digest) for mode, digest, path in
-                         candidate_tree._tree_entries(env, oid) if path == marker['docs_file']), None)
-        oid, changed_docs = marker['source_oid'], None
-        for row in rows:
-            if (row.get('candidate_oid') != oid or row.get('status') not in ('READY', 'APPROVE') or
-                    row.get('stage') == 'SECURITY'):
-                raise ValueError(fail)
-            if row.get('stage') != 'DOCS' and blob(oid) != blob(row['output_oid']):
-                raise ValueError(fail)
-            if (row.get('stage') == 'DOCS' and row.get('docs_file') == marker['docs_file'] and
-                    row.get('retested_oid') == row.get('output_oid') and
-                    blob(oid) != blob(row['output_oid'])):
-                changed_docs = row
-            oid = row.get('output_oid')
-        reviews = [row for row in rows if row.get('stage') == 'EXEC' and
-                   isinstance(row.get('approval_proof'), dict) and
-                   row['approval_proof'].get('fake_only') is True and
-                   row['approval_proof'].get('convergence_id') == chain.get('id') and
-                   row.get('candidate_oid') == revision.tree_oid]
-        if (oid != revision.tree_oid or not changed_docs or not reviews or
-                blob(marker['source_oid']) == blob(revision.tree_oid) or
-                blob(changed_docs['output_oid']) != blob(revision.tree_oid)):
-            raise ValueError(fail)
-        if marker['owner'] == 'coordinator' and not self._coord_doc_blockers(marker['docs_file'], marker['owner_ids']):
-            raise ValueError(fail)
-        if marker['owner'] == 'security-reviewer':
-            owner = life.get('awaiting_owner_reverify') or {}
-            if (owner.get('owner') != 'security-reviewer' or
-                    tuple(owner.get('finding_ids', ())) != tuple(marker['owner_ids'])):
-                raise ValueError(fail)
-            owner.update(repair_oid=changed_docs['output_oid'], request_id=changed_docs['request_id'],
-                         reserved_docs_replay=True)
-        elif marker['owner'] != 'coordinator':
-            raise ValueError(fail)
-
-    def fake_reserved_docs_begin_replay(self):
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise ValueError('reserved DOCS replay requires fake-only dispatch')
-        life = self.state['lifecycle']
-        marker = life.get('reserved_docs_constraint') or {}
-        source_owner = life.get('awaiting_owner_reverify') or {}
-        source_rows = self._coord_doc_blockers(marker.get('docs_file'), marker.get('owner_ids', ()))
-        owned = (marker.get('owner') == 'coordinator' and source_rows or
-                 marker.get('owner') == source_owner.get('owner') == 'security-reviewer' and
-                 tuple(marker.get('owner_ids', ())) == tuple(source_owner.get('finding_ids', ())))
-        if (life['stage'] != 'SECURITY' or life['pending'] or not owned or
-                marker.get('source_oid') != life['candidate_oid']):
-            raise ValueError('reserved DOCS replay lacks coordinator-owned source')
-        self.state['lifecycle'] = {**life, 'stage': 'DOCS'}
-        self.save()
-
-    def fake_lifecycle_route(self, approval, outputs=None, finish_context=None, stub_mode=False,
-                             polish_context=None, polish_stub=False, docs_context=None, docs_stub=False,
-                             security_context=None, chain_only=False):
-        if not self._fake_lifecycle: raise ValueError('fake lifecycle router is unavailable')
-        if chain_only:
-            if not lifecycle_spine.fake_dispatch_guard(self.args):
-                raise ValueError('chain-only route requires fake providers')
-            if outputs:
-                raise ValueError('chain-only route cannot accept caller output OIDs')
-            if approval is not None:
-                raise ValueError('chain-only route rejects caller approval')
-            if (life := self.state['lifecycle'])['stage'] == 'EXEC' and life['epoch'] and not self._fake_reentry():
-                return 'HOLD'
-            if self.state['lifecycle']['stage'] == 'EXEC':
-                approval = self.fake_candidate_approval()
-                if not self.state['fake_ingest_receipt'].get('chain_only'):
-                    raise ValueError('chain-only route requires a chain-only ingest')
-                chain_id = approval['proof']['convergence_id']
-                if self.state.get('fake_route_consumed') == chain_id:
-                    raise ValueError('chain-only EXEC approval was already consumed')
-                self.state['fake_route_consumed'] = chain_id
-                self.save()
-            else:
-                if self.state['lifecycle']['stage'] == 'STOP_BEFORE_SECURITY' and security_context is None:
-                    raise ValueError('chain-only continuation needs SECURITY context or unused persisted approval')
-                prior = next((row for row in reversed(self.state['lifecycle']['receipts'])
-                              if row['stage'] == 'EXEC'), None)
-                proof = prior.get('approval_proof') if prior else None
-                if (not isinstance(proof, dict) or proof.get('fake_only') is not True or
-                        not self.state.get('fake_route_consumed') or
-                        not (self.state.get('fake_ingest_receipt') or {}).get('chain_only') or
-                        proof.get('convergence_id') != self.state['fake_route_consumed']):
-                    raise ValueError('chain-only continuation lacks consumed EXEC proof')
-        else:
-            chain_pending = self.state.get('fake_candidate_pending') or {}
-            chain_ingest = self.state.get('fake_ingest_receipt') or {}
-            if (chain_pending.get('chain_only') or chain_ingest.get('chain_only') or
-                    self.state.get('fake_candidate_chain') or self.state.get('fake_route_consumed')):
-                raise ValueError('persisted chain forbids a hand-built approval')
-            proof = approval.get('proof') if isinstance(approval, dict) else None
-            if isinstance(proof, dict) and proof.get('fake_only'):
-                raise ValueError('fake chain proof requires chain-only route')
-        outputs = outputs or {}
-        emit = self._fake_lifecycle_event if chain_only else self.fake_lifecycle_event
-        start_epoch = self.state['lifecycle']['epoch']
-        while True:
-            life = self.state['lifecycle']
-            stage = life['stage']
-            owner_marker = life.get('awaiting_owner_reverify', {})
-            owner_waiting = (owner_marker.get('owner') == 'security-reviewer' and
-                             bool(owner_marker.get('finding_ids')) and not any(
-                row['id'] not in owner_marker['finding_ids'] for row in self.blocking_open_findings()))
-            blockers_allowed = owner_waiting or self._coordinator_reserved_waiting(life, stage, security_context)
-            if stage == 'STOP_BEFORE_SECURITY' and security_context:
-                if self.blocking_open_findings() and not blockers_allowed:
-                    raise ValueError('SECURITY has an upstream blocker')
-                self.state['lifecycle'] = {**life, 'stage': 'SECURITY'}
-                self.save()
-                continue
-            if stage in ('STOP_BEFORE_SECURITY', 'STOP_BEFORE_DELIVERY') or (
-                    stage == 'EXEC' and life['epoch'] != start_epoch):
-                if stage == 'EXEC' and chain_only:
-                    if not self._fake_reentry(): return 'HOLD'
-                return stage
-            last = life['receipts'][-1] if life['receipts'] else {}
-            replay_unfinished = (stage == 'DOCS' and life.get('reserved_docs_constraint') and
-                                 not str(last.get('request_id', '')).endswith('-reserved-replay'))
-            if (not replay_unfinished and
-                    not life['pending'] and last.get('stage') == stage and
-                    last.get('epoch') == life['epoch'] and last.get('candidate_oid') == life['candidate_oid']):
-                if stage == 'POLISH-Q' and self.blocking_open_findings() and not blockers_allowed:
-                    raise ValueError('POLISH-Q has an open blocker')
-                self.state['lifecycle'] = lifecycle_spine.advance(life)
-                self.save()
-                continue
-            if stage == 'EXEC':
-                expected = {'status': 'APPROVE', 'epoch': life['epoch'],
-                            'item_uuid': life['item_uuid'], 'run_id': self.run_dir.name,
-                            'parent': life['parent']}
-                if not isinstance(approval, dict) or any(approval.get(k) != v for k, v in expected.items()):
-                    raise ValueError('fake EXEC approval is stale or malformed')
-                oid = approval.get('candidate_oid')
-                if not isinstance(oid, str) or not oid or life['candidate_oid'] not in (None, oid):
-                    raise ValueError('fake EXEC approval differs from current OID')
-                if life['candidate_oid'] is None:
-                    self.state['lifecycle'] = {**life, 'candidate_oid': oid}
-                    self.save()
-                    life = self.state['lifecycle']
-            request = {key: life[key] for key in ('item_uuid', 'stage', 'epoch', 'candidate_oid', 'parent')}
-            suffix = '-repair' if stage == 'SECURITY' and owner_waiting else ''
-            if stage == 'DOCS' and life.get('reserved_docs_constraint'):
-                suffix = '-reserved-replay'
-            request.update(request_id=f"fake-{stage}-{life['epoch']}{suffix}",
-                           role='reviewer' if stage == 'EXEC' else stage)
-            if life['pending'] and life['pending'] != request:
-                raise ValueError('fake stage has a different pending request')
-            if stage == 'FINISH' and life['pending']:
-                raise ValueError('uncertain FINISH request requires operator resolution')
-            if stage == 'FINISH' and not stub_mode and not finish_context:
-                raise ValueError('FINISH requires a candidate-bound dispatch context')
-            if stage == 'POLISH-Q' and life['pending']:
-                raise ValueError('uncertain POLISH-Q request requires operator resolution')
-            if stage == 'POLISH-Q' and self.blocking_open_findings() and not blockers_allowed:
-                raise ValueError('POLISH-Q has an open blocker')
-            if stage == 'POLISH-Q' and life.get('polish_calls', 0) >= budget_policy.BUDGET_CAPS['POLISH-Q'][0]:
-                raise ValueError('POLISH-Q specialist budget exhausted')
-            if stage == 'POLISH-Q' and not stub_mode and not polish_stub and not polish_context:
-                raise ValueError('POLISH-Q requires fake specialists')
-            if stage == 'POLISH-Q' and not stub_mode and not polish_stub:
-                names = tuple(sorted(polish_context))
-                counts = life.get('specialist_counts', {})
-                used = life.get('polish_calls', 0)
-                if any(not re.fullmatch(r'[A-Za-z0-9_.-]+', name) for name in names):
-                    raise ValueError('invalid specialist owner')
-                if (used + len(names) > budget_policy.BUDGET_CAPS['POLISH-Q'][0] or
-                        any(counts.get(name, 0) >= budget_policy.BUDGET_CAPS['specialist'][0] for name in names) or
-                        self.state['invocations_used'] + len(names) * (3 if self.state.get('q_reserved') else 1) +
-                        self.state.get('q_reserved', 0) > self.args.max_invocations):
-                    raise ValueError('POLISH-Q specialist budget exhausted')
-            if stage == 'DOCS' and (life['pending'] or (self.blocking_open_findings() and not blockers_allowed)):
-                raise ValueError('DOCS has an uncertain request or open blocker')
-            if stage == 'DOCS' and not stub_mode and not docs_stub:
-                if not docs_context: raise ValueError('DOCS requires a candidate-bound fake writer')
-                baseline, before = docs_context['baseline'], docs_context['before']
-                if (baseline.workspace != self.workspace or baseline.run_dir != self.run_dir or
-                        baseline.parent_head != life['parent'] or before.tree_oid != life['candidate_oid']):
-                    raise ValueError('DOCS candidate differs from persisted item state')
-                prior = life['receipts'][-1]
-                replaying = bool(life.get('reserved_docs_constraint') and prior['stage'] == 'DOCS')
-                if (prior['stage'] != 'POLISH-Q' and not replaying or
-                        prior['output_oid'] != before.tree_oid or
-                        prior['epoch'] != life['epoch'] or prior['status'] != 'READY'):
-                    raise ValueError('DOCS lacks current POLISH-Q receipt')
-                if not self.state['config']['docs_file']: raise ValueError('DOCS requires a frozen docs_file')
-                path = Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix()
-                replay = next((row for row in reversed(life['receipts'])
-                               if row.get('stage') == 'DOCS' and row.get('output_oid') == before.tree_oid and
-                               row.get('docs_file') == path), None)
-            if stage == 'SECURITY':
-                if not security_context:
-                    raise ValueError('SECURITY requires a candidate-bound fake reviewer')
-                if life['pending'] or (self.blocking_open_findings() and not blockers_allowed):
-                    raise ValueError('SECURITY has an uncertain request or open blocker')
-                baseline, revision = security_context['baseline'], security_context['revision']
-                if (baseline.workspace != self.workspace or baseline.run_dir != self.run_dir or
-                        revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent']):
-                    raise ValueError('SECURITY candidate differs from persisted item state')
-                candidate_tree.verify_candidate_revision(baseline, revision)
-                paths = sorted(path.relative_to(baseline.root).as_posix()
-                               for path in baseline.root.rglob('*') if not path.is_dir() or path.is_symlink())
-                hits = {path: kind for path in paths
-                        if (kind := sensitive_policy.sensitive_path_category(path))}
-                if life.get('reserved_docs_constraint'):
-                    self._verify_reserved_docs_replay(baseline, revision, hits)
-                    constraint = life['reserved_docs_constraint']
-                    if constraint['owner'] == 'coordinator':
-                        blockers_allowed = bool(self._close_reserved_docs(constraint['owner_ids'], life['epoch'] + 1))
-                    self.state['lifecycle'].pop('reserved_docs_constraint')
-                    self.save()
-                marker = life.get('awaiting_owner_reverify')
-                if marker and marker.get('owner') == 'security-reviewer':
-                    if owner_waiting and marker.get('check_failures', 0) >= 2:
-                        raise ValueError('owner check retry limit reached; abort')
-                    if marker.get('role_manifest_sha256') != self.state['role_dispatch_manifest_sha256']:
-                        raise ValueError('SECURITY reviewer owner identity changed')
-                    if not marker.get('repair_oid') and not security_context.get('repair'):
-                        raise ValueError('SECURITY reviewer blocker requires a repair')
-                    if marker.get('repair_oid'):
-                        repairs = [i for i, row in enumerate(life['receipts'])
-                                   if row.get('stage') == 'SECURITY' and
-                                   row.get('request_id') == marker.get('request_id') and
-                                   row.get('output_oid') == marker['repair_oid'] and
-                                   row.get('security_repair') == marker.get('repair_digest')]
-                        if not repairs and marker.get('reserved_docs_replay'):
-                            repairs = [i for i, row in enumerate(life['receipts'])
-                                       if row.get('stage') == 'DOCS' and
-                                       row.get('request_id') == marker['request_id'] and
-                                       row.get('output_oid') == marker['repair_oid']]
-                        if len(repairs) != 1:
-                            raise ValueError('SECURITY reviewer owner requires bound repair receipt')
-                        replay_oid = marker['repair_oid']
-                        for row in life['receipts'][repairs[0] + 1:]:
-                            if (row.get('stage') not in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS') or
-                                    row.get('candidate_oid') != replay_oid):
-                                raise ValueError('SECURITY owner replay lineage differs')
-                            replay_oid = row['output_oid']
-                        if replay_oid != revision.tree_oid:
-                            raise ValueError('SECURITY owner replay OID differs')
-                    if marker.get('repair_oid') and security_context.get('repair'):
-                        raise ValueError('SECURITY reviewer repair already dispatched')
-                elif marker:
-                    if (marker['repair_oid'] not in [row.get('output_oid') for row in life['receipts']] or
-                            marker['request_id'] not in [row.get('request_id') for row in life['receipts']]):
-                        raise ValueError('SECURITY owner marker lacks repair lineage')
-                    if marker['preflight_paths'] and hits:
-                        raise ValueError('SECURITY preflight owner rescan still has sensitive paths')
-                    if marker['ignore_sha256']:
-                        ignore = baseline.root / '.gitignore'
-                        if (ignore.is_symlink() or not ignore.is_file() or
-                                ignore.stat().st_mode & 0o111 or
-                                hashlib.sha256(ignore.read_bytes()).hexdigest() != marker['ignore_sha256']):
-                            raise ValueError('SECURITY ignore owner byte check differs')
-                    self.state['lifecycle'].pop('awaiting_owner_reverify')
-                    self.save()
-                repair = security_context.get('repair')
-                if hits and not repair:
-                    raise ValueError('SECURITY sensitive candidate paths: ' + ', '.join(hits))
-                if repair:
-                    if owner_waiting and (hits or repair['proposals']):
-                        raise ValueError('SECURITY repair cannot combine owner groups')
-                    allowed = marker['paths'] if owner_waiting else repair['allowed_paths']
-                    docs_file = self.state['config'].get('docs_file')
-                    docs_path = Path(docs_file).relative_to(self.workspace).as_posix() if docs_file else None
-                    frozen_docs = {Path(value).relative_to(self.workspace).as_posix()
-                                   for value in self.state['config']['docs_allowlist']}
-                    reserved = tuple(sorted(frozen_docs | set(
-                        security_repair_policy._paths(repair['reserved_docs']))))
-                    try:
-                        plan = security_repair_policy.plan_security_repair(
-                            self.run_dir.name, revision.tree_oid, repair['proposals'], repair['paths'],
-                            allowed, reserved, paths, repair.get('consent'))
-                    except security_repair_policy.ReservedDocsRepair as exc:
-                        if (hits or (not owner_waiting and repair.get('owner_finding_ids')) or
-                                (owner_waiting and tuple(repair.get('owner_finding_ids', ())) !=
-                                     tuple(marker.get('finding_ids', ()))) or not docs_path or
-                                tuple(repair['paths']) != (docs_path,) or repair['proposals'] or
-                                life.get('reserved_docs_constraint') or not blockers_allowed):
-                            raise ValueError('reserved docs repair needs one frozen docs_file') from exc
-                        constraint = {'id': str(uuid.uuid4()), 'source_oid': revision.tree_oid,
-                                      'docs_file': docs_path, 'epoch': life['epoch'],
-                                      'owner': 'security-reviewer' if owner_waiting else 'coordinator',
-                                      'owner_ids': tuple(marker['finding_ids']) if owner_waiting else tuple(
-                                          row['id'] for row in self._coord_doc_blockers(docs_path)),
-                                      'receipt_count': len(life['receipts'])}
-                        atomic_json(self.evidence / (constraint['id'] + '-reserved-docs.json'), constraint)
-                        self.state['lifecycle']['reserved_docs_constraint'] = constraint
-                        self.save()
-                        raise ValueError('reserved docs repair requires replayed DOCS receipt and retest') from exc
-                    if not set(hits) <= set(plan.fixer_paths):
-                        raise ValueError('SECURITY repair does not cover sensitive paths')
-                    if not hits and not plan.approved_patterns and not owner_waiting:
-                        raise ValueError('SECURITY repair has no frozen coordinator-owned blocker')
-            if stage == 'FINISH' and not stub_mode:
-                baseline, revision = finish_context['baseline'], finish_context['revision']
-                if (revision.tree_oid != life['candidate_oid'] or baseline.parent_head != life['parent'] or
-                        baseline.run_dir != self.run_dir or baseline.workspace != self.workspace):
-                    raise ValueError('FINISH candidate differs from persisted item state')
-                prior = next((row for row in reversed(life['receipts'])
-                              if row['stage'] == 'EXEC' and row['epoch'] == life['epoch']), None)
-                if not prior or not isinstance(prior.get('approval_proof'), dict):
-                    raise ValueError('FINISH lacks persisted EXEC approval proof')
-            emit('begin', request)
-            output = outputs.get(stage, life['candidate_oid'])
-            receipt = {**request, 'status': 'APPROVE' if stage == 'EXEC' else 'READY', 'output_oid': output}
-            if stage == 'EXEC': receipt['approval_proof'] = approval.get('proof')
-            if stage == 'FINISH' and not stub_mode:
-                result = finish_dispatch.dispatch(
-                    baseline, revision, prior['approval_proof'], life['epoch'],
-                    self.state['role_dispatch_manifest_sha256'],
-                    finish_context['launch'], finish_context['sandbox_stopped'])
-                output = result['output_oid']
-                if result['status'] == 'TESTS_REQUIRED' and finish_context.get('tested_oid') != output:
-                    raise ValueError('FINISH current-OID tests are missing')
-                receipt.update(output_oid=output, finish_result=result['status'])
-            if stage == 'POLISH-Q' and not stub_mode and not polish_stub:
-                for name in names:
-                    call = {'role': 'specialist:' + name, 'candidate_oid': life['candidate_oid'],
-                            'epoch': life['epoch'], 'run_id': self.run_dir.name}
-                    used += 1
-                    counts[name] = counts.get(name, 0) + 1
-                    self.state['invocations_used'] += 1
-                    self.state['lifecycle'].update(polish_calls=used, specialist_counts=counts)
-                    self.save()
-                    result = polish_context[name](call)
-                    if result.get('candidate_oid') != life['candidate_oid']:
-                        raise ValueError('specialist result has a stale OID')
-                    if any(str(finding.get('severity', '')).upper() not in
-                           (ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)
-                           for finding in result.get('findings', [])):
-                        raise ValueError('specialist result has an unknown severity')
-                    self.record_findings('specialist:' + name, 'POLISH-Q', life['epoch'] + 1,
-                                         result.get('findings', []))
-                    if any(row['source'].startswith('specialist:') for row in self.blocking_open_findings()):
-                        self.state['lifecycle']['hold_reason'] = 'open specialist blocker'
-                        self.save()
-                        raise ValueError('POLISH-Q has an open specialist blocker')
-                    if result.get('status') != 'APPROVE':
-                        raise ValueError('specialist did not approve current OID')
-                receipt.update(specialists=names, polish_calls=used)
-            if stage == 'DOCS' and not stub_mode and not docs_stub:
-                docs_context['write'](baseline.root, path)
-                after = candidate_tree.ingest_candidate_revision(baseline)
-                polish_approval = {'candidate_oid': before.tree_oid, 'run_id': self.run_dir.name,
-                                   'workspace': str(self.workspace), 'run_dir': str(self.run_dir),
-                                   'parent_head': life['parent'], 'phase': 'POLISH-Q',
-                                   'status': 'APPROVE', 'blocking_findings': [], 'epoch': life['epoch']}
-                change = docs_policy.validate_candidate_docs_change(
-                    baseline, before, polish_approval, after, [path], exec_paths=(),
-                    finish_paths=(), polish_paths=(), closure_inputs=(), closure_uncertain=False,
-                    replay_receipt=replay)
-                retested_oid = (None if chain_only else
-                                docs_context['test'](after.tree_oid) if change.requires_rechecks else None)
-                if change.requires_rechecks and not chain_only and retested_oid != after.tree_oid:
-                    raise ValueError('DOCS write lacks current-OID retest')
-                receipt.update(output_oid=after.tree_oid, docs_file=path, docs_paths=change.paths,
-                               invalidated=change.invalidated_receipts, retested_oid=retested_oid,
-                               fake_only=True)
-            if stage == 'SECURITY':
-                if repair:
-                    source_env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
-                    source_entries = candidate_tree._tree_entries(source_env, revision.tree_oid)
-                    ignore_entry = next((row for row in source_entries if row[2] == '.gitignore'), None)
-                    if ignore_entry and ignore_entry[0] != '100644':
-                        raise ValueError('SECURITY ignore source is not a regular 100644 file')
-                    old_ignore = (candidate_tree._indexed_blobs(source_env, (ignore_entry,))[ignore_entry[1]]
-                                  if ignore_entry else b'')
-                    if plan.approved_patterns:
-                        lines = old_ignore.decode('utf-8').split('\n')
-                        missing = [pattern for _, pattern in plan.approved_patterns if pattern not in lines]
-                        suffix = (b'\n' if old_ignore and not old_ignore.endswith(b'\n') and missing else b'')
-                        suffix += b''.join((pattern + '\n').encode() for pattern in missing)
-                        expected_ignore = old_ignore + suffix
-                    repair['write'](baseline.root, plan.fixer_paths)
-                    blobs = candidate_tree._indexed_blobs(source_env, source_entries)
-                    source_files = {path: (mode, blobs[oid]) for mode, oid, path in source_entries}
-                    seen_files = candidate_tree._candidate_files(baseline)
-                    changed = {path for path in set(seen_files) | set(source_files)
-                               if seen_files.get(path) != source_files.get(path)}
-                    if not changed or not changed <= set(plan.fixer_paths):
-                        raise ValueError('SECURITY writer changed an ungranted candidate path')
-                    if plan.approved_patterns and seen_files.get('.gitignore') != ('100644', expected_ignore):
-                        raise ValueError('SECURITY ignore writer changed bytes beyond approved patterns')
-                    after = candidate_tree.ingest_candidate_revision(baseline)
-                    if after.tree_oid == revision.tree_oid or candidate_tree._candidate_files(baseline) != seen_files:
-                        raise ValueError('SECURITY repair made no change or changed during ingest')
-                    candidate_tree.verify_candidate_revision(baseline, after)
-                    if plan.approved_patterns:
-                        current = candidate_tree._tree_entries(source_env, after.tree_oid)
-                        entry = next((row for row in current if row[2] == '.gitignore'), None)
-                        if (not entry or entry[0] != '100644' or
-                                candidate_tree._indexed_blobs(source_env, (entry,))[entry[1]] != expected_ignore):
-                            raise ValueError('SECURITY ingested ignore bytes differ from approval')
-                    self.state['gate_ran'] = False
-                    receipt.update(output_oid=after.tree_oid, security_repair=plan.digest,
-                                   consent_digest=plan.consent_digest, approved_patterns=plan.approved_patterns,
-                                   invalidated=plan.invalidated_receipts, fake_only=True)
-                    self.state['lifecycle']['awaiting_owner_reverify'] = {
-                        'owners': tuple(name for name, needed in (
-                            ('preflight', bool(hits)), ('ignore', bool(plan.approved_patterns))) if needed),
-                        'preflight_paths': tuple(sorted(hits)),
-                        'ignore_sha256': (hashlib.sha256(expected_ignore).hexdigest()
-                                          if plan.approved_patterns else None),
-                        'source_oid': revision.tree_oid, 'repair_oid': after.tree_oid,
-                        'request_id': request['request_id'], 'consent_digest': plan.consent_digest}
-                    if owner_waiting:
-                        self.state['lifecycle']['awaiting_owner_reverify'] = {
-                            **marker, 'repair_oid': after.tree_oid, 'request_id': request['request_id'],
-                            'repair_digest': plan.digest}
-                    emit('receipt', receipt)
-                    continue
-                review = security_context['review']({'candidate_oid': revision.tree_oid, 'paths': paths,
-                                                     'run_id': self.run_dir.name, 'epoch': life['epoch'],
-                                                     'prior_finding_ids': tuple(marker['finding_ids'])
-                                                     if owner_waiting else ()})
-                candidate_tree.verify_candidate_revision(baseline, revision)
-                if (not isinstance(review, dict) or not isinstance(review.get('findings'), list) or
-                        any(not isinstance(row, dict) or
-                            str(row.get('severity', '')).upper() not in
-                            (ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)
-                            for row in review['findings'])):
-                    raise ValueError('SECURITY reviewer result is malformed')
-                if review.get('candidate_oid') != revision.tree_oid or not review.get('observed_tools'):
-                    raise ValueError('SECURITY review lacks current-OID inspection evidence')
-                if owner_waiting:
-                    dispositions = review.get('dispositions')
-                    frozen = set(marker['finding_ids'])
-                    if (not isinstance(dispositions, list) or
-                            len(dispositions) != len(frozen) or
-                            {row.get('id') for row in dispositions if isinstance(row, dict)} != frozen or
-                            any(not isinstance(row, dict) or row.get('disposition') not in
-                                ('fixed', 'withdrawn', 'still_open') or not row.get('evidence')
-                                for row in dispositions) or
-                            review.get('status') != 'APPROVE' and any(
-                                row.get('disposition') in ('fixed', 'withdrawn') for row in dispositions)):
-                        marker = {**self.state['lifecycle'].get('awaiting_owner_reverify', marker),
-                                  'check_failures': marker.get('check_failures', 0) + 1}
-                        self.state['lifecycle'].update(awaiting_owner_reverify=marker, pending=None)
-                        self.save()
-                        raise ValueError('SECURITY owner disposition is missing; ' +
-                                         ('retry' if marker['check_failures'] < 2 else 'retry limit reached; abort'))
-                    missing = self.apply_dispositions(dispositions, life['epoch'] + 1,
-                                                      list(frozen), 'security-reviewer')
-                    if missing:
-                        raise ValueError('SECURITY owner disposition omitted frozen IDs')
-                recorded = self.record_findings('security-reviewer', 'SECURITY', life['epoch'] + 1,
-                                                review.get('findings', []))
-                direct_blocking = any(str(row['severity']).upper() in BLOCKING_REVIEW_SEVERITIES or
-                                      row.get('security') for row in review['findings'])
-                still_open = owner_waiting and any(
-                    row['id'] in frozen for row in self.blocking_open_findings())
-                if direct_blocking or still_open:
-                    blockers = [row for row in self.blocking_open_findings()
-                                if row['source'] == 'security-reviewer']
-                    previous = tuple(marker.get('repair_history', ())) if owner_waiting else ()
-                    history = previous + ((marker['repair_oid'], marker['request_id']),) if owner_waiting else ()
-                    self.state['lifecycle']['awaiting_owner_reverify'] = {
-                        'owner': 'security-reviewer', 'source_oid': revision.tree_oid,
-                        'finding_ids': tuple(row['id'] for row in blockers),
-                        'paths': tuple(row.get('file', '') for row in blockers),
-                        'role_manifest_sha256': self.state['role_dispatch_manifest_sha256'],
-                        'repair_history': history}
-                    owner_hold = {**request, 'status': 'HOLD', 'finding_ids': tuple(row['id'] for row in blockers)}
-                    atomic_json(self.evidence / (request['request_id'] + '-owner-hold.json'), owner_hold)
-                    self.state['lifecycle']['owner_hold_receipt'] = owner_hold
-                    self.state['lifecycle']['pending'] = None
-                    self.save()
-                    raise ValueError('SECURITY review did not approve current OID')
-                if direct_blocking or self.blocking_open_findings() or review.get('status') != 'APPROVE':
-                    raise ValueError('SECURITY review did not approve current OID')
-                if owner_waiting:
-                    self.state['lifecycle'].pop('awaiting_owner_reverify')
-                receipt.update(output_oid=revision.tree_oid, security_review='APPROVE',
-                               scanned_paths=paths, fake_only=True)
-            emit('receipt', receipt)
-
     def _head_commit(self) -> Optional[str]:
         proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--verify', 'HEAD', cwd=self.workspace), cwd=self.workspace,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -3859,24 +3332,6 @@ class Coordinator:
         if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') not in ('SECURITY', 'DONE'):
             rows = [row for row in rows if row.get('owner_role') != 'security-reviewer']   # only SECURITY can close them
         return rows
-
-    def _coord_doc_blockers(self, docs_path, ids=None):
-        blockers = self.blocking_open_findings()
-        rows = [row for row in blockers if row['source'] == 'coordinator' and row['file'] == docs_path]
-        return rows if rows and rows == blockers and (ids is None or [r['id'] for r in rows] == list(ids)) else []
-
-    def _close_reserved_docs(self, ids, round_number):
-        changes = [{'id': item, 'disposition': 'fixed', 'evidence': 'reserved docs replay verified'} for item in ids]
-        self.apply_dispositions(changes, round_number, list(ids), 'coordinator')
-
-    def _coordinator_reserved_waiting(self, life, stage, security_context):
-        config = self.state['config']
-        path = Path(config['docs_file']).relative_to(self.workspace).as_posix() if config.get('docs_file') else None
-        repair = security_context.get('repair') if security_context else {}
-        return bool(self._coord_doc_blockers(path) and (
-            (life.get('reserved_docs_constraint') or {}).get('owner') == 'coordinator' or
-            stage in ('STOP_BEFORE_SECURITY', 'SECURITY') and
-            tuple(repair.get('paths', ())) == (path,) and not repair.get('proposals')))
 
     @staticmethod
     def normalize_plan_findings(findings: list[dict]) -> tuple[list[dict], int]:
@@ -4190,20 +3645,7 @@ class Coordinator:
             lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
 
-    def _publication_guard(self):
-        journal_path = self.evidence / 'delivery-publication.json'
-        intent = self.state.get('fake_delivery_intent') or {}
-        digest = intent.get('digest')
-        complete = bool(digest) and self.state.get('publication_complete') == digest
-        if journal_path.exists():
-            journal = json.loads(journal_path.read_text())
-            lock = Path(journal.get('lock', {}).get('path', str(self.workspace / '.git/index.lock')))
-            complete = complete and journal.get('phase') == 'RECONCILED' and not (lock.exists() or lock.is_symlink())
-        if self.state.get('publication_hold') or (journal_path.exists() and not complete):
-            raise ValueError('publication incomplete; use locked publication recovery before operator commands')
-
     def hold(self, reason: str, terminal_kind: Optional[str] = None, rate_limited: bool = False) -> str:
-        self._publication_guard()
         if self.state.get('status') in ('ACCEPTED', 'ABORTED', 'CLOSED', 'REPORTED'):
             return self.state['status']
         if reason == 'rejected-tree':
@@ -4290,7 +3732,6 @@ class Coordinator:
 
     def scope_change(self, text: Optional[str], file: Optional[str]) -> str:
         self._refuse_report_feedback()
-        self._publication_guard()
         intent = self.state.get('scope_change_intent')
         target = self.run_dir.with_name(self.run_dir.name + '-successor')
         task_path = self.evidence / 'successor-workitem.md'; config_path = self.evidence / 'successor-config.json'
@@ -4369,7 +3810,6 @@ class Coordinator:
 
     def note(self, text: Optional[str], file: Optional[str]) -> str:
         self._refuse_report_feedback()
-        self._publication_guard()
         if self.state['status'] != 'HOLD':
             raise ValueError('note requires a HOLD run; DONE uses reject')
         if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
@@ -4428,7 +3868,6 @@ class Coordinator:
 
     def accept(self) -> str:
         self._refuse_report_accept()
-        self._publication_guard()
         if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
                 and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
             fix = ('permission-probe' if turn.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') else 'resume') + ' --retry-uncertain'   # resume returns early on DONE
@@ -4438,8 +3877,6 @@ class Coordinator:
             return self._worktree_accept()
         if self.state.get('status') == 'ACCEPTED' and not self.args.override_rejection:
             return 'ACCEPTED'
-        if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
-            return delivery_intent.accept(self, observed_test_succeeded, atomic_json)
         if self.state.get('status') != 'DONE' and not (
                 self.state.get('status') == 'HOLD' and
                 (self.state.get('terminal_hold_kind') == 'rejection_limit' or self.args.override_rejection)):
@@ -4716,9 +4153,6 @@ class Coordinator:
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
         self._refuse_report_feedback()
-        self._publication_guard()
-        if self._fake_lifecycle and self.state.get('fake_delivery_intent'):
-            raise ValueError('lifecycle reject not wired; abort/new run or use --scope-change')
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
         self._refuse_past_deadline('reject')
@@ -4888,9 +4322,6 @@ class Coordinator:
             self.state['exec_comparisons'][-1]['effective_verdict'] = verdict
 
     def start_polish_or_done(self, force=False) -> str:
-        if self._fake_lifecycle:
-            self._freeze_fake_exec_source()
-            return self.hold('fake lifecycle has reviewed EXEC; router binding is pending')
         if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
             if blocking := self.blocking_open_findings():   # repair round: author fix, then reviewer and a new gate
                 self.state['gate_ran'] = False
@@ -4950,7 +4381,6 @@ class Coordinator:
 
     def resume_polish(self) -> str:
         if self.state['config'].get('review_report'): raise ValueError('report mode refuses resume --polish')
-        self._publication_guard()
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state.get('status') == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
             return self.rejection_limit_hold()
@@ -6245,11 +5675,6 @@ class Coordinator:
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
-        if self._fake_lifecycle:
-            if not self._fake_dispatching:
-                raise RuntimeError('fake lifecycle cannot dispatch a real provider')
-            if not lifecycle_spine.fake_dispatch_guard(self.args):
-                raise RuntimeError('fake lifecycle refuses a non-fake provider')
         issue = self._program_state(hold=True)[1]
         if issue: raise RuntimeError(issue)
         if self.state.get('config', {}).get('lifecycle_mode') == 'on':
@@ -6304,7 +5729,7 @@ class Coordinator:
         schema_path = prefix.with_suffix('.schema.json')
         atomic_json(schema_path, schema)
         atomic_text(prefix.with_suffix('.prompt.txt'), prompt)
-        snapshot_workspace = self.workspace if self._fake_lifecycle and workspace_override else active_workspace
+        snapshot_workspace = active_workspace
         control_dirs, control_before = git_control_state(snapshot_workspace) if role == 'author' else ([], {})
         if bad := control_before.get('!unreadable') or next((v for v in control_before.values() if v.startswith('UNAVAILABLE')), None): raise RuntimeError('git control state unreadable: ' + bad)   # no further git call in a workspace whose config cannot be read
         before, manifest = git_snapshot(snapshot_workspace)
@@ -6333,8 +5758,6 @@ class Coordinator:
                    'role_identity_sha256': self.state.get('role_dispatch_manifest_sha256'),
                    'timeout_seconds': timeout_seconds,
                    'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
-        if self._fake_lifecycle:
-            receipt['run_id'] = self.run_dir.name
         if role == 'reviewer':
             receipt['open_finding_ids'] = [row['id'] for row in self._reviewer_open_findings()]
         if rejection:
@@ -6348,8 +5771,6 @@ class Coordinator:
         env = cli_env()
         if env_overrides:
             env.update(env_overrides)
-        if self._fake_lifecycle and workspace_override:
-            env = {key: value for key, value in env.items() if not key.startswith('GIT_')}
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
@@ -6596,15 +6017,8 @@ class Coordinator:
                               (role == 'gate' and answer.get('verdict') == 'approve')))
             if approves_exec and self.args.test_command is None and self.state['config'].get('review_report'):   # LG2-b2
                 receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
-            elif approves_exec and not (self._fake_lifecycle and workspace_override and
-                                      self.state.get('fake_candidate_test') and
-                                      self.state.get('fake_ingest_receipt') and
-                                      self.state['fake_candidate_test']['ingest_id'] ==
-                                      self.state['fake_ingest_receipt']['id'] and
-                                      Path(workspace_override).resolve() == Path(
-                                          self.state['fake_candidate_test']['root']).resolve()) and not any(
-                    observed_test_succeeded(row, self.args.test_command)
-                                         for row in observed_commands):
+            elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
+                                           for row in observed_commands):
                 unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
                                  for row in observed_commands)   # FIELD-20
                 raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
@@ -8985,7 +8399,6 @@ class Coordinator:
 
     def permission_probe(self, retry_uncertain=False) -> bool:
         """One fresh reviewer turn proving allowlist use and write denial/detection."""
-        self._publication_guard()
         uncertain = self.state.get('active') or self.state.get('uncertain_active')
         if not uncertain:   # F2b: no FAIL record, no cache void, no rewritten HOLD after the deadline
             self._refuse_past_deadline('permission-probe')
@@ -9198,10 +8611,8 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
-        if self._fake_lifecycle:
-            raise RuntimeError('fake lifecycle cannot enter legacy drive')
         # The one entry of every real author dispatch (run, resume, reject, resume_polish): author_turn and
-        # polish_author_turn are reachable only from _drive_loop, which only drive()/fake_drive() call.
+        # polish_author_turn are reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
         if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
                 and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
@@ -9210,770 +8621,6 @@ class Coordinator:
                 and not (ok := self.claude_author_verified())[0]:
             raise ValueError(ok[1])
         return self._drive_loop()
-
-    def fake_drive(self) -> str:
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise RuntimeError('fake lifecycle refuses a non-fake provider')
-        life = self.state['lifecycle']
-        if (life['stage'] != 'EXEC' or life['epoch'] != 0 or life['candidate_oid'] is not None or
-                life['pending'] or life['receipts']):
-            raise RuntimeError('fake drive requires a fresh EXEC lifecycle state')
-        self._fake_dispatching = True
-        try:
-            return self._drive_loop()
-        finally:
-            self._fake_dispatching = False
-
-    def fake_lifecycle_drive(self, backlog_item=None) -> str:
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise RuntimeError('fake lifecycle refuses a non-fake provider')
-        if backlog_item is not None:
-            life = self.state['lifecycle']
-            if self.state.get('closeout_item') or life != lifecycle_spine.initial(life['item_uuid'], life['parent']):
-                raise ValueError('closeout item freeze requires a fresh lifecycle and is write-once')
-            if any(p.casefold() == str(self.workspace / 'BACKLOG.md').casefold()
-                   for p in self.state['config']['docs_allowlist']):
-                raise ValueError('BACKLOG must be outside writer grants')
-            frozen = closeout_policy.freeze_item(self.workspace, backlog_item)
-            if frozen['head'] != life['parent']:
-                raise ValueError('closeout item HEAD differs from frozen lifecycle parent')
-            if self.state['invocations_used'] + 8 >= self.args.max_invocations:
-                raise ValueError('Q reservation leaves no P budget; abort and start a new run '
-                                 'with larger --max-invocations')
-            delivery_seal.freeze(self, atomic_json)
-            self.state['closeout_item'] = frozen
-            self.state['q_reserved'] = 8
-        if self.fake_drive() != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON:
-            return self.state['status']
-        self.fake_candidate_author_turn(chain_only=True)
-        self.fake_candidate_oid_test()
-        self.fake_candidate_oid_review()
-        for _ in range(3):
-            ingest = self.state['fake_ingest_receipt']
-            baseline = candidate_tree.replace(
-                candidate_tree.baseline_from_binding(ingest['baseline']), separate_filesystems=True)
-            revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
-            def dispatch(role, phase, prompt, schema, root, env=None):
-                self._fake_dispatching = True
-                try: return self.invoke(role, phase, prompt, schema, fresh=True,
-                                        workspace_override=root, env_overrides=env)
-                finally: self._fake_dispatching = False
-            def finish(request):
-                result = dispatch('author', 'FINISH', 'Role: persistent finisher. Phase: FINISH.',
-                                  author_schema(), baseline.root)
-                return {'sandbox_id': str(result['sequence']), 'request_sha256': request['sha256'],
-                        'status': result['answer']['status']}
-            def specialist(request):
-                prompt = ('Role: reviewer, fresh. Phase: POLISH.\nRun this test command exactly as written '
-                          'in one Bash call: ' + self.args.test_command)
-                result = dispatch('reviewer', 'POLISH', prompt,
-                                  review_schema(), baseline.root)
-                return {'candidate_oid': request['candidate_oid'], 'status': result['answer']['status'],
-                        'findings': result['answer']['full_review']}
-            def write_docs(root, path):
-                result = dispatch('author', 'DOCS', 'Role: persistent docs writer. Phase: DOCS.',
-                                  author_schema(), root, {'FAKE_LIFECYCLE_DOCS_FILE': path})
-                if result['answer']['status'] != 'READY': raise RuntimeError('DOCS author did not report READY')
-            finish_context = {'baseline': baseline, 'revision': revision, 'launch': finish,
-                              'sandbox_stopped': lambda sandbox: True, 'tested_oid': revision.tree_oid}
-            docs_context = {'baseline': baseline, 'before': revision, 'write': write_docs}
-            route = self.fake_lifecycle_route(
-                None, finish_context=finish_context, polish_context={'python-reviewer': specialist},
-                docs_context=docs_context, chain_only=True)
-            if route != 'EXEC': return route
-        return 'HOLD'
-
-    def _fake_resume_p(self):
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise ValueError('P resume is fake-only')
-        for _ in range(3):
-            if self.state['lifecycle']['stage'] == 'EXEC' and not self._fake_reentry():
-                return 'HOLD'
-            ingest = self.state['fake_ingest_receipt']
-            baseline = candidate_tree.replace(
-                candidate_tree.baseline_from_binding(ingest['baseline']), separate_filesystems=True)
-            revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
-            def dispatch(role, phase, prompt, schema, root, env=None):
-                self._fake_dispatching = True
-                try: return self.invoke(role, phase, prompt, schema, fresh=True,
-                                        workspace_override=root, env_overrides=env)
-                finally: self._fake_dispatching = False
-            def finish(request):
-                result = dispatch('author', 'FINISH', 'Role: persistent finisher. Phase: FINISH.',
-                                  author_schema(), baseline.root)
-                return {'sandbox_id': str(result['sequence']), 'request_sha256': request['sha256'],
-                        'status': result['answer']['status']}
-            def specialist(request):
-                prompt = ('Role: reviewer, fresh. Phase: POLISH.\nRun this test command exactly as written '
-                          'in one Bash call: ' + self.args.test_command)
-                result = dispatch('reviewer', 'POLISH', prompt,
-                                  review_schema(), baseline.root)
-                return {'candidate_oid': request['candidate_oid'], 'status': result['answer']['status'],
-                        'findings': result['answer']['full_review']}
-            def write_docs(root, path):
-                result = dispatch('author', 'DOCS', 'Role: persistent docs writer. Phase: DOCS.',
-                                  author_schema(), root, {'FAKE_LIFECYCLE_DOCS_FILE': path})
-                if result['answer']['status'] != 'READY': raise RuntimeError('DOCS author did not report READY')
-            finish_context = {'baseline': baseline, 'revision': revision, 'launch': finish,
-                              'sandbox_stopped': lambda sandbox: True, 'tested_oid': revision.tree_oid}
-            docs_context = {'baseline': baseline, 'before': revision, 'write': write_docs}
-            route = self.fake_lifecycle_route(
-                None, finish_context=finish_context, polish_context={'python-reviewer': specialist},
-                docs_context=docs_context, chain_only=True)
-            if route != 'EXEC': return route
-        return 'HOLD'
-
-    def fake_materialize_q(self, c1, day):
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise ValueError('Q objects are fake-only and never authorize delivery')
-        life = self.state['lifecycle']
-        proof = life['receipts'][-1] if life['receipts'] else {}
-        if (life['stage'] != 'STOP_BEFORE_DELIVERY' or life['pending'] or self.state.get('active') or
-                self.state.get('uncertain_active') or proof.get('stage') != 'SECURITY' or
-                proof.get('status') != 'READY' or proof.get('security_review') != 'APPROVE' or
-                proof.get('output_oid') != life['candidate_oid'] or
-                not self.state.get('closeout_item') or self.blocking_open_findings()):
-            raise ValueError('Q needs current SECURITY pass and frozen item; resolve blockers or abort')
-        ingest = self.state['fake_ingest_receipt']
-        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
-        revision = candidate_tree.CandidateRevision(life['candidate_oid'], tuple(ingest['manifest']), 0)
-        return q_proposal.materialize(baseline, revision, self.state['closeout_item'], c1, day)
-
-    def q_review_verdict(self, answer):
-        if answer.get('status') == 'APPROVE' and answer.get('full_review') == []:
-            return 'APPROVE'
-        if (answer.get('status') in ('APPROVE', 'REVISE') and
-                self.findings_are_advisory(answer.get('full_review', []))):
-            return 'APPROVE_WITH_ADVISORY'
-        return None
-
-    def q_proof(self, turn, oid):
-        answer, role = turn['answer'], turn['role']
-        findings = answer.get('findings', []) if role == 'gate' else answer.get('full_review', [])
-        effective = self.q_review_verdict(answer) if role == 'reviewer' else None
-        if (role == 'gate' and answer.get('verdict') in ('approve', 'needs-attention') and
-                (answer['verdict'] == 'approve' or findings) and
-                all(f.get('severity') == 'low' and not f.get('security') for f in findings)):
-            effective = 'APPROVE_WITH_ADVISORY' if findings else 'APPROVE'
-        if not effective:
-            raise ValueError('Q verdict is blocking or empty; abort and start a new run')
-        return {'role': role, 'phase': turn['phase'], 'sequence': turn['sequence'], 'oid': oid,
-                'raw_verdict': answer.get('status', answer.get('verdict')), 'effective_verdict': effective,
-                'advisories': copy.deepcopy(findings)}
-
-    def fake_q_review(self, c1, day):
-        proposal = self.fake_materialize_q(c1, day)
-        if (self.state.get('fake_q_pending') or self.state.get('fake_q_review') or
-                self.state.get('pending_reviewer_result_sequence') or self.state.get('q_reserved') != 8):
-            raise ValueError('Q review pending or completed, or unreserved; abort and start a new run')
-        ingest = self.state['fake_ingest_receipt']
-        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
-        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
-        oid = proposal['q_oid']
-        revision = candidate_tree.CandidateRevision(
-            oid, candidate_tree._manifest(env, baseline.tree_oid, oid), 0)
-        baseline = candidate_tree.replace(baseline, authorized_prefixes=(*baseline.authorized_prefixes, 'BACKLOG.md'))
-        candidate_tree._git(['update-ref', 'refs/paired-session/candidates/' + oid, oid], env=env)
-        checkout = candidate_tree.rebuild_candidate_from_oid(baseline, revision)
-        command = shlex.split(self.args.test_command)
-        if not command or Path(command[0]).name == 'env':
-            raise ValueError('Q test requires a direct executable')
-        executable = Path(resolve_test_executable(checkout.root, self.args.test_command)).resolve()
-        if any(root == executable or root in executable.parents for root in (self.workspace, self.run_dir)):
-            raise ValueError('Q test executable is under writable operator roots')
-        command[0] = str(executable)
-        test_id = str(uuid.uuid4())
-        pending = {'id': test_id, 'proposal': proposal, 'run_id': self.run_dir.name,
-                   'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
-                   'review_after_sequence': self.state['sequence'], 'binding_sha256': q_evidence.binding(self)}
-        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5 * timeout_scale.env_factor())
-        self.state['fake_q_pending'] = pending
-        self.save()
-        test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
-                              timeout=self.args.timeout, capture_output=True,
-                              env={'PATH': os.defpath, 'HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
-                                   'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'})
-        candidate_tree.verify_candidate_revision(checkout, revision)
-        receipt = {**pending, 'oid': oid, 'command': command, 'returncode': test.returncode,
-                   'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
-                   'stderr_sha256': hashlib.sha256(test.stderr).hexdigest(),
-                   'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
-                   'write_boundary': test.write_boundary}
-        atomic_json(self.evidence / (test_id + '-q-test.json'), receipt)
-        if test.returncode:
-            raise ValueError('Q tests failed; abort and start a new run')
-        self._fake_dispatching = True
-        try:
-            self.state['q_reserved'] -= 2
-            result = self.invoke('reviewer', 'Q',
-                                 f'Role: reviewer, fresh. Phase: Q. Candidate Q OID: {oid}.\n'
-                                 f'Run this test command exactly as written in one Bash call: {self.args.test_command}',
-                                 review_schema(), fresh=True, workspace_override=checkout.root)
-            candidate_tree.verify_candidate_revision(checkout, revision)
-            turn = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
-            if (turn.get('error') or turn['phase'] != 'Q' or turn['workspace'] != str(checkout.root) or
-                    turn['sequence'] <= pending['review_after_sequence'] or self.configured_test_failed(turn) or
-                    not any(observed_test_succeeded(c, self.args.test_command)
-                    for c in turn.get('observed_commands', [])) or
-                    not self.q_review_verdict(result['answer'])):
-                raise ValueError('Q reviewer did not approve; abort and start a new run')
-            reviewed = {**receipt, 'review_id': str(uuid.uuid4()), 'sequence': result['sequence'],
-                        'status': 'UNREVIEWED', 'root': str(checkout.root), 'index': str(checkout.index),
-                        'root_identity': list(checkout.root_identity), 'proof': self.q_proof(turn, oid)}
-            self.record_review_verdict(turn['sequence'], 'Q', turn['answer']['status'],
-                                       reviewed['proof']['effective_verdict'])
-            atomic_json(self.evidence / (reviewed['review_id'] + '-q-review.json'), reviewed)
-            self.state['fake_q_review'] = reviewed
-            self.state.pop('fake_q_pending')
-            return reviewed
-        finally:
-            self._fake_dispatching = False
-            self.state.pop('pending_reviewer_result_sequence', None)
-            self.save()
-    def fake_prepare_delivery(self, backlog_item=None, day=None):
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise ValueError('delivery drive is fake-only')
-        frozen_item = self.state.get('closeout_item')
-        if frozen_item and backlog_item is not None and backlog_item != frozen_item['item_id']:
-            raise ValueError('backlog item differs from frozen item; use the original ID')
-        existing = self.state.get('fake_delivery_intent')
-        if existing:
-            if self.state['status'] == 'CLOSED':
-                self.fake_close(existing['digest'])
-            return copy.deepcopy(existing)
-        if not self.state.get('closeout_item'):
-            life = self.state['lifecycle']
-            if life != lifecycle_spine.initial(life['item_uuid'], life['parent']):
-                raise ValueError('closeout item can only be frozen on a fresh lifecycle; abort and start a new run')
-            if backlog_item is None:
-                raise ValueError('delivery requires a backlog item ID; supply it before starting')
-        day = day or self.state.get('fake_delivery_day') or datetime.now().date().isoformat()
-        try:
-            if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
-                raise ValueError('noncanonical day')
-        except (ValueError, TypeError) as error:
-            raise ValueError('invalid delivery day; supply YYYY-MM-DD before starting') from error
-        if self.state.get('fake_delivery_day') not in (None, day):
-            raise ValueError('delivery day changed; use the frozen day')
-        self.state['fake_delivery_day'] = day
-        self.save()
-        if self.state['lifecycle']['candidate_oid'] is None:
-            if self.fake_lifecycle_drive(backlog_item) != 'STOP_BEFORE_SECURITY':
-                raise ValueError('delivery drive requires completed P stages')
-        if self.state['lifecycle']['stage'] in ('EXEC', 'FINISH', 'POLISH-Q', 'DOCS'):
-            self._fake_resume_p()
-        ingest = self.state['fake_ingest_receipt']
-        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
-        revision = candidate_tree.CandidateRevision(self.state['lifecycle']['candidate_oid'],
-                                                   tuple(ingest['manifest']), 0)
-        if self.state['lifecycle']['stage'] in ('STOP_BEFORE_SECURITY', 'SECURITY'):
-            def security(request):
-                self._fake_dispatching = True
-                try:
-                    result = self.invoke('reviewer', 'SECURITY',
-                        f'Role: reviewer, fresh. Phase: SECURITY. Candidate OID: {revision.tree_oid}.\n'
-                        'Run this test command exactly as written in one Bash call: ' + self.args.test_command,
-                        review_schema(),
-                        fresh=True, workspace_override=baseline.root)
-                finally:
-                    self._fake_dispatching = False
-                turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
-                if (turn.get('error') or turn['role'] != 'reviewer' or turn['phase'] != 'SECURITY' or
-                        turn['workspace'] != str(baseline.root) or not self.configured_test_succeeded(turn) or
-                        self.configured_test_failed(turn)):
-                    raise ValueError('SECURITY turn lacks current-OID error-free test evidence; retry or abort')
-                return {'status': result['answer']['status'], 'candidate_oid': revision.tree_oid,
-                        'findings': result['answer']['full_review'], 'observed_tools': turn['observed_tool_calls']}
-            self.fake_lifecycle_route(None, chain_only=True,
-                security_context={'baseline': baseline, 'revision': revision, 'review': security})
-        if self.state['lifecycle']['stage'] != 'STOP_BEFORE_DELIVERY':
-            raise ValueError('delivery drive requires fresh SECURITY completion')
-        c1 = delivery_seal.c1(self, baseline, revision)
-        if not self.state.get('fake_q_review'):
-            self.fake_q_review(c1, day)
-        if not self.state.get('fake_q_bundle'):
-            self.fake_q_complete(c1, day)
-        return delivery_intent.prepare(self, c1, day, observed_test_succeeded, atomic_json)
-
-    def fake_finish_delivery(self, expected_digest):
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise ValueError('delivery drive is fake-only')
-        if not expected_digest or expected_digest != (self.state.get('fake_delivery_intent') or {}).get('digest'):
-            raise ValueError('delivery finish requires the exact accepted intent digest')
-        try:
-            from paired_session import delivery_recover
-        except ModuleNotFoundError:
-            import delivery_recover
-        if self.state['status'] != 'CLOSED':
-            if delivery_recover.reconcile(self, observed_test_succeeded, atomic_json) == 'HOLD':
-                return 'HOLD'
-        result = self.fake_close(expected_digest)
-        facts = self.state['close_receipt']['facts']
-        with run_lease(self.run_dir):
-            atomic_text(self.run_dir / 'delivery-report.md',
-                        f'已关闭工作项 {facts["item_uuid"]}。\nC1: {facts["c1"]}\nC2: {facts["c2"]}\n'
-                        f'Q: {facts["q_oid"]}\n外部交付：关闭。\n')
-        return result
-
-    def fake_close(self, expected_digest, *, external_delivery=False):
-        return delivery_close.close(self, expected_digest, atomic_json, external_delivery)
-
-    def fake_q_complete(self, c1, day):
-        source, root, revision = q_evidence.review_source(self, c1, day, observed_test_succeeded)
-        if (self._program_state()[1] or self.state.get('fake_q_bundle_pending') or
-                self.state.get('fake_q_bundle') or self.state['sequence'] != source['sequence'] or
-                self.state.get('q_reserved') != 6 or self.state['invocations_used'] + 6 > self.args.max_invocations):
-            raise ValueError('Q completion uncertain or unreserved; abort and start a new run')
-        life, p_oid = self.state['lifecycle'], source['proposal']['p_oid']
-        noops = json.loads(json.dumps([r for r in life['receipts'] if r['epoch'] == life['epoch'] and
-                 r['stage'] in ('FINISH', 'POLISH-Q', 'DOCS')]))
-        if (len(noops) != 3 or {r['stage'] for r in noops} != {'FINISH', 'POLISH-Q', 'DOCS'} or
-                any(r.get('status') != 'READY' or r['candidate_oid'] != p_oid or r['output_oid'] != p_oid or
-                    r['item_uuid'] != life['item_uuid'] or r['parent'] != life['parent'] for r in noops) or
-                not noops[0].get('finish_result') or not noops[1].get('specialists') or
-                not noops[2].get('docs_file')):
-            raise ValueError('Q requires current P no-op receipts; abort and start a new run')
-        paths = candidate_tree._tree_entries(candidate_tree._git_env(GIT_DIR=str(root.git_dir)), revision.tree_oid)
-        if any(sensitive_policy.sensitive_path_category(row[2]) for row in paths):
-            raise ValueError('Q sensitive preflight blocked; abort and start a new run')
-        template = Path(self.args.gate_prompt).read_text().replace('${REVIEW_TARGET_DESC}', str(root.root))
-        gate_prompt = template.replace('${FOCUS_TEXT}', 'Audit complete Q tree ' + revision.tree_oid)
-        prompts = [('gate', 'Q-GATE', gate_prompt, gate_schema()),
-                   ('reviewer', 'Q-FINAL', 'Role: reviewer, fresh. Audit Q: regressions/docs/tests.', review_schema()),
-                   ('reviewer', 'Q-SECURITY', 'Role: reviewer, fresh. Audit Q: secrets/escapes.', review_schema())]
-        pending = {'id': str(uuid.uuid4()), 'source_id': source['review_id'], 'proofs': [], 'p_noops': noops}
-        self.state['fake_q_bundle_pending'] = pending
-        self._fake_dispatching = True
-        try:
-            previous = source['sequence']
-            for role, phase, prompt, schema in prompts:
-                self.state['q_reserved'] -= 2
-                prompt += f'\n{phase}: Q={revision.tree_oid}; base={life["parent"]}; read task/plan in {self.context}\n'
-                prompt += 'Run this test command exactly as written in one Bash call: ' + self.args.test_command
-                result = self.invoke(role, phase, prompt, schema, fresh=True, workspace_override=root.root)
-                candidate_tree.verify_candidate_revision(root, revision)
-                turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
-                if (turn.get('error') or turn['role'] != role or turn['phase'] != phase or
-                        turn['workspace'] != str(root.root) or turn['sequence'] <= previous):
-                    raise ValueError('Q role did not approve exact tree; abort and start a new run')
-                proof = self.q_proof(turn, revision.tree_oid)
-                if (self.configured_test_failed(turn) or not any(
-                        observed_test_succeeded(c, self.args.test_command) for c in turn.get('observed_commands', []))):
-                    raise ValueError('Q role lacks observed checks; abort and start a new run')
-                previous = turn['sequence']
-                pending['proofs'].append(proof)
-            q_evidence.review_source(self, c1, day, observed_test_succeeded)
-            bundle = {**pending, 'status': 'REVIEWED', 'source': source, 'scanned_paths': [r[2] for r in paths]}
-            atomic_json(self.evidence / (pending['id'] + '-q-bundle.json'), bundle)
-            self.state['fake_q_bundle'] = bundle
-            for proof in [source['proof'], *pending['proofs']]:
-                rows = self.record_findings('q-' + proof['role'], proof['phase'],
-                                            proof['sequence'], proof['advisories'])
-                self.mark_advisory_findings(rows)
-            self.state.pop('fake_q_bundle_pending')
-            return bundle
-        finally:
-            self._fake_dispatching = False
-            self.state.pop('pending_reviewer_result_sequence', None)
-            self.save()
-
-    def fake_candidate_author_turn(self, chain_only=False) -> dict:
-        """Run one fake EXEC author against a clean isolated candidate root."""
-        if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
-                self.state['phase'] != 'EXEC' or self.state['next'] != 'author' or
-                self.state.get('status') != 'HOLD' or self.state.get('hold_reason') != PLAN_STOP_REASON or
-                self.state.get('active') or self.state.get('uncertain_active') or
-                self.state.get('pending_operator_note_id') or self.state.get('pending_rejection_id') or
-                self.state.get('fake_candidate_pending') or self.state.get('fake_ingest_receipt')):
-            raise RuntimeError('fake candidate author requires an unstarted EXEC turn')
-        plan = (self.context / 'plan.md').read_bytes()
-        docs_file = self.state['config'].get('docs_file')
-        authorized = ['sum_ints.py', *([Path(docs_file).relative_to(self.workspace).as_posix()] if docs_file else [])]
-        baseline = candidate_tree.prepare_candidate_baseline(
-            self.workspace, self.run_dir, self.run_dir.parent, self.run_dir.parent, tuple(authorized))
-        if chain_only and baseline.parent_head != self.state['lifecycle']['parent']:
-            raise RuntimeError('fake candidate differs from frozen parent before author dispatch')
-        request_id = str(uuid.uuid4())
-        binding = {key: str(value) if isinstance(value, Path) else value
-                   for key, value in vars(baseline).items()}
-        self.state['fake_candidate_pending'] = {'request_id': request_id, 'baseline': binding,
-            'plan_sha256': hashlib.sha256(plan).hexdigest(), 'epoch': self.state['lifecycle']['epoch'],
-            'sequence': self.state['sequence'] + 1, 'item_uuid': self.state['item_uuid'],
-            'chain_only': chain_only}
-        self.state['sessions']['author'] = None
-        self.state['started']['author'] = False
-        self.save()
-        prompt = (f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.\n'
-                  f'Workspace: {baseline.root}\nImplement approved plan (sha256={hashlib.sha256(plan).hexdigest()}):\n'
-                  + plan.decode() + '\nReturn only JSON matching the supplied schema.')
-        self._fake_dispatching = True
-        try:
-            result = self.invoke('author', 'EXEC', prompt, author_schema(),
-                                 workspace_override=baseline.root,
-                                 env_overrides={'FAKE_UNIQUE_CODEX_THREAD': '1'})
-        finally:
-            self._fake_dispatching = False
-        if result['answer']['status'] != 'READY':
-            raise RuntimeError('fake candidate author did not finish READY')
-        revision = candidate_tree.ingest_candidate_revision(baseline)
-        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
-        entries = candidate_tree._tree_entries(env, revision.tree_oid)
-        digest = hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest()
-        receipt = {'id': request_id, 'run_id': self.run_dir.name, 'author_sequence': result['sequence'],
-                   'input_oid': baseline.tree_oid, 'output_oid': revision.tree_oid,
-                   'manifest_sha256': digest, 'manifest': revision.manifest,
-                   'plan_sha256': hashlib.sha256(plan).hexdigest(),
-                   'root': str(baseline.root), 'baseline': binding, 'chain_only': chain_only,
-                   'epoch': self.state['lifecycle']['epoch'], 'item_uuid': self.state['item_uuid']}
-        atomic_json(self.evidence / (request_id + '-ingest.json'), receipt)
-        self.state['fake_ingest_receipt'] = receipt
-        self.state.pop('fake_candidate_pending')
-        self.save()
-        return receipt
-
-    def fake_candidate_oid_test(self) -> dict:
-        """Run configured tests against a rebuilt checkout of the ingested OID."""
-        ingest = self.state.get('fake_ingest_receipt')
-        if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
-                not ingest or self.state.get('fake_candidate_test') or
-                self.state.get('fake_candidate_test_pending') or
-                self.state.get('fake_candidate_test_failed') or
-                self.state.get('active') or self.state.get('uncertain_active')):
-            raise RuntimeError('fake OID review requires a completed ingest')
-        stored = json.loads((self.evidence / (ingest['id'] + '-ingest.json')).read_text())
-        if stored != json.loads(json.dumps(ingest)): raise RuntimeError('persisted ingest evidence differs from state')
-        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
-        revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
-        candidate_tree.verify_candidate_revision(baseline, revision)
-        checkout = candidate_tree.rebuild_candidate_from_oid(baseline, revision)
-        command = shlex.split(self.args.test_command)
-        if not command or Path(command[0]).name == 'env': raise RuntimeError('fake OID test requires direct executable')
-        executable = Path(resolve_test_executable(checkout.root, self.args.test_command)).resolve()
-        if any(executable == root or root in executable.parents for root in (self.workspace, self.run_dir)):
-            raise RuntimeError('OID test executable resolves outside candidate into writable roots')
-        command[0] = str(executable)
-        safe_path = [part for part in os.environ.get('PATH', '').split(os.pathsep)
-                     if Path(part).is_absolute() and not any(
-                         root == Path(part).resolve() or root in Path(part).resolve().parents
-                         for root in (self.workspace, self.run_dir))]
-        test_env = {'PATH': os.pathsep.join(safe_path), 'HOME': os.devnull,
-                    'XDG_CONFIG_HOME': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
-                    'GIT_CEILING_DIRECTORIES': str(checkout.root.parent),
-                    'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
-        test_id = str(uuid.uuid4())
-        candidate_test_sandbox.run(self, None, cwd=checkout.root, env={}, timeout=5 * timeout_scale.env_factor())
-        self.state['fake_candidate_test_pending'] = test_id
-        self.save()
-        test = candidate_test_sandbox.run(self, command, cwd=checkout.root,
-                              env=test_env,
-                              capture_output=True, timeout=self.args.timeout)
-        candidate_tree.verify_candidate_revision(checkout, revision)
-        test_receipt = {'id': test_id, 'ingest_id': ingest['id'], 'oid': revision.tree_oid,
-                        'command': command, 'returncode': test.returncode,
-                        'root': str(checkout.root), 'root_identity': checkout.root_identity,
-                        'index': str(checkout.index), 'run_id': self.run_dir.name,
-                        'item_uuid': self.state['item_uuid'], 'epoch': self.state['lifecycle']['epoch'],
-                        'manifest_sha256': ingest['manifest_sha256'],
-                        'config_sha256': hashlib.sha256(json.dumps(
-                            self.state['config'], sort_keys=True).encode()).hexdigest(),
-                        'env_sha256': hashlib.sha256(json.dumps(test_env, sort_keys=True).encode()).hexdigest(),
-                        'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
-                        'write_boundary': test.write_boundary,
-                        'stdout_sha256': hashlib.sha256(test.stdout).hexdigest(),
-                        'stderr_sha256': hashlib.sha256(test.stderr).hexdigest()}
-        atomic_json(self.evidence / (test_id + '-oid-test.json'), test_receipt)
-        self.state.pop('fake_candidate_test_pending')
-        if test.returncode:
-            self.state['fake_candidate_test_failed'] = test_id
-            self.save()
-            raise RuntimeError('OID-bound coordinator test failed')
-        self.state['fake_candidate_test'] = test_receipt
-        self.save()
-        return test_receipt
-
-    def fake_reserved_docs_writer_ingest(self) -> dict:
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise RuntimeError('reserved DOCS ingest requires fake-only dispatch')
-        life = self.state['lifecycle']
-        prior = life['receipts'][-1] if life['receipts'] else {}
-        old = self.state.get('fake_ingest_receipt') or {}
-        marker = life.get('reserved_docs_constraint') or {}
-        docs_file = marker.get('docs_file') or self.state['config'].get('docs_file')
-        docs_path = Path(docs_file) if docs_file else None
-        if docs_path and docs_path.is_absolute(): docs_path = docs_path.relative_to(self.workspace)
-        docs_path = docs_path.as_posix() if docs_path else None
-        if (life['stage'] != 'EXEC' or (marker and life['epoch'] <= marker['epoch']) or
-                prior.get('stage') != 'DOCS' or prior.get('output_oid') != life['candidate_oid'] or
-                prior.get('docs_file') != docs_path or not old.get('chain_only') or
-                self.state.get('active') or self.state.get('uncertain_active')):
-            raise RuntimeError('reserved DOCS ingest lacks a current writer receipt')
-        baseline = candidate_tree.baseline_from_binding(old['baseline'])
-        paths = tuple(sorted(set(baseline.authorized_prefixes) | {docs_path}))
-        baseline = candidate_tree.replace(baseline, authorized_prefixes=paths)
-        revision = candidate_tree.ingest_candidate_revision(baseline)
-        if revision.tree_oid != prior['output_oid']:
-            raise RuntimeError('reserved DOCS output differs from candidate OID')
-        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
-        entries = candidate_tree._tree_entries(env, revision.tree_oid)
-        binding = {key: str(value) if isinstance(value, Path) else value
-                   for key, value in vars(baseline).items()}
-        receipt = {**old, 'id': str(uuid.uuid4()), 'input_oid': old['output_oid'],
-                   'output_oid': revision.tree_oid, 'manifest': revision.manifest,
-                   'manifest_sha256': hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest(),
-                   'baseline': binding, 'epoch': life['epoch'],
-                   'source_writer_request_id': prior['request_id']}
-        atomic_json(self.evidence / (receipt['id'] + '-ingest.json'), receipt)
-        for key in ('fake_candidate_test', 'fake_candidate_review', 'fake_candidate_chain'):
-            self.state.pop(key, None)
-        self.state['fake_ingest_receipt'] = receipt
-        self.save()
-        return receipt
-
-    def fake_finish_writer_ingest(self) -> dict:
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise RuntimeError('FINISH ingest requires fake-only dispatch')
-        life = self.state['lifecycle']
-        prior = life['receipts'][-1] if life['receipts'] else {}
-        old = self.state.get('fake_ingest_receipt') or {}
-        if (life['stage'] != 'EXEC' or life['epoch'] < 1 or prior.get('stage') != 'FINISH' or
-                prior.get('output_oid') != life['candidate_oid'] or not old.get('chain_only') or
-                self.state.get('active') or self.state.get('uncertain_active')):
-            raise RuntimeError('FINISH ingest lacks a current writer receipt')
-        baseline = candidate_tree.baseline_from_binding(old['baseline'])
-        revision = candidate_tree.ingest_candidate_revision(baseline)
-        if revision.tree_oid != prior['output_oid']:
-            raise RuntimeError('FINISH output differs from candidate OID')
-        env = candidate_tree._git_env(GIT_DIR=str(baseline.git_dir))
-        entries = candidate_tree._tree_entries(env, revision.tree_oid)
-        binding = {key: str(value) if isinstance(value, Path) else value
-                   for key, value in vars(baseline).items()}
-        receipt = {**old, 'id': str(uuid.uuid4()), 'input_oid': old['output_oid'],
-                   'output_oid': revision.tree_oid, 'manifest': revision.manifest,
-                   'manifest_sha256': hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest(),
-                   'baseline': binding, 'epoch': life['epoch'],
-                   'source_writer_request_id': prior['request_id']}
-        atomic_json(self.evidence / (receipt['id'] + '-ingest.json'), receipt)
-        for key in ('fake_candidate_test', 'fake_candidate_review', 'fake_candidate_chain'):
-            self.state.pop(key, None)
-        self.state['fake_ingest_receipt'] = receipt
-        self.save()
-
-    def _fake_reentry(self) -> bool:
-        life = self.state['lifecycle']
-        prior = life['receipts'][-1] if life['receipts'] else {}
-        current = self.state.get('fake_ingest_receipt') or {}
-        if current.get('source_writer_request_id') != prior.get('request_id'):
-            if prior.get('stage') == 'DOCS': self.fake_reserved_docs_writer_ingest()
-            elif prior.get('stage') == 'FINISH': self.fake_finish_writer_ingest()
-            else:
-                self.hold('EXEC receipt needs abort or new run' if prior.get('stage') == 'EXEC' else
-                          'unsupported writer: abort or start a new run')
-                return False
-        if self.state.get('fake_candidate_test', {}).get('ingest_id') != self.state['fake_ingest_receipt']['id']:
-            self.fake_candidate_oid_test()
-        if self.state.get('fake_candidate_chain', {}).get('ingest_id') != self.state['fake_ingest_receipt']['id']:
-            self.fake_candidate_oid_review()
-        if prior.get('stage') == 'DOCS':
-            test = self.state['fake_candidate_test']
-            self.state['lifecycle']['receipts'][-1].update(
-                retested_oid=test['oid'], retest_id=test['id'])
-            self.save()
-        return True
-
-    def fake_candidate_oid_review(self) -> dict:
-        ingest, test = self.state.get('fake_ingest_receipt'), self.state.get('fake_candidate_test')
-        if (not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args) or
-                not ingest or not test or self.state.get('fake_candidate_test_failed') or
-                self.state.get('fake_candidate_review') or self.state.get('fake_candidate_review_rejected') or
-                self.state.get('active') or
-                self.state.get('uncertain_active') or self.state['lifecycle']['stage'] != 'EXEC'):
-            raise RuntimeError('fake OID review requires a current successful test')
-        identity = (self.run_dir.name, self.state['item_uuid'], self.state['lifecycle']['epoch'])
-        if (any((ingest[k], test[k]) != (v, v) for k, v in zip(('run_id', 'item_uuid', 'epoch'), identity)) or
-                test['ingest_id'] != ingest['id'] or
-                test['oid'] != ingest['output_oid'] or test['manifest_sha256'] != ingest['manifest_sha256'] or
-                test['config_sha256'] != hashlib.sha256(json.dumps(
-                    self.state['config'], sort_keys=True).encode()).hexdigest() or
-                hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest() != ingest['plan_sha256']):
-            raise RuntimeError('fake test receipt does not bind current ingest')
-        saved = json.loads((self.evidence / (test['id'] + '-oid-test.json')).read_text())
-        if saved != json.loads(json.dumps(test)): raise RuntimeError('test evidence differs from state')
-        if hashlib.sha256(Path(test['command'][0]).read_bytes()).hexdigest() != test['executable_sha256']:
-            raise RuntimeError('OID test executable changed')
-        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
-        revision = candidate_tree.CandidateRevision(ingest['output_oid'], tuple(ingest['manifest']), 0)
-        checkout = candidate_tree.replace(baseline, root=Path(test['root']), index=Path(test['index']),
-                                          root_identity=tuple(test['root_identity']))
-        candidate_tree.verify_candidate_revision(checkout, revision)
-        proof = (f'Phase: EXEC.\nWorkspace: {checkout.root}\nCandidate OID: {revision.tree_oid}; test: {test["id"]}\n'
-                 f'Approved plan:\n{(self.context / "plan.md").read_text()}\nOID delta:\n{ingest["manifest"]}\n'
-                 f'Run this test command exactly as written in one Bash call: {self.args.test_command}')
-        self.state['fake_candidate_review_rejected'] = (revision.tree_oid, test['id'])
-        self.save()
-        self._fake_dispatching = True
-        try:
-            review = self.invoke('reviewer', 'EXEC', 'Role: reviewer, fresh. ' + proof,
-                                 review_schema(), fresh=True, workspace_override=checkout.root)
-            candidate_tree.verify_candidate_revision(checkout, revision)
-            if review['answer']['status'] != 'APPROVE' or review['answer']['full_review']:
-                raise RuntimeError('OID reviewer did not approve')
-            reviewed = {'id': str(uuid.uuid4()), 'test_id': test['id'],
-                        'oid': revision.tree_oid, 'sequence': review['sequence'],
-                        'run_id': self.run_dir.name, 'item_uuid': identity[1], 'epoch': identity[2],
-                        'ingest_id': ingest['id']}
-            atomic_json(self.evidence / (reviewed['id'] + '-oid-review.json'), reviewed)
-            self.state['fake_candidate_review'] = reviewed
-            self.save()
-            gate = self.invoke('gate', 'EXEC', 'You are an adversarial reviewer. ' + proof,
-                               gate_schema(), fresh=True, workspace_override=checkout.root)
-            candidate_tree.verify_candidate_revision(checkout, revision)
-            if gate['answer']['verdict'] != 'approve' or gate['answer']['findings']:
-                raise RuntimeError('OID gate did not approve')
-            chain = {'id': str(uuid.uuid4()), 'ingest_id': ingest['id'], 'test_id': test['id'], 'identity': identity,
-                     'review_id': reviewed['id'], 'gate_sequence': gate['sequence'], 'oid': revision.tree_oid,
-                     'root': str(checkout.root), 'root_identity': checkout.root_identity}
-            atomic_json(self.evidence / (chain['id'] + '-oid-chain.json'), chain)
-            self.state.pop('fake_candidate_review_rejected')
-            self.state['fake_candidate_chain'] = chain
-            self.save()
-        finally:
-            self.state.pop('pending_reviewer_result_sequence', None)
-            self._fake_dispatching = False
-            self.save()
-
-    def fake_candidate_approval(self) -> dict:
-        try:
-            return self._fake_candidate_approval()
-        except candidate_tree.CandidateError as exc:
-            raise RuntimeError(f'fake approval candidate changed: {exc}') from exc
-        except (KeyError, TypeError, IndexError, OSError, ValueError) as exc:
-            raise RuntimeError('fake approval receipt is missing or malformed') from exc
-
-    def _fake_candidate_approval(self) -> dict:
-        if not self._fake_lifecycle or not lifecycle_spine.fake_dispatch_guard(self.args):
-            raise RuntimeError('fake approval requires fake-only dispatch')
-        state = self.state
-        ingest, test = state.get('fake_ingest_receipt'), state.get('fake_candidate_test')
-        reviewed, chain = state.get('fake_candidate_review'), state.get('fake_candidate_chain')
-        life = state['lifecycle']
-        blockers = self.blocking_open_findings()
-        owner = life.get('awaiting_owner_reverify') or {}
-        constraint = life.get('reserved_docs_constraint') or {}
-        downstream = (constraint.get('owner') == owner.get('owner') == 'security-reviewer' and
-                      set(constraint.get('owner_ids', ())) == {row['id'] for row in blockers} and
-                      all(row['source'] == 'security-reviewer' for row in blockers))
-        source_rows = self._coord_doc_blockers(constraint.get('docs_file'), constraint.get('owner_ids', ()))
-        downstream = downstream or constraint.get('owner') == 'coordinator' and bool(source_rows)
-        if (not all((ingest, test, reviewed, chain)) or state.get('fake_candidate_review_rejected') or
-                state.get('active') or state.get('uncertain_active') or (blockers and not downstream) or
-                state.get('fake_candidate_test_failed') or state.get('fake_candidate_test_pending') or
-                state.get('fake_candidate_pending') or
-                state.get('pending_reviewer_result_sequence') or test['returncode'] != 0):
-            raise RuntimeError('fake approval lacks a clean receipt chain')
-        if (state.get('status') != 'HOLD' or state.get('hold_reason') != PLAN_STOP_REASON or
-                life.get('pending') or life.get('item_uuid') != state['item_uuid'] or
-                state.get('fake_route_consumed') == chain.get('id')):
-            raise RuntimeError('fake approval lifecycle is not ready for chain-only routing')
-        if life['epoch'] == 0:
-            if life.get('candidate_oid') is not None or life.get('receipts'):
-                raise RuntimeError('fake approval initial lifecycle is not empty')
-        else:
-            prior = life['receipts'][-1] if life.get('receipts') else {}
-            if (life.get('candidate_oid') != chain['oid'] or prior.get('stage') not in ('FINISH', 'DOCS') or
-                    prior.get('output_oid') != chain['oid'] or
-                    ingest.get('source_writer_request_id') != prior.get('request_id')):
-                raise RuntimeError('fake approval has no current writer ingest')
-        identity = [self.run_dir.name, state['item_uuid'], life['epoch']]
-        if (list(chain['identity']) != identity or reviewed['run_id'] != identity[0] or
-                reviewed['item_uuid'] != identity[1] or reviewed['epoch'] != identity[2] or
-                chain['ingest_id'] != ingest['id'] or chain['test_id'] != test['id'] or
-                test['ingest_id'] != ingest['id'] or
-                chain['review_id'] != reviewed['id'] or reviewed['ingest_id'] != ingest['id'] or
-                chain['oid'] != reviewed['oid'] or chain['oid'] != test['oid'] or
-                chain['oid'] != ingest['output_oid'] or chain['root'] != test['root'] or
-                list(chain['root_identity']) != list(test['root_identity']) or life['stage'] != 'EXEC'):
-            raise RuntimeError('fake approval has stale or unrelated receipts')
-        for row, suffix in ((ingest, 'ingest'), (test, 'oid-test'),
-                            (reviewed, 'oid-review'), (chain, 'oid-chain')):
-            saved = json.loads((self.evidence / (row['id'] + '-' + suffix + '.json')).read_text())
-            if saved != json.loads(json.dumps(row)):
-                raise RuntimeError('fake approval evidence differs from state')
-        turns = {row['sequence']: row for row in state['turns']}
-        reviewer, gate = turns[reviewed['sequence']], turns[chain['gate_sequence']]
-        if (reviewer['role'] != 'reviewer' or gate['role'] != 'gate' or
-                reviewer['phase'] != 'EXEC' or gate['phase'] != 'EXEC' or
-                reviewer.get('error') or gate.get('error') or
-                reviewer.get('verified_claims_error') or gate.get('verified_claims_error') or
-                reviewer['answer']['status'] != 'APPROVE' or reviewer['answer']['full_review'] or
-                gate['answer']['verdict'] != 'approve' or gate['answer']['findings'] or
-                reviewed['sequence'] >= chain['gate_sequence']):
-            raise RuntimeError('fake approval roles or verdicts differ')
-        if any(row.get('run_id') != identity[0] or row.get('workspace') != test['root']
-               for row in (reviewer, gate)): raise RuntimeError('fake approval turn identity differs')
-        for row in (reviewer, gate):
-            path = self.evidence / f"{row['sequence']:03d}-exec-{row['role']}.receipt.json"
-            if json.loads(path.read_text()) != json.loads(json.dumps(row)):
-                raise RuntimeError('fake approval turn evidence differs')
-        if (hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest() != ingest['plan_sha256'] or
-                hashlib.sha256(json.dumps(state['config'], sort_keys=True).encode()).hexdigest() !=
-                test['config_sha256'] or
-                hashlib.sha256(Path(test['command'][0]).read_bytes()).hexdigest() != test['executable_sha256']):
-            raise RuntimeError('fake approval inputs changed')
-        if any(row['sequence'] > chain['gate_sequence'] and row['role'] == 'author'
-               for row in state['turns']): raise RuntimeError('fake approval has a later author')
-        if any(row['sequence'] > ingest['author_sequence'] and row['role'] in
-               ('finisher', 'docs', 'security-writer') for row in state['turns']):
-            raise RuntimeError('fake approval has a later writer')
-        baseline = candidate_tree.baseline_from_binding(ingest['baseline'])
-        revision = candidate_tree.CandidateRevision(chain['oid'], tuple(ingest['manifest']), 0)
-        if baseline.parent_head != life['parent']:
-            raise RuntimeError('fake approval differs from frozen parent')
-        candidate_tree.verify_candidate_revision(baseline, revision)
-        fields = {'run_id': identity[0], 'convergence_id': chain['id'], 'epoch': identity[2],
-                  'candidate_oid': chain['oid'], 'parent_head': baseline.parent_head,
-                  'workspace': str(self.workspace.resolve()), 'run_dir': str(self.run_dir.resolve()),
-                  'phase': 'EXEC'}
-        source = {'fake_only': True, 'ingest_id': ingest['id'], 'test_id': test['id']}
-        proof = {**fields, **source, 'blocking_findings': [],
-                 'downstream_open_findings': tuple(row['id'] for row in blockers),
-                 'reviewer': {**fields, **source, 'role': 'reviewer', 'status': 'APPROVE',
-                              'receipt_id': reviewed['id'], 'sequence': reviewed['sequence']},
-                 'gate': {**fields, **source, 'role': 'gate', 'verdict': 'approve',
-                          'sequence': chain['gate_sequence']}}
-        return {'status': 'APPROVE', 'epoch': identity[2], 'item_uuid': identity[1],
-                'run_id': identity[0], 'parent': baseline.parent_head,
-                'candidate_oid': chain['oid'], 'proof': proof}
-
-    def _freeze_fake_exec_source(self) -> None:
-        self.state.pop('fake_exec_source', None)
-        rows = [row for row in self.state['turns'] if row.get('phase') == 'EXEC']
-        author = next((row for row in reversed(rows) if row['role'] == 'author'), None)
-        if author is None:
-            raise RuntimeError('fake EXEC has no author turn')
-        later = [row for row in rows if row['sequence'] > author['sequence']]
-        comparison = self.state['exec_comparisons'][-1] if self.state['exec_comparisons'] else {}
-        verdict = comparison.get('effective_verdict')
-        reviewer = next((row for row in later if row['role'] == 'reviewer' and
-                         row['sequence'] == comparison.get('review_sequence')), None)
-        gate = next((row for row in reversed(later) if row['role'] == 'gate' and not row.get('error') and
-                     not row.get('verified_claims_error') and reviewer and
-                     row['sequence'] > reviewer['sequence']), None)
-        snapshot = git_snapshot(self.workspace)[0]
-        if (not reviewer or not gate or verdict not in ('APPROVE', 'APPROVE_WITH_ADVISORY') or
-                reviewer.get('error') or reviewer.get('verified_claims_error') or
-                any(row.get('run_id') != self.run_dir.name for row in (author, reviewer, gate)) or
-                reviewer.get('answer', {}).get('status') != 'APPROVE' or
-                gate.get('answer', {}).get('verdict') != 'approve' or
-                gate.get('answer', {}).get('findings') or
-                any(row.get('snapshot_before') != snapshot or
-                    row.get('answer', {}).get('reviewed_snapshot') != snapshot for row in (reviewer, gate))):
-            raise RuntimeError('fake EXEC lacks current reviewer and gate receipts')
-        self.state['fake_exec_source'] = {'run_id': self.run_dir.name,
-                                          'author_sequence': author['sequence'],
-                                          'reviewer_sequence': reviewer['sequence'],
-                                          'gate_sequence': gate['sequence'],
-                                          'workspace_snapshot': snapshot}
-        self.save()
 
     def _drive_loop(self) -> str:
         if self.state.get('uncertain_active'):
@@ -10023,10 +8670,8 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
-        self._publication_guard()
         if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
-        if self._fake_lifecycle: raise RuntimeError('fake lifecycle cannot enter legacy resume')
         if (add := getattr(self.args, 'add_rounds', None)) is not None and (   # L100: only at the round-limit HOLD itself
                 not self.at_round_limit_hold() or self.state['config'].get('review_report')):
             raise ValueError(f"--add-rounds needs a PLAN or EXEC round-limit HOLD (not report mode); this run is {self.state['status']}"
@@ -10280,7 +8925,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
     p.add_argument('--polish-round', choices=['on', 'off'], default='on')
-    p.add_argument('--lifecycle-mode', choices=['off', 'on'], default='off')
+    p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
+                   help="'on' (the worktree lifecycle W, the CLI default for a new run) or 'off' (the older route without "
+                        "FINISH, POLISH-Q, DOCS and SECURITY); an existing run keeps the mode it was created with")
     p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
@@ -10616,8 +9263,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
         raise ValueError('--scope-change requires note or reject')
     if args.action == 'status':
         return print((Path(args.run_dir) / 'state.json').read_text()) or 0
+    if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
+        args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)
-    co._publication_guard()
     if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
