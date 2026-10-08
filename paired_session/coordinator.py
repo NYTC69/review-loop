@@ -2261,6 +2261,8 @@ class Coordinator:
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text())
+            # test_a_filter_driver_name_git_cannot_pass_safely_fails_closed: validate git config on load.
+            self._head_commit()
             worktree_lifecycle.refuse_saved(self.state, args)
             if (self.state.get('supersedes') != (str(Path(args.supersedes).resolve()) if args.supersedes else None) or
                     (self.state.get('effective_task_sha256') and
