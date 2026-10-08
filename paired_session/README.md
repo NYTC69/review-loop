@@ -287,8 +287,13 @@ bin/paired-session permission-probe \
   --test-command 'python3 -m unittest' --lifecycle-mode on
 ```
 
-The probe is bound to the author binary and relevant configuration; changing
-them requires a fresh probe. For a Codex author, the coordinator runs external
+In strict mode the probe is bound to the author binary and relevant configuration;
+changing them requires a fresh probe. Efficient runs record CLI release updates in
+`state.json` under `program_updates` and re-freeze `operator_programs`: Claude must
+advance to a newer version under the same `versions` directory; an in-place Codex
+replacement must report a parseable release version (its old version is unavailable).
+Other binary or PATH changes HOLD with instructions to run `permission-probe` to
+re-freeze, then resume. For a Codex author, the coordinator runs external
 temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
 as advisory controls. Their argv, return codes and observations appear under
 `advisory_direct_controls`; this separate CLI's policy is not proven equivalent
