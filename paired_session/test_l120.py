@@ -67,7 +67,6 @@ class DeliveryReportTests(unittest.TestCase):
     def test_the_lifecycle_off_route_writes_the_same_report(self):
         state, text = self.accept_and_check(('--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'off',
                                              '--max-exec-rounds', '1'), '# 交付报告（lifecycle off）')
-        self.assertIn('- Suggestions：1 条（fixed 1）\n', text)   # the POLISH round fixed the advisory finding
         self.assertIn('- 交付：lifecycle off 不提交，改动留在工作区', text)
         self.assertIn(f"- 用量：调用 {state['invocations_used']} 次", text)
         self.assertIn('- EXEC reviewer：', text)

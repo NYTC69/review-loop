@@ -3803,7 +3803,7 @@ class Coordinator:
                                           'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
         if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
             record['operator_verifications'] = verified
-        if self.state.get('review_only'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25: no commit here
+        record['uncommitted'] = self._uncommitted_files()   # no commit on the lifecycle-off route
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -3875,7 +3875,7 @@ class Coordinator:
                   'override_rejection': False, 'delivery': delivery}
         if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
             record['operator_verifications'] = verified
-        if self.state.get('review_only') and not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()   # FIELD-25
+        if not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
