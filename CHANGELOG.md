@@ -1,5 +1,11 @@
 # Changelog
 
+### v3.0.3：产品代码里合法出现的模型名不再被 gate 当成审查历史
+
+**修复**
+- 工作项本身讲的就是某个模型（例如产品里的 reader 模型叫 Astra，或者有 `gg/readers/opus.py`）时，改动里新增的裸模型名（Astra、Opus、Claude、Codex）不再被 shadow/gate 前的独立性扫描当成审查历史。以前这种 run 会以 `gate independence check rejected history in context/delta.patch: ASTRA` HOLD，而且没有办法继续（poker-news-bot 在 3.0.0 上遇到）。工作项里没提到的模型名、以及 "Astra approved"、"Per Claude.ai"、以模型命名的目录、finding 编号、verdict 词这类审查历史的写法照样拦。
+- EXEC reviewer、shadow 和 gate 的提示也加了同样的例外，不再把这类合法的产品名报成 MAJOR。
+
 ### v3.0.2：DOCS writer 只写有证据的事实；README 加流程图
 
 **修复**
