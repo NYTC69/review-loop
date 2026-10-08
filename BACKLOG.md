@@ -4,6 +4,8 @@
 
 ## P1 — high priority
 
+- **Fresh-scan rejected legitimate product model names (Astra/Opus/...)** — **Fixed in v3.0.3 (V303-A)**. Real user run poker-news-bot WI-132r2 on review-loop 3.0.0 HOLDed with "gate independence check rejected history in context/delta.patch: ASTRA" when `pn/ab/key_vote.py` legitimately added reader model `astra`; an `OPUS` constant in `gg/readers/opus.py` has the same failure. Bare names named as whole words in the frozen work item now pass; review-history phrasing stays scanned.
+
 - [new] **Road to v3.0.0** (owner 2026-10-07: "我们等彻底 deprecate 了 legacy, 做一遍 repo 的彻底复查, 尤其是说明文档, 看看和当前版本的行为是否一致. 不一致一定要更新, 然后等彻底 deprecate 以后, 我希望发布 3.0.0 版本."). In order:
   1. Finish the ADR-15 rows: L105 (lane A), L100 continue command (lane B), L107 (done 11732e6).
   2. ~~L133 Linux~~ dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; the docs say so and a non-macOS host gets a clear refusal once legacy is gone.

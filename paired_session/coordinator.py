@@ -196,6 +196,10 @@ GUIDANCE_KEYS = (('review_focus', 'Review focus'), ('review_style', 'Review styl
 REVIEW_GUIDANCE, QUALITY_GUIDANCE = ('review_focus', 'review_style'), ('quality_focus', 'review_style')
 # A path with a dotted extension (gg/readers/opus.py, docs/Codex.md:7) is a file name, not prose, for the bare-name scan.
 DOTTED_PATH_RE = re.compile(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=[:\s`\]\)>,.;!?'\"]|$)''')
+BARE_MODEL_NAME_RE = re.compile(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', re.I)
+REVIEW_HISTORY_GUIDANCE = ('Flag accidental review-history carry-over, but do not flag bare vendor/model names '
+                           'when the frozen work item is about them (contains the same whole word, case-insensitively). '
+                           'Review attributions, vendor-named directory paths, finding ids and verdict words remain review-history markers.')
 # FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
 AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
                        '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
@@ -4532,7 +4536,7 @@ class Coordinator:
                 self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
-                REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
+                REVIEW_SEVERITY_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
                 self.inspection_prompt(role),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
@@ -4585,6 +4589,7 @@ class Coordinator:
             self.inspection_prompt(role),
             REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
+            REVIEW_HISTORY_GUIDANCE,
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt(),
             self._test_instruction(),
@@ -4608,6 +4613,7 @@ class Coordinator:
                 '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.' +
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
+                '\n' + REVIEW_HISTORY_GUIDANCE +
                 '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
                 opv.prompt_block(self, snapshot, atomic_json))
@@ -4669,7 +4675,7 @@ class Coordinator:
         matches += findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
                            r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
         prose = DOTTED_PATH_RE.sub('<path>', prose)
-        matches += findall(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', prose, re.I)
+        matches += findall(BARE_MODEL_NAME_RE, prose)
         if name not in ('prompt', 'gate-template'):
             matches += findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
         return matches
@@ -4713,10 +4719,19 @@ class Coordinator:
         def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
 
+        try:
+            workitem_text = (self.context / 'workitem.md').read_text()
+        except OSError:
+            workitem_text = ''   # No frozen work item yet at run creation.
+
+        def workitem_name(whole, text):
+            return bool(BARE_MODEL_NAME_RE.fullmatch(whole) and repo_word(whole).search(workitem_text)
+                        and name != 'context/plan.md' and self._plan_tool_name(whole, text))
+
         def mask(text, exists):
             # Replace an exempt whole match as a whole word; unrelated markers in the same quote/line remain visible, and
             # so does a non-exempt match that contains exempt text ("Claude approved" when only "Claude" is base text).
-            wholes = {whole: exists(whole) for _, whole in self._history_matches(name, text)}
+            wholes = {whole: exists(whole) or workitem_name(whole, text) for _, whole in self._history_matches(name, text)}
             kept = [whole.lower() for whole, exempt in wholes.items() if not exempt]
             for whole, exempt in wholes.items():
                 if exempt and not any(whole.lower() in other for other in kept):
@@ -4753,7 +4768,7 @@ class Coordinator:
                                             if raw[1:].startswith(root + '/')), None)
                         if line.startswith('--- '): old = rel
                         else: new = rel
-                # A new file has no exemption, even if its post-image path happens to exist at base.
+                # A new file has no base-text exemption, even if its post-image path happens to exist at base.
                 # --no-index mirrors can render a run rename as a deletion plus an addition.
                 old = renames.get(new, old)
                 paths = (new, old) if 'rename from ' in header or new in renames else (new,)
@@ -4764,6 +4779,12 @@ class Coordinator:
                     if line.startswith('+'):
                         result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository))))
             return '\n'.join(result)
+
+        # V303-A: apply the same bare-name exception to stat/status and workitem prose.
+        # Plans already exempt bare prose names in _introduced_history; keep slash pairs
+        # intact for that check, including quoted plan text.
+        if name in (*self.WORKITEM_SOURCES, 'context/delta.stat', 'context/status.txt'):
+            content = mask(content, lambda whole: False)
 
         if name in ('context/delta.stat', 'context/status.txt'):
             if not self._history_markers(name, content):
@@ -4919,7 +4940,8 @@ class Coordinator:
                         + (f', +{len(hits) - 10} more' if len(hits) > 10 else '') + ')'),
             'failure_scenario': ('the independent shadow and gate refuse inputs that carry review history, so the run '
                                  'cannot reach them; reword every listed place without finding ids, review narrative or '
-                                 'reviewer names')}])
+                                 'reviewer names unless the frozen work item is about those bare names; review '
+                                 'attributions and other history markers remain forbidden')}])
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
