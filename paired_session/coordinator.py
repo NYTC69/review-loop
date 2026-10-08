@@ -6131,7 +6131,9 @@ class Coordinator:
         prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
                   f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff: '
                   'the docs must describe the implemented behavior, APIs and logic accurately, and the '
-                  'changed code comments must match the code. Do not modify any file. Documentation written by the '
+                  'changed code comments must match the code. A documentation statement that is false or not supported '
+                  'by the diff or an observed result (for example a claimed test or check that does not exist) is at '
+                  'least MAJOR. Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
                   f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'
                   'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))

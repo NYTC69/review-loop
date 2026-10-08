@@ -136,8 +136,10 @@ and resume replays the same way.
 
 **`docs_file` entry.** Legacy Step 4 appends the post-delivery summary (status, rounds, polish summary,
 findings, cross-vendor line, files) after the gate. W writes the entry during DOCS so that it is reviewed
-and scanned; it can only hold facts known before SECURITY (work item, changes, EXEC/POLISH-Q results).
-The SECURITY outcome and the commit SHA go only to the Chinese delivery report in the run directory
+and scanned; it describes the work item and the changes. State test, check, review or security results only
+if the writer ran or read them itself in this turn and can name them. All docs writes must contain only facts
+supported by the diff, the worktree or a command run in this turn; never claim unobserved tests, checks or results.
+Final review, security and commit facts go only to the Chinese delivery report in the run directory
 (`worktree_lifecycle.delivery_report`: run and work item, ACCEPTED time, the auto_commit commit and parent or
 "no ref or index changed", external delivery not done, the last receipt of each stage, the SECURITY scans and
 review, open findings, and invocations, epoch and elapsed minutes; it has no token totals, which stay in the

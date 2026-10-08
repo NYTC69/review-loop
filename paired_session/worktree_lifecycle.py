@@ -121,8 +121,12 @@ def docs_prompt(docs_file, allowlist, run_id, workitem):
             'comments in the changed files. Documentation paths you may write: ' + (', '.join(allowlist) or 'none') +
             '. Any other write (a comment or code fix) sends the change back through EXEC review and the gate; agent, '
             'skill, protocol, config, manifest and Git files and symlinks are refused. ' +
-            (f'Add one entry for run {run_id} to {docs_file} with the work item, the changes and the review results, '
-             'replacing an earlier entry for this run. ' if docs_file else '') +
+            (f'Add one entry for run {run_id} to {docs_file} with the work item and the changes, '
+             'replacing an earlier entry for this run. Do not state test, check, review or security results unless '
+             'you ran or read them yourself in this turn and can name them; final review, security and commit facts '
+             'belong to the delivery report, not the docs. ' if docs_file else '') +
+            'Write only facts supported by the diff, the worktree or a command you ran in this turn; never claim '
+            'tests, checks or results that were not observed. '
             'Do not commit, stage, push or change branches, refs or the index. Do not edit outside the workspace or '
             'edit run state or review files. Do not load review-loop skills and do not invoke or wait for another '
             'model. Answer READY when the docs are consistent; answer HOLD only when a decision is missing or the '
