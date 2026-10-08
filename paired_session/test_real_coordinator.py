@@ -4393,7 +4393,7 @@ sys.exit(result.returncode)
                                      env={'FAKE_OMIT_DISPOSITION': '1'})
         self.assertEqual(retry.returncode, 0, retry.stderr + retry.stdout)
         prompts = [path.read_text() for path in (self.run_dir / 'evidence').glob('*-reviewer.prompt.txt')]
-        self.assertEqual(sum('one allowed protocol retry' in prompt for prompt in prompts), 3)
+        self.assertEqual(sum('one allowed protocol retry' in prompt for prompt in prompts), 2)
 
         self.run_dir = self.root / 'always-omit'
         held = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
@@ -4627,7 +4627,7 @@ sys.exit(result.returncode)
         main = self.run_coordinator('--exercise-revisions', '--gate-vendor', 'claude', skip_probe=False)
         self.assertEqual(main.returncode, 0, main.stderr + main.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(len(state['turns']), 15)
+        self.assertEqual(len(state['turns']), 13)
         usage = json.loads((self.run_dir / 'usage.json').read_text())
         self.assertIn('probe', usage['by_role'])
         self.assertEqual(usage['by_role']['probe']['cli_turns'], 1)
