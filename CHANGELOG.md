@@ -1,5 +1,20 @@
 # Changelog
 
+### v2.13.4：v3.0 复查第二批（删掉测试专用的 fake lifecycle，CLI 默认走 worktree 生命周期）
+
+ADR-17 复查的第二批。在跑的 run 不受影响：已保存的 run 继续按它保存的模式 resume。
+
+**行为变化**
+- 直接调用 `bin/paired-session` 新建 run 时，`--lifecycle-mode` 默认改为 `on`（ADR-17 V1），和两个宿主的 skill 入口一致（入口本来就显式传 `on`）。已保存的 run 读取自己的模式，不受新默认值影响；以前保存为 `on` 的 run 在 resume 时不带这个 flag 会报配置不一致，现在可以直接 resume。
+
+**删除**
+- 删除只供测试使用的 fake lifecycle：20 个 `paired_session/` 模块及其专属测试，约 8000 行（ADR-17 V4）。真实 run 从不走这些分支，删掉的调用点都是空操作。
+
+**开发者文档**
+- CLAUDE.md、ARCHITECTURE.md、DESIGN.md 删掉 compass adopt 时留下的 README 快照块（ADR-17 V9），改为描述当前 coordinator；STATUS.md 按 v2.13.x 和 v3.0.0 复查重写；README 补上各阶段 finding 的去向。
+
+**审查**：每个单元都经 Codex 审查 APPROVE，并通过 fresh Opus 终审；V4 与 V1 的全量 CI 均为绿。
+
 ### v2.13.3：v3.0 复查第一批（文档对照当前行为）
 
 legacy 删除后，全仓库复查文档是否与实际行为一致（ADR-17）。这一版是复查的第一批修复，不影响在跑的 run。
