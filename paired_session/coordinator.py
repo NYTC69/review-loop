@@ -555,7 +555,7 @@ OLD_STATE_REFUSAL = ('run was created by an older paired-session build; start a 
                      'review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)')
 
 
-def refuse_user_off(args, state=None):
+def refuse_removed_options(args):
     """Refuse the four removed options; lifecycle off remains supported (ADR-19)."""
     # Old fake fixtures still exercise the separately removed options; this does not select lifecycle mode.
     if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS') == '1':
@@ -576,6 +576,9 @@ def refuse_user_off(args, state=None):
     if removed:
         raise ValueError('removed user option: ' + '; '.join(removed))
     return False
+
+
+OFF_NEVER_COMMITS_NOTE = 'auto_commit true is ignored: lifecycle off never commits; accept hands back the uncommitted tree'   # V312
 
 
 def saved_state_is_old(run_dir) -> bool:
@@ -1610,7 +1613,11 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
 
 
 def uncommitted_cause(state: dict) -> str:
-    """FIELD-25: why an accept left files uncommitted: auto_commit off, or a defaulted auto_commit its checks refused."""
+    """FIELD-25: why an accept left files uncommitted: auto_commit off, a defaulted auto_commit its checks refused, or
+    lifecycle off with auto_commit true."""
+    config = state.get('config') or {}
+    if config.get('lifecycle_mode') == 'off' and config.get('auto_commit'):   # V312: off ignores a frozen auto_commit true
+        return 'lifecycle off never commits'
     reason = ((state.get('acceptance') or {}).get('delivery') or {}).get('commit_skipped')
     return f'auto_commit skipped: {reason}' if reason else 'auto_commit off'
 
@@ -1830,13 +1837,14 @@ def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path,
                      writable_roots: tuple = (), configured: tuple = (), fallbacks: Optional[list] = None) -> Optional[str]:
     """v297-eg-wire, the hybrid (owner 2026-10-04): the typed-operation evidence guard (evidence_guard.py) decides every call it can
     resolve: PROTECTED holds, ALLOW passes even where the old substring match would have held. A call it cannot resolve falls back to
-    the legacy substring guard with bounded evidence-path matching, and its reason (cut to 300 characters) is appended to `fallbacks` (the receipt
+    the narrowed fallback guard (_legacy_sensitive_access, v3.0.4: literal run-directory spellings, bare or parent-hop evidence/
+    paths, role isolation; a nested workspace path such as tests/evidence/ no longer holds), and its reason (cut to 300 characters) is appended to `fallbacks` (the receipt
     counts them). Secret-named variables never expand, so no secret value reaches a reason; other values may, as in the stdout evidence.
     Known limit: the guard runs after the turn, so a symlink made and removed inside the turn is not seen."""
     ctx = evidence_guard.Context(evidence, rounds, cwd, {k: v for k, v in (env or {}).items() if not SECRET_ENV_NAME.search(k)},
                                  tuple(writable_roots), tuple(c for c in configured if isinstance(c, str)))
     try: verdicts = evidence_guard.turn_verdicts(calls, ctx)
-    except Exception as exc:   # a guard failure (RecursionError, ...) falls back to the substring guard for every call
+    except Exception as exc:   # a guard failure (RecursionError, ...) sends every call to the narrowed fallback guard
         verdicts = [(evidence_guard.UNKNOWN, f'evidence guard error: {type(exc).__name__}')] * len(calls)
     if found := next((reason for verdict, reason in verdicts if verdict == evidence_guard.PROTECTED), None): return found
     for call, (verdict, reason) in zip(calls, verdicts):
@@ -1848,7 +1856,7 @@ def sensitive_access(calls: list[dict], role: str, evidence: Path, rounds: Path,
 
 def configured_command_issue(workspace: Path, run_dir: Path, commands: list) -> Optional[str]:
     """v297-eg-wire admission (hybrid): only a configured test or reviewer command that names a protected path is refused, before any
-    model turn; a form the guard cannot resolve is not refused (its runs fall back to the substring guard)."""
+    model turn; a form the guard cannot resolve is not refused (its runs fall back to the narrowed fallback guard)."""
     for command in commands:
         ctx = evidence_guard.Context(run_dir / 'evidence', run_dir / 'rounds', Path(workspace).resolve(),
                                      {k: v for k, v in cli_env().items() if not SECRET_ENV_NAME.search(k)}, configured=(command,))
@@ -2165,7 +2173,7 @@ def codex_rollout_cwds(session: Optional[str], start: float, end: float, writabl
 def codex_guard_calls(calls: list[dict], proof: Optional[dict]) -> tuple[list[dict], Optional[Path], int]:
     """v297-eg-cwd: Codex command events carry no workdir. A command_execution call gets the cwd Codex recorded for that command when
     every recorded run of it in the turn has the same cwd and there are at least as many records as events; otherwise it keeps no cwd
-    (unknown: the substring guard decides, as before). Code-mode cells get the turn's own cwd only when every command event is proven.
+    (unknown: the narrowed fallback guard decides: literal run-directory spellings, bare or parent-hop evidence/ paths, role isolation). Code-mode cells get the turn's own cwd only when every command event is proven.
     Returns (calls for the guard, the guard's cwd or None, proven events); the receipt keeps the calls as observed."""
     if not proof:
         return calls, None, 0
@@ -2268,10 +2276,7 @@ class Coordinator:
         if (saved_state is not None and saved_state.get('version') != STATE_VERSION or   # V3-B6: before any key of it,
                 getattr(args, 'supersedes', None) and saved_state_is_old(Path(args.supersedes).resolve())):   # or of a parent, is read
             raise ValueError(OLD_STATE_REFUSAL)
-        if getattr(args, 'supersedes', None):
-            parent_path = Path(args.supersedes).expanduser() / 'state.json'
-            if parent_path.is_file(): refuse_user_off(args, json.loads(parent_path.read_text()))
-        refuse_user_off(args, saved_state)
+        refuse_removed_options(args)
         if getattr(args, 'lifecycle_mode', None) is None:
             args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else (
                 'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')
@@ -2897,7 +2902,7 @@ class Coordinator:
         voided = f'; the earlier operator opt-in is void ({self._void_text(optin)})' if optin.get('voided') else ''
         detail = ('; the recorded probe does not pass: ' + passed[1]) if probed else '; no Claude author probe PASS is recorded in permission-probe.json'   # FIELD-10
         fixture_optin = (' or the operator opts in with `run --accept-unverified-claude-author --reason TEXT` '
-                         '(permission-probe does not take the flag)' if refuse_user_off(self.args, self.state) else '')
+                         '(permission-probe does not take the flag)' if refuse_removed_options(self.args) else '')
         return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
                        'author permission-probe passes (P0-3b)' + fixture_optin + voided + detail)
 
@@ -3725,7 +3730,7 @@ class Coordinator:
         if issue := self._wi_deadline_issue(record=False):
             kept = ('the DONE tree stays acceptable: accept it, abort, or reject --scope-change' if self.state.get('status') == 'DONE'
                     else ('nothing changed: the HOLD keeps its reason, so its accept/override, note and abort paths stay as they are'
-                          if refuse_user_off(self.args, self.state) else
+                          if refuse_removed_options(self.args) else
                           'nothing changed: the HOLD keeps its reason; use note --scope-change or abort')
                     if self.state.get('status') == 'HOLD' else 'nothing changed; abort, or note --scope-change to start a successor')
             raise ValueError(f'{action} refused: {issue.split(";")[0]}; {kept}')
@@ -3884,7 +3889,7 @@ class Coordinator:
         return note_id
 
     def accept(self) -> str:
-        refuse_user_off(self.args, self.state)
+        refuse_removed_options(self.args)
         self._refuse_report_accept()
         if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
                 and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
@@ -3925,6 +3930,7 @@ class Coordinator:
             '# 交付报告（lifecycle off）', '', f'- 运行：`{self.run_dir.name}`；工作项：{title}',
             f"- 结论：已接受（ACCEPTED）{'，--override-rejection' if record['override_rejection'] else ''}，{record['timestamp']}",
             '- 交付：lifecycle off 不提交，改动留在工作区；外部交付（push、PR、merge）未执行。',
+            *(['- 注意：auto_commit 为 true，但 lifecycle off 从不提交，该设置被忽略。'] if self.state['config'].get('auto_commit') else []),
             *(['- 未提交的文件（请自行提交）：' + '、'.join(record['uncommitted'])] if record.get('uncommitted') else []),
             f"- 用量：调用 {self.state.get('invocations_used')} 次", '', review_report.delivery_section(self.state)]))
         self.save()
@@ -4125,7 +4131,7 @@ class Coordinator:
         return {'path': str(path), 'sha256': base['sha256'], 'inherited_from': str(parent)}
 
     def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
-        refuse_user_off(self.args, self.state)
+        refuse_removed_options(self.args)
         if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
         payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
         index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
@@ -4171,7 +4177,7 @@ class Coordinator:
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
-        refuse_user_off(self.args, self.state)
+        refuse_removed_options(self.args)
         self._refuse_report_feedback()
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
@@ -4764,10 +4770,17 @@ class Coordinator:
         except OSError:
             workitem_text = ''   # No frozen work item yet at run creation.
 
+        def model_id_component(whole):   # V312: any component of a hyphenated model id with a digit component
+            # (claude-opus-5-5 names Claude and Opus, gpt-6-astra names Astra); prose ("pre-Opus", "Claude-based") and
+            # directory or file forms (/opt/claude-opus-5-5/, claude-opus-5-5.md) name nothing
+            for token in re.finditer(r'(?<![\w./-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w/-]|\.[\w])', workitem_text):
+                parts = token.group(0).lower().split('-')
+                if whole.lower() in parts and any(re.search(r'\d', part) for part in parts):
+                    return True
+            return False
+
         def workitem_name(whole, text):
-            named = repo_word(whole).search(workitem_text) or re.search(
-                r'(?<![\w./-])(?:[A-Za-z0-9]+-)+' + re.escape(whole) +
-                r'(?:-[A-Za-z0-9]+)*(?![\w/-]|\.[\w])', workitem_text, re.I)
+            named = repo_word(whole).search(workitem_text) or model_id_component(whole)
             return bool(BARE_MODEL_NAME_RE.fullmatch(whole) and named
                         and name != 'context/plan.md' and self._plan_tool_name(whole, text))
 
@@ -8451,7 +8464,7 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
-        refuse_user_off(self.args, self.state)
+        refuse_removed_options(self.args)
         # The one entry of every real author dispatch (run, resume, reject): author_turn
         # is reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
@@ -8511,7 +8524,7 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
-        refuse_user_off(self.args, self.state)
+        refuse_removed_options(self.args)
         if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if (add := getattr(self.args, 'add_rounds', None)) is not None and (   # L100: only at the round-limit HOLD itself
@@ -9050,7 +9063,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
         if key in ('lifecycle_mode', 'adversarial_gate') and value == 'off':
             p.set_defaults(off_profile_options={**(p.get_default('off_profile_options') or {}), key: str(config_path)})
         if key == 'lifecycle_mode' and value == 'on' and writable_profile:
-            raise ValueError('lifecycle_mode is operator-only; pass --lifecycle-mode on '
+            raise ValueError('lifecycle_mode on is operator-only (a workspace profile may set only off); pass --lifecycle-mode on '
                              'or use an operator --config outside the workspace, run dir and author temp')
         if key == 'allowed_models':
             p.set_defaults(allowed_models=value)
@@ -9231,6 +9244,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         co.hold('aborted by operator' + suffix)
         print('HOLD: ' + co.state['hold_reason'])
         return 2
+    if args.action == 'run' and co.state['config'].get('lifecycle_mode') == 'off' and co.state['config'].get('auto_commit'):
+        print('NOTE: ' + OFF_NEVER_COMMITS_NOTE)   # V312: a note, not a refusal
     print(f'GATE: {args.gate_vendor} {args.gate_model} (gate_vendor_source: {args.gate_vendor_source})')   # ADR-10 M2
     status = (co.drive() if args.action == 'run' else
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
@@ -9258,14 +9273,8 @@ def main(argv=None) -> int:
         print('REFUSED: ' + OLD_STATE_REFUSAL)
         return 2
     try:
-        for run in (known.run_dir, known.supersedes):
-            path = Path(run).expanduser() / 'state.json' if run else None
-            if path is not None:
-                try: state = json.loads(path.read_text())
-                except (OSError, ValueError): continue
-                if isinstance(state, dict): refuse_user_off(known, state)
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
-        refuse_user_off(args)
+        refuse_removed_options(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
@@ -9305,7 +9314,7 @@ def main(argv=None) -> int:
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
     if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action == 'accept') and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
         flags = ('--accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip'
-                 if refuse_user_off(args) else '--accept-unverified-codex-cli')
+                 if refuse_removed_options(args) else '--accept-unverified-codex-cli')
         print('REFUSED: ' + flags + ' needs --reason and run, resume or reject')
         return 2
     try:

@@ -185,7 +185,7 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
-The paired-session skill defaults to `--lifecycle-mode on` (D-4); when the user or selected profile chooses off, it passes `--lifecycle-mode off` instead. The frozen config also records exact
+The paired-session skill passes `--lifecycle-mode on` (D-4) only when no operator/workspace profile sets `lifecycle_mode`; when one does, it omits the flag so the profile value applies, and when the user chooses off, it passes `--lifecycle-mode off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
