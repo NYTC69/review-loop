@@ -43,8 +43,6 @@ What these flags deliver:
 
 ## 3. Category C gates
 
-Superseded in 3.1.0: off route removed from the user surface; the following description is historical.
-
 | Gate | strict | efficient |
 |---|---|---|
 | Permission probe before run, resume and reject (`probe_gate`); `_probe_gate_required` re-checks after an uncertain turn | required | not required. `permission-probe` still runs and its report is still recorded |

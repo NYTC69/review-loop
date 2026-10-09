@@ -99,8 +99,6 @@ The first dispatch is the EXEC reviewer on the frozen tree; the author's first r
 review HOLDs ("the tree changed before the first review"). The operator restores the tree from `internal/review-start`
 and resumes, or aborts.
 
-Superseded in 3.1.0: off route removed from the user surface; the following description is historical.
-
 ## 3. Phases
 
 - **EXEC.** The reviewer reviews first. On BLOCK, the persistent author fixes the findings. Shadow and gate on that first

@@ -184,7 +184,7 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
-`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. With `auto_commit false`, accept hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
+`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 The paired-session skill defaults to `--lifecycle-mode on` (D-4); when the user or selected profile chooses off, it passes `--lifecycle-mode off` instead. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);
@@ -206,7 +206,7 @@ commit of exactly the accepted tree (never a push; `auto_commit` defaults to
 true for a `--review-only` W run and to false otherwise, and an explicit CLI or
 operator-profile value wins), and writes a Chinese
 delivery report; `reject` reopens EXEC; a
-workspace profile cannot set its mode or docs/skip/polish keys.
+workspace profile cannot set lifecycle_mode on or the docs/skip/polish keys.
 `--adversarial-gate off`, `--override-rejection`,
 `--accept-unverified-claude-author` and `--accept-probe-skip` are refused; use the enabled gate,
 `resume --add-rounds N` or `note --scope-change`, and permission-probe for strict runs.
