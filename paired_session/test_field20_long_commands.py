@@ -8,6 +8,7 @@ import re
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import evidence_guard as eg
 from paired_session import test_operator_roles as tor
@@ -47,6 +48,7 @@ class LongProbeCommandTests(unittest.TestCase):
         self.assertFalse(any(reason.startswith(NOT_COMPLETED) for reason in report['failure_reasons']))
 
     def test_the_probe_prompt_tells_both_vendors_to_wait_before_the_allowed_command(self):
+        use_lifecycle_on(self, self.h)
         co = self.co(*CODEX_ROLES)
         for vendor in ('codex', 'claude'):
             prompt = co._probe_prompt(vendor, 'python3 -m unittest', ('echo x > forbidden-probe',), [])

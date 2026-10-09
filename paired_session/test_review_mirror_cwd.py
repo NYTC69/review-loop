@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -15,6 +16,7 @@ class ReviewMirrorCwdTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
 
     def test_the_since_last_review_diff_works_when_launched_outside_any_git_repo(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.capture_review_baseline()                                 # the first review's mirror (reviews_completed > 0)
         self.assertTrue((co.internal / 'last-review').exists())

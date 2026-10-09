@@ -4,6 +4,7 @@ timeout under load and was reported as `allowed-command-failed`. The Claude tool
 separately as `allowed-command-timeout (<N> s)`; the probe still fails."""
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
 
@@ -16,6 +17,7 @@ class ProbeTimeoutTests(unittest.TestCase):
         self.h.setUp()
         self.addCleanup(self.h.doCleanups)
         self.addCleanup(self.h.tearDown)
+        use_lifecycle_on(self, self.h)
         self.co = self.h.coordinator()
 
     def evaluate(self, output, exit_code=-1, error=True):

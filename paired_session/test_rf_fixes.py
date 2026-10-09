@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
 
@@ -88,6 +89,7 @@ class ClaudeAutoUpdateTests(unittest.TestCase):
         self.assertNotIn('FORCE_AUTOUPDATE_PLUGINS', env)
 
     def test_the_claude_flags_digests_bind_the_child_env_and_codex_only_runs_do_not(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude')
         self.assertEqual(co.reviewer_flags()['claude_child_env'], rc.CLAUDE_CHILD_ENV)
         self.assertEqual(co.author_flags()['claude_child_env'], rc.CLAUDE_CHILD_ENV)
@@ -158,6 +160,7 @@ class ApproveWithOpenBlockingFindingsTests(unittest.TestCase):
                 self.assertTrue(any(row['status'] == 'open' and row.get('security') for row in state['finding_ledger']))
 
     def test_the_reviewer_prompt_says_the_approve_is_converted(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         prompt = co._review_prompt('reviewer', '')
         self.assertIn('converted to REVISE', prompt)

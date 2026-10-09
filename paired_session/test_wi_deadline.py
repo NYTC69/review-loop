@@ -4,6 +4,7 @@ import subprocess
 import time
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 from paired_session import timeout_scale as tsc
 
@@ -25,12 +26,14 @@ class WiDeadlineTests(unittest.TestCase):
             '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli())]))
 
     def test_off_by_default_saves_no_key_and_never_holds(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*self.flags())
         self.assertNotIn('wi_deadline', co.state['config'])
         co.state['started_at'] -= 10 ** 7
         self.assertIsNone(co._wi_deadline_issue())
 
     def test_only_a_positive_deadline_is_accepted(self):
+        use_lifecycle_on(self, self)
         for value in ('0', '-5'):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'positive number of seconds'):
                 self.coordinator(*self.flags('--wi-deadline', value))
@@ -49,6 +52,7 @@ class WiDeadlineTests(unittest.TestCase):
         self.assertIsNone(co.state['active'])
 
     def test_resume_keeps_the_saved_deadline_and_refuses_a_change(self):
+        use_lifecycle_on(self, self)
         self.coordinator(*self.flags('--wi-deadline', '100'))
         self.assertEqual(self.resumed().args.wi_deadline, 100)
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: wi_deadline'):
@@ -176,6 +180,7 @@ class WiDeadlineTests(unittest.TestCase):
         self.assertGreater(after['sequence'], before['sequence'])
 
     def test_a_wall_clock_moved_back_holds_and_never_refunds(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*self.flags('--wi-deadline', '100'))
         co.state['wi_clock'] = time.time() + 3600
         self.assertIn('wall clock moved back', co._wi_deadline_issue())

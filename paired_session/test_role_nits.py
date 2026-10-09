@@ -7,6 +7,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_operator_roles as tor
 
 rc = tor.rc
@@ -66,6 +67,7 @@ class DispatchedCodexContractTests(unittest.TestCase):
         self.assertEqual(self.drive('codex', '--review-only', '--review-report', '--lifecycle-mode', 'on'), 'DRIVEN')
 
     def test_dispatched_vendors_name_the_gate(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--gate-vendor', 'codex', '--author-vendor', 'claude', '--reviewer-vendor', 'claude',
                                 '--test-command', 'python3 -m unittest')
         self.assertEqual(co.dispatched_vendors(), ('claude', 'claude', 'codex'))

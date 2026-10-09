@@ -7,6 +7,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
 from paired_session.test_field11_plan_ledger_ids import PLAN_CLEAN, PLAN_WITH_IDS
@@ -140,6 +141,7 @@ class PlanRewriteTests(unittest.TestCase):
         self.assertEqual(co2.state['plan_history_rewrite']['attempt_sequences'], [13])
 
     def test_the_progress_label_of_the_rewrite_is_not_a_plan_round(self):   # R1 LOW
+        use_lifecycle_on(self, self.h)
         co = self.last_round()
         self.review(co, 10)
         with patch.object(co, 'progress'):
@@ -147,6 +149,7 @@ class PlanRewriteTests(unittest.TestCase):
         self.assertEqual(co._progress_label, 'PLAN rewrite')
 
     def test_a_work_item_with_review_history_still_holds_at_once_in_the_last_round(self):
+        use_lifecycle_on(self, self.h)
         co = self.last_round(plan=PLAN_CLEAN)
         (co.context / 'workitem.md').write_text('Fix the crash reported as F123.\n')
         self.review(co, 10)

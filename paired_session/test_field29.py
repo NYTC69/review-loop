@@ -4,6 +4,7 @@ line quoting the test command) carries the configured command, whose absolute pa
 commands are configuration, not review history; everything else stays scanned."""
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_field26 as f26
 
 rc = f26.rc
@@ -32,6 +33,7 @@ class ConfiguredCommandTextTests(unittest.TestCase):
             co.assert_fresh_prompt(role, self.prompt(co))
 
     def test_an_ordinary_run_prompt_quoting_the_commands_passes(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.state.update(phase='EXEC', next='reviewer')
         (co.context / 'plan.md').write_text('# Plan\n1. Add sum_ints.\n')
@@ -41,6 +43,7 @@ class ConfiguredCommandTextTests(unittest.TestCase):
             co.assert_fresh_prompt(role, self.prompt(co))
 
     def test_the_same_words_written_by_an_author_are_still_caught(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.state.update(phase='EXEC', next='reviewer')
         self.write('sum_ints.py', 'def sum_ints(values):\n    return sum(values)\n')
@@ -58,6 +61,7 @@ class ShortCommandTests(unittest.TestCase):   # FIELD-29 gate: a short command m
         from paired_session import test_field23_repo_text_scan as f23
         h = f23.RepoTextScanTests('test_history_in_a_new_file_holds')
         h.setUp()
+        use_lifecycle_on(self, h.h)
         self.addCleanup(h.doCleanups)
         name, base = 'tests/pytest_helpers.py', '# Claude reads this helper.\nVALUE = 1\n'
         h.commit({name: base})

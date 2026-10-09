@@ -5,6 +5,7 @@ specialists, never to the author. The text is operator configuration, not review
 import unittest
 from unittest import mock
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_review_report_b1 as b1
 from paired_session import test_real_coordinator as trc
 
@@ -32,6 +33,7 @@ class GuidanceTests(unittest.TestCase):
                 'gate': co._gate_prompt(snap), 'author': co._author_prompt()}
 
     def test_review_roles_carry_focus_and_style_and_the_author_does_not(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*GUIDE)
         self.assertEqual({key: co.state['config'][key] for key in ('review_focus', 'review_style', 'quality_focus')},
                          {'review_focus': FOCUS, 'review_style': STYLE, 'quality_focus': QUALITY})
@@ -44,6 +46,7 @@ class GuidanceTests(unittest.TestCase):
                 self.assertNotIn(QUALITY, prompt)                                   # quality_focus is for the specialists
 
     def test_unset_keys_add_nothing(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         self.assertEqual([co.state['config'][key] for key in ('review_focus', 'review_style', 'quality_focus')], ['', '', ''])
         for role, prompt in self.prompts(co).items():
@@ -51,6 +54,7 @@ class GuidanceTests(unittest.TestCase):
                 self.assertNotIn('Project review guidance', prompt)
 
     def test_the_guidance_is_not_review_history_for_the_fresh_scan(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*GUIDE)
         prompts = self.prompts(co)
         co.materialize_review_context()
@@ -60,6 +64,7 @@ class GuidanceTests(unittest.TestCase):
             co.assert_fresh_prompt('shadow', prompts['shadow'] + '\nCodex approved this.')   # other text is still scanned
 
     def test_overlapping_guidance_texts_stay_exempt(self):   # L105 R1: "security" inside the style text
+        use_lifecycle_on(self, self)
         co = self.coordinator('--review-focus', 'security', '--review-style', 'Be strict like Codex about security.')
         prompts = self.prompts(co)
         co.materialize_review_context()
@@ -67,6 +72,7 @@ class GuidanceTests(unittest.TestCase):
             co.assert_fresh_prompt(role, prompts[role])
 
     def test_guidance_naming_a_leak_phrase_passes_the_prompt_checks(self):   # L105 R2: the pre-checks see it masked too
+        use_lifecycle_on(self, self)
         co = self.coordinator('--review-style', 'Do not include prior_findings; flag F123-style ids.')
         prompts = self.prompts(co)
         co.materialize_review_context()
@@ -76,6 +82,7 @@ class GuidanceTests(unittest.TestCase):
             co.assert_fresh_prompt('shadow', prompts['shadow'] + '\nprior_findings: none')   # outside the guidance: refused
 
     def test_the_guidance_is_frozen_at_run_start(self):
+        use_lifecycle_on(self, self)
         self.coordinator(*GUIDE)
         resumed = self.coordinator(action='resume')                               # no flag: the saved text stays
         self.assertEqual(resumed.args.review_focus, FOCUS)

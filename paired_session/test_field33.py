@@ -6,6 +6,7 @@ bare tool name passes when every use of it is a prose word (not part of a path o
 such as "Codex/GPT approved."; narratives, verdict words, ledger ids and attributions stay caught."""
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_field30 as f30
 
 GG_PLAN = ('# Plan\n1. Keep the per-model gate: Claude <= 5 pp, Codex <= 3 pp.\n2. Opus primary_state reads the frame first.\n'
@@ -27,12 +28,14 @@ class PlanToolNameTests(unittest.TestCase):
         return co
 
     def test_the_gg_plan_passes_the_shadow_the_gate_and_plan_approval(self):
+        use_lifecycle_on(self, self.h)
         co = self.plan(GG_PLAN)
         for role in ('shadow', 'gate'):
             co.assert_fresh_prompt(role, 'Review the delta.')
         self.assertIsNone(co._plan_history_issue())
 
     def test_review_history_in_the_plan_still_holds(self):
+        use_lifecycle_on(self, self.h)
         for text, marker in (('# Plan\n1. Keep what the Codex reviewer approved.\n', 'reviewer approved'),
                              ('# Plan\n1. Claude/Sonnet signed off on the thresholds.\n', 'Claude'),
                              ('# Plan\n1. Codex approved the frame order.\n', 'Codex'),
@@ -45,12 +48,14 @@ class PlanToolNameTests(unittest.TestCase):
                         co.assert_fresh_prompt(role, 'Review the delta.')
 
     def test_a_tool_named_path_under_the_scratch_root_is_still_caught(self):   # FIELD-33 gate
+        use_lifecycle_on(self, self.h)
         co = self.plan('# Plan\n1. Read /tmp/claude-501/codex-review/notes.md first.\n')
         for role in ('shadow', 'gate'):
             with self.assertRaisesRegex(RuntimeError, f'{role} independence check rejected history in context/plan.md: codex'):
                 co.assert_fresh_prompt(role, 'Review the delta.')
 
     def test_ledger_ids_in_the_plan_still_hold(self):   # FIELD-11
+        use_lifecycle_on(self, self.h)
         co = self.plan(GG_PLAN + '4. Keep the F008 and F009 fixes.\n')
         with self.assertRaisesRegex(RuntimeError, 'gate independence check rejected ledger ids in context/plan.md'):
             co.assert_fresh_prompt('gate', 'Review the delta.')

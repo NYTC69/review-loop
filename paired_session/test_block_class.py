@@ -4,6 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -77,6 +78,7 @@ class BlockClassTests(unittest.TestCase):
         self.assertTrue(all(row['summary'].startswith('[class: evidence-path-leak] ') for row in gate_rows))   # visible to the reviewer
 
     def test_labels_are_explicit_and_mixed_sources_share_a_class(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         rows = lambda *texts: [{'id': f'F{index}', 'summary': text} for index, text in enumerate(texts)]
         self.assertIsNone(co._structural_block_hold('reviewer', 1, rows('[class: path-leak] a', 'leak through a path')))

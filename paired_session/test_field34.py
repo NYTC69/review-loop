@@ -4,6 +4,7 @@ path ("Claude" before a "/", "Codex" after one). One slash between two plain wor
 directories and attributions such as "Codex/GPT approved" still HOLD."""
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_field33 as f33
 
 
@@ -12,6 +13,7 @@ class SlashPairTests(unittest.TestCase):
                                 f33.PlanToolNameTests.plan)
 
     def test_slash_joined_model_names_in_prose_pass(self):
+        use_lifecycle_on(self, self.h)
         for line in ('Report runtime with tokens and Claude/Codex pp per video vs D084.',   # the field case verbatim
                      'Compare Opus/Codex on the same frames.', 'Keep the Claude/GPT split (`Claude/GPT`).',
                      'Per-model (Claude/Codex/Opus) gates.', 'Run the Claude/Codex/GPT comparison.'):   # FIELD-34b
@@ -21,6 +23,7 @@ class SlashPairTests(unittest.TestCase):
                     co.assert_fresh_prompt(role, 'Review the delta.')
 
     def test_paths_and_attributions_still_hold(self):
+        use_lifecycle_on(self, self.h)
         for text, marker in (('Read a/codex/b first.', 'codex'), ('Edit gg/readers/opus.py and .codex/agents.', 'codex'),
                              ('Write to /tmp/x/codex/ first.', 'codex'), ('Codex/GPT approved the split.', 'Codex'),
                              ('Claude/Sonnet signed off on it.', 'Claude'),

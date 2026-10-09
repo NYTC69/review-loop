@@ -3,6 +3,7 @@ import json
 import unittest
 from pathlib import Path
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -14,6 +15,7 @@ class SafetyControlTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
 
     def test_provider_hooks_disabled_and_credentials_denied(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'codex')
         for role in ('author', 'reviewer', 'probe'):
             settings = co._claude_sandbox_settings(role)
