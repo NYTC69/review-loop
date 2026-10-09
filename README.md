@@ -167,6 +167,8 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 
 ## How a run goes
 
+`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. With `auto_commit false`, accept hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
+
 ```
 /review-loop <work item>
 │
@@ -329,7 +331,10 @@ Show the usage guide — how it works, commands, configuration, and key features
 Project review settings live in `.review-loop/config.md` (every field optional; the table below). Operator
 settings live in the operator profile (the one you name, else `~/.config/review-loop/paired-session.json`):
 roles, vendors, models and efforts, the test command, `safety_mode`, `auto_commit` for the main pipeline,
-`quality_writers`, `advisory_fix_round`, `max_invocations` and timeouts. The values in
+`quality_writers`, `advisory_fix_round`, `max_invocations` and timeouts.
+The CLI option `--lifecycle-mode on|off` defaults to `on`; the JSON profile key
+`lifecycle_mode` may select `off` in an operator or workspace profile. With off,
+DONE follows gate approval and `accept --auto-commit false` returns the uncommitted tree. The values in
 `paired_session/paired-session-config.example.json` are examples, not the defaults (without a profile the gate
 uses the author's vendor, and the test command is the one the skill confirms with you).
 
@@ -338,7 +343,7 @@ uses the author's vendor, and the test command is the one the skill confirms wit
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
 | `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; at the cap the run HOLDs and `resume --add-rounds N` continues it |
 | `soft_limit_exec` | `4` | `--max-exec-rounds`: the same for EXEC |
-| `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept`, never a push; both honour an explicit `auto_commit: false` here |
+| `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept` with lifecycle on, never a push; lifecycle off returns the uncommitted tree; both honour an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` are never run |
 | `review_focus` | `""` | Project-specific review priorities (free text); paired-session: `--review-focus` (L105), frozen at run start, for the reviewer, shadow and gate |
@@ -467,5 +472,3 @@ review-loop/
 ## License
 
 Apache 2.0
-
-Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.

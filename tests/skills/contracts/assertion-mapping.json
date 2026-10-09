@@ -131,7 +131,7 @@
     "paired_session_skill_lifecycle_mode_on": [
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
+        "needle": "By default, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
       },
       {
         "path": "skills/paired-session/SKILL.md",
@@ -143,7 +143,7 @@
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
+        "needle": "By default, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
@@ -392,6 +392,32 @@
       {
         "path": "review-loop-config.example.md",
         "needle": "legacy workflow was removed in v2.13.0"
+      }
+    ],
+    "lifecycle_off_supported_stop_after_gate": [
+      {
+        "path": "README.md",
+        "needle": "`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending)."
+      },
+      {
+        "path": "paired_session/README.md",
+        "needle": "`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending)."
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending)."
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending)."
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending)."
+      },
+      {
+        "path": "review-loop-config.example.md",
+        "needle": "`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending)."
       }
     ]
   }

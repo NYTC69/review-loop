@@ -555,22 +555,15 @@ OLD_STATE_REFUSAL = ('run was created by an older paired-session build; start a 
                      'review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)')
 
 
-OFF_STATE_REFUSAL = ('lifecycle-off was removed in this release; finish this saved run with the pinned '
-                     'v3.0.4 copy at ~/paired-runs/review-loop-v3.0.4; start new runs with --lifecycle-mode on')
-
-
 def refuse_user_off(args, state=None):
-    """OFF-2: one admission boundary; the undocumented exception belongs to test fixtures only."""
-    if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1':
+    """Refuse the four removed options; lifecycle off remains supported (ADR-19)."""
+    # Old fake fixtures still exercise the separately removed options; this does not select lifecycle mode.
+    if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS') == '1':
         return True
-    if (getattr(args, 'action', None) not in ('status', 'stop', 'snapshot') and
-            state is not None and state.get('config', {}).get('lifecycle_mode') == 'off'):
-        raise ValueError(OFF_STATE_REFUSAL)
     removed = []
     sources = getattr(args, 'off_profile_options', {}) or {}
     inspection = getattr(args, 'action', None) in ('status', 'stop', 'snapshot')
-    options = (('lifecycle_mode', '--lifecycle-mode off', 'use --lifecycle-mode on', 'off'),
-               ('adversarial_gate', '--adversarial-gate off', 'keep --adversarial-gate on', 'off'),
+    options = (('adversarial_gate', '--adversarial-gate off', 'keep --adversarial-gate on', 'off'),
                ('override_rejection', '--override-rejection', 'use resume --add-rounds N or note --scope-change at a HOLD', True),
                ('accept_unverified_claude_author', '--accept-unverified-claude-author', 'run permission-probe until it passes for strict runs', True),
                ('accept_probe_skip', '--accept-probe-skip', 'run permission-probe until it passes for strict runs', True))
@@ -2278,9 +2271,10 @@ class Coordinator:
         if getattr(args, 'supersedes', None):
             parent_path = Path(args.supersedes).expanduser() / 'state.json'
             if parent_path.is_file(): refuse_user_off(args, json.loads(parent_path.read_text()))
-        internal_off = refuse_user_off(args, saved_state)
+        refuse_user_off(args, saved_state)
         if getattr(args, 'lifecycle_mode', None) is None:
-            args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else ('off' if internal_off else 'on')
+            args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else (
+                'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
@@ -8787,7 +8781,7 @@ def parser() -> argparse.ArgumentParser:
     # removed in 3.0.0; ignored (hidden deprecated compatibility option, on or off).
     p.add_argument('--polish-round', choices=['on', 'off'], default='off', help=argparse.SUPPRESS)
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
-                   metavar='on', help='worktree lifecycle (on); the lifecycle is required for every new run')
+                   help='on: full worktree lifecycle (default); off: stop after gate, acceptance pending')
     p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md; empty string skips the docs entry")

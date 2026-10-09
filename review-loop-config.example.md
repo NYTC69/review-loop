@@ -44,4 +44,4 @@
 # codex_reviewer_model, codex_executor_model, commit_message_prefix, cross_vendor_review,
 # adversarial_gate_skip_paths, context_persist_threshold.
 
-# Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.
+# `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. With `auto_commit false`, accept hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.

@@ -160,7 +160,7 @@ For operator-selected programs, role/vendor settings and test commands, copy
 workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
 so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It sets
-`lifecycle_mode: on`, which is required for every new run. A workspace
+`lifecycle_mode: on`, the default full lifecycle; select `off` to stop after gate. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
 when that profile is selected, before any run state is created; `permission-probe`
@@ -184,12 +184,8 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
-Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy
-at `~/paired-runs/review-loop-v3.0.4`. This release refuses run, resume, accept, reject, note,
-abort, permission-probe, attach-verification and use as a `--supersedes` parent;
-status, stop and snapshot remain available, including with an old off profile.
-Profile-sourced off refusals name the profile file and setting.
-The paired-session skill passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
+`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. With `auto_commit false`, accept hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
+The paired-session skill defaults to `--lifecycle-mode on` (D-4); when the user or selected profile chooses off, it passes `--lifecycle-mode off` instead. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the

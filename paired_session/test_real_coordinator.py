@@ -112,7 +112,8 @@ class RealCoordinatorTests(unittest.TestCase):
         # Start the env patch before changing HOME: its stop (an addCleanup, so after tearDown)
         # restores the pre-test environment instead of re-installing this test's deleted HOME.
         self._fake_codex_env = patch.dict(os.environ, {
-            'PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF': '1',
+            'PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF': '1',   # shared Python-API test default only
+            'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': '1',
             'PATH': str(stub_bin) + os.pathsep + os.environ.get('PATH', ''),
             'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root),
             tsc.ENV: str(tsc.factor())})   # one load factor per test, shared with every coordinator it starts
