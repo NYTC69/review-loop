@@ -6,7 +6,7 @@
 
 - **CLI auto-update validation:** v2.13.5 implementation shipped; remaining: record one real efficient run surviving a CLI auto-update.
 
-- **Lifecycle-off staged removal: remaining test migration (OFF-2, owner 2026-10-09)** — Step 1 removed the user surface. Step 2 migrates the 166 class A tests to lifecycle on; step 3 migrates the 530 class C tests opportunistically when their modules change. Delete internal off mode when no test uses it. See the staged-removal ADR in DECISIONS.md.
+- ~~Lifecycle-off staged removal: remaining test migration (OFF-2, owner 2026-10-09).~~ — Closed as superseded by ADR-19 (2026-10-09 18:50 JST): off remains supported; staged deletion and remaining migration requirement cancelled. OFF-3 class-A migrations to on stay; tests may use either route.
 
 ## P2 — normal
 

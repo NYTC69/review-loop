@@ -11,6 +11,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
 
@@ -283,6 +284,7 @@ class NoteWhileAwaitingReviewerTests(unittest.TestCase):
         return co
 
     def test_an_exec_hold_waiting_for_the_reviewer_records_the_note_for_the_next_author_turn(self):
+        use_lifecycle_on(self, self.h)
         co = self.held('EXEC', 'reviewer')
         with patch.object(co, 'invoke') as invoke:
             note_id = co.note('Operator reworded the TabRoutingTests comment.', None)
@@ -319,18 +321,21 @@ class NoteWhileAwaitingReviewerTests(unittest.TestCase):
         self.assertNotIn('N001', fresh.call_args.args[1])   # never to a review role
 
     def test_a_plan_hold_waiting_for_the_reviewer_refuses_and_says_how_to_record_the_change(self):
+        use_lifecycle_on(self, self.h)
         co = self.held('PLAN', 'reviewer')
         with self.assertRaisesRegex(ValueError, r'waiting for reviewer in PLAN.*--stop-after-plan.*note --scope-change'):
             co.note('clarify', None)
         self.assertNotIn('operator_notes', co.state)
 
     def test_other_waiting_roles_refuse_and_say_how_to_record_the_change(self):
+        use_lifecycle_on(self, self.h)
         co = self.held('EXEC', 'gate')
         with self.assertRaisesRegex(ValueError, r'waiting for gate; no author turn is due.*note --scope-change'):
             co.note('clarify', None)
         self.assertNotIn('operator_notes', co.state)
 
     def test_no_author_round_left_refuses_as_before(self):
+        use_lifecycle_on(self, self.h)
         co = self.held('EXEC', 'reviewer', exec_rounds=10 ** 6)
         with self.assertRaisesRegex(ValueError, 'next author turn is unavailable'):
             co.note('clarify', None)

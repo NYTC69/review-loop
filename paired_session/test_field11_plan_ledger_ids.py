@@ -9,6 +9,7 @@ and holds early when the work item carries the history or no PLAN round is left.
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
 
@@ -43,6 +44,7 @@ class PlanLedgerIdTests(unittest.TestCase):
         return co
 
     def test_an_approved_plan_that_cites_ledger_ids_goes_back_to_the_author(self):
+        use_lifecycle_on(self, self.h)
         co = self.approve(self.coordinator(plan=PLAN_WITH_IDS))
         self.assertEqual(co.state['status'], 'ACTIVE')
         self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
@@ -54,6 +56,7 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertIn('PLAN APPROVE rejected: plan: ledger-id-shaped tokens F001, F003', co.state['approve_refusals'][-1]['reason'])
 
     def test_after_the_restatement_a_clean_plan_moves_to_exec(self):
+        use_lifecycle_on(self, self.h)
         co = self.approve(self.coordinator(plan=PLAN_WITH_IDS))
         (co.context / 'plan.md').write_text(PLAN_CLEAN)                 # the author's restated plan
         co.state.update(plan_rounds=2, next='reviewer')
@@ -61,6 +64,7 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertEqual((co.state['status'], co.state['phase'], co.state['next']), ('ACTIVE', 'EXEC', 'author'))
 
     def test_review_history_wording_is_caught_too(self):
+        use_lifecycle_on(self, self.h)
         co = self.approve(self.coordinator(plan=PLAN_WITH_NARRATIVE))
         self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
         self.assertIn("review-history wording 'previous review'", co.state['delivered_review'])
@@ -76,6 +80,7 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertNotIn('round_limit_hold', co.state)          # the second failure HOLDs, not as a round-limit HOLD: test_field11b_plan_rewrite
 
     def test_a_work_item_with_ledger_ids_holds_at_plan_because_the_author_cannot_fix_it(self):
+        use_lifecycle_on(self, self.h)
         co = self.coordinator()
         (co.context / 'workitem.md').write_text('Fix the crash reported as F123.\n')
         self.approve(co)
@@ -85,11 +90,13 @@ class PlanLedgerIdTests(unittest.TestCase):
 
 
     def test_a_verdict_word_in_the_plan_is_caught_as_the_gate_would(self):
+        use_lifecycle_on(self, self.h)
         co = self.approve(self.coordinator(plan='# Plan\n## Addressing REVISE notes\n1. Validate input.\n'))
         self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
         self.assertIn("review-history wording 'REVISE'", co.state['delivered_review'])
 
     def test_the_progress_log_does_not_call_it_an_rf5_conversion(self):
+        use_lifecycle_on(self, self.h)
         co = self.coordinator(plan=PLAN_WITH_IDS)
         with patch.object(co, 'progress') as progress:
             self.approve(co)
@@ -98,10 +105,12 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertFalse(verdicts[-1]['rf5_converted'])
 
     def test_a_clean_plan_still_moves_to_exec(self):
+        use_lifecycle_on(self, self.h)
         co = self.approve(self.coordinator())
         self.assertEqual((co.state['phase'], co.state['next']), ('EXEC', 'author'))
 
     def test_the_gate_still_refuses_a_plan_that_cites_ledger_ids(self):
+        use_lifecycle_on(self, self.h)
         co = self.approve(self.coordinator())
         (co.context / 'plan.md').write_text(PLAN_WITH_IDS)
         with self.assertRaisesRegex(RuntimeError, 'gate independence check rejected ledger ids in context/plan.md'):

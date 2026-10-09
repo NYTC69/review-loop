@@ -6,6 +6,7 @@ import io
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -19,11 +20,13 @@ class TimeoutCapTests(unittest.TestCase):
         self.addCleanup(self.h.tearDown)
 
     def test_the_default_is_unchanged(self):
+        use_lifecycle_on(self, self.h)
         self.assertEqual(rc.parser().parse_args(['run', '--workspace', 'w', '--workitem', 'i', '--run-dir', 'r']).timeout, 2700)
         self.assertEqual(rc.DEFAULT_TIMEOUT_SECONDS, 2700)
         self.assertEqual(self.h.coordinator().state['config']['timeout'], 2700)
 
     def test_the_cap_is_accepted_and_a_value_outside_the_range_is_refused_before_state(self):
+        use_lifecycle_on(self, self.h)
         self.assertEqual(rc.MAX_TIMEOUT_SECONDS, 86400)
         self.h.run_dir = self.h.root / 'at-cap'
         self.assertEqual(self.h.coordinator('--timeout', '86400').state['config']['timeout'], 86400)

@@ -6,6 +6,7 @@ every other source, and the last EXEC round, still HOLD."""
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_field23_repo_text_scan as f23
 
 rc = f23.rc
@@ -23,6 +24,7 @@ class AuthorDeltaHistoryTests(unittest.TestCase):
         self.t = f23.RepoTextScanTests('test_history_in_a_new_file_holds')
         self.t.setUp()
         self.addCleanup(self.t.doCleanups)
+        use_lifecycle_on(self, self.t.h)
         self.co = self.t.coordinator()
         self.co.state['exec_rounds'] = 1
         self.co.save()

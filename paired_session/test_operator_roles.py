@@ -16,6 +16,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 
 from paired_session import claude_author_probe as cap
 from paired_session import timeout_scale as tsc
@@ -66,6 +67,7 @@ class CodexContractTests(unittest.TestCase):
         return json.loads((self.h.run_dir / 'state.json').read_text()).get('codex_cli_override')
 
     def test_verified_version_passes(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         self.assertEqual(co.codex_contract_verified(), (True, ''))
         args = co._codex_sandbox_profile_args()
@@ -73,6 +75,7 @@ class CodexContractTests(unittest.TestCase):
         self.assertEqual(args[4:], ['--config', 'permissions.paired_session_author.network.enabled=false'])
 
     def test_synthetic_profile_arguments_unchanged_for_verified_version(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         tmp = json.dumps(str(co.author_temp_dir.resolve()))
         expected = ('permissions.paired_session_author.filesystem={":root"="read", ":tmpdir"="write", '
@@ -95,6 +98,7 @@ class CodexContractTests(unittest.TestCase):
         self.assertIn('unverified codex sandbox contract', refused.stdout)
 
     def test_unverified_version_with_matching_probe_pass_is_accepted(self):
+        use_lifecycle_on(self, self.h)
         for status in ('PASS', 'PASS_RESIDUAL_RISK'):
             with self.subTest(status=status), patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
                 co = self.co()
@@ -105,6 +109,7 @@ class CodexContractTests(unittest.TestCase):
             self.assertFalse(co.codex_contract_verified()[0])
 
     def test_probe_pass_from_a_different_version_is_refused(self):
+        use_lifecycle_on(self, self.h)
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
             co = self.co()
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': OTHER}):
@@ -113,6 +118,7 @@ class CodexContractTests(unittest.TestCase):
             self.assertFalse(co.codex_contract_verified()[0])
 
     def test_a_probe_file_that_probe_passed_rejects_never_satisfies_the_contract(self):
+        use_lifecycle_on(self, self.h)
         path = self.h.run_dir / 'permission-probe.json'
         with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
             co = self.co()
@@ -314,6 +320,7 @@ class RoleModelTests(unittest.TestCase):
         return args
 
     def test_bug_report_config_passes_the_model_layer(self):
+        use_lifecycle_on(self, self.h)
         args = self.resolved(*BUG_REPORT_FLAGS)
         rc.validate_role_models(args)
         self.assertEqual((args.author_model, args.reviewer_model, args.gate_model, args.gate_vendor),
@@ -408,6 +415,7 @@ class RoleModelTests(unittest.TestCase):
         self.assertTrue(all(t['vendor'] == 'codex' and t['model'] == 'gpt-6.1-sol' for t in gates))
 
     def test_a_restore_keeps_the_saved_roles_and_refuses_a_switch(self):
+        use_lifecycle_on(self, self.h)
         saved_flags = ['--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol',
                        '--reviewer-model', 'claude-sonnet-5-5']
         self.h.coordinator(*saved_flags)
@@ -487,6 +495,7 @@ class RoleModelTests(unittest.TestCase):
         return path
 
     def test_the_allowlist_is_saved_and_enforced_after_every_restore(self):
+        use_lifecycle_on(self, self.h)
         path = self.allowlist_run(None, '--gate-vendor', 'claude')   # explicit: the gate_model swap below needs a claude gate
         self.assertEqual(self.state()['config']['allowed_models'], self.ALLOWED)
         for action in ('accept', 'reject', 'note', 'resume', 'run'):
@@ -510,6 +519,7 @@ class RoleModelTests(unittest.TestCase):
         self.assertEqual(self.restored('--config', str(path)).allowed_models, self.ALLOWED)   # same one is fine
 
     def test_a_saved_run_without_allowed_models_means_no_allowlist(self):
+        use_lifecycle_on(self, self.h)
         self.h.coordinator()
         state = self.state()
         state['config'].pop('allowed_models')
@@ -518,6 +528,7 @@ class RoleModelTests(unittest.TestCase):
         self.assertIsNone(self.restored().allowed_models)
 
     def test_the_scope_change_successor_inherits_the_allowlist(self):
+        use_lifecycle_on(self, self.h)
         self.allowlist_run()
         self.assertIn('Start:', self.main('note', '--scope-change', '--text', 'narrow it').stdout)
         config = json.loads((self.h.run_dir / 'evidence' / 'successor-config.json').read_text())
@@ -536,6 +547,7 @@ class RoleModelTests(unittest.TestCase):
         self.assertEqual(self.state_at(target)['config']['allowed_models'], self.ALLOWED)
 
     def test_a_plain_resume_of_a_non_default_model_run_works(self):
+        use_lifecycle_on(self, self.h)
         self.h.coordinator('--gate-model', 'gpt-6.1-sol', '--reviewer-model', 'claude-sonnet-5-5')
         for action in ('resume', 'run'):
             a = self.restored(action=action)
@@ -633,6 +645,7 @@ class RoleModelTests(unittest.TestCase):
         self.assertTrue(gates and all(t['vendor'] == 'codex' and t['model'] == 'gpt-6.1-sol' for t in gates))
 
     def test_a_gate_model_of_the_other_vendor_is_refused_before_state_unless_the_vendor_is_explicit(self):   # G-b M4
+        use_lifecycle_on(self, self.h)
         bob = ['--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-model', 'gpt-6.1-sol']
         message = ("REFUSED: gate_model gpt-6.1-sol belongs to codex, but the gate now defaults to the author's vendor claude; "
                    "pass --gate-vendor codex to keep it")
@@ -716,6 +729,7 @@ class ClaudeAuthorTests(unittest.TestCase):
         return str(Path(path).parent) == base
 
     def test_author_argv_is_path_scoped_and_denies_everything_outside_the_workspace(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         argv = self.author_argv(co)
         allowed = argv[argv.index('--allowedTools') + 1].split(',')
@@ -740,6 +754,7 @@ class ClaudeAuthorTests(unittest.TestCase):
         self.assertEqual(len(json.loads(reviewer[reviewer.index('--settings') + 1])['permissions']['deny']), 1)
 
     def test_no_deny_rule_matches_a_path_inside_the_workspace(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         ws = co.workspace.resolve()
         argv = self.author_argv(co)
@@ -760,6 +775,7 @@ class ClaudeAuthorTests(unittest.TestCase):
 
 
     def test_the_edit_rules_refuse_a_workspace_in_a_denied_root_or_the_filesystem_root(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         for bad in (Path('/'), co.context / 'ws', co.run_dir / 'ws', Path.home() / '.aws',
                     Path.home() / '.codex' / 'p'):
@@ -772,6 +788,7 @@ class ClaudeAuthorTests(unittest.TestCase):
                 co.author_flags()
 
     def test_every_allow_rule_is_joined_into_the_author_allowed_tools(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         deny = co._claude_author_edit_rules()[1]
         with patch.object(co, '_claude_author_edit_rules', return_value=(['Edit(//a/**)', 'Edit(//b/**)'], deny)):
@@ -792,6 +809,7 @@ class ClaudeAuthorTests(unittest.TestCase):
         self.assertNotIn(co.workspace.resolve().as_posix().lstrip('/'), ' '.join(self.author_deny(argv)))
 
     def test_author_flags_record_the_exact_rules_and_the_digest_binds_them(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         flags = co.author_flags()
         allow, deny = co._claude_author_edit_rules()
@@ -807,6 +825,7 @@ class ClaudeAuthorTests(unittest.TestCase):
 
 
     def test_a_claude_author_probe_pass_is_the_other_way_forward(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         self.assertFalse(co.claude_author_verified()[0])
         probe = co.run_dir / 'permission-probe.json'
@@ -1199,6 +1218,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(rc.directory_digest(co.context), context_before)
 
     def test_the_codex_author_probe_is_unchanged(self):
+        use_lifecycle_on(self, self.h)
         source = inspect.getsource(rc.Coordinator._author_permission_probe)
         dispatch = "        if self.args.author_vendor == 'claude':\n            return self._claude_author_probe()\n"
         self.assertIn(dispatch, source)
@@ -1283,6 +1303,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertTrue(co.context.is_relative_to(co.run_dir))
 
     def test_the_author_bash_sandbox_does_not_list_the_cache_root(self):                            # P0-4b H0: the Edit deny rule guards it; the Bash sandbox is cwd-bound
+        use_lifecycle_on(self, self.h)
         co = self.co()
         for role in ('author', 'probe'):
             fs = co._claude_sandbox_settings(role)['sandbox']['filesystem']
@@ -1383,6 +1404,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertFalse(co.probe_passed()[0])
 
     def test_permission_probe_records_the_report_hash_and_turn_in_state(self):                       # P0-3c F6
+        use_lifecycle_on(self, self.h)
         co = self.co()
         canned = {'answer': {}, 'snapshot': rc.git_snapshot(co.workspace)[0]}
         with patch.object(co, 'invoke', return_value=canned), patch.object(co, 'render'), \
@@ -1868,6 +1890,7 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertEqual(self.state()['config']['gate_vendor_source'], 'default')
 
     def test_the_gate_probe_is_its_own_role_with_its_own_os_only_path(self):                          # G-a K2
+        use_lifecycle_on(self, self.h)
         co = self.co('--reviewer-vendor', 'codex', '--gate-vendor', 'claude')
         self.assertEqual(co._role_vendor('gate-probe'), 'claude')
         self.assertEqual(co._model_effort('gate-probe'), (co.args.gate_model, co.args.gate_effort))
@@ -1949,6 +1972,7 @@ class ProbeSkipTests(unittest.TestCase):
 
 
     def test_a_workspace_overlapping_the_cache_root_disables_the_cache(self):                  # P0-4 R1 MD2
+        use_lifecycle_on(self, self.h)
         co = self.co()
         self.assertIsNotNone(co._probe_cache_key())
         for workspace in (self.cache, self.cache.parent, self.cache / 'ws', self.h.test_home / '.cache'):
@@ -1959,6 +1983,7 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertFalse(self.cache.exists())
 
     def test_an_overlapping_workspace_puts_the_cache_root_in_the_author_bash_denywrite(self):        # P0-4b R1 MD-1
+        use_lifecycle_on(self, self.h)
         co = self.co()
         deny = lambda: co._claude_sandbox_settings('author')['sandbox']['filesystem']['denyWrite']
         self.assertNotIn(str(self.cache), deny())
@@ -2200,6 +2225,7 @@ class ProbeSkipTests(unittest.TestCase):
                 for old in self.entries(): old.unlink()
 
     def test_a_claude_version_is_part_of_the_key_only_when_a_role_is_claude(self):
+        use_lifecycle_on(self, self.h)
         co = self.co()
         self.assertEqual(co._probe_cache_key()[1]['claude_versions'], ['claude 1.0'])
         with patch.object(co.args, 'reviewer_vendor', 'codex'), patch.object(co.args, 'gate_vendor', 'codex'):
@@ -2291,6 +2317,7 @@ class ProbeSkipTests(unittest.TestCase):
     # ---- V4: no role can write the cache ---------------------------------------------------------------------
 
     def test_the_claude_author_argv_denies_the_cache_root_for_edit_and_bash(self):
+        use_lifecycle_on(self, self.h)
         co = self.co(*BUG_REPORT_FLAGS)
         schema = self.h.root / 'schema.json'
         rc.atomic_json(schema, rc.review_schema())

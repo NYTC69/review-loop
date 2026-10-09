@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
 from paired_session import timeout_scale as tsc
@@ -144,6 +145,7 @@ class ScratchProbeTests(unittest.TestCase):
                 self.assertFalse(list(self.h.run_dir.glob('paired-session-link-source-*')))
 
     def test_the_new_profile_changes_the_codex_read_only_flags_digest_only(self):
+        use_lifecycle_on(self, self.h)
         co = self.co(*CODEX_ROLES)
         codex_digest, codex_gate = co.reviewer_flags_digest(), co.gate_flags_digest()
         with patch.object(rc, 'codex_readonly_profile_args', return_value=['-c', 'sandbox_mode="read-only"']):
@@ -167,6 +169,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         self.assertEqual(((target / 'keep' / 'child.txt').read_text(), stat.S_IMODE(target.stat().st_mode)), ('keep\n', 0o755))
 
     def test_a_symlinked_or_loose_role_tmp_is_refused_and_nothing_outside_is_touched(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
         target = self.outside()
         (co.run_dir / 'role-tmp').symlink_to(target)
@@ -183,6 +186,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
             co._scratch_root('reviewer')
 
     def test_a_symlinked_scratch_is_refused_and_a_link_inside_a_scratch_is_removed_as_a_link(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
         target = self.outside()
         os.mkdir(co.run_dir / 'role-tmp', 0o700)
@@ -211,6 +215,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         self.assertEqual(stat.S_IMODE((target / 'keep').stat().st_mode), 0o755)
 
     def test_a_missing_role_tmp_needs_no_cleanup_and_a_chmod_of_the_scratch_root_fails_the_turn(self):   # R1 LOW-1, LOW-2
+        use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
         co._drop_scratch(co.run_dir / 'role-tmp' / '001-reviewer')                            # nothing to remove, no error
         scratch = co._scratch_root('reviewer')
@@ -295,6 +300,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
                 co._drop_scratch(fresh)
 
     def test_the_ctime_exemption_is_exactly_state_json_and_progress_jsonl(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
         for name in ('state.json', 'progress.jsonl', 'state.json.backup', 'progress.jsonl.1'):
             (co.run_dir / name).write_text('x')

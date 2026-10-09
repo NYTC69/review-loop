@@ -8,6 +8,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -136,6 +137,7 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn('label', self.rows()[-1])
 
     def test_an_rf5_conversion_is_named_in_the_verdict_event(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.record_review_verdict(1, 'EXEC', 'APPROVE', 'REVISE', rf5=True)
         row = self.rows()[-1]

@@ -5,6 +5,7 @@ import json
 import unittest
 from unittest import mock
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import review_report
 from paired_session import test_worktree_lifecycle as twl
 
@@ -125,6 +126,7 @@ class AddRoundsTests(unittest.TestCase):
         self.assertEqual(len(self.state()['round_extensions']), 1)
 
     def test_a_gate_hold_goes_to_the_author_and_a_write_hold_keeps_its_review(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--max-exec-rounds', '1')
         [row] = co.record_findings('adversarial-gate', 'EXEC', 7, [{'severity': 'high', 'file': 'sum_ints.py', 'body': 'b',
                                                                     'summary': 'gate blocker', 'failure_scenario': 'x'}])
@@ -140,6 +142,7 @@ class AddRoundsTests(unittest.TestCase):
         self.assertEqual(co.exec_round_limit(), 5)   # 1 + 2 + 2
 
     def test_the_limits_count_an_extension_once_next_to_the_writer_replay(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--max-exec-rounds', '1', '--max-plan-rounds', '2')
         co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2}, {'phase': 'PLAN', 'n': 3}]
         self.assertEqual((co.exec_round_limit(), co.plan_round_limit()), (3, 5))

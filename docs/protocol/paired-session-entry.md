@@ -252,13 +252,15 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 
 ## Safety mode and the first commands
 
-For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to
+By default, pass `--lifecycle-mode on` to `run` and, in strict mode, to
 `permission-probe`, identically; the CLI value overrides any profile value. Never pass
 `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative.
+When the user selects the stop-after-gate route, replace `on` with `off` in both
+commands; honor an operator/workspace profile selecting off instead of overriding it.
 The removed `--adversarial-gate off`, `--override-rejection`,
 `--accept-unverified-claude-author` and `--accept-probe-skip` options are refused.
 Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, and permission-probe for strict runs.
-Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.
+`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. With `auto_commit false`, accept hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 `--strict` comes only from the user or the operator profile (`safety_mode`),
 and goes to `permission-probe` and `run` alike:
 both modes keep every sandbox; the default `efficient` mode does not require
@@ -291,20 +293,18 @@ Once `RUN_DIR/state.json` exists (strict: after the probe, before `run`), read
 its frozen `config` and print one start line from it: author, reviewer and gate
 vendor and model; plan and exec rounds, invocations and timeout; docs file and
 skip-quality-polish; and which values came from `.review-loop/config.md`. In
-strict mode, if `config.lifecycle_mode` is not `on`, run `abort` with the run's
+strict mode, if `config.lifecycle_mode` differs from the selected mode (`on` by default,
+`off` for the stop-after-gate route), run `abort` with the run's
 saved options and report a plugin version mismatch instead of starting the run.
-A saved off run is handled, including abort, with the pinned v3.0.4 copy at
-`~/paired-runs/review-loop-v3.0.4`; this release cannot abort it.
 
 While the run is active, do not call plain `status`: it needs the run lease
 and, while the run holds it, prints
 `HOLD: another coordinator currently owns this run` although the run is not on
 HOLD. Read `RUN_DIR/state.json` directly or use `status --brief`. As a
-backstop, if the running state shows `config.lifecycle_mode` other than `on`,
+backstop, if the running state shows `config.lifecycle_mode` different from the selected mode,
 stop the running coordinator command (host skill), wait until the child in
 `state.active` has exited, run `abort` with the run's saved options, and report
-a plugin version mismatch. For a saved off run, run that abort with the pinned
-v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.
+a plugin version mismatch.
 
 ## Existing runs and HOLD
 
@@ -312,8 +312,8 @@ Later commands on an existing run (`resume`, `permission-probe
 --retry-uncertain`, `abort`, `reject`, `accept`, `note`,
 `attach-verification`) pass the saved `state.json` `config.lifecycle_mode`
 value and the run's original workspace, work item, run directory, profile and
-options, never the current default. If the saved mode is off, use the pinned v3.0.4 copy;
-this release refuses continuation. Report DONE/HOLD and the run directory. On
+options, never the current default. Saved off runs use this release normally.
+Report DONE/HOLD and the run directory. On
 HOLD, inspect its state, findings, and receipts before resuming. If `uncertain_active` is
 present, do not rerun the probe or resume automatically: check its pid and
 receipts; if the child is still alive, wait for it to stop. If its phase is
@@ -353,7 +353,7 @@ option `--polish-round on|off` remains an accepted deprecated no-op (removed in 
 the stage receipts, open findings, operator verification records still valid
 for the tree, and whether the run's frozen `config.auto_commit` (the operator
 profile, the CLI or the review-only default) will make one local commit on
-acceptance; offer `accept` or `reject`. Never accept or reject
+acceptance with lifecycle on. Off acceptance returns the uncommitted tree; offer `accept` or `reject`. Never accept or reject
 under handsfree, and never on your own judgment:
 - Accept only after the user explicitly accepts in this conversation. Run
   `accept --intent-only` with the user's reason as `--reason TEXT` (or no

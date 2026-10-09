@@ -9,6 +9,7 @@ import types
 import unittest
 import unittest.mock
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import author_write_guard as guard
 from paired_session import candidate_tree as tree
 from paired_session import test_real_coordinator as trc
@@ -174,6 +175,7 @@ class FilterDriverTests(Fixture):
         self.assertFalse(marker.exists())
 
     def test_a_global_config_include_pointing_into_the_workspace_is_covered_by_the_control_digest(self):
+        use_lifecycle_on(self, self.h)
         ws = self.h.workspace
         (ws / 'git-settings').write_text('')
         config = self.h.root / 'global-gitconfig'
@@ -264,6 +266,7 @@ class GitControlFileDetectionTests(Fixture):
         self.assertFalse(marker.exists())
 
     def test_hooks_and_info_attributes_are_covered_and_an_unchanged_turn_does_not_hold(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--codex-bin', str(self.wrapper(None)))
         dirs, before = tree_state = rc.git_control_state(self.h.workspace)
         self.assertEqual(len(dirs), 1)
@@ -414,6 +417,7 @@ class WorkspaceProfileBeforeStateTests(Fixture):
         return types.SimpleNamespace(returncode=code, stdout=out.getvalue())
 
     def test_a_workspace_profile_is_refused_before_state_exists_and_never_reaches_resume(self):
+        use_lifecycle_on(self, self.h)
         baseline = rc.resolve_role_model_defaults(self.args())
         picks = (('reviewer_model', 'gpt-6-astra'), ('gate_vendor', 'claude' if baseline.gate_vendor == 'codex' else 'codex'))
         self.assertNotEqual([getattr(baseline, k) for k, _ in picks], [v for _, v in picks])

@@ -7,6 +7,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_operator_roles as tor
 
@@ -39,6 +40,7 @@ class NegativeEvidenceTests(unittest.TestCase):
         self.assertNotIn('probe_skip_override', self.t.state())
 
     def test_a_real_flags_change_still_makes_the_report_stale(self):
+        use_lifecycle_on(self, self.t.h)
         co = self.t.co()
         self.bound_report(co)
         co.args.reviewer_effort = 'high'
@@ -47,6 +49,7 @@ class NegativeEvidenceTests(unittest.TestCase):
         self.assertIsNone(co._probe_env_names)
 
     def test_a_pass_is_never_negative_evidence(self):
+        use_lifecycle_on(self, self.t.h)
         co = self.t.co()
         self.bound_report(co, 'PASS')
         with patch.dict(os.environ, NEW):

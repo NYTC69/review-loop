@@ -825,6 +825,11 @@
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
       "needle": "`auto_commit` applies to a review-only run only (whatever entry started\nit): `auto_commit: false` becomes `--auto-commit false`"
+    },
+    {
+      "id": "lifecycle_off_supported_stop_after_gate",
+      "kind": "consistent_with",
+      "mapping_id": "lifecycle_off_supported_stop_after_gate"
     }
   ]
 }

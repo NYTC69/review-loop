@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import candidate_tree as ct
 from paired_session import timeout_scale as tsc
 from paired_session.docs_policy import validate_candidate_docs_change
@@ -111,7 +112,8 @@ class RealCoordinatorTests(unittest.TestCase):
         # Start the env patch before changing HOME: its stop (an addCleanup, so after tearDown)
         # restores the pre-test environment instead of re-installing this test's deleted HOME.
         self._fake_codex_env = patch.dict(os.environ, {
-            'PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF': '1',
+            'PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF': '1',   # shared Python-API test default only
+            'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': '1',
             'PATH': str(stub_bin) + os.pathsep + os.environ.get('PATH', ''),
             'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root),
             tsc.ENV: str(tsc.factor())})   # one load factor per test, shared with every coordinator it starts
@@ -547,6 +549,7 @@ class RealCoordinatorTests(unittest.TestCase):
             self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
 
     def test_codex_capability_config_fails_probe_and_prevents_dispatch(self):
+        use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         for key, value in (('mcp_servers', '{}'), ('notify', '"hook"')):
             with self.subTest(key=key):
@@ -561,6 +564,7 @@ class RealCoordinatorTests(unittest.TestCase):
                 self.assertEqual(co.state['sequence'], 0)
 
     def test_clean_codex_capability_config_allows_probe(self):
+        use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         config.write_text('model = "gpt-6-luna"\n')
         co = self.coordinator('--author-vendor', 'codex')
@@ -568,6 +572,7 @@ class RealCoordinatorTests(unittest.TestCase):
 
     def test_plugin_bundle_blocks_codex_probe_and_dispatch(self):
         # rel210-fixCG: pins "without the launch flag a live bundle blocks probe and dispatch"; the default flag (bundles inert, recorded) is covered in test_cg_fixes.py: test_the_launch_flag_makes_cached_bundles_inert_and_they_stay_recorded, test_every_codex_role_argv_carries_the_launch_flag_so_the_guard_treats_bundles_as_inert
+        use_lifecycle_on(self, self)
         with patch.object(rc, 'CODEX_PLUGINS_OFF', ()):
             plugin = self.test_home / '.codex/plugins/cache/local/probe/1.0'
             plugin.mkdir(parents=True)
@@ -662,6 +667,7 @@ class RealCoordinatorTests(unittest.TestCase):
                       (self.run_dir / 'review-comparison.md').read_text())
 
     def test_author_policy_digest_ignores_only_known_trust_entries(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         config = self.test_home / '.codex/config.toml'
         original = config.read_text()
@@ -786,6 +792,7 @@ class RealCoordinatorTests(unittest.TestCase):
                       json.dumps(report['failure_reasons']))
 
     def test_fresh_permission_probe_rebinds_changed_operator_binary(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         before, issue = co._program_state()
         self.assertIsNone(issue)
@@ -838,6 +845,7 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertIn('ACCEPTED', accepted.stdout)
 
     def test_program_issue_never_executes_version_or_synthetic_control(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         programs, issue = co._program_state()
         self.assertIsNone(issue)
@@ -875,6 +883,7 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertFalse((self.root / 'target').exists())
 
     def test_synthetic_profile_rejects_extra_writable_root_and_credentials(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'codex')
         co.author_temp_dir.mkdir(parents=True, exist_ok=True)
         (self.test_home / '.codex' / 'auth.json').write_text('{"private":"do not copy"}')
@@ -1229,6 +1238,7 @@ sys.exit(result.returncode)
         self.assertEqual(state['invocations_used'], 1)
 
     def test_exec_turn_timeout_default_tracks_general_timeout_with_cap(self):
+        use_lifecycle_on(self, self)
         for index, (general, expected) in enumerate(((31, 7200), (9000, 9000), (20000, 14400))):
             with self.subTest(general=general):
                 self.run_dir = self.root / f'exec-default-{index}'
@@ -1238,6 +1248,7 @@ sys.exit(result.returncode)
                 self.assertEqual(co.state['config']['exec_turn_timeout'], expected)
 
     def test_exec_turn_timeout_defaults_to_7200_without_changing_general_timeout(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--timeout', '31')
         self.assertEqual(co.args.timeout, 31)
         self.assertEqual(co.args.exec_turn_timeout, rc.DEFAULT_EXEC_TURN_TIMEOUT_SECONDS)
@@ -1272,6 +1283,7 @@ sys.exit(result.returncode)
         self.assertEqual(json.loads(receipt_path.read_text())['timeout_seconds'], 7200)
 
     def test_exec_timeout_above_cap_is_rejected(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--exec-turn-timeout', str(rc.MAX_EXEC_TURN_TIMEOUT_SECONDS + 1)])
@@ -1279,6 +1291,7 @@ sys.exit(result.returncode)
             rc.Coordinator(args)
 
     def test_resume_exec_timeout_above_cap_is_rejected(self):
+        use_lifecycle_on(self, self)
         self.coordinator()
         args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
@@ -1287,6 +1300,7 @@ sys.exit(result.returncode)
             rc.Coordinator(args)
 
     def test_exec_timeout_resume_rejects_lower_and_preserves_saved_value(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--exec-turn-timeout', '9000')
         base = ['resume', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
                 '--run-dir', str(self.run_dir), '--timeout', '2700', '--skip-probe',
@@ -1346,6 +1360,7 @@ sys.exit(result.returncode)
         self.assertEqual(json.loads(config.read_text())['exec_turn_timeout'], 12000)
 
     def test_project_exec_default_does_not_raise_saved_timeout(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         config_dir = self.workspace / '.review-loop'
         config_dir.mkdir(exist_ok=True)
@@ -1357,6 +1372,7 @@ sys.exit(result.returncode)
         self.assertEqual(resumed.args.exec_turn_timeout, 7200)
 
     def test_exec_turn_timeout_rejects_zero_and_negative_values(self):
+        use_lifecycle_on(self, self)
         for value in ('0', '-1'):
             with self.subTest(value=value):
                 args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -1994,6 +2010,7 @@ sys.exit(result.returncode)
             drive.assert_called_once_with()
 
     def test_successor_probe_binds_parent_base_task_and_single_child(self):
+        use_lifecycle_on(self, self)
         old_dir = self.root / 'superseded-run'
         self.run_dir = old_dir
         parent = self.coordinator()
@@ -2036,6 +2053,7 @@ sys.exit(result.returncode)
             self.coordinator('--supersedes', str(old_dir))
 
     def test_scope_change_method_aborts_and_preserves_successor_spec(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.args.action = 'note'
         co.args.scope_change = True
@@ -2062,6 +2080,7 @@ sys.exit(result.returncode)
         self.assertIn('Superseded run', (co.run_dir / 'scope-change-report.md').read_text())
 
     def test_item_uuid_and_blockers_survive_scope_change_without_fresh_role_leak(self):
+        use_lifecycle_on(self, self)
         parent = self.coordinator()
         item_uuid = parent.state['item_uuid']
         parent.state['finding_ledger'] = [
@@ -2096,6 +2115,7 @@ sys.exit(result.returncode)
             self.coordinator('--supersedes', str(parent.run_dir))
 
     def test_legacy_successor_without_item_fields_is_marked_unverified(self):
+        use_lifecycle_on(self, self)
         self.run_dir = self.root / 'legacy-parent'
         parent = self.coordinator(); parent.args.action = 'note'; parent.args.scope_change = True
         parent.scope_change('New scope.', None)
@@ -2112,6 +2132,7 @@ sys.exit(result.returncode)
         self.assertFalse(child.state['item_blockers_complete'])
 
     def test_hold_note_storage_replaces_pending_and_refuses_other_roles(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.hold('operator pause')
         with patch.object(co, 'invoke') as invoke:
@@ -2587,6 +2608,7 @@ sys.exit(result.returncode)
                 self.assertEqual(len(again['abandoned_turn_usage']), 1)
 
     def test_archived_uncertain_turn_retains_stream_usage(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         co.archive_abandoned_turn({'sequence': 8, 'role': 'author', 'phase': 'EXEC',
             'invocation_budget_counted': True,
@@ -2601,6 +2623,7 @@ sys.exit(result.returncode)
         self.assertIn('| 8 | author | EXEC | 1 | 30 | 5 | 8 |', (self.run_dir / 'usage.md').read_text())
 
     def test_concurrent_state_saves_are_serialized(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         original_write = rc.atomic_json
         barrier = threading.Barrier(3)
@@ -2936,6 +2959,7 @@ sys.exit(result.returncode)
         self.assertEqual(retry_after['reset_hint'], 'Retry-After: 32')
 
     def test_codex_readonly_roles_do_not_inherit_execpolicy_bypass_grants(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--gate-model', 'gpt-6-luna'])   # explicit: default moved by owner decision 2026-09-30
@@ -3186,6 +3210,7 @@ sys.exit(result.returncode)
         self.assertNotEqual(digest, rc.Coordinator(args_without).reviewer_flags_digest())
 
     def test_fresh_roles_have_no_ledger_channel_and_leaks_are_rejected_before_launch(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -3208,6 +3233,7 @@ sys.exit(result.returncode)
         self.assertEqual(co.state['sequence'], sequence)
 
     def test_plan_prompts_omit_exec_instructions(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -3257,6 +3283,7 @@ sys.exit(result.returncode)
         self.assertEqual(args.max_invocations, 17)
 
     def test_role_model_defaults_follow_vendor_pinned_adr(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         rc.Coordinator(args)
@@ -3871,6 +3898,7 @@ sys.exit(result.returncode)
         self.assertEqual(Path(args.run_dir), workspace / '.compass' / 'run')
 
     def test_bundled_gate_prompt_config_is_stable_across_plugin_cache_roots(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         old_default = self.root / 'cache' / '2.8.7' / 'scripts' / 'gate.txt'
@@ -3933,6 +3961,7 @@ sys.exit(result.returncode)
         self.assertIn('[out-of-phase]', plan_round)
 
     def test_codex_plan_receives_full_inputs_without_requiring_shell_reads(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--gate-model', 'gpt-6-luna'])   # explicit: default moved by owner decision 2026-09-30
@@ -4028,6 +4057,7 @@ sys.exit(result.returncode)
         self.assertIn('verified_claims protocol error after one retry', state['hold_reason'])
 
     def test_fresh_roles_reject_ledger_ids_in_referenced_plan_before_launch(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -4041,6 +4071,7 @@ sys.exit(result.returncode)
         self.assertIn('current plan only', co._author_prompt())
 
     def test_fresh_roles_scan_all_context_and_history_before_process_launch(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -4125,6 +4156,7 @@ sys.exit(result.returncode)
                 co.assert_fresh_prompt('shadow', 'Clean prompt')
 
     def test_fresh_scan_does_not_mask_vendor_text_glued_to_known_path_tail(self):
+        use_lifecycle_on(self, self)
         run_dir = self.root / 'run-C'
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(run_dir)])
@@ -4351,6 +4383,7 @@ sys.exit(result.returncode)
                     self.assertTrue(low['advisory'])
 
     def test_workitem_reviewer_commands_merge_into_roles_and_probe_digest(self):
+        use_lifecycle_on(self, self)
         self.workitem.write_text('# Toy\n```reviewer-commands\nnode verify-real-data.mjs\npython3 audit.py\n```\n')
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
@@ -4893,6 +4926,7 @@ sys.exit(result.returncode)
                                 for reason in report['failure_reasons']))
 
     def test_claude_probe_runtime_error_records_escape_before_cleanup(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
         created = []
 
@@ -4921,6 +4955,7 @@ sys.exit(result.returncode)
         self.assertTrue(all(not path.exists() for path in created))
 
     def test_claude_probe_reports_a_target_that_cleanup_could_not_remove(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
         created = []
 
@@ -4992,6 +5027,7 @@ sys.exit(result.returncode)
                 self.assertFalse(report['outcomes'][failed_outcome])
 
     def test_fresh_shadow_critical_is_ledgered_and_delivered_even_if_reviewer_approves(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'shadow-critical-run'),
             '--shadow', 'on', '--author-vendor', 'codex', '--reviewer-vendor', 'claude'])
@@ -5532,6 +5568,7 @@ sys.exit(result.returncode)
         self.assertIn('operator/manual resolution', co.state['hold_reason'])
 
     def test_permission_probe_preserves_active_receipt_instead_of_overwriting_it(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -5545,6 +5582,7 @@ sys.exit(result.returncode)
         self.assertIsNone(co.state['active'])
 
     def test_stopped_permission_probe_requires_explicit_retry_before_new_probe(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--codex-bin', str(self.fake_codex_cli()), '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30 (a codex gate adds a gate-probe turn)
@@ -5575,6 +5613,7 @@ sys.exit(result.returncode)
         self.assertEqual(len(reloaded.state['abandoned_turns']), 1)
 
     def test_uncertain_codex_turn_refuses_global_config_change_before_replay(self):
+        use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         original = config.read_bytes()
         for action in ('resume', 'permission-probe'):
@@ -5769,6 +5808,7 @@ sys.exit(result.returncode)
         self.assertEqual(json.loads((self.run_dir / 'permission-probe.json').read_text())['global_config_changes']['status'], 'FAIL')
 
     def test_permission_probe_clears_unverifiable_hold_after_later_group_check(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--codex-bin', str(self.fake_codex_cli())])
@@ -5795,6 +5835,7 @@ sys.exit(result.returncode)
         self.assertEqual(len(co.state['abandoned_turns']), 1)
 
     def test_permission_probe_eperm_then_esrch_clears_uncertain_probe_before_reprobe(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--codex-bin', str(self.fake_codex_cli())])
@@ -5815,6 +5856,7 @@ sys.exit(result.returncode)
         self.assertIsNone(co.state['uncertain_active'])
 
     def test_uncertain_permission_probe_refuses_live_or_unverifiable_process_group(self):
+        use_lifecycle_on(self, self)
         for side_effect in (None, PermissionError(errno.EPERM, 'denied'),
                             OSError('operation unavailable')):
             with self.subTest(side_effect=side_effect):
@@ -5842,6 +5884,7 @@ sys.exit(result.returncode)
                 self.assertIsNone(co.state['active'])
 
     def test_uncertain_permission_probe_without_valid_group_id_fails_closed(self):
+        use_lifecycle_on(self, self)
         for pid in (None, 0, True, '12345', 2**31, -1):
             with self.subTest(pid=pid):
                 self.run_dir = self.root / ('probe-group-invalid-' + str(pid))
@@ -5924,6 +5967,7 @@ sys.exit(result.returncode)
         self.assertIn('| spawn_failure | 1 | author | EXEC | False | none |', usage_md)
 
     def test_usage_report_includes_unresolved_active_receipt_once(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -6046,6 +6090,7 @@ sys.exit(result.returncode)
                 author_turn.assert_not_called()
 
     def test_probe_retries_after_real_group_leader_exits_but_descendant_lives(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--codex-bin', str(self.fake_codex_cli()), '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30 (a codex gate adds a gate-probe turn)
@@ -6267,6 +6312,7 @@ sys.exit(result.returncode)
 
     def test_exec_approve_without_self_run_evidence_holds(self):
         # Exercise the invariant directly because the standard fake emits allowed evidence.
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
         co = rc.Coordinator(args)
@@ -6435,6 +6481,7 @@ sys.exit(result.returncode)
 
 
     def test_fresh_scan_rejects_ledger_ids_but_not_lowercase_identifiers(self):
+        use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace), '--workitem', str(self.workitem),
                                        '--run-dir', str(self.root / 'scan-run')])
         co = rc.Coordinator(args)

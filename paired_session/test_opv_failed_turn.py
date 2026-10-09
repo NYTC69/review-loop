@@ -8,6 +8,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import operator_verification as opv
 from paired_session import test_operator_verification as tov
 from paired_session import test_real_coordinator as trc
@@ -50,6 +51,7 @@ class FailedAuthorTurnTests(unittest.TestCase):
         self.assertEqual(json.loads((self.run_dir / 'evidence' / 'operator-verification-V001.json').read_text())['status'], 'voided')
 
     def test_an_unknown_tree_voids_the_record_when_a_child_ran_without_a_recorded_turn(self):
+        use_lifecycle_on(self, self)
         co = self.exec_coordinator()
         self.attach(co)
         def interrupted(role, phase, fresh, call):
@@ -108,6 +110,7 @@ class FailedAuthorTurnTests(unittest.TestCase):
         self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['operator_verifications'][0]['status'], 'current')
 
     def test_a_refusal_before_any_child_ran_keeps_the_record(self):
+        use_lifecycle_on(self, self)
         co = self.exec_coordinator()
         self.attach(co)
         def refused(role, phase, fresh, call):

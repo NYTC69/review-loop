@@ -5,6 +5,7 @@ import shutil
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -52,6 +53,7 @@ class InvocationCapTests(unittest.TestCase):
             later._invoke_once('author', 'PLAN', 'Role prompt.', {})
 
     def test_lower_is_refused(self):
+        use_lifecycle_on(self, self)
         self.coordinator('--max-invocations', '3')
         with self.assertRaisesRegex(ValueError, '--max-invocations cannot lower saved value 3'):
             self.restored('resume', '--max-invocations', '2')
@@ -144,6 +146,7 @@ class InvocationCapTests(unittest.TestCase):
                 resumed._verify_frozen_role_dispatch()
 
     def test_non_resume_actions_keep_frozen_cap(self):
+        use_lifecycle_on(self, self)
         self.coordinator('--max-invocations', '3')
         for action in ('run', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
             with self.subTest(action=action), self.assertRaisesRegex(

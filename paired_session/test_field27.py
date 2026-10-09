@@ -9,6 +9,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_field26 as f26
 
 rc = f26.rc
@@ -48,6 +49,7 @@ class PathsAsCreatedTests(unittest.TestCase):
             self.scan(co, 'shadow')
 
     def test_an_ordinary_run_is_unchanged(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         self.add({'bin/codex-run': '#!/bin/sh\nexit 0\n'})
         with self.assertRaisesRegex(RuntimeError, r'shadow independence check rejected history in context/(delta\.stat|status\.txt): codex'):

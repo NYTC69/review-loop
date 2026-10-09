@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import claude_author_probe as cap
 from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
@@ -93,6 +94,7 @@ class ProbeParentLockTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.parent)), before)            # no run dir, no state, no probe tree
 
     def test_an_existing_claude_author_run_reprobes_under_the_lock_without_the_vendor_flag(self):   # R3 MEDIUM (a)
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator(*tor.BUG_REPORT_FLAGS)                       # saved author vendor: claude
         (co.run_dir / 'permission-probe.json').write_text('{"status": "PASS"}\n')
         state, report = (co.run_dir / 'state.json').read_bytes(), (co.run_dir / 'permission-probe.json').read_bytes()

@@ -6,6 +6,7 @@ run's LOW F003 was missing)."""
 import subprocess
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import review_report
 from paired_session import test_real_coordinator as trc
 
@@ -58,6 +59,7 @@ class ReviewOnlyCreationTextTests(unittest.TestCase):
             self.scan(co, 'gate')
 
     def test_an_ordinary_run_is_unchanged(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator()
         self.write(PLUGIN, PLUGIN_TEXT)
         with self.assertRaisesRegex(RuntimeError, 'shadow independence check rejected history in context/delta.patch'):

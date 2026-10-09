@@ -10,6 +10,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
 
@@ -107,6 +108,7 @@ class EfficientModeTests(unittest.TestCase):
         self.assertTrue(self.h.coordinator('--strict').strict)                # the CLI still may
 
     def test_mode_edges_from_the_eff_a_review(self):
+        use_lifecycle_on(self, self.h)
         self.other_run('active-plan')
         self.h.coordinator()
         state = self.state()
@@ -153,6 +155,7 @@ class EfficientModeTests(unittest.TestCase):
 
     # --- categories A and B: the same in both modes ---------------------------------------------------------------------------------
     def test_every_role_keeps_its_sandbox_flags_in_efficient_mode(self):
+        use_lifecycle_on(self, self.h)
         schema = self.h.root / 'schema.json'
         rc.atomic_json(schema, rc.review_schema())
         for vendor in ('claude', 'codex'):

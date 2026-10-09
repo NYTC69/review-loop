@@ -10,6 +10,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
@@ -40,6 +41,7 @@ class SecretEnvNameReuseTests(unittest.TestCase):
         (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
 
     def test_a_new_secret_env_name_does_not_void_the_recorded_pass(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--gate-vendor', 'claude')
         self.write_report(co)
         self.assertEqual(co.probe_passed(), (True, ''))
@@ -49,6 +51,7 @@ class SecretEnvNameReuseTests(unittest.TestCase):
             self.assertIn('FIELD10_NEW_MESSAGING_TOKEN', env_names(co._claude_sandbox_settings('reviewer')))
 
     def test_a_vanished_secret_env_name_does_not_void_the_recorded_pass(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--gate-vendor', 'claude')
         with patch.dict(os.environ, {'FIELD10_OLD_TOKEN': 'x'}):
             self.write_report(co)
@@ -56,6 +59,7 @@ class SecretEnvNameReuseTests(unittest.TestCase):
         self.assertNotIn('FIELD10_OLD_TOKEN', env_names(co._claude_sandbox_settings('reviewer')))
 
     def test_a_relevant_flag_change_still_refuses_with_its_reason(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--gate-vendor', 'claude')
         self.write_report(co)
         co.args.reviewer_effort = 'high'
@@ -64,6 +68,7 @@ class SecretEnvNameReuseTests(unittest.TestCase):
             self.assertEqual(co.probe_passed(), (False, 'permission probe reviewer flags do not match this run'))
 
     def test_a_failed_comparison_reports_the_check_that_still_fails(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--gate-vendor', 'claude')
         self.write_report(co)
         co.args.gate_effort = 'high'                                         # the gate changed for real ...
@@ -71,6 +76,7 @@ class SecretEnvNameReuseTests(unittest.TestCase):
             self.assertEqual(co.probe_passed(), (False, 'permission probe gate flags do not match this run'))
 
     def test_a_path_change_refuses_and_names_what_changed(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator('--gate-vendor', 'claude')
         self.assertIsNone(co._program_state()[1])                            # frozen as permission_probe would
         self.write_report(co)
@@ -128,6 +134,7 @@ class ClaudeAuthorRejectOnDoneTests(unittest.TestCase):
             self.assertIn('FIELD10_NEW_MESSAGING_TOKEN', env_names(co._claude_sandbox_settings('author')))
 
     def test_the_refusal_names_the_failing_probe_check(self):
+        use_lifecycle_on(self, self.t.h)
         co = self.t.co()
         ok, message = co.claude_author_verified()
         self.assertFalse(ok)

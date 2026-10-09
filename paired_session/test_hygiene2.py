@@ -2,6 +2,7 @@
 (F003 came back as F006). Its prompt now says not to, and in a worktree-lifecycle run that other roles own unlisted findings."""
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 
@@ -18,6 +19,7 @@ class OpenFindingPromptTests(unittest.TestCase):
              **extra}])
 
     def test_listed_findings_must_not_be_reported_again(self):
+        use_lifecycle_on(self, self.h)
         co = self.h.coordinator()
         self.finding(co)
         prompt = co.open_findings_prompt()

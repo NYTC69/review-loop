@@ -133,4 +133,6 @@ key `entry` is `paired-session` or absent and the work is fresh, an existing pla
 code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
 legacy workflow was removed in v2.13.0.
 
-Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.
+`--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. With `auto_commit false`, accept hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
+
+The commands above default to `--lifecycle-mode on`. When the user or selected operator/workspace profile chooses off, replace `on` with `off` in both the probe and run commands. Compare the saved lifecycle mode with that selected mode for the backstop; saved off runs continue with off.

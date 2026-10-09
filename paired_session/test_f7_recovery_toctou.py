@@ -7,6 +7,7 @@ import hashlib
 import unittest
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc   # the module the harness's Coordinator comes from (patches must land there)
@@ -72,6 +73,7 @@ class RecoveryToctouTests(unittest.TestCase):
         self.assertNotIn('recovery_config_hashes', co.state)
 
     def test_permission_probe_retry_holds_on_a_change_before_its_baseline(self):
+        use_lifecycle_on(self, self.h)
         path = self.config('.codex/config.toml')
         original = path.read_bytes()
         co = self.uncertain('codex', 'codex_config', path, 'AUTHOR_PERMISSION_PROBE')

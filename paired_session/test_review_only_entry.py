@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 from paired_session import worktree_lifecycle as wl
 from paired_session.test_worktree_lifecycle import COVERING_GITIGNORE, DONE
@@ -433,6 +434,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
             rc.Coordinator(self.args())
 
     def test_a_ledger_id_or_verdict_shaped_path_is_refused_and_names_its_source(self):   # FIELD-11, kept conservative
+        use_lifecycle_on(self, self)
         self.change()
         for name in ('docs/F001.md', 'APPROVE.txt'):
             with self.subTest(name=name):

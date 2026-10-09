@@ -375,3 +375,14 @@ The executed OFF-1b census provides the method inventory and reasons.
 Threat model: reasonable protection for normal use, assuming users and models do not act
 maliciously or cross boundaries. The internal fixture switch is not a security boundary;
 absolute safety, adversarial switch use and worst-case hardening are outside this decision.
+
+
+## ADR-19: lifecycle off is the supported stop-after-gate route (owner 2026-10-09 18:50 JST)
+
+Supersedes ADR-18. Owner feedback relayed by the poker-news-bot PM: “我希望是gate 以后允许停下，其他返回给我们自己做。” The staged deletion plan is cancelled. Lifecycle off stays supported for CLI, operator/workspace profiles and documented Python entry points: PLAN -> EXEC -> GATE -> DONE, acceptance pending. With auto_commit false, accept hands back the uncommitted tree; the operator handles FINISH, POLISH-Q, documentation, security review and merging. New runs still default to on, the full lifecycle. Saved off runs continue normally. Tests may use either route; the OFF-3 class-A migrations to on stay.
+
+The test-only `PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF` remains solely as the shared Python-API test default, preserving the pre-existing off fixture meanings; it does not gate user access to off. Separate removed-option fixtures preserve unrelated old test coverage.
+
+The separate removals of gate off, round-limit override acceptance, strict Claude-author opt-in and probe-skip acceptance stay approved and refused. The Codex CLI version override remains supported.
+
+Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.

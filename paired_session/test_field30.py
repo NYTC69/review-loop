@@ -5,6 +5,7 @@ operator's own work item is operator input, not this run's review history; what 
 is now refused at run creation, before any author or reviewer turn."""
 import unittest
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
 
@@ -33,14 +34,17 @@ class OperatorWorkItemTests(unittest.TestCase):
             co.assert_fresh_prompt(role, 'Review the delta.')
 
     def test_the_poker_tools_work_item_passes_creation_and_both_fresh_scans(self):
+        use_lifecycle_on(self, self.h)
         co = self.coordinator(POKER_TOOLS)
         self.assertIn('found by Codex', (co.context / 'workitem.md').read_text())
         self.scan(co)
 
     def test_a_tool_named_directory_in_the_work_item_passes(self):
+        use_lifecycle_on(self, self.h)
         self.scan(self.coordinator('# Toy\nThe check script lives in /opt/claude-tools/; create sum_ints.\n'))
 
     def test_a_review_narrative_in_the_plan_is_still_caught(self):   # FIELD-33 (supervisor decision): was the bare-name case
+        use_lifecycle_on(self, self.h)
         co = self.coordinator(POKER_TOOLS)
         co.state.update(phase='EXEC', next='reviewer')
         (co.context / 'plan.md').write_text('# Plan\n1. Keep what the Codex reviewer approved.\n')
@@ -48,12 +52,14 @@ class OperatorWorkItemTests(unittest.TestCase):
             co.assert_fresh_prompt('shadow', 'Review the delta.')
 
     def test_the_same_sentence_in_the_plan_now_passes(self):   # FIELD-33: a bare tool name in the plan is not review history
+        use_lifecycle_on(self, self.h)
         co = self.coordinator(POKER_TOOLS)
         co.state.update(phase='EXEC', next='reviewer')
         (co.context / 'plan.md').write_text('# Plan\n1. Fix the issue found by Codex.\n')
         co.assert_fresh_prompt('shadow', 'Review the delta.')
 
     def test_what_still_blocks_in_the_work_item_is_refused_at_creation(self):
+        use_lifecycle_on(self, self.h)
         for text, marker in (('# Toy\nCodex approved this approach; create sum_ints.\n', 'Codex'),
                              ('# Toy\nAddress the previous review; create sum_ints.\n', 'previous review'),
                              ('# Toy\nThe reviewer returned REVISE; create sum_ints.\n', 'REVISE')):

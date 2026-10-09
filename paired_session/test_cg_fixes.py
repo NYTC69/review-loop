@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import claude_author_probe as cap
 from paired_session import codex_capability_guard as guard
 from paired_session import test_operator_roles as tor
@@ -77,6 +78,7 @@ class CodexDispatchTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
 
     def test_every_codex_dispatch_disables_plugins_and_the_flags_bind_it(self):
+        use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
         schema = Path(self.root) / 'schema.json'
         for role in ('author', 'reviewer', 'gate', 'probe', 'gate-probe'):
@@ -110,6 +112,7 @@ class CodexDispatchTests(unittest.TestCase):
             co._invoke_once('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
 
     def test_a_missing_config_toml_is_an_empty_config_everywhere(self):
+        use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         co = self.coordinator('--author-vendor', 'codex')
         config.write_bytes(b'')
@@ -131,6 +134,7 @@ class CodexDispatchTests(unittest.TestCase):
         self.assertEqual(outcome['source_config_sha256'], hashlib.sha256(b'').hexdigest())
 
     def test_a_probe_that_adds_a_capability_fails_with_the_finding_named(self):
+        use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         for inject in (False, True):
             with self.subTest(inject=inject):
