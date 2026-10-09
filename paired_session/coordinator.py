@@ -555,6 +555,31 @@ OLD_STATE_REFUSAL = ('run was created by an older paired-session build; start a 
                      'review-loop 2.13.x (for example a pinned copy at ~/paired-runs/review-loop-v2.13.<n>)')
 
 
+OFF_STATE_REFUSAL = ('lifecycle-off was removed in this release; finish this saved run with the pinned '
+                     'v3.0.4 copy at ~/paired-runs/review-loop-v3.0.4; start new runs with --lifecycle-mode on')
+
+
+def refuse_user_off(args, state=None):
+    """OFF-2: one admission boundary; the undocumented exception belongs to test fixtures only."""
+    if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1':
+        return True
+    if (getattr(args, 'action', None) not in ('status', 'stop', 'snapshot') and
+            state is not None and state.get('config', {}).get('lifecycle_mode') == 'off'):
+        raise ValueError(OFF_STATE_REFUSAL)
+    removed = []
+    if getattr(args, 'lifecycle_mode', None) == 'off': removed.append('--lifecycle-mode off')
+    if getattr(args, 'adversarial_gate', None) == 'off': removed.append('--adversarial-gate off')
+    for dest, flag in (('override_rejection', '--override-rejection'),
+                       ('accept_unverified_claude_author', '--accept-unverified-claude-author'),
+                       ('accept_probe_skip', '--accept-probe-skip')):
+        if getattr(args, dest, False): removed.append(flag)
+    if removed:
+        raise ValueError('removed user option: ' + ', '.join(removed) +
+                         '; use --lifecycle-mode on with the gate enabled, permission-probe for strict runs, '
+                         'and resume --add-rounds N or note --scope-change at a HOLD')
+    return False
+
+
 def saved_state_is_old(run_dir) -> bool:
     """V3-B6: the run (or --supersedes parent) in run_dir was saved by another state format; checked before any of its
     keys is read. A missing or unreadable state is not old: its own readers report it."""
@@ -2245,8 +2270,12 @@ class Coordinator:
         if (saved_state is not None and saved_state.get('version') != STATE_VERSION or   # V3-B6: before any key of it,
                 getattr(args, 'supersedes', None) and saved_state_is_old(Path(args.supersedes).resolve())):   # or of a parent, is read
             raise ValueError(OLD_STATE_REFUSAL)
-        if getattr(args, 'lifecycle_mode', None) is None:   # V3-B5: a saved run keeps its mode; the CLI sets 'on' for a new
-            args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else 'off'   # run (_execute_locked)
+        if getattr(args, 'supersedes', None):
+            parent_path = Path(args.supersedes).expanduser() / 'state.json'
+            if parent_path.is_file(): refuse_user_off(args, json.loads(parent_path.read_text()))
+        internal_off = refuse_user_off(args, saved_state)
+        if getattr(args, 'lifecycle_mode', None) is None:
+            args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else ('off' if internal_off else 'on')
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
         if args.lifecycle_mode == 'on':
@@ -2868,9 +2897,10 @@ class Coordinator:
         if probed and (passed := self.probe_passed())[0]: return True, ''
         voided = f'; the earlier operator opt-in is void ({self._void_text(optin)})' if optin.get('voided') else ''
         detail = ('; the recorded probe does not pass: ' + passed[1]) if probed else '; no Claude author probe PASS is recorded in permission-probe.json'   # FIELD-10
+        fixture_optin = (' or the operator opts in with `run --accept-unverified-claude-author --reason TEXT` '
+                         '(permission-probe does not take the flag)' if refuse_user_off(self.args, self.state) else '')
         return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
-                       'author permission-probe passes (P0-3b) or the operator opts in with `run '
-                       '--accept-unverified-claude-author --reason TEXT` (permission-probe does not take the flag)' + voided + detail)
+                       'author permission-probe passes (P0-3b)' + fixture_optin + voided + detail)
 
     def _codex_sandbox_profile_args(self) -> list[str]:
         if not (verified := self.codex_contract_verified())[0]:
@@ -3695,7 +3725,9 @@ class Coordinator:
     def _refuse_past_deadline(self, action: str) -> None:   # F2: a deadline blocks new dispatches only; it never rewrites a DONE or a HOLD
         if issue := self._wi_deadline_issue(record=False):
             kept = ('the DONE tree stays acceptable: accept it, abort, or reject --scope-change' if self.state.get('status') == 'DONE'
-                    else 'nothing changed: the HOLD keeps its reason, so its accept/override, note and abort paths stay as they are'
+                    else ('nothing changed: the HOLD keeps its reason, so its accept/override, note and abort paths stay as they are'
+                          if refuse_user_off(self.args, self.state) else
+                          'nothing changed: the HOLD keeps its reason; use note --scope-change or abort')
                     if self.state.get('status') == 'HOLD' else 'nothing changed; abort, or note --scope-change to start a successor')
             raise ValueError(f'{action} refused: {issue.split(";")[0]}; {kept}')
 
@@ -3853,6 +3885,7 @@ class Coordinator:
         return note_id
 
     def accept(self) -> str:
+        refuse_user_off(self.args, self.state)
         self._refuse_report_accept()
         if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
                 and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
@@ -4093,6 +4126,7 @@ class Coordinator:
         return {'path': str(path), 'sha256': base['sha256'], 'inherited_from': str(parent)}
 
     def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
+        refuse_user_off(self.args, self.state)
         if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
         payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
         index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
@@ -4138,6 +4172,7 @@ class Coordinator:
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
+        refuse_user_off(self.args, self.state)
         self._refuse_report_feedback()
         if self.state.get('status') != 'DONE':
             raise ValueError('reject requires a DONE run')
@@ -5115,7 +5150,7 @@ class Coordinator:
         if args.stop_after_plan:
             raise ValueError('--review-only has no PLAN phase; --stop-after-plan does not apply')
         if args.lifecycle_mode == 'on' and not REVIEW_ONLY_LIFECYCLE_READY:
-            raise ValueError('--review-only runs with --lifecycle-mode off until its base-tree delivery baseline lands (LG1-c)')
+            raise ValueError('--review-only lifecycle delivery is not ready; restore its base-tree delivery baseline before starting')
         head = self._head_commit()
         if head is None:
             raise ValueError('--review-only needs a commit to review against')
@@ -8417,6 +8452,7 @@ class Coordinator:
         return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
 
     def drive(self) -> str:
+        refuse_user_off(self.args, self.state)
         # The one entry of every real author dispatch (run, resume, reject): author_turn
         # is reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
@@ -8476,6 +8512,7 @@ class Coordinator:
         return self.state['status']
 
     def resume(self, retry_uncertain=False) -> str:
+        refuse_user_off(self.args, self.state)
         if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
             raise ValueError(f'an auto_commit delivery is pending; restore HEAD and accept --expect {pending}, or abort')
         if (add := getattr(self.args, 'add_rounds', None)) is not None and (   # L100: only at the round-limit HOLD itself
@@ -8741,15 +8778,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
-    p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on')
+    p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on', metavar='on', help='required adversarial gate')
     # removed in 3.0.0; ignored (hidden deprecated compatibility option, on or off).
     p.add_argument('--polish-round', choices=['on', 'off'], default='off', help=argparse.SUPPRESS)
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
-                   help="'on' (the worktree lifecycle W, the CLI default for a new run) or 'off' (the older route without "
-                        "FINISH, POLISH-Q, DOCS and SECURITY); an existing run keeps the mode it was created with")
+                   metavar='on', help='worktree lifecycle (on); the lifecycle is required for every new run')
     p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
                    help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
-    p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md for a worktree-lifecycle run, else ''")
+    p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md; empty string skips the docs entry")
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
     for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
@@ -8762,7 +8798,7 @@ def parser() -> argparse.ArgumentParser:
                    help='worktree lifecycle POLISH-Q writer passes (default: both for --review-only, else off)')
     p.add_argument('--auto-commit', type=config_bool, default=None,
                    help='worktree lifecycle: accept --expect makes one hook-free local commit of the accepted tree '
-                        '(default: true for a --review-only run with --lifecycle-mode on, else false)')
+                        '(default: true for a --review-only run, else false)')
     p.add_argument('--external-delivery', type=config_bool, default=False,
                    help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
@@ -8816,18 +8852,12 @@ def parser() -> argparse.ArgumentParser:
                    help='explicitly bypass the permission-probe gate (tests only)')
     p.add_argument('--accept-unverified-codex-cli', action='store_true',
                    help='operator override: run Codex roles (author, reviewer or gate) on an unverified codex-cli version (needs --reason)')
-    p.add_argument('--accept-unverified-claude-author', action='store_true',
-                   help='operator opt-in: run a Claude author with path-scoped Edit rules but no probe PASS (needs --reason; '
-                        'with run, resume or reject). Persisted and re-applied on restore until the author flags change. '
-                        'The Edit path boundary is not yet verified against symlink or hardlink redirection created '
-                        'inside the workspace (P0-3b probes it)')
-    p.add_argument('--accept-probe-skip', action='store_true',
-                   help='operator acceptance: run/resume/reject without a passing permission-probe.json (needs --reason); voided for good '
-                        'when a flags digest changes; the Codex CLI contract and Claude author gate still apply')
-    p.add_argument('--reason', help='why the operator accepts the unverified codex-cli version, Claude author or probe skip; also the reason for accept --override-rejection')
+    p.add_argument('--accept-unverified-claude-author', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--accept-probe-skip', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--reason', help='operator reason for acceptance or the unverified codex-cli version')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
-    p.add_argument('--override-rejection', action='store_true', help='operator ruling on a held rejected tree')
+    p.add_argument('--override-rejection', action='store_true', help=argparse.SUPPRESS)
     av = p.add_argument_group('attach-verification', 'operator evidence for the current tree (ACTIVE, HOLD or DONE before accept)')   # HELP-GROUP
     av.add_argument('--command', help='the command the operator ran outside the author sandbox')
     av.add_argument('--cwd', help='where it ran, the workspace or a directory inside it (default the workspace)')
@@ -9227,7 +9257,12 @@ def main(argv=None) -> int:
         print('REFUSED: ' + OLD_STATE_REFUSAL)
         return 2
     try:
+        for run in (known.run_dir, known.supersedes):
+            path = Path(run).expanduser() / 'state.json' if run else None
+            if path is not None and path.is_file():
+                refuse_user_off(known, json.loads(path.read_text()))
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
+        refuse_user_off(args)
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
@@ -9266,7 +9301,9 @@ def main(argv=None) -> int:
         args.test_command = None
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
     if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action == 'accept') and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
-        print('REFUSED: --accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip needs --reason and run, resume or reject')
+        flags = ('--accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip'
+                 if refuse_user_off(args) else '--accept-unverified-codex-cli')
+        print('REFUSED: ' + flags + ' needs --reason and run, resume or reject')
         return 2
     try:
         resolve_role_model_defaults(args)
@@ -9286,8 +9323,7 @@ def main(argv=None) -> int:
             and not args.review_report \
             and not restores_run(args) and (args.safety_mode or DEFAULT_SAFETY_MODE) == 'strict':   # D-EFF: a new run's probe gate (C)
         print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
-              'author permission-probe passes (P0-3b) or the operator opts in with `run --accept-unverified-claude-author '
-              '--reason TEXT` (permission-probe does not take the flag); no run state exists yet, so run permission-probe first')   # FIELD-10
+              'author permission-probe passes (P0-3b); no run state exists yet, so run permission-probe first')   # FIELD-10
         return 2
     if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
             and (hint := dontask_command_hint([c for c in (args.test_command, *args.reviewer_command) if c]))):

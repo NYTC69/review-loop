@@ -467,3 +467,5 @@ review-loop/
 ## License
 
 Apache 2.0
+
+Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.

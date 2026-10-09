@@ -354,7 +354,7 @@
       "id": "legacy_execute_review_only_mapping_documented",
       "kind": "contains",
       "path": "docs/paired-session-migration.md",
-      "needle": "Legacy `/review-loop:execute --review-only` stays legacy until its retirement; its paired-session equivalent is `run --review-only`, and its `--stop-after exec-round` maps to the operator CLI options `--max-exec-rounds 1 --lifecycle-mode off --adversarial-gate off`"
+      "needle": "Legacy `/review-loop:execute --review-only` is retired; its paired-session equivalent is `run --review-only`, and `--max-exec-rounds 1` sets the EXEC round cap while the required lifecycle and gate remain enabled"
     },
     {
       "id": "codex_entry_resolved_once_before_handoff",

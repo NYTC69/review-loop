@@ -355,3 +355,23 @@ entry; never edit history.
 - **Consequences**: Test deletions and rewrites listed in the two audits are owner-approved removals, not regression-red-line edits; every other previously passing test stays untouched. V2, V3 and V11 break resume of runs saved on 2.13.x, so they ship only in 3.0.0 with that release note.
 
 - **Amendment 2026-10-08 (V3 scope)**: owner chose scope A — 3.0.0 deletes only the four named lifecycle-off features (polish round, `resume --polish`, FIELD-32 recheck, RLO hint); `--lifecycle-mode off` stays as a minimal route (the test harness runs on it; new runs default to `on` since V1). Deleting the whole off route and migrating ~450 off-route test methods to the worktree lifecycle is post-3.0 backlog (Codex plan `.compass/results/laneb/v3-plan.md`: option B, 9 slices, 13 test changes outside the approved list).
+
+## ADR-18: staged lifecycle-off removal (owner 2026-10-09)
+
+Decision: remove lifecycle-off in stages. OFF-2 is step 1: every public CLI and documented
+Python entry point uses the worktree lifecycle. Explicit off, gate-off, held-tree override
+acceptance and the Claude-author/probe-skip waivers receive explicit refusals with supported
+alternatives. The separate Codex CLI version override remains supported. Saved off runs finish
+on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`; this release refuses their
+continuation and acceptance/rejection, while status, stop and snapshot remain available.
+
+Keep the existing off implementation solely as an internal test fixture behind one undocumented
+switch set by shared test helpers. Owner-approved B assertions of removed user behavior may be
+deleted or replaced with refusal assertions, with each old → new change listed in the OFF-2 report.
+Step 2 migrates the 166 class A tests to on. Step 3 migrates the 530 class C tests opportunistically
+when their modules change. Delete the internal off implementation once no test uses it.
+The executed OFF-1b census provides the method inventory and reasons.
+
+Threat model: reasonable protection for normal use, assuming users and models do not act
+maliciously or cross boundaries. The internal fixture switch is not a security boundary;
+absolute safety, adversarial switch use and worst-case hardening are outside this decision.

@@ -132,3 +132,5 @@ paired-session entry and the review-loop handoff target only when the config
 key `entry` is `paired-session` or absent and the work is fresh, an existing plan (as the work item) or a review-only
 code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
 legacy workflow was removed in v2.13.0.
+
+Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.

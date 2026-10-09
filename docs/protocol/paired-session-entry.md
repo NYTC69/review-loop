@@ -254,16 +254,16 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 
 For a new run, pass `--lifecycle-mode on` to `run` and, in strict mode, to
 `permission-probe`, identically; the CLI value overrides any profile value. Never pass
-`--skip-probe`, `--accept-unverified-codex-cli`,
-`--accept-unverified-claude-author`, `--accept-probe-skip` or
-`--override-rejection` on your own initiative.
+`--skip-probe` or `--accept-unverified-codex-cli` on your own initiative.
+The removed `--adversarial-gate off`, `--override-rejection`,
+`--accept-unverified-claude-author` and `--accept-probe-skip` options are refused.
+Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, and permission-probe for strict runs.
+Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.
 `--strict` comes only from the user or the operator profile (`safety_mode`),
 and goes to `permission-probe` and `run` alike:
 both modes keep every sandbox; the default `efficient` mode does not require
 the probe PASS and its evidence guard only logs, while `--strict` restores
-both (`paired_session/docs/efficient-mode.md`). A strict lifecycle run also
-refuses `--accept-unverified-claude-author` and `--accept-probe-skip` (D-7);
-an efficient run needs no waiver. The run is strict when the user asked for
+both (`paired_session/docs/efficient-mode.md`). An efficient run needs no probe waiver. The run is strict when the user asked for
 `--strict` or the operator profile sets `"safety_mode": "strict"`; read the
 profile before choosing the flow.
 - Default (efficient): no permission probe; the first coordinator command is
@@ -309,7 +309,8 @@ Later commands on an existing run (`resume`, `permission-probe
 --retry-uncertain`, `abort`, `reject`, `accept`, `note`,
 `attach-verification`) pass the saved `state.json` `config.lifecycle_mode`
 value and the run's original workspace, work item, run directory, profile and
-options, never the current default. Report DONE/HOLD and the run directory. On
+options, never the current default. If the saved mode is off, use the pinned v3.0.4 copy;
+this release refuses continuation. Report DONE/HOLD and the run directory. On
 HOLD, inspect its state, findings, and receipts before resuming. If `uncertain_active` is
 present, do not rerun the probe or resume automatically: check its pid and
 receipts; if the child is still alive, wait for it to stop. If its phase is
@@ -320,7 +321,7 @@ recovering an interrupted probe, use `resume` on the existing run directory;
 do not use `run` again or start a new work item. In strict mode, re-run the
 permission probe first if it is missing or no longer matches.
 
-For coordinator HOLD, acceptance, rejection, override and round-limit rules, use
+For coordinator HOLD, acceptance, rejection and round-limit rules, use
 [the operator reference](../../paired_session/README.md#acceptance-rejection-and-round-limits).
 At a round-limit HOLD, report the open findings and offer the documented exits.
 Add rounds only on the user's request, with the number they choose; never on
@@ -362,7 +363,7 @@ under handsfree, and never on your own judgment:
   `reject --intent-only --text NOTE`, show the digest, then run
   `reject --expect <digest> --text NOTE` in the host's long-command form (it
   reopens EXEC and dispatches model turns) and inspect the final status.
-- Use `--override-rejection` only when the user asks for it with a reason.
+- At a round-limit HOLD, use `resume --add-rounds N` on the user's instruction; acceptance requires DONE.
 
 Do not imply user acceptance or delivery authorization from DONE.
 Do not raise the invocation cap on your own: use `resume --max-invocations N`

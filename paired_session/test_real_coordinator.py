@@ -111,6 +111,7 @@ class RealCoordinatorTests(unittest.TestCase):
         # Start the env patch before changing HOME: its stop (an addCleanup, so after tearDown)
         # restores the pre-test environment instead of re-installing this test's deleted HOME.
         self._fake_codex_env = patch.dict(os.environ, {
+            'PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF': '1',
             'PATH': str(stub_bin) + os.pathsep + os.environ.get('PATH', ''),
             'CODEX_HOME': str(self.test_home / '.codex'), 'FAKE_CODEX_TEST_ROOT': str(self.root),
             tsc.ENV: str(tsc.factor())})   # one load factor per test, shared with every coordinator it starts
@@ -217,14 +218,6 @@ class RealCoordinatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'symlink'):
             rc.frozen_role_manifest({}, flags, agents, gate_link, {'reviewer': 'reviewer.md'})
 
-    def test_new_run_freezes_role_manifest_and_turn_receipt(self):
-        co = self.coordinator()
-        manifest = co.state['role_dispatch_manifest']
-        digest = co.state['role_dispatch_manifest_sha256']
-        self.assertEqual(manifest['role_flags']['author']['model'], co.args.author_model)
-        self.assertFalse(manifest['role_flags']['author']['tmp_isolated'])
-        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', rc.author_schema())
-        self.assertEqual(co.state['turns'][-1]['role_identity_sha256'], digest)
 
     def test_lifecycle_role_manifest_drift_and_shared_tmp_fail_closed(self):
         co = self.coordinator()
@@ -3311,22 +3304,6 @@ sys.exit(result.returncode)
             rc.configure_parser(rc.parser(), ['run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
 
-    def test_lifecycle_config_is_frozen_while_default_route_stays_off(self):
-        co = self.coordinator('--docs-file', 'docs/guide.md', '--docs-allowlist', 'docs/other.md',
-                              '--skip-quality-polish', 'true')
-        saved = co.state['config']
-        self.assertEqual(saved['lifecycle_mode'], 'off')
-        self.assertTrue(saved['skip_quality_polish'])
-        self.assertEqual(saved['docs_file'], str(self.workspace / 'docs/guide.md'))
-        self.assertEqual(saved['docs_allowlist'], sorted([str(self.workspace / 'docs/guide.md'),
-                                                          str(self.workspace / 'docs/other.md')]))
-        args = rc.parser().parse_args(['resume', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()),
-            '--docs-file', 'docs/changed.md', '--docs-allowlist', 'docs/other.md',
-            '--skip-quality-polish', 'true'])
-        with self.assertRaisesRegex(ValueError, 'resume configuration differs: docs_file'):
-            rc.Coordinator(args)
 
     def test_lifecycle_on_and_old_done_are_refused_before_dispatch(self):
         self.run_dir = self.root / 'lifecycle-refusal'
@@ -6200,15 +6177,6 @@ sys.exit(result.returncode)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertIn('accessed isolated evidence directory', state['hold_reason'])
 
-    def test_valid_gate_blocker_delivered_once_then_re_reviewed(self):
-        result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_BLOCK': '1'})
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['status'], 'DONE')
-        self.assertEqual(state['exec_rounds'], 3)
-        self.assertEqual(sum(t['role'] == 'gate' for t in state['turns']), 1)
-        prompts = [p.read_text() for p in (self.run_dir / 'evidence').glob('*-author.prompt.txt')]
-        self.assertTrue(any('adversarial-gate' in p for p in prompts))
 
     def test_lifecycle_gate_blocker_starts_new_gate_convergence(self):
         co = self.coordinator('--shadow', 'off', '--polish-round', 'off')

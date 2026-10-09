@@ -43,3 +43,5 @@
 # Removed with the legacy workflow (no effect if set): reviewer, judgment_model, cheap_model, codex_reviewer_backend,
 # codex_reviewer_model, codex_executor_model, commit_message_prefix, cross_vendor_review,
 # adversarial_gate_skip_paths, context_persist_threshold.
+
+# Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.

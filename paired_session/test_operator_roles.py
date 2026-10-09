@@ -758,16 +758,6 @@ class ClaudeAuthorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'workspace must not'):
                 co._claude_author_edit_rules()
 
-    def test_actions_that_never_dispatch_an_author_are_not_blocked_by_a_void_opt_in(self):
-        self.cli('run', '--author-vendor', 'claude', *OPT_IN)
-        state = self.state()
-        state['claude_author_override']['author_flags_digest'] = '0' * 64            # stale: void on the next check
-        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
-        for action, extra in (('note', ['--text', 'n']), ('accept', []), ('abort', []), ('snapshot', []),
-                              ('permission-probe', [])):
-            self.assertNotIn(REFUSAL, self.cli(action, *extra).stdout, action)
-        self.assertIn(REFUSAL, self.cli('reject', '--text', 'x').stdout)             # dispatching actions still refuse
-        self.assertIn(REFUSAL, self.cli('resume').stdout)
 
     def test_the_edit_rules_refuse_a_workspace_in_a_denied_root_or_the_filesystem_root(self):
         co = self.co()
@@ -812,81 +802,9 @@ class ClaudeAuthorTests(unittest.TestCase):
         with patch.object(co, '_claude_author_edit_rules', return_value=([*allow, 'Edit(//extra/**)'], deny)):
             self.assertNotEqual(co.author_flags_digest(), digest)
 
-    def test_a_claude_author_is_refused_without_the_opt_in_at_start_and_on_restore(self):
-        started = self.cli('run', '--author-vendor', 'claude')
-        self.assertEqual(started.returncode, 2)
-        self.assertIn(REFUSAL, started.stdout)
-        self.assertIn('--accept-unverified-claude-author', started.stdout)
-        self.assertFalse((self.h.run_dir / 'state.json').exists())
-        self.co()                                                               # a saved Claude-author run, no opt-in
-        restored = self.cli('reject', '--text', 'x')
-        self.assertEqual(restored.returncode, 2)
-        self.assertIn(REFUSAL, restored.stdout)
-        self.assertNotIn('claude_author_override', self.state())
-        self.cli('reject', '--text', 'x', *OPT_IN)                              # the opt-in records and persists ...
-        self.assertNotIn(REFUSAL, self.cli('reject', '--text', 'x').stdout)     # ... while the author flags are unchanged
-        co = self.co()
-        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
-                patch.object(co, '_drive_loop', side_effect=AssertionError('dispatched')):
-            self.assertTrue(co.claude_author_verified()[0])
-            with self.assertRaisesRegex(AssertionError, 'dispatched'):
-                co.drive()                                                      # drive() directly passes with a current opt-in
-            co.state['claude_author_override']['actor'] = 'author'
-            with self.assertRaisesRegex(ValueError, REFUSAL):
-                co.drive()                                                      # ... and refuses without one
 
-    def test_the_opt_in_is_recorded_with_actor_reason_time_and_the_author_flags_digest(self):
-        result = self.cli('run', '--author-vendor', 'claude', *OPT_IN)
-        self.assertIn('permission-probe.json is missing', result.stdout)        # past the guard, at the probe gate
-        record = self.state()['claude_author_override']
-        self.assertEqual((record['actor'], record['reason']), ('operator', 'checked by hand'))
-        self.assertRegex(record['time'], STAMP)
-        self.assertEqual(record['author_flags_digest'], self.co().author_flags_digest())
-        self.assertNotIn('voided', record)
 
-    def test_the_opt_in_is_operator_only_and_needs_a_reason(self):
-        self.assertIn('accept_unverified_claude_author', rc.OPERATOR_ONLY_DESTS)
-        for extra in (['--accept-unverified-claude-author'], ['--accept-unverified-claude-author', '--reason', ' ']):
-            self.assertIn('needs --reason', self.cli('run', '--author-vendor', 'claude', *extra).stdout)
-        self.assertIn('needs --reason and run, resume or reject', self.cli(
-            'permission-probe', '--author-vendor', 'claude', *OPT_IN).stdout)
-        config = self.h.workspace / '.review-loop' / 'paired-session.json'
-        config.parent.mkdir()
-        config.write_text(json.dumps({'accept_unverified_claude_author': True}))
-        self.assertIn('unsupported paired-session config keys', self.cli('run', '--author-vendor', 'claude').stdout)
-        config.unlink()
-        self.co()                                                               # a saved run carrying the flag ...
-        state = self.state()
-        state['config'].update({'accept_unverified_claude_author': True, 'reason': 'injected'})
-        (self.h.run_dir / 'state.json').write_text(json.dumps(state))
-        refused = self.cli('reject', '--text', 'x')                             # ... is not an opt-in
-        self.assertEqual(refused.returncode, 2)
-        self.assertIn(REFUSAL, refused.stdout)
-        self.assertNotIn('claude_author_override', self.state())
-        (self.h.run_dir / 'state.json').write_text(json.dumps({**self.state(), 'config': {
-            k: v for k, v in self.state()['config'].items() if not k.startswith('accept_') and k != 'reason'}}))
-        forged = self.co()                                                      # nor is a record naming another actor
-        forged.state['claude_author_override'] = {'actor': 'author', 'reason': 'x',
-                                                  'author_flags_digest': forged.author_flags_digest()}
-        self.assertFalse(forged.claude_author_verified()[0])
 
-    def test_the_opt_in_is_voided_when_the_author_flags_change_and_never_revives(self):
-        self.cli('run', '--author-vendor', 'claude', *OPT_IN)
-        co = self.co()
-        self.assertTrue(co.claude_author_verified()[0])
-        with patch.object(co, 'author_flags_digest', return_value='f' * 64):    # flags A -> B
-            self.assertFalse(co.claude_author_verified()[0])
-        voided = self.state()['claude_author_override']['voided']
-        self.assertEqual(voided['digest_seen'], 'f' * 64)
-        self.assertRegex(voided['time'], STAMP)
-        ok, message = self.co().claude_author_verified()                        # flags B -> A: the opt-in stays void
-        self.assertFalse(ok)
-        self.assertIn('void', message)
-        self.assertEqual(self.state()['claude_author_override']['voided'], voided)
-        self.assertEqual(self.cli('reject', '--text', 'x', '--author-vendor', 'claude').returncode, 2)
-        again = self.cli('reject', '--text', 'x', '--author-vendor', 'claude', *OPT_IN)   # only a fresh flag re-accepts
-        self.assertNotIn(REFUSAL, again.stdout)
-        self.assertNotIn('voided', self.state()['claude_author_override'])
 
     def test_a_claude_author_probe_pass_is_the_other_way_forward(self):
         co = self.co()
@@ -899,12 +817,6 @@ class ClaudeAuthorTests(unittest.TestCase):
             probe.write_text(json.dumps({'author_permission_probe': {'claude_author_status': 'PASS'}}))
             self.assertTrue(co.claude_author_verified()[0])                     # both together are (P0-3b produces it)
 
-    def test_the_bug_report_config_with_the_opt_in_passes_validation_up_to_dispatch(self):
-        result = self.cli('run', *BUG_REPORT_FLAGS, *OPT_IN)
-        self.assertNotIn(REFUSAL, result.stdout)
-        self.assertNotIn('model', result.stdout.lower(), result.stdout)
-        self.assertIn('permission-probe.json is missing', result.stdout)        # stopped at the probe gate, not a guard
-        self.assertEqual(self.state()['claude_author_override']['actor'], 'operator')
 
 
 # A stand-in claude binary: emits a canned stream-json for the probe prompt and, per FAKE_AUTHOR_SCENARIO,
@@ -1815,33 +1727,7 @@ class ProbeSkipTests(unittest.TestCase):
         self.assertEqual((skipped.returncode, skipped.stdout.strip()), (2, 'REFUSED: --skip-probe is limited to the fake test harness'))
         self.assertFalse(self.cache.exists())
 
-    def test_accept_probe_skip_needs_a_reason_and_is_recorded_with_actor_reason_time_and_both_digests(self):
-        for extra in (['--accept-probe-skip'], ['--accept-probe-skip', '--reason', '  ']):
-            with self.subTest(extra=extra):
-                result = self.cli('run', *extra)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn('needs --reason', result.stdout)
-        self.assertIn('needs --reason and run, resume or reject', self.cli('permission-probe', '--accept-probe-skip', '--reason', 'x').stdout)
-        self.assertNotIn('probe_skip_override', self.state())
-        ok = self.cli('run', '--accept-probe-skip', '--reason', 'probe ran elsewhere')
-        self.assertEqual((ok.returncode, ok.stdout.count('DONE')), (0, 1), ok.stdout)
-        self.assertIn('probe skipped by operator acceptance', ok.stdout)
-        record = self.state()['probe_skip_override']
-        co = self.co()
-        self.assertEqual((record['actor'], record['reason']), ('operator', 'probe ran elsewhere'))
-        self.assertRegex(record['time'], STAMP)
-        self.assertEqual((record['reviewer_flags_digest'], record['author_flags_digest']), (co.reviewer_flags_digest(), co.author_flags_digest()))
-        later = self.cli('resume')                                                   # the record, not the flag, is what a later command honours
-        self.assertEqual(later.returncode, 0, later.stdout)
-        self.assertIn('probe skipped by operator acceptance', later.stdout)
-        self.assertFalse(self.cache.exists())
 
-    def test_the_acceptance_shares_one_reason_with_the_codex_accept_and_is_recorded_for_both(self):
-        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': UNVERIFIED}):
-            result = self.cli('run', '--accept-unverified-codex-cli', '--accept-probe-skip', '--reason', 'both')
-        self.assertEqual(result.returncode, 0, result.stdout)
-        state = self.state()
-        self.assertEqual((state['codex_cli_override']['reason'], state['probe_skip_override']['reason']), ('both', 'both'))
 
     def test_the_acceptance_cannot_come_from_saved_state_or_config(self):
         self.assertIn('accept_probe_skip', rc.OPERATOR_ONLY_DESTS)
@@ -2061,17 +1947,6 @@ class ProbeSkipTests(unittest.TestCase):
                     self.assertEqual((co.run_dir / 'permission-probe.json').read_bytes(), before)    # the FAIL evidence is intact
                 entry.unlink()
 
-    def test_a_reprobe_voids_a_persisted_acceptance(self):                                     # P0-4 R1 M1
-        self.assertEqual(self.cli('run', '--accept-probe-skip', '--reason', 'probe ran elsewhere').returncode, 0)
-        self.assertEqual(self.cli('resume').returncode, 0)                                    # the record is honoured until new evidence
-        failed = self.probe(self.co(), {'status': 'FAIL', 'reason': 'x'})
-        self.assertEqual(failed['status'], 'FAIL')
-        voided = self.state()['probe_skip_override']['voided']
-        self.assertEqual(voided['reason'], 'permission-probe re-run')
-        self.assertRegex(voided['time'], STAMP)
-        result = self.cli('resume')
-        self.assertEqual(result.returncode, 2, result.stdout)
-        self.assertNotIn('probe skipped', result.stdout)
 
     def test_a_workspace_overlapping_the_cache_root_disables_the_cache(self):                  # P0-4 R1 MD2
         co = self.co()
@@ -2442,19 +2317,6 @@ class ProbeSkipTests(unittest.TestCase):
 
     # ---- P0-4b: H1 negative evidence, H2 fd-based cache read, H3 no revival, H4 malformed entries --------------------
 
-    def test_the_acceptance_never_overrides_a_current_negative_probe(self):                  # H1
-        verdicts = {'FAIL': {'status': 'FAIL', 'reason': 'escape write observed: forbidden-probe'}, 'UNKNOWN': {'status': 'UNKNOWN'},
-                    'PASS_RESIDUAL_RISK': {'status': 'PASS_RESIDUAL_RISK', 'd1a_model_verdict': 'UNKNOWN', 'd1b_synthetic_verdict': 'PASS', 'residual_risk': 'x'}}
-        for status, verdict in verdicts.items():
-            with self.subTest(status=status):
-                self.h.run_dir = self.h.root / ('neg-' + status)
-                self.assertEqual(self.probe(self.co(), verdict)['status'], status)
-                result = self.cli('run', '--accept-probe-skip', '--reason', 'r')
-                self.assertEqual(result.returncode, 2, result.stdout)
-                self.assertIn(f'REFUSED: the current permission probe is {status}; fix the cause and re-run permission-probe', result.stdout)
-                self.assertNotIn('probe_skip_override', self.state())                          # the acceptance was not recorded
-        self.h.run_dir = self.h.root / 'neg-none'                                                 # no report: the acceptance is allowed
-        self.assertEqual(self.cli('run', '--accept-probe-skip', '--reason', 'r').returncode, 0)
 
     def test_a_stale_or_unbound_negative_report_does_not_block_the_acceptance(self):         # H1
         co = self.co()

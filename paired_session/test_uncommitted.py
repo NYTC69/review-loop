@@ -35,14 +35,10 @@ class UncommittedTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertEqual(again.stdout.strip().splitlines()[-3:], accepted.stdout.strip().splitlines()[-3:])
 
-    def test_main_pipeline_lifecycle_off(self):
-        self.check_acceptance('off')
 
     def test_main_pipeline_lifecycle_on(self):
         self.check_acceptance('on')
 
-    def test_review_only_lifecycle_off_unchanged(self):
-        self.check_acceptance('off', review_only=True)
 
     def test_review_only_lifecycle_on_unchanged(self):
         self.check_acceptance('on', review_only=True)
