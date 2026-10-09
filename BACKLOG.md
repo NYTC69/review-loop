@@ -6,7 +6,7 @@
 
 - **CLI auto-update validation:** v2.13.5 implementation shipped; remaining: record one real efficient run surviving a CLI auto-update.
 
-- **Post-3.0: delete the whole lifecycle-off route** — Remove lifecycle-off after migrating its tests and review-only delivery baseline; obtain owner decisions for test changes outside ADR-17 authorization.
+- **Lifecycle-off staged removal: remaining test migration (OFF-2, owner 2026-10-09)** — Step 1 removed the user surface. Step 2 migrates the 166 class A tests to lifecycle on; step 3 migrates the 530 class C tests opportunistically when their modules change. Delete internal off mode when no test uses it. See the staged-removal ADR in DECISIONS.md.
 
 ## P2 — normal
 

@@ -167,11 +167,11 @@
     "paired_session_skill_no_operator_waivers": [
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "Never pass `--skip-probe`, `--accept-unverified-codex-cli`, `--accept-unverified-claude-author`, `--accept-probe-skip` or `--override-rejection` on your own initiative."
+        "needle": "Never pass `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative."
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "Never pass `--skip-probe`, `--accept-unverified-codex-cli`, `--accept-unverified-claude-author`, `--accept-probe-skip` or `--override-rejection` on your own initiative."
+        "needle": "Never pass `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative."
       }
     ],
     "guide_entry_key_and_commands": [

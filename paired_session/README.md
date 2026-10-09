@@ -160,8 +160,7 @@ For operator-selected programs, role/vendor settings and test commands, copy
 workspace, run directory and author temp directory, then pass it with
 `--config /absolute/path/to/profile.json`. The example leaves `docs_file` out,
 so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It sets
-`lifecycle_mode: on`, which is also the CLI default for a new run; to create a run
-with lifecycle off, pass `--lifecycle-mode off`. A workspace
+`lifecycle_mode: on`, which is required for every new run. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
 when that profile is selected, before any run state is created; `permission-probe`
@@ -175,8 +174,7 @@ changed (for example `changed: path_env`), so run `reject`, `resume` and `accept
 from the same shell setup as the probe. The names of secret-looking environment
 variables (for example a `*_TOKEN` set by an agent session) do not void a recorded
 permission-probe PASS: the Claude credential deny list always follows the current
-environment. They still bind a strict run's operator opt-in and accepted probe skip, the
-probe-pass cache key and a lifecycle-on role manifest. A Claude-author refusal
+environment. They still bind the probe-pass cache key and the lifecycle role manifest. A Claude-author refusal
 also names the failing probe check.
 Role models are operator-set (ADR-9): a role without `--author-model`,
 `--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
@@ -185,10 +183,13 @@ every model id must be well formed and, when `allowed_models` is set, listed for
 that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
-`lifecycle_mode` defaults to `on` for a new run started from the CLI (earlier
-versions defaulted to `off`); a saved run keeps the mode it was created with, so
-`resume`, `accept` and the other run commands need no flag. The paired-session skill
-passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
+`lifecycle_mode` defaults to `on` for CLI and Python entry points.
+Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy
+at `~/paired-runs/review-loop-v3.0.4`. This release refuses run, resume, accept, reject, note,
+abort, permission-probe, attach-verification and use as a `--supersedes` parent;
+status, stop and snapshot remain available, including with an old off profile.
+Profile-sourced off refusals name the profile file and setting.
+The paired-session skill passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
@@ -209,17 +210,18 @@ commit of exactly the accepted tree (never a push; `auto_commit` defaults to
 true for a `--review-only` W run and to false otherwise, and an explicit CLI or
 operator-profile value wins), and writes a Chinese
 delivery report; `reject` reopens EXEC; a
-workspace profile can neither enable it nor set its docs/skip/polish keys, and
-a strict run refuses
-`--accept-unverified-claude-author` and `--accept-probe-skip` (D-7; an
-efficient run needs neither and records neither). Legacy
+workspace profile cannot set its mode or docs/skip/polish keys.
+`--adversarial-gate off`, `--override-rejection`,
+`--accept-unverified-claude-author` and `--accept-probe-skip` are refused; use the enabled gate,
+`resume --add-rounds N` or `note --scope-change`, and permission-probe for strict runs.
+`--accept-unverified-codex-cli --reason TEXT` remains supported. Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
 
-In 3.0.0, the lifecycle-off advisory POLISH round is removed. The hidden
+The advisory POLISH round was removed in 3.0.0. The hidden
 `--polish-round on|off` CLI/profile option is deprecated and ignored; it no
 longer enables a POLISH round.
-`--lifecycle-mode off` converges directly to DONE; lifecycle-on POLISH-Q remains available.
+Lifecycle POLISH-Q remains available.
 
 `--review-focus TEXT` supplies priorities to the reviewer, shadow and gate;
 `--quality-focus TEXT` supplies POLISH-Q priorities; `--review-style TEXT`
@@ -553,8 +555,7 @@ keeps the saved deadline and refuses a different one, and the operator actions
 keep the saved deadline. The deadline only blocks new dispatches: once it has
 passed, `resume` and `permission-probe` are refused without dispatching or
 touching the HOLD, so every HOLD keeps its reason and its exits
-(`accept --override-rejection` at a round-limit or rejected-tree HOLD,
-`note --scope-change`, `abort`). The one exception is an uncertain in-flight
+(`note --scope-change`, `abort`). The one exception is an uncertain in-flight
 turn: `resume` records it, and `resume --retry-uncertain` (or
 `permission-probe --retry-uncertain` for a probe turn) still verifies its
 process group is gone and archives it, then HOLDs with the deadline reason
@@ -575,28 +576,24 @@ next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
 `run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
 inspect whether `round_limit_hold.hold_reason` equals the current `hold_reason`.
-Other exits are `note --scope-change`, `abort`, or, with lifecycle off only,
-`accept --override-rejection --reason TEXT`. Ordinary notes cannot extend a cap.
+Other exits are `note --scope-change` or `abort`. Ordinary notes cannot extend a cap.
 
-A run ending in `DONE` is awaiting explicit operator acceptance. In either lifecycle
-mode, acceptance writes the Chinese `delivery-report.md` only at ACCEPTED and
+A run ending in `DONE` is awaiting explicit operator acceptance. Acceptance writes the Chinese `delivery-report.md` only at ACCEPTED and
 prints `REPORT: <path>`. A local commit prints `COMMIT: ...; not pushed`; a
 review-only acceptance leaving changes uncommitted prints `UNCOMMITTED: ...`. Use `accept` to
 record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
 no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope
 feedback to one more EXEC author turn. That turn goes through the configured
 review again and forces a gate review. Rejections are saved and limited to two
-by default; exhausting the limit puts the run on `HOLD`, which can still be
-explicitly accepted without another provider run only with lifecycle off. Lifecycle-on
-acceptance requires DONE; at HOLD, use note and resume when an author turn is
+by default; exhausting the limit puts the run on `HOLD`.
+Acceptance requires DONE; at HOLD, use note and resume when an author turn is
 available, a scope-change successor, or abort.
 
 Before accepting or rejecting, request an operator intent for the exact action.
 It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
 index, state and rejection text hashes; accept refuses a changed approved tree,
 and the mutation rechecks the intent under both leases. `resume --polish` was
-removed in 3.0.0; the option remains parsed only to refuse it. Lifecycle-off
-DONE no longer runs the FIELD-32 final gate recheck; lifecycle-on gate replay
+removed in 3.0.0; the option remains parsed only to refuse it. Lifecycle gate replay
 after writes remains in place.
 
 ```sh
@@ -609,8 +606,7 @@ bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" 
 `accept --reason TEXT` records the operator's acceptance reason; the intent
 digest covers it, so give the same `--reason` to `accept --intent-only` and to
 `accept`. `accept` refuses `--text` and `--file` (they belong to `reject` and
-`note`). `accept` also refuses while a CLI turn is active or uncertain (in the
-lifecycle-off and lifecycle-on routes alike): once its process group is gone,
+`note`). `accept` also refuses while a CLI turn is active or uncertain: once its process group is gone,
 settle a probe turn with `permission-probe --retry-uncertain` (a DONE run stays
 DONE) and any other turn with `resume --retry-uncertain`, or abort.
 
@@ -626,26 +622,9 @@ Operator rejection, including the tree held at the rejection limit, permanently
 records that tree's digest. An unchanged author answer enters `HOLD rejected-tree`
 before review. Status includes the author's rationale, truncated to 2,000 characters,
 and a pointer to that author receipt. The operator may add `note` guidance, change
-the workspace and resume a new author ingest, or, with lifecycle off only, explicitly rule on the exact held tree:
-
-```sh
-bin/paired-session accept --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" \
-  --override-rejection --reason 'I inspected the author rationale and accept this tree.'
-```
-
-With lifecycle off only, the override requires `HOLD rejected-tree`, a non-empty
-reason and an unchanged
-held snapshot. It records operator UID/time, reason, digest and rationale pointer
-in state, events and acceptance evidence. The same command is the owner's ruling
-at a current PLAN or EXEC round-limit HOLD (lifecycle off only): the
-HOLD records its tree, the override needs that HOLD to be the current one (any
-later HOLD cause, an operator-rejected tree, a changed tree, an active or
-uncertain turn or an empty reason is refused), and `acceptance.json` adds the
-recorded `round_limit_hold` and the findings still open (id, severity, source,
-security flag, one-line summary). Both leases and role run-dir write denials
-apply. This explicit ruling needs no separate intent preview; ordinary accept/reject
-still require `--expect`. `ACCEPTED` returns before stale checks. Retry-uncertain with
-no receipt follows plain resume; a fresh author ingest is required for rejected trees.
+the workspace and resume a new author ingest, or start a scope-change successor.
+Ordinary accept/reject require `--expect`; acceptance requires DONE.
+Retry-uncertain with no receipt follows plain resume; a fresh author ingest is required for rejected trees.
 
 Repeated same-class blocks (FIELD-5, v2.9.7): the EXEC reviewer, shadow and gate
 prompts ask for every blocking finding to start with an explicit defect-class
@@ -791,17 +770,7 @@ in the permission probe. Options for the operator:
 
 1. Pick a Claude author (`--author-vendor claude`) for that item. The default
    efficient mode needs no probe for it. In strict mode it needs a
-   passing Claude-author permission-probe, or (without lifecycle, D-7) the documented
-   `--accept-unverified-claude-author --reason` opt-in, which is the operator's
-   own decision (see the probe section above). The opt-in waives only the
-   Claude author's probe part: a report that is UNKNOWN solely because the author
-   probe could not prove the sandbox (author-model-escape-unknown or
-   author-model-refused) then passes the run/resume/reject gate, while a reviewer
-   or gate probe failure, a config change or any escape still blocks and
-   `--accept-probe-skip` is still refused for them. Claude Code's auto mode
-   blocks a `run --accept-unverified-claude-author` command as "Create Unsafe
-   Agents", so the owner launches such a run by hand in a terminal; with a
-   passing Claude author probe (poker-tools N4 run-02) the opt-in is not needed.
+   passing Claude-author permission-probe. Run permission-probe until it passes before starting a strict run.
 2. Split out the step that needs the capability and keep the rest in the work item.
 3. Run that step outside paired-session, by hand, and feed the result back as
    ordinary workspace content.

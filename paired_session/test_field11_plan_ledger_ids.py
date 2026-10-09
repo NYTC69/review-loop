@@ -82,16 +82,7 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertEqual(co.state['status'], 'HOLD')
         self.assertIn('work item: ledger-id-shaped tokens F123', co.state['hold_reason'])
 
-    def test_without_shadow_or_gate_nothing_scans_so_the_plan_moves_on(self):
-        co = self.approve(self.coordinator('--shadow', 'off', '--adversarial-gate', 'off', plan=PLAN_WITH_IDS))
-        self.assertEqual((co.state['phase'], co.state['next']), ('EXEC', 'author'))
 
-    def test_a_gate_forced_by_an_operator_note_still_triggers_the_check(self):
-        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off', plan=PLAN_WITH_IDS)
-        co.state['force_gate_after_reject'] = True
-        co.save()
-        self.approve(co)
-        self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
 
     def test_a_verdict_word_in_the_plan_is_caught_as_the_gate_would(self):
         co = self.approve(self.coordinator(plan='# Plan\n## Addressing REVISE notes\n1. Validate input.\n'))

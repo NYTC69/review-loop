@@ -34,7 +34,7 @@ class PolishRoundCompatibilityTests(unittest.TestCase):
                 return 0
 
             with contextlib.ExitStack() as stack:
-                stack.enter_context(patch.dict(os.environ))
+                stack.enter_context(patch.dict(os.environ, {'PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF': '1'}))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 stack.enter_context(patch.object(rc, 'program_snapshot', return_value=({'codex_bin': {'path': '/usr/bin/true'}}, None)))
                 stack.enter_context(patch.object(rc, 'refuse_default_codex_model_on_old_cli'))

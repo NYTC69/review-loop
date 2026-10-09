@@ -105,7 +105,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 profile.parent.mkdir(exist_ok=True)
                 profile.write_text(json.dumps({'lifecycle_mode': 'on'}))
                 argv = self.command('--config', str(profile))[2:]
-                with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled from a workspace profile'):
+                with self.assertRaisesRegex(ValueError, 'lifecycle_mode is operator-only'):
                     rc.configure_parser(rc.parser(), argv)
                 explicit = self.command('--config', str(profile), '--lifecycle-mode', 'on')[2:]
                 self.assertEqual(rc.configure_parser(rc.parser(), explicit).parse_args(explicit).lifecycle_mode, 'on')
@@ -1539,7 +1539,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         (self.run_dir / 'author-tmp').symlink_to(outside, target_is_directory=True)
         (outside / 'ops.json').write_text(json.dumps({'lifecycle_mode': 'on'}))
         argv = self.command('--config', str(outside / 'ops.json'))[2:]
-        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled from a workspace profile'):
+        with self.assertRaisesRegex(ValueError, 'lifecycle_mode is operator-only'):
             rc.configure_parser(rc.parser(), argv)
 
     def test_a_case_alias_of_the_workspace_profile_is_still_refused(self):
@@ -1549,5 +1549,5 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         if not alias.exists():
             self.skipTest('case-sensitive filesystem')
         argv = self.command('--config', str(alias))[2:]
-        with self.assertRaisesRegex(ValueError, 'lifecycle remains disabled from a workspace profile'):
+        with self.assertRaisesRegex(ValueError, 'lifecycle_mode is operator-only'):
             rc.configure_parser(rc.parser(), argv)
