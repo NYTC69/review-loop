@@ -219,6 +219,17 @@ class RealCoordinatorTests(unittest.TestCase):
             rc.frozen_role_manifest({}, flags, agents, gate_link, {'reviewer': 'reviewer.md'})
 
 
+    def test_lifecycle_on_freezes_role_manifest_and_turn_receipt(self):
+        from paired_session.lifecycle_fixtures import OnModeFixtures
+
+        co = rc.Coordinator(rc.parser().parse_args(OnModeFixtures.command_on(self)[2:]))
+        manifest = co.state['role_dispatch_manifest']
+        digest = co.state['role_dispatch_manifest_sha256']
+        self.assertEqual(co.state['config']['lifecycle_mode'], 'on')
+        self.assertEqual(manifest['role_flags']['author']['model'], co.args.author_model)
+        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', rc.author_schema())
+        self.assertEqual(co.state['turns'][-1]['role_identity_sha256'], digest)
+
     def test_lifecycle_role_manifest_drift_and_shared_tmp_fail_closed(self):
         co = self.coordinator()
         co.state['role_dispatch_manifest']['role_flags']['author']['model'] = 'gpt-6-sol'
@@ -3304,6 +3315,25 @@ sys.exit(result.returncode)
             rc.configure_parser(rc.parser(), ['run', '--workspace', str(self.workspace),
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
 
+
+    def test_lifecycle_on_freezes_docs_config_and_refuses_changed_docs_file(self):
+        from paired_session.lifecycle_fixtures import OnModeFixtures
+
+        argv = OnModeFixtures.command_on(self, '--docs-file', 'docs/guide.md',
+                                        '--docs-allowlist', 'docs/other.md', '--skip-quality-polish', 'true')[2:]
+        co = rc.Coordinator(rc.parser().parse_args(argv))
+        saved = co.state['config']
+        self.assertEqual(saved['lifecycle_mode'], 'on')
+        self.assertTrue(saved['skip_quality_polish'])
+        self.assertEqual(saved['docs_file'], str(self.workspace / 'docs/guide.md'))
+        self.assertEqual(saved['docs_allowlist'], sorted([str(self.workspace / 'docs/guide.md'),
+                                                        str(self.workspace / 'docs/other.md')]))
+        argv = OnModeFixtures.command_on(self, '--docs-file', 'docs/changed.md',
+                                        '--docs-allowlist', 'docs/other.md', '--skip-quality-polish', 'true')[2:]
+        argv[0] = 'resume'
+        args = rc.parser().parse_args(argv)
+        with self.assertRaisesRegex(ValueError, 'resume configuration differs: docs_file'):
+            rc.Coordinator(args)
 
     def test_lifecycle_on_and_old_done_are_refused_before_dispatch(self):
         self.run_dir = self.root / 'lifecycle-refusal'
