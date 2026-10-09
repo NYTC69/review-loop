@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.1.0：用户不能再选 lifecycle-off 路线（分步删除的第一步）
+
+**变更（会影响用户）**
+- `--lifecycle-mode off` 不再接受，所有 run 都走 worktree lifecycle（PLAN → EXEC → GATE → FINISH → POLISH-Q → DOCS → SECURITY）。review-only 也一律走 lifecycle。
+- 只在 off 路线下才有用的选项一并移除，会直接拒绝并说明改用什么：gate off、round-limit HOLD 的 override 验收、strict 模式下的 Claude-author opt-in 和 probe-skip 验收。`--accept-unverified-codex-cli` 保留。
+- 已经用 off 开跑的 run：resume、accept、reject、note、abort 等操作会被拒，提示改用固定副本 `~/paired-runs/review-loop-v3.0.4` 跑完；`status`、`stop`、`snapshot` 照常可用。
+- workspace 或 operator profile 里还写着 `"lifecycle_mode": "off"` 时，`status`、`stop`、`snapshot` 不受影响；其他操作的拒绝提示会写明这个设置来自哪个 profile 文件。
+
+**内部**
+- off 的代码路径暂时只留给测试套件使用（未写进文档的内部开关）。之后分步把测试迁到 on，迁完再删掉这条路径（ADR-18）。
+- 删掉 29 个只测 off 专属行为的测试，换成拒绝相关的测试；其中两个仍有通用价值的（turn 身份摘要、冻结的 docs 配置）改写成 on 模式保留。
+
 ### v3.0.4：3.0.2/3.0.3 终审建议收尾；evidence guard 不再误拦工作区里的 evidence/ 目录
 
 **修复**
