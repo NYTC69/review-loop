@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.1.1：恢复"gate 后停下"路线（`--lifecycle-mode off`）
+
+**修复**
+- v3.1.0 把 `--lifecycle-mode off` 对用户关掉了，这不是想要的效果。现在恢复为正式支持的路线：PLAN → EXEC → GATE → DONE（等待验收），之后的收尾、文档、安全审查和合并交回给你自己做；`auto_commit` 关闭时，accept 不提交，把工作区原样交回。行为与 v3.0.4 相同，原来的启动命令不用改。
+- 新 run 的默认仍是完整 lifecycle；要在 gate 后停下，显式传 `--lifecycle-mode off`，或在 profile 里写 `"lifecycle_mode": "off"`。
+- 已经用 off 开跑的 run 可以照常 resume、accept、reject、note、abort。
+- 仍然不支持：gate off、round-limit HOLD 的 override 验收、strict 模式下的 Claude-author opt-in 和 probe-skip 验收。拒绝提示不再说 off 已被删除。
+
+**内部**
+- 取消"分步删除 off 路线"的计划（ADR-19 取代 ADR-18）。
+- 165 个原本走 off 的测试改为在 on 下运行，断言不变。
+
 ### v3.1.0：用户不能再选 lifecycle-off 路线（分步删除的第一步）
 
 **变更（会影响用户）**
