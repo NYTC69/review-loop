@@ -293,6 +293,8 @@ vendor and model; plan and exec rounds, invocations and timeout; docs file and
 skip-quality-polish; and which values came from `.review-loop/config.md`. In
 strict mode, if `config.lifecycle_mode` is not `on`, run `abort` with the run's
 saved options and report a plugin version mismatch instead of starting the run.
+A saved off run is handled, including abort, with the pinned v3.0.4 copy at
+`~/paired-runs/review-loop-v3.0.4`; this release cannot abort it.
 
 While the run is active, do not call plain `status`: it needs the run lease
 and, while the run holds it, prints
@@ -301,7 +303,8 @@ HOLD. Read `RUN_DIR/state.json` directly or use `status --brief`. As a
 backstop, if the running state shows `config.lifecycle_mode` other than `on`,
 stop the running coordinator command (host skill), wait until the child in
 `state.active` has exited, run `abort` with the run's saved options, and report
-a plugin version mismatch.
+a plugin version mismatch. For a saved off run, run that abort with the pinned
+v3.0.4 copy at `~/paired-runs/review-loop-v3.0.4`.
 
 ## Existing runs and HOLD
 

@@ -185,8 +185,10 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
 Lifecycle-off was removed in this release; saved off runs finish on the pinned v3.0.4 copy
-at `~/paired-runs/review-loop-v3.0.4`. Resume, accept and reject refuse it;
-status, stop and snapshot remain available.
+at `~/paired-runs/review-loop-v3.0.4`. This release refuses run, resume, accept, reject, note,
+abort, permission-probe, attach-verification and use as a `--supersedes` parent;
+status, stop and snapshot remain available, including with an old off profile.
+Profile-sourced off refusals name the profile file and setting.
 The paired-session skill passes `--lifecycle-mode on` for every new run (D-4). The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);

@@ -28,17 +28,17 @@ class OffUserSurfaceTests(unittest.TestCase):
         return code, output.getvalue()
 
     def test_cli_off_and_each_removed_flag_are_refused_before_state(self):
-        cases = (('--lifecycle-mode', 'off'), ('--adversarial-gate', 'off'),
-                 ('--override-rejection',), ('--accept-unverified-claude-author',),
-                 ('--accept-probe-skip',))
-        for options in cases:
+        cases = ((('--lifecycle-mode', 'off'), 'use --lifecycle-mode on'),
+                 (('--adversarial-gate', 'off'), 'keep --adversarial-gate on'),
+                 (('--override-rejection',), 'use resume --add-rounds N or note --scope-change'),
+                 (('--accept-unverified-claude-author',), 'run permission-probe'),
+                 (('--accept-probe-skip',), 'run permission-probe'))
+        for options, alternative in cases:
             with self.subTest(options=options):
                 code, output = self.call_public(self.public_argv('run', *options))
                 self.assertEqual(code, 2, output)
                 self.assertIn('removed user option: ' + ' '.join(options), output)
-                self.assertIn('use --lifecycle-mode on', output)
-                self.assertIn('permission-probe', output)
-                self.assertIn('resume --add-rounds N or note --scope-change', output)
+                self.assertIn(alternative, output)
                 self.assertFalse((self.run_dir / 'state.json').exists())
                 with patch.dict(os.environ, {INTERNAL_OFF: '0'}):
                     with self.assertRaisesRegex(ValueError, 'removed user option'):
@@ -92,8 +92,45 @@ class OffUserSurfaceTests(unittest.TestCase):
         argv = self.command('--config', str(profile))[2:]
         code, output = self.call_public(argv)
         self.assertEqual(code, 2, output)
-        self.assertIn('--lifecycle-mode off', output)
+        self.assertIn('profile ' + str(profile) + ': lifecycle_mode=off', output)
+        self.assertIn('use --lifecycle-mode on', output)
         self.assertFalse((self.run_dir / 'state.json').exists())
+
+    def test_off_profiles_preserve_inspection_and_name_the_source_on_refusal(self):
+        co = self.coordinator()
+        before = co.state_path.read_bytes()
+        profiles = (self.root / 'operator.json', self.workspace / '.review-loop' / 'paired-session.json')
+        for profile in profiles:
+            profile.parent.mkdir(exist_ok=True)
+            for key in ('lifecycle_mode', 'adversarial_gate'):
+                with self.subTest(profile=profile, key=key):
+                    profile.write_text(json.dumps({key: 'off'}))
+                    for action in ('status', 'stop', 'snapshot'):
+                        argv = self.public_argv(action, '--config', str(profile))
+                        index = argv.index('--lifecycle-mode')
+                        del argv[index:index + 2]
+                        code, output = self.call_public(argv)
+                        self.assertEqual(code, 0, output)
+                        self.assertNotIn('REFUSED', output)
+                        self.assertEqual(co.state_path.read_bytes(), before)
+                    # A fresh run reaches profile admission rather than the saved-off gate.
+                    argv = self.public_argv('run', '--config', str(profile), '--run-dir', str(self.root / 'new-run'))
+                    index = argv.index('--lifecycle-mode')
+                    del argv[index:index + 2]
+                    code, output = self.call_public(argv)
+                    self.assertEqual(code, 2, output)
+                    self.assertIn('profile ' + str(profile) + ': ' + key + '=off', output)
+                    self.assertFalse((self.root / 'new-run').exists())
+            profile.unlink()
+
+    def test_status_reads_corrupt_or_non_object_state_without_off_precheck_refusal(self):
+        self.run_dir.mkdir()
+        for raw in ('not JSON', '[]', 'null', '"text"'):
+            with self.subTest(raw=raw):
+                (self.run_dir / 'state.json').write_text(raw)
+                code, output = self.call_public(self.public_argv('status'))
+                self.assertEqual(code, 0, output)
+                self.assertEqual(output.strip(), raw)
 
     def test_python_default_and_review_only_default_use_lifecycle_on(self):
         for review_only in (False, True):

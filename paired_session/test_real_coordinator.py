@@ -3363,7 +3363,7 @@ sys.exit(result.returncode)
         with patch('sys.stdout', new=io.StringIO()) as output:
             result = rc.main(self.command()[2:])
         self.assertEqual(result, 2)
-        self.assertIn('lifecycle remains disabled', output.getvalue())
+        self.assertIn('lifecycle_mode is operator-only', output.getvalue())
         self.assertFalse((self.run_dir / 'state.json').exists())
 
     def test_lifecycle_doc_paths_refuse_escape_before_state(self):

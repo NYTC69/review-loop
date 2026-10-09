@@ -567,16 +567,21 @@ def refuse_user_off(args, state=None):
             state is not None and state.get('config', {}).get('lifecycle_mode') == 'off'):
         raise ValueError(OFF_STATE_REFUSAL)
     removed = []
-    if getattr(args, 'lifecycle_mode', None) == 'off': removed.append('--lifecycle-mode off')
-    if getattr(args, 'adversarial_gate', None) == 'off': removed.append('--adversarial-gate off')
-    for dest, flag in (('override_rejection', '--override-rejection'),
-                       ('accept_unverified_claude_author', '--accept-unverified-claude-author'),
-                       ('accept_probe_skip', '--accept-probe-skip')):
-        if getattr(args, dest, False): removed.append(flag)
+    sources = getattr(args, 'off_profile_options', {}) or {}
+    inspection = getattr(args, 'action', None) in ('status', 'stop', 'snapshot')
+    options = (('lifecycle_mode', '--lifecycle-mode off', 'use --lifecycle-mode on', 'off'),
+               ('adversarial_gate', '--adversarial-gate off', 'keep --adversarial-gate on', 'off'),
+               ('override_rejection', '--override-rejection', 'use resume --add-rounds N or note --scope-change at a HOLD', True),
+               ('accept_unverified_claude_author', '--accept-unverified-claude-author', 'run permission-probe until it passes for strict runs', True),
+               ('accept_probe_skip', '--accept-probe-skip', 'run permission-probe until it passes for strict runs', True))
+    for dest, flag, alternative, value in options:
+        if getattr(args, dest, None) != value: continue
+        source = sources.get(dest)
+        if source and inspection: continue
+        label = f'profile {source}: {dest}={value}' if source else flag
+        removed.append(label + '; ' + alternative)
     if removed:
-        raise ValueError('removed user option: ' + ', '.join(removed) +
-                         '; use --lifecycle-mode on with the gate enabled, permission-probe for strict runs, '
-                         'and resume --add-rounds N or note --scope-change at a HOLD')
+        raise ValueError('removed user option: ' + '; '.join(removed))
     return False
 
 
@@ -9048,8 +9053,10 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
             continue
         if writable_profile and key in worktree_lifecycle.PROFILE_KEYS:
             p.set_defaults(workspace_lifecycle_keys=sorted({*(p.get_default('workspace_lifecycle_keys') or ()), key}))
+        if key in ('lifecycle_mode', 'adversarial_gate') and value == 'off':
+            p.set_defaults(off_profile_options={**(p.get_default('off_profile_options') or {}), key: str(config_path)})
         if key == 'lifecycle_mode' and value == 'on' and writable_profile:
-            raise ValueError('lifecycle remains disabled from a workspace profile; pass --lifecycle-mode on '
+            raise ValueError('lifecycle_mode is operator-only; pass --lifecycle-mode on '
                              'or use an operator --config outside the workspace, run dir and author temp')
         if key == 'allowed_models':
             p.set_defaults(allowed_models=value)
@@ -9259,8 +9266,10 @@ def main(argv=None) -> int:
     try:
         for run in (known.run_dir, known.supersedes):
             path = Path(run).expanduser() / 'state.json' if run else None
-            if path is not None and path.is_file():
-                refuse_user_off(known, json.loads(path.read_text()))
+            if path is not None:
+                try: state = json.loads(path.read_text())
+                except (OSError, ValueError): continue
+                if isinstance(state, dict): refuse_user_off(known, state)
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
         refuse_user_off(args)
     except ValueError as exc:
