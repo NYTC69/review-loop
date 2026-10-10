@@ -1,5 +1,25 @@
 # Changelog
 
+### v3.1.2：每条路线都检查新提交的凭据
+
+**新增：凭据扫描**
+- 每条路线都会检查本次改动新增的行里有没有硬编码凭据，包括 `--lifecycle-mode off`、review-only 和 review-pr 报告。检查在每次 EXEC 评审结论被接受之前和 gate 之前各做一次，不依赖 reviewer 是否看到。
+- 能识别的形态：JWT、`sk-` / `sk-ant-` / `sk-proj-` key、AWS key id、GitHub / Slack / Google / Stripe live token、私钥块，以及名字含 key、secret、token 或 password 的变量被赋了一长串随机字面量。占位符（`xxx`、`<...>`、`${...}`、changeme、example、dummy、test、`your_...`）和从环境变量或配置里读取的写法不会命中。
+- 命中后作者收到一条阻塞 finding，在正常的 EXEC 轮里改掉。finding 只写 `path:line` 和规则名，不写凭据的值。
+- 没有 EXEC 轮次可用时 run 会 HOLD：在工作区里删掉凭据后 `resume`（会重新评审），或者 abort。
+- review-pr 报告把它列在 Security 小节。要贴到 PR 的报告正文也按同样的规则检查，正文里引用了 JWT 或 `sk-` key 时不会发出去。
+- 故意保留的测试 fixture 可以豁免：在 work item 里加一行 `secret-scan-allow: <path or glob>`，每行一个路径、目录或 glob。豁免的命中记录在 `state.json` 的 `secret_scan` 里，不阻塞。
+
+**不变**
+- SECURITY 阶段仍然用原来的 6 条规则扫描整个仓库，行为与 v3.1.1 相同。仓库里原本就有的 JWT 样例或 key 命名的字面量不会拦住 run；新增的规则只看本次改动新增的行。`secret-scan-allow` 不影响这 6 条。
+
+**修复**
+- off 路线下 profile 写了 `auto_commit: true` 时，启动会提示这个设置被忽略（off 路线从不提交），交付报告里也有一行说明；accept 的输出不再写成"auto_commit off"。
+- workspace profile 设 `lifecycle_mode: on` 时的拒绝提示改为"lifecycle_mode on is operator-only"，说明 off 是允许的。
+- skill 只在没有 profile 设置 `lifecycle_mode` 时才传 `--lifecycle-mode on`，不再覆盖 profile 里的 off。
+- work item 点名带数字的模型 id（例如 `claude-opus-5-5`）时，id 的每一段都不算历史标记；"pre-Opus"这类没有数字段的写法不再豁免。
+- 带空格的文件路径在凭据扫描里能正确报出位置，`secret-scan-allow` 也能匹配。
+
 ### v3.1.1：恢复"gate 后停下"路线（`--lifecycle-mode off`）
 
 **修复**
