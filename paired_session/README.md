@@ -105,6 +105,32 @@ the history is still there or the plan changed in substance. Vendor names and ot
 only at the shadow or gate. The work item is never rewritten: a work item with
 `F001`-style identifiers or review narratives holds at PLAN, so keep them out.
 
+Secret scan (V312-S, every route, `--lifecycle-mode off` included): before each
+EXEC review verdict is accepted and before the gate, `leak_scan.py` reads the
+added lines of the run's change (`context/delta.patch`: tracked changes against
+the base plus new untracked files; a review-only or review-pr run, the change
+under review). The rules are `scripts/content_rules.py`, the one table the
+SECURITY preflight (`scripts/security_preflight.py`) also uses for the whole
+delivery: the six rules SECURITY already had, unchanged (`-----BEGIN ... PRIVATE
+KEY-----` blocks, `AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and `github_pat_`
+tokens, Slack `xox[baprs]-` tokens, Google `AIza` keys, Stripe live keys), plus
+JWTs (`eyJ` plus three base64url segments), `sk-`, `sk-ant-` and `sk-proj-` keys,
+and a name that contains key, secret, token or password given a quoted literal
+of 20+ characters without spaces. The added rules need a value that mixes
+letters and digits with one random-looking run of 16+ characters and skip
+placeholders (`xxx`, `<...>`, `${...}`, changeme, example, dummy, test,
+`your_...`, a single repeated character); an environment or config lookup is not
+a quoted literal and never matches. A hit is one program finding (`secret-scan`, severity SECURITY) that
+the author repairs in a normal EXEC round; the scan closes it once the lines are
+gone. It names `path:line (kind)` only, never the value, in the ledger, prompts,
+progress, state and reports. With no EXEC round left the run holds with
+`secret scan: the change still adds a hardcoded credential at ...`; a review-pr
+report lists the finding under Security. A deliberate test fixture is exempted
+by a `secret-scan-allow: <path, directory or glob>` line in the work item, one
+per line; its hits are recorded as exempted in `state.json` (`secret_scan`). The
+scan catches the realistic mistake of committing a real credential; obfuscated or
+deliberately hidden values are out of scope.
+
 ## Local marketplace installs
 
 Installing a plugin from a local directory marketplace copies the whole directory,

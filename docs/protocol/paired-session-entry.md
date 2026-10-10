@@ -112,6 +112,7 @@ the product worktree, and best outside any git repository: tools that refuse
 scratch space inside a repository then fall back to /tmp, which the Codex
 read-only sandbox denies; `run` warns about it) with goal, acceptance criteria, scope, and verification.
 The first line is the title, `# <one-line summary of the task>`: `accept` uses it as the commit title and the delivery report names the work item with it, so never a generic heading such as `# Work item`.
+Add a `secret-scan-allow: <path or glob>` line (one per path) only when the user says a secret-like literal under that path is a deliberate test fixture; the coordinator's secret scan otherwise blocks it.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;

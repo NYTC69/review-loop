@@ -18,8 +18,10 @@ import subprocess
 import sys
 
 try:
+    import content_rules
     import delivery_scope as ds
 except ModuleNotFoundError:  # imported as scripts.security_preflight
+    from scripts import content_rules
     from scripts import delivery_scope as ds
 
 RULES_VERSION = "security-preflight/v1"
@@ -41,14 +43,6 @@ PATH_RULES = (
     ("log-file", re.compile(r"(?:\.log$|(?:^|/)logs(?:/|$))", re.I)),
 )
 EXAMPLE_SUFFIX = re.compile(r"\.(?:example|sample)(?:\.[^/]*)?$", re.I)
-CONTENT_RULES = (
-    ("private-key-block", re.compile(rb"-----BEGIN (?:(?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY|ENCRYPTED PRIVATE KEY)-----")),
-    ("aws-access-key-id", re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
-    ("github-token", re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})\b")),
-    ("slack-token", re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
-    ("google-api-key", re.compile(rb"\bAIza[0-9A-Za-z_-]{35}\b")),
-    ("stripe-live-key", re.compile(rb"\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b")),
-)
 IGNORE_CASES = {
     "environment-and-config": ((".env", ".env.local", "apps/service.env"), (".env.example",)),
     "keys-and-certificates": (("keys/private.pem", "keys/app.key", "certs/app.crt", "certs/app.cert",
@@ -69,6 +63,14 @@ IGNORE_CASES = {
 
 class ScanError(Exception):
     pass
+
+
+def _content_findings(content: bytes) -> list:
+    """(rule, line) under the shared table scripts/content_rules.py (V312-S), one per rule and line; never the value."""
+    found = content_rules.scan_text(content.decode("utf-8", "replace"))
+    if len(found) > MAX_FINDINGS:
+        raise ScanError("finding-count limit exceeded")
+    return found
 
 
 def _report(**fields) -> dict:
@@ -192,20 +194,11 @@ def _read_and_scan(root: str, path: str, expected: dict, total_left: int) -> tup
             after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
         ) or size != expected.get("size") or raw_hash.hexdigest() != expected.get("sha256"):
             raise ScanError("file changed or no longer matches the manifest")
-        for rule, pattern in CONTENT_RULES:
-            cursor = 0
-            line = 1
-            for hit in pattern.finditer(content):
-                line += content.count(b"\n", cursor, hit.start())
-                matched.append({"rule": rule, "path": path, "line": line})
-                cursor = hit.end()
-                if len(matched) > MAX_FINDINGS:
-                    raise ScanError("finding-count limit exceeded")
+        # Several markers on one line collapse to one finding per rule and line.
+        matched = [{"rule": rule, "path": path, "line": line} for rule, line in _content_findings(bytes(content))]
     finally:
         os.close(fd)
-    # Several markers on one line collapse to one finding per rule and line.
-    unique = {(item["rule"], item["path"], item["line"]): item for item in matched}
-    return size, list(unique.values())
+    return size, matched
 
 
 def _bind_findings_to_git_state(findings: list, state: dict) -> list:
@@ -249,13 +242,7 @@ def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
         raise ScanError("content scan limit exceeded")
     if process.returncode:
         raise ScanError("cannot read staged blob for " + path)
-    findings = []
-    for rule, pattern in CONTENT_RULES:
-        for hit in pattern.finditer(content):
-            findings.append({"rule": rule, "path": path, "line": content.count(b"\n", 0, hit.start()) + 1,
-                             "source": "index"})
-            if len(findings) > MAX_FINDINGS:
-                raise ScanError("finding-count limit exceeded")
+    findings = [{"rule": rule, "path": path, "line": line, "source": "index"} for rule, line in _content_findings(content)]
     return len(content), findings
 
 
@@ -344,12 +331,12 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
 
 
 def scan_file(path: str) -> list:
-    """One file under CONTENT_RULES (the review-pr post body, LG2-b2): rule and line only, never the matched value."""
+    """One file under the content rules (the review-pr post body, LG2-b2): rule and line only, never the matched value."""
     content = Path(path).read_bytes()
     if len(content) > MAX_FILE_BYTES:
         raise ScanError("content scan limit exceeded")
-    found = {(rule, content.count(b"\n", 0, hit.start()) + 1) for rule, pattern in CONTENT_RULES for hit in pattern.finditer(content)}
-    return [{"rule": rule, "line": line} for rule, line in sorted(found, key=lambda item: (item[1], item[0]))]
+    return [{"rule": rule, "line": line}
+            for rule, line in sorted(_content_findings(content), key=lambda item: (item[1], item[0]))]
 
 
 def start_coverage(repo_path: str) -> dict:

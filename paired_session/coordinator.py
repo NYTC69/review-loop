@@ -43,6 +43,7 @@ try:
     from paired_session import readonly_guard
     from paired_session import lifecycle_spine
     from paired_session import operator_verification as opv
+    from paired_session import leak_scan
     from paired_session import sensitive_policy
     from paired_session import worktree_lifecycle
     from paired_session import review_report
@@ -59,6 +60,7 @@ except ModuleNotFoundError:
     import readonly_guard
     import lifecycle_spine
     import operator_verification as opv
+    import leak_scan
     import sensitive_policy
     import worktree_lifecycle
     import review_report
@@ -3298,17 +3300,22 @@ class Coordinator:
             elif source.is_file():
                 shutil.copy2(source, destination)
 
-    def materialize_review_context(self) -> None:
-        """Create program-owned, read-only review views without reviewer Git Bash access."""
+    def _delta_patch(self) -> tuple[str, list[str]]:
+        """The run's change: tracked changes against the base plus every new untracked file, and those untracked names."""
         base = self.state.get('base_commit')
         tracked = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--binary', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--binary', '--'])
-        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, base, '--'] if base else
-                         ['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, '--'])
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
             additions.append(self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
-        delta = tracked + ''.join(additions)
+        return tracked + ''.join(additions), untracked
+
+    def materialize_review_context(self) -> None:
+        """Create program-owned, read-only review views without reviewer Git Bash access."""
+        base = self.state.get('base_commit')
+        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, base, '--'] if base else
+                         ['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, '--'])
+        delta, untracked = self._delta_patch()
         untracked_stat = ''.join(f'UNTRACKED {name} ({(self.workspace / name).lstat().st_size} bytes)\n'
                                  for name in untracked)
         atomic_text(self.context / 'delta.patch', delta)
@@ -4998,6 +5005,47 @@ class Coordinator:
                                  'cannot reach them; reword every listed place without finding ids, review narrative or '
                                  'reviewer names unless the frozen work item is about those bare names; review '
                                  'attributions and other history markers remain forbidden')}])
+
+    def _secret_scan_findings(self, phase: str, sequence: int) -> list[dict]:
+        """V312-S (owner 2026-10-10): a hardcoded credential on a line the run's change adds is a blocking program finding
+        on every route, whatever the reviewers saw: the author repairs it in a normal EXEC round, a report run lists it.
+        Hits under a `secret-scan-allow:` path of the work item are recorded as exempted. Only path:line and the pattern
+        kind are written, never the value. One open row carries the current hit list; a clean scan closes it."""
+        hits = leak_scan.scan_patch(self._delta_patch()[0], self._git_unquote)
+        workitem = self.context / 'workitem.md'
+        allow = leak_scan.allow_patterns(workitem.read_text(errors='replace') if workitem.is_file() else '')
+        blocking = [hit for hit in hits if not leak_scan.exempt(hit['path'], allow)]
+        exempted = [leak_scan.where(hit) for hit in hits if hit not in blocking]
+        self.state['secret_scan'] = {'sequence': sequence, 'blocking': [leak_scan.where(hit) for hit in blocking],
+                                     'exempted': exempted}
+        if hits:
+            self.progress('secret_scan', blocking=f'{len(blocking)} blocking', exempted=f'{len(exempted)} exempted')
+        summary = ('the change adds a hardcoded credential at ' + ', '.join(map(leak_scan.where, blocking[:10]))
+                   + (f', +{len(blocking) - 10} more' if len(blocking) > 10 else '')) if blocking else None
+        stale = [row for row in self.open_findings() if row['source'] == 'secret-scan' and row['summary'] != summary]
+        for row in stale:
+            row['status'] = 'fixed'
+            row['status_history'].append({'round': sequence, 'status': 'fixed', 'evidence': 'secret scan: no longer in the change'
+                                          if not blocking else 'secret scan: replaced by the current hit list'})
+            self._progress_finding(row)
+        if stale:
+            self.write_ledger()
+        if not blocking:
+            return []
+        finding = {'severity': 'SECURITY', 'security': True, 'file': f"{blocking[0]['path']}:{blocking[0]['line']}",
+                   'summary': summary,
+                   'failure_scenario': ('a credential committed with the change is published with it; remove the literal from '
+                                        'every listed line and read it from the environment or a secret store instead (a '
+                                        'test needs an obviously fake value)')}
+        if same := next((row for row in self.open_findings() if row['source'] == 'secret-scan'), None):
+            return [{'id': same['id'], **finding}]   # the same hit list, still open: one row, not one per round
+        return self.record_findings('secret-scan', phase, sequence, [finding])
+
+    def _secret_scan_hold_reason(self) -> str:
+        blocking = self.state['secret_scan']['blocking']
+        return ('secret scan: the change still adds a hardcoded credential at ' + ', '.join(blocking[:10])
+                + (f', +{len(blocking) - 10} more' if len(blocking) > 10 else '')
+                + '; no EXEC round is left to remove it; remove it from the workspace and resume, or abort')
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
@@ -7320,6 +7368,10 @@ class Coordinator:
             answer['full_review'].extend(leak)
             if answer['status'] == 'APPROVE':
                 answer['status'] = 'REVISE'
+        if secrets := self._secret_scan_findings(phase, result['sequence']) if phase == 'EXEC' else []:   # V312-S: every route
+            answer['full_review'].extend(secrets)
+            if answer['status'] == 'APPROVE':
+                answer['status'] = 'REVISE'
         if not leak and phase == 'EXEC' and (self.args.shadow == 'on' or replaying):
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
@@ -7436,6 +7488,9 @@ class Coordinator:
             rounds = self.state[f'{phase.lower()}_rounds']
             if rounds >= limit:
                 self.state['pending_reviewer_result_sequence'] = None
+                if secrets:
+                    self.hold(self._secret_scan_hold_reason())
+                    return
                 self.round_limit_hold(f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
@@ -7560,6 +7615,19 @@ class Coordinator:
         return None
 
     def gate_turn(self) -> None:
+        secrets = self._secret_scan_findings('EXEC', self.state['sequence'])   # V312-S: a tree that changed since the review
+        if secrets and not self.state['config'].get('review_report'):
+            self.set_effective_verdict('REVISE')
+            if self.state['exec_rounds'] >= self.exec_round_limit():
+                self.hold(self._secret_scan_hold_reason())
+                return
+            self.state['delivered_review'] = json.dumps({
+                'source': 'secret-scan', 'status': 'REVISE',
+                'findings': [{key: row[key] for key in ('id', 'severity', 'file', 'summary', 'failure_scenario')}
+                             for row in secrets]}, ensure_ascii=False)
+            self.state['next'] = 'author'
+            self.save()
+            return
         self.materialize_review_context()
         snapshot, _ = git_snapshot(self.workspace)
         result = self.invoke('gate', 'EXEC', self._gate_prompt(snapshot), gate_schema(), fresh=True)
