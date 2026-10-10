@@ -3303,11 +3303,12 @@ class Coordinator:
     def _delta_patch(self) -> tuple[str, list[str]]:
         """The run's change: tracked changes against the base plus every new untracked file, and those untracked names."""
         base = self.state.get('base_commit')
-        tracked = self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--binary', base, '--'] if base else ['diff', *candidate_tree.NO_EXT_DIFF, '--binary', '--'])
+        diff = ['diff', *candidate_tree.NO_EXT_DIFF, '--src-prefix=a/', '--dst-prefix=b/']   # whatever diff.mnemonicPrefix or diff.noprefix the operator's git config sets
+        tracked = self._git([*diff, '--binary', base, '--'] if base else [*diff, '--binary', '--'])
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
-            additions.append(self._git(['diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
+            additions.append(self._git([*diff, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
         return tracked + ''.join(additions), untracked
 
     def materialize_review_context(self) -> None:
@@ -5036,7 +5037,9 @@ class Coordinator:
                    'summary': summary,
                    'failure_scenario': ('a credential committed with the change is published with it; remove the literal from '
                                         'every listed line and read it from the environment or a secret store instead (a '
-                                        'test needs an obviously fake value)')}
+                                        'test needs an obviously fake value); if a listed line is a false positive or a '
+                                        'deliberate fixture, say so in body: its path needs a `secret-scan-allow: <path or '
+                                        'glob>` line in the work item of a new run, because this run\'s work item is frozen')}
         if same := next((row for row in self.open_findings() if row['source'] == 'secret-scan'), None):
             return [{'id': same['id'], **finding}]   # the same hit list, still open: one row, not one per round
         return self.record_findings('secret-scan', phase, sequence, [finding])
@@ -5045,7 +5048,9 @@ class Coordinator:
         blocking = self.state['secret_scan']['blocking']
         return ('secret scan: the change still adds a hardcoded credential at ' + ', '.join(blocking[:10])
                 + (f', +{len(blocking) - 10} more' if len(blocking) > 10 else '')
-                + '; no EXEC round is left to remove it; remove it from the workspace and resume, or abort')
+                + '; no EXEC round is left to remove it; remove it from the workspace and resume, or abort (a false positive '
+                  'or a deliberate fixture needs a `secret-scan-allow: <path or glob>` line in the work item of a new run: '
+                  'this run\'s work item is frozen)')
 
     @staticmethod
     def _git_unquote(body: str) -> Optional[str]:
