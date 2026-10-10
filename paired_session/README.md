@@ -105,6 +105,40 @@ the history is still there or the plan changed in substance. Vendor names and ot
 only at the shadow or gate. The work item is never rewritten: a work item with
 `F001`-style identifiers or review narratives holds at PLAN, so keep them out.
 
+Secret scan (V312-S, every route, `--lifecycle-mode off` included): before each
+EXEC review verdict is accepted and before the gate, `leak_scan.py` reads the
+added lines of the run's change (`context/delta.patch`: tracked changes against
+the base plus new untracked files; a review-only or review-pr run, the change
+under review). The rules are `scripts/content_rules.py`, one table with a scope
+per rule. Added lines are text the run adds, so this scan applies every rule:
+the six `whole-delivery` rules (`-----BEGIN ... PRIVATE KEY-----` blocks,
+`AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and `github_pat_` tokens, Slack
+`xox[baprs]-` tokens, Google `AIza` keys, Stripe live keys) and the `added-text`
+rules: JWTs (`eyJ` plus three base64url segments), `sk-`, `sk-ant-` and
+`sk-proj-` keys, and a name that contains key, secret, token or password given a
+quoted literal of 20+ characters without spaces. The SECURITY preflight
+(`scripts/security_preflight.py`) reads the whole worktree, files the run never
+touched included, and holds on any hit with no repair, so it applies only the six
+`whole-delivery` rules, exactly as before V312-S: a JWT-shaped sample or a
+key-named literal the repository already contained does not hold a run. Its
+`--file` scan of a review-pr post body is published text and applies every rule.
+The added rules need a value that mixes
+letters and digits with one random-looking run of 16+ characters and skip
+placeholders (`xxx`, `<...>`, `${...}`, changeme, example, dummy, test,
+`your_...`, a single repeated character); an environment or config lookup is not
+a quoted literal and never matches. A hit is one program finding (`secret-scan`, severity SECURITY) that
+the author repairs in a normal EXEC round; the scan closes it once the lines are
+gone. It names `path:line (kind)` only, never the value, in the ledger, prompts,
+progress, state and reports. With no EXEC round left the run holds with
+`secret scan: the change still adds a hardcoded credential at ...`; a review-pr
+report lists the finding under Security. A deliberate test fixture is exempted
+by a `secret-scan-allow: <path, directory or glob>` line in the work item, one
+per line; its hits are recorded as exempted in `state.json` (`secret_scan`). The
+marker exempts hits of this every-route scan only: the SECURITY stage's six
+whole-delivery rules are not affected by it. The
+scan catches the realistic mistake of committing a real credential; obfuscated or
+deliberately hidden values are out of scope.
+
 ## Local marketplace installs
 
 Installing a plugin from a local directory marketplace copies the whole directory,
@@ -185,7 +219,7 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
-The paired-session skill defaults to `--lifecycle-mode on` (D-4); when the user or selected profile chooses off, it passes `--lifecycle-mode off` instead. The frozen config also records exact
+The paired-session skill passes `--lifecycle-mode on` (D-4) only when no operator/workspace profile sets `lifecycle_mode`; when one does, it omits the flag so the profile value applies, and when the user chooses off, it passes `--lifecycle-mode off`. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the

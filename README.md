@@ -395,6 +395,17 @@ and logs it to `progress.jsonl` in the run directory; `status --brief` shows the
 EXEC approval needs their own run evidence (`self_run_evidence`; a review-pr report run without a test
 command may approve statically).
 
+**Secret scan** — On every route, `--lifecycle-mode off` included, the coordinator scans the lines the change adds
+for hardcoded credentials (JWTs, `sk-` / `sk-ant-` / `sk-proj-` keys, AWS key ids, GitHub, Slack, Google and Stripe
+live tokens, private-key blocks, and a key/secret/token/password name given a long random-looking quoted literal)
+before each EXEC review verdict and before the gate. A hit is a blocking finding for the author that names only
+`path:line` and the rule, never the value; with no EXEC round left the run holds, and a review-pr report lists it.
+Exempt a deliberate test fixture with a `secret-scan-allow: <path or glob>` line in the work item (one per line).
+The rules are one table (`scripts/content_rules.py`) with a scope per rule: the SECURITY stage scans the whole
+delivery, files the run never touched included, with only the six rules it always had (private-key blocks, AWS key
+ids, GitHub, Slack, Google and Stripe live tokens), and the marker does not exempt those; the JWT, `sk-` and
+key-named-literal rules apply only to lines the run adds and to a review-pr post body.
+
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
 

@@ -24,10 +24,11 @@ macOS only. The user-facing description is README.md.
   `permission-probe`, …), the state machine, role dispatch, the finding ledger, budgets and acceptance. Helpers beside
   it include `worktree_lifecycle.py` (stage prompts, specialists, writers, the delivery report), `lifecycle_spine.py`
   (stage receipts), `review_report.py` (report mode and the delivery-report sections), `review_post.py` (the opt-in PR
-  post), `docs_policy.py`, `evidence_guard.py`, `security_repair_policy.py`, `sensitive_policy.py` and
+  post), `docs_policy.py`, `evidence_guard.py`, `leak_scan.py` (the every-route credential scan of the change),
+  `security_repair_policy.py`, `sensitive_policy.py` and
   `operator_verification.py`. `paired_session/README.md` is the operator reference for the coordinator CLI.
 - `scripts/`: `delivery_scope.py` (delivery baselines and manifests) and `security_preflight.py` (the secret and
-  `.gitignore` scan) for SECURITY, `materialize_pr.py` (review-pr clones), `adversarial_gate_fallback_prompt.txt` (the
+  `.gitignore` scan) for SECURITY, `content_rules.py` (the one credential rule table, with a scope per rule: that whole-delivery scan applies six rules, `leak_scan.py` and the review-pr post-body scan apply all), `materialize_pr.py` (review-pr clones), `adversarial_gate_fallback_prompt.txt` (the
   default gate prompt), `read_protocol.py`, `run-skill-lint`.
 - `agents/*.md`: the role bodies, all hashed into the frozen role manifest; the specialists' and the simplifier's
   bodies are inlined into their turns.

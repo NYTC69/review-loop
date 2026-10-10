@@ -112,6 +112,7 @@ the product worktree, and best outside any git repository: tools that refuse
 scratch space inside a repository then fall back to /tmp, which the Codex
 read-only sandbox denies; `run` warns about it) with goal, acceptance criteria, scope, and verification.
 The first line is the title, `# <one-line summary of the task>`: `accept` uses it as the commit title and the delivery report names the work item with it, so never a generic heading such as `# Work item`.
+Add a `secret-scan-allow: <path or glob>` line (one per path) only when the user says a secret-like literal under that path is a deliberate test fixture; the coordinator's secret scan otherwise blocks it.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
@@ -146,7 +147,7 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   "Review the change for correctness" is enough) and carries no review history
   (ledger ids or earlier findings).
 - Pass `--review-only` (and `--base`) to `permission-probe` and `run`
-  identically, with `--lifecycle-mode on` as for any new run. Later commands read
+  identically, with the lifecycle flag of any new run (Safety mode and the first commands). Later commands read
   the entry and base from the saved state; never pass a different `--base`.
 - `run` refuses before creating any state when the change is empty, the index
   has unmerged entries or partially staged paths, the base is not an ancestor of
@@ -252,11 +253,11 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 
 ## Safety mode and the first commands
 
-By default, pass `--lifecycle-mode on` to `run` and, in strict mode, to
-`permission-probe`, identically; the CLI value overrides any profile value. Never pass
+Pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically, only when no operator/workspace profile sets `lifecycle_mode`.
+The CLI value overrides any profile value, so when a profile sets `lifecycle_mode`, omit the flag (or pass the
+profile's value) in both commands. Never pass
 `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative.
-When the user selects the stop-after-gate route, replace `on` with `off` in both
-commands; honor an operator/workspace profile selecting off instead of overriding it.
+When the user selects the stop-after-gate route, pass `--lifecycle-mode off` in both commands.
 The removed `--adversarial-gate off`, `--override-rejection`,
 `--accept-unverified-claude-author` and `--accept-probe-skip` options are refused.
 Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, and permission-probe for strict runs.
@@ -294,7 +295,7 @@ its frozen `config` and print one start line from it: author, reviewer and gate
 vendor and model; plan and exec rounds, invocations and timeout; docs file and
 skip-quality-polish; and which values came from `.review-loop/config.md`. In
 strict mode, if `config.lifecycle_mode` differs from the selected mode (`on` by default,
-`off` for the stop-after-gate route), run `abort` with the run's
+`off` for the stop-after-gate route, the profile's `lifecycle_mode` when it sets one), run `abort` with the run's
 saved options and report a plugin version mismatch instead of starting the run.
 
 While the run is active, do not call plain `status`: it needs the run lease

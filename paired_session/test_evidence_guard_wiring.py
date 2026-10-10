@@ -1,6 +1,7 @@
 """v297-eg-wire: the hybrid wiring of the typed-operation evidence guard (owner 2026-10-04). A call the guard resolves is decided by
 it (PROTECTED holds, ALLOW passes where the old substring match held by mistake); a call it cannot resolve falls back to the
-pre-v2.9.7 substring guard exactly as before, and the receipt counts those fallbacks. The post-dispatch call site gets the call's own
+narrowed fallback guard (v3.0.4: literal run-directory spellings, bare or parent-hop evidence/ paths, role isolation; a nested
+workspace path such as tests/evidence/ no longer holds), and the receipt counts those fallbacks. The post-dispatch call site gets the call's own
 context (Popen cwd, child env without secret-named variables, writable roots, configured commands); Codex keeps a command's workdir;
 admission refuses only a configured command that names a protected path."""
 import json
@@ -120,7 +121,7 @@ class EvidenceGuardWiringTests(unittest.TestCase):
             self.assertEqual(fallbacks, [])   # decided by the guard on the proven cwd
         self.assertIsNone(rc._legacy_sensitive_access(calls[1:], 'author', self.evidence, self.rounds))   # workspace false HOLD fixed
 
-    def test_an_unproven_codex_cwd_behaves_exactly_as_today(self):
+    def test_an_unproven_codex_cwd_behaves_exactly_as_today(self):   # no proven cwd: the narrowed fallback guard decides
         same_name, other = 'cat evidence/a.txt', str(self.h.root.as_uri())
         for label, items, commands, kw in (
                 ('another turn', [{'command': same_name, 'turn': 'T2'}], [same_name], {}),
@@ -140,7 +141,7 @@ class EvidenceGuardWiringTests(unittest.TestCase):
                 fallbacks = []
                 self.assertEqual(rc.sensitive_access(guarded, 'author', self.evidence, self.rounds, cwd, {}, (self.h.workspace,), (), fallbacks),
                                  rc._legacy_sensitive_access(calls, 'author', self.evidence, self.rounds))
-                self.assertEqual(len(fallbacks), 1)   # the first unresolved call already holds, as today
+                self.assertEqual(len(fallbacks), 1)   # the first unresolved call already holds in the fallback guard
 
     def test_code_mode_cells_get_the_turn_cwd_only_when_every_command_is_proven(self):
         cell = {'tool': 'code_mode', 'input': {'code': 'const r = await tools.exec_command({"cmd": "cat tests/evidence/a.txt"});\ntext(r);'}}
@@ -229,7 +230,7 @@ class EvidenceGuardWiringTests(unittest.TestCase):
         _, calls = rc.observed_events('codex', [{'type': 'item.completed', 'item': {'type': 'command_execution', 'command': 'cat x/../evidence/a',
                                                                                     'exit_code': 0}}])
         self.assertEqual(rc.sensitive_access(calls, 'reviewer', self.evidence, self.rounds, None, fallbacks=fallbacks), 'evidence directory')
-        self.assertEqual(len(fallbacks), 1)   # no workdir, no known cwd: the substring guard decides, as before
+        self.assertEqual(len(fallbacks), 1)   # no workdir, no known cwd: the narrowed fallback guard decides (a parent hop holds)
 
     def test_admission_refuses_only_a_configured_command_that_names_a_protected_path(self):
         self.assertIsNone(rc.configured_command_issue(self.h.workspace, self.h.run_dir, [

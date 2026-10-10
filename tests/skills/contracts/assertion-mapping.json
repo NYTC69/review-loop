@@ -131,7 +131,7 @@
     "paired_session_skill_lifecycle_mode_on": [
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "By default, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
+        "needle": "Pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically, only when no operator/workspace profile sets `lifecycle_mode`"
       },
       {
         "path": "skills/paired-session/SKILL.md",
@@ -143,7 +143,7 @@
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "By default, pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically"
+        "needle": "Pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically, only when no operator/workspace profile sets `lifecycle_mode`"
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
@@ -152,6 +152,18 @@
       {
         "path": ".agents/skills/paired-session/SKILL.md",
         "needle": "bin/paired-session\" run \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
+        "needle": "pass it only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value)"
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "pass it only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value)"
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "so when a profile sets `lifecycle_mode`, omit the flag (or pass the profile's value) in both commands"
       }
     ],
     "paired_session_skill_saved_lifecycle_mode": [
