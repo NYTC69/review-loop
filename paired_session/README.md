@@ -135,7 +135,10 @@ report lists the finding under Security. A deliberate test fixture is exempted
 by a `secret-scan-allow: <path, directory or glob>` line in the work item, one
 per line; its hits are recorded as exempted in `state.json` (`secret_scan`). The
 marker exempts hits of this every-route scan only: the SECURITY stage's six
-whole-delivery rules are not affected by it. The
+whole-delivery rules are not affected by it. Lines the FINISH, POLISH-Q and DOCS
+writers add after the gate are covered by those six SECURITY rules, not by the
+added rules, unless the stage sends the run back through EXEC (the review and
+the gate, where this scan runs again). The
 scan catches the realistic mistake of committing a real credential; obfuscated or
 deliberately hidden values are out of scope.
 

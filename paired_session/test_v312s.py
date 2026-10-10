@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -130,6 +131,18 @@ class ScannerTests(unittest.TestCase):
                              [('github-token', 'settings.txt', 2)])
             self.assertNotIn(VALUES['github-token'], json.dumps(report))
 
+    def test_the_coordinator_starts_beside_a_foreign_scripts_package(self):   # gate round: an ordinary Python environment
+        with tempfile.TemporaryDirectory() as scratch:   # a user's project root on PYTHONPATH with its own regular package
+            (Path(scratch) / 'scripts').mkdir()
+            (Path(scratch) / 'scripts' / '__init__.py').write_text('')
+            entry = Path(leak_scan.__file__).resolve().parents[1] / 'bin' / 'paired-session'
+            result = subprocess.run([sys.executable, str(entry), '--help'], env={**os.environ, 'PYTHONPATH': scratch},
+                                    cwd=scratch, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn('permission-probe', result.stdout)
+        rules = Path(leak_scan.content_rules.__file__).resolve()             # this repository's table, whatever sys.path holds
+        self.assertEqual(rules, Path(leak_scan.__file__).resolve().parents[1] / 'scripts' / 'content_rules.py')
+
     def test_only_added_lines_count_with_path_and_new_line_number(self):
         patch_text = (f'diff --git a/app.py b/app.py\nindex 1..2 100644\n--- a/app.py\n+++ b/app.py\n'
                       f'@@ -1,3 +1,3 @@\n import os\n-OLD = "{VALUES["github-token"]}"\n+KEY = "{JWT}"\n'
@@ -235,7 +248,10 @@ class SecretScanRunTests(unittest.TestCase):
         self.assertEqual(co.state['status'], 'HOLD')
         self.assertEqual(co.state['hold_reason'],
                          f'secret scan: the change still adds a hardcoded credential at {SERVICE}:2 (jwt); no EXEC round is '
-                         'left to remove it; remove it from the workspace and resume, or abort')
+                         'left to remove it; remove it from the workspace and resume, or abort (a false positive or a '
+                         'deliberate fixture needs a `secret-scan-allow: <path or glob>` line in the work item of a new run: '
+                         "this run's work item is frozen)")
+        self.assertIn('needs a `secret-scan-allow: <path or glob>` line in the work item of a new run', row['failure_scenario'])
         self.assertEqual([r['id'] for r in self.rows()], [row['id']])        # the same hit list stays one row
         self.assert_value_never_written()
 
@@ -280,6 +296,32 @@ class SecretScanRunTests(unittest.TestCase):
         self.assertEqual(self.rows(), [])
         self.assertEqual((co.state['secret_scan']['blocking'], co.state['secret_scan']['exempted']),
                          ([], [f'{tracked}:2 (jwt)', f'{new}:1 (jwt)']))
+
+    def test_the_operators_diff_prefix_settings_do_not_change_the_reported_path(self):   # gate round: an ordinary git setting
+        fixture = 'tests/fixtures/token.py'
+        co = self.start(workitem_extra='secret-scan-allow: tests/fixtures/*\n',
+                        files={f23.SWIFT: f23.BASE_SWIFT, 'app.py': 'x = 1\n'})
+        self.t.write('app.py', f'x = 1\nKEY = "{JWT}"\n')                    # tracked: "+++ w/app.py" under mnemonicPrefix
+        self.t.write(fixture, f'TOKEN = "{JWT}"\n')                          # untracked, --no-index: "+++ 2/tests/..."
+        default = co._delta_patch()[0]
+        plain_diff = ['diff', *rc.candidate_tree.NO_EXT_DIFF, '--binary']   # the commands without fixed prefixes
+        self.assertEqual(default, co._git([*plain_diff, co.state['base_commit'], '--'])
+                         + co._git([*plain_diff, '--no-index', '--', '/dev/null', fixture], ok=(0, 1)))   # unchanged by default
+        for setting, header in (('mnemonicPrefix', '+++ w/app.py'), ('noprefix', '+++ app.py')):
+            with self.subTest(setting=setting):
+                config = self.t.h.root / f'gitconfig-{setting}'
+                config.write_text(f'[diff]\n\t{setting} = true\n')
+                with patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': str(config)}):
+                    plain = subprocess.run(['git', 'diff'], cwd=self.t.ws, check=True, capture_output=True, text=True).stdout
+                    self.assertIn(header + '\n', plain)                      # the operator's setting is in effect
+                    self.assertEqual(co._delta_patch()[0], default)          # and the run's delta is byte-identical
+                    self.assertEqual(leak_scan.scan_patch(co._delta_patch()[0], co._git_unquote),
+                                     [{'path': 'app.py', 'line': 2, 'kind': 'jwt'}, {'path': fixture, 'line': 1, 'kind': 'jwt'}])
+        with patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': str(self.t.h.root / 'gitconfig-mnemonicPrefix')}):
+            self.review()
+        [row] = self.rows()
+        self.assertEqual((row['file'], row['summary']), ('app.py:2', 'the change adds a hardcoded credential at app.py:2 (jwt)'))
+        self.assertEqual(co.state['secret_scan']['exempted'], [f'{fixture}:1 (jwt)'])   # the marker still matches
 
     def test_the_gate_scans_a_tree_that_changed_after_the_review(self):
         co = self.start()

@@ -6,16 +6,17 @@ adds, so this is an ADDED_TEXT scan and applies every rule of that table. The SE
 (scripts/security_preflight.py) reads files the run never touched and applies only the table's WHOLE_DELIVERY rules.
 """
 import fnmatch
+import importlib.util
 from pathlib import Path
 import re
-import sys
 from typing import Callable, Optional
 
-try:
-    from scripts import content_rules
-except ModuleNotFoundError:   # coordinator.py run as a plain script: only paired_session/ is on sys.path
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-    import content_rules
+# Loaded by file path: this repository's scripts/ is a namespace package, so `from scripts import content_rules` would
+# resolve to any regular `scripts` package on sys.path (a user's project on PYTHONPATH) and fail at coordinator start.
+_spec = importlib.util.spec_from_file_location('paired_session_content_rules',
+                                               Path(__file__).resolve().parents[1] / 'scripts' / 'content_rules.py')
+content_rules = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(content_rules)
 
 ALLOW_RE = re.compile(r'(?m)^[ \t>*-]*secret-scan-allow:[ \t]*(\S.*?)[ \t]*$')
 
