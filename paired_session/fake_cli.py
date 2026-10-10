@@ -289,6 +289,7 @@ def main():
                 if 'hardcoded credential at ' + secret in prompt:
                     (Path.cwd() / secret).unlink(missing_ok=True)
                 else:   # built at runtime, so the repository carries no scanner-matching literal
+                    (Path.cwd() / secret).parent.mkdir(parents=True, exist_ok=True)
                     (Path.cwd() / secret).write_text('SERVICE_KEY = "' + 'eyJ' + 'hbGciOiJIUzI1NiJ9.' + 'eyJ' + 'yb2xlIjoic2VydmljZSJ9.'
                                                      + 'Qm9kZ3hKc2lPa1pXN2VyYm5' + '"\n')
             body = 'Implemented sum_ints and ran fake checks.'

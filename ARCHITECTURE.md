@@ -28,7 +28,7 @@ macOS only. The user-facing description is README.md.
   `security_repair_policy.py`, `sensitive_policy.py` and
   `operator_verification.py`. `paired_session/README.md` is the operator reference for the coordinator CLI.
 - `scripts/`: `delivery_scope.py` (delivery baselines and manifests) and `security_preflight.py` (the secret and
-  `.gitignore` scan) for SECURITY, `content_rules.py` (the one credential rule table of that scan and `leak_scan.py`), `materialize_pr.py` (review-pr clones), `adversarial_gate_fallback_prompt.txt` (the
+  `.gitignore` scan) for SECURITY, `content_rules.py` (the one credential rule table, with a scope per rule: that whole-delivery scan applies six rules, `leak_scan.py` and the review-pr post-body scan apply all), `materialize_pr.py` (review-pr clones), `adversarial_gate_fallback_prompt.txt` (the
   default gate prompt), `read_protocol.py`, `run-skill-lint`.
 - `agents/*.md`: the role bodies, all hashed into the frozen role manifest; the specialists' and the simplifier's
   bodies are inlined into their turns.

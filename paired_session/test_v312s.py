@@ -9,10 +9,15 @@ so the repository itself carries no literal the scanner matches.
 """
 import json
 import os
+from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from scripts import content_rules
+from scripts import delivery_scope as ds
+from scripts import security_preflight as sp
 from paired_session import leak_scan
 from paired_session import test_field23_repo_text_scan as f23
 from paired_session import test_off_user_surface as tou
@@ -72,8 +77,7 @@ class ScannerTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(leak_scan.scan_line(line), rule)
 
-    def test_the_security_preflight_uses_the_same_table(self):
-        from scripts import security_preflight as sp
+    def test_the_post_body_scan_applies_every_rule_of_the_table(self):   # scan_file: text the run publishes (ADDED_TEXT)
         lines = [f'KEY = "{value}"' for value in VALUES.values()] + [PRIVATE_KEY, f'db_password = "{GENERIC}"',
                                                                     'api_key = os.getenv("OPENAI_API_KEY_FOR_PROD_2")']
         with tempfile.TemporaryDirectory() as scratch:
@@ -84,6 +88,47 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual([(row['rule'], row['line']) for row in found],
                          [(rule, n) for n, rule in enumerate([*VALUES, 'private-key-block', 'generic-secret-assignment'], 1)])
         self.assertNotIn(JWT, json.dumps(found))
+
+    def test_every_rule_has_a_scope_and_the_whole_delivery_scope_is_the_six_rules_security_had(self):
+        scopes = {rule: scope for rule, _, scope, _ in content_rules.RULES}
+        self.assertEqual([rule for rule, scope in scopes.items() if scope == content_rules.WHOLE_DELIVERY],
+                         ['private-key-block', 'aws-access-key-id', 'github-token', 'slack-token', 'google-api-key',
+                          'stripe-live-key'])
+        self.assertEqual({rule for rule, scope in scopes.items() if scope == content_rules.ADDED_TEXT} | {content_rules.GENERIC_RULE},
+                         {'jwt', 'anthropic-key', 'openai-project-key', 'sk-key', 'generic-secret-assignment'})
+        self.assertEqual(content_rules.GENERIC_SCOPE, content_rules.ADDED_TEXT)
+        text = '\n'.join([f'KEY = "{JWT}"', f'db_password = "{GENERIC}"', f'T = "{VALUES["github-token"]}"',
+                          f'K = "{VALUES["sk-key"]}"'])
+        self.assertEqual(content_rules.scan_text(text, content_rules.WHOLE_DELIVERY), [('github-token', 3)])
+        self.assertEqual(content_rules.scan_text(text, content_rules.ADDED_TEXT),
+                         [('jwt', 1), ('generic-secret-assignment', 2), ('github-token', 3), ('sk-key', 4)])
+        with self.assertRaisesRegex(ValueError, 'unknown scan scope'):
+            content_rules.scan_text(text, 'everything')
+
+    def test_the_whole_delivery_preflight_ignores_added_text_rules_in_files_the_run_did_not_touch(self):
+        with tempfile.TemporaryDirectory() as scratch:   # a repository that already holds samples, as real ones do
+            repo = Path(scratch) / 'repo'
+            repo.mkdir()
+            git = lambda *args: subprocess.run(['git', *args], cwd=repo, check=True, capture_output=True)
+            for args in (('init', '-q'), ('config', 'user.name', 'Fake'), ('config', 'user.email', 'fake@example.test')):
+                git(*args)
+            files = {'.gitignore': twl.COVERING_GITIGNORE, 'docs/auth.md': f'A sample bearer value: {JWT}\n',
+                     'legacy/client.py': f'api_key = "{GENERIC}"\nOPENAI = "{VALUES["sk-key"]}"\n'}
+            for name, text in files.items():
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_text(text)
+            git('add', '-A')
+            git('commit', '-qm', 'existing repository content')
+            info = ds.repository(str(repo))
+            baseline = ds.build_baseline(info, ['.'], ds.capture_state(info))
+            report = sp.scan(str(repo), manifest=ds.build_manifest(baseline, ds.capture_state(info)))
+            self.assertEqual((report['status'], report['findings'], report['scanned_files']), ('clean', [], 3))
+            (repo / 'settings.txt').write_text(f'x = 1\nTOKEN = "{VALUES["github-token"]}"\n')   # a six-rule value still blocks
+            report = sp.scan(str(repo), manifest=ds.build_manifest(baseline, ds.capture_state(info)))
+            self.assertEqual(report['status'], 'blocked')
+            self.assertEqual([(row['rule'], row['path'], row['line']) for row in report['findings']],
+                             [('github-token', 'settings.txt', 2)])
+            self.assertNotIn(VALUES['github-token'], json.dumps(report))
 
     def test_only_added_lines_count_with_path_and_new_line_number(self):
         patch_text = (f'diff --git a/app.py b/app.py\nindex 1..2 100644\n--- a/app.py\n+++ b/app.py\n'
@@ -113,12 +158,12 @@ class SecretScanRunTests(unittest.TestCase):
         self.addCleanup(self.t.doCleanups)
         self.calls = []
 
-    def start(self, on=False, workitem_extra=''):
+    def start(self, on=False, workitem_extra='', files=None):
         if on:
             use_lifecycle_on(self, self.t.h)
         if workitem_extra:
             self.t.h.workitem.write_text(self.t.h.workitem.read_text() + workitem_extra)
-        self.co = self.t.coordinator()
+        self.co = self.t.coordinator(files)
         self.co.state['exec_rounds'] = 1
         self.co.save()
         return self.co
@@ -205,6 +250,37 @@ class SecretScanRunTests(unittest.TestCase):
                                                    'exempted': ['tests/fixtures/token.py:1 (jwt)']})
         self.assert_value_never_written()
 
+    SPACED = ('docs/old name.py', 'new file.py')   # git ends the "+++ b/<path>" header of such a path with a tab
+
+    def spaced_change(self, workitem_extra=''):
+        tracked, new = self.SPACED
+        co = self.start(workitem_extra=workitem_extra, files={f23.SWIFT: f23.BASE_SWIFT, tracked: 'x = 1\n'})
+        self.t.write(tracked, f'x = 1\nKEY = "{JWT}"\n')                     # a tracked file the change modifies
+        self.t.write(new, f'KEY = "{JWT}"\n')                                # a new untracked file (the --no-index form)
+        return co
+
+    def test_a_path_with_a_space_is_named_exactly_from_the_patch_git_generates(self):
+        tracked, new = self.SPACED
+        co = self.spaced_change()
+        patch_text = co._delta_patch()[0]                                    # the coordinator's own delta, from real git
+        for name in self.SPACED:
+            self.assertIn(f'+++ b/{name}\t\n', patch_text)
+        self.assertEqual(leak_scan.scan_patch(patch_text, co._git_unquote),
+                         [{'path': tracked, 'line': 2, 'kind': 'jwt'}, {'path': new, 'line': 1, 'kind': 'jwt'}])
+        self.review()
+        [row] = self.rows()
+        self.assertEqual((row['file'], row['summary']),
+                         (f'{tracked}:2', f'the change adds a hardcoded credential at {tracked}:2 (jwt), {new}:1 (jwt)'))
+
+    def test_the_marker_exempts_a_path_with_a_space(self):
+        tracked, new = self.SPACED
+        co = self.spaced_change(f'secret-scan-allow: {new}\nsecret-scan-allow: {tracked}\n')
+        self.review()
+        self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'gate'))
+        self.assertEqual(self.rows(), [])
+        self.assertEqual((co.state['secret_scan']['blocking'], co.state['secret_scan']['exempted']),
+                         ([], [f'{tracked}:2 (jwt)', f'{new}:1 (jwt)']))
+
     def test_the_gate_scans_a_tree_that_changed_after_the_review(self):
         co = self.start()
         co.state['next'] = 'gate'
@@ -249,6 +325,21 @@ class SecretScanEndToEndTests(unittest.TestCase):
         self.assertGreaterEqual(sum(t['role'] == 'author' and t['phase'] == 'EXEC' for t in state['turns']), 2)
         self.assertFalse((self.workspace / 'config_local.py').exists())
         self.assertEqual(self.leaked('eyJ' + 'hbGciOiJIUzI1NiJ9', output), [])
+
+    def test_a_default_route_run_with_an_exempted_fixture_reaches_done_through_security(self):
+        fixture = 'fixtures/jwt_sample.py'   # the whole-delivery SECURITY scan does not apply the jwt rule: no HOLD there
+        self.workitem.write_text(self.workitem.read_text() + 'secret-scan-allow: fixtures/*\n')
+        result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_AUTHOR_SECRET': fixture})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(twl.DONE, result.stdout)
+        state = self.state()
+        self.assertEqual((state['config']['lifecycle_mode'], state['status'], state['lifecycle']['stage']), ('on', 'DONE', 'DONE'))
+        [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
+        self.assertEqual((security['status'], security['route'], security['preflight']['status']), ('READY', 'DONE', 'clean'))
+        self.assertEqual(state['secret_scan']['exempted'], [f'{fixture}:1 (jwt)'])
+        self.assertEqual([row for row in state['finding_ledger'] if row['source'] == 'secret-scan'], [])
+        self.assertIn('eyJ' + 'hbGciOiJIUzI1NiJ9', (self.workspace / fixture).read_text())   # the fixture is delivered
+        self.assertEqual(self.leaked('eyJ' + 'hbGciOiJIUzI1NiJ9', result.stdout), [])
 
     def test_public_off_run_holds_when_no_exec_round_is_left(self):
         with patch.dict(os.environ, {'FAKE_AUTHOR_SECRET': 'config_local.py'}):

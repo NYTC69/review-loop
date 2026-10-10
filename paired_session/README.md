@@ -109,14 +109,20 @@ Secret scan (V312-S, every route, `--lifecycle-mode off` included): before each
 EXEC review verdict is accepted and before the gate, `leak_scan.py` reads the
 added lines of the run's change (`context/delta.patch`: tracked changes against
 the base plus new untracked files; a review-only or review-pr run, the change
-under review). The rules are `scripts/content_rules.py`, the one table the
-SECURITY preflight (`scripts/security_preflight.py`) also uses for the whole
-delivery: the six rules SECURITY already had, unchanged (`-----BEGIN ... PRIVATE
-KEY-----` blocks, `AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and `github_pat_`
-tokens, Slack `xox[baprs]-` tokens, Google `AIza` keys, Stripe live keys), plus
-JWTs (`eyJ` plus three base64url segments), `sk-`, `sk-ant-` and `sk-proj-` keys,
-and a name that contains key, secret, token or password given a quoted literal
-of 20+ characters without spaces. The added rules need a value that mixes
+under review). The rules are `scripts/content_rules.py`, one table with a scope
+per rule. Added lines are text the run adds, so this scan applies every rule:
+the six `whole-delivery` rules (`-----BEGIN ... PRIVATE KEY-----` blocks,
+`AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and `github_pat_` tokens, Slack
+`xox[baprs]-` tokens, Google `AIza` keys, Stripe live keys) and the `added-text`
+rules: JWTs (`eyJ` plus three base64url segments), `sk-`, `sk-ant-` and
+`sk-proj-` keys, and a name that contains key, secret, token or password given a
+quoted literal of 20+ characters without spaces. The SECURITY preflight
+(`scripts/security_preflight.py`) reads the whole worktree, files the run never
+touched included, and holds on any hit with no repair, so it applies only the six
+`whole-delivery` rules, exactly as before V312-S: a JWT-shaped sample or a
+key-named literal the repository already contained does not hold a run. Its
+`--file` scan of a review-pr post body is published text and applies every rule.
+The added rules need a value that mixes
 letters and digits with one random-looking run of 16+ characters and skip
 placeholders (`xxx`, `<...>`, `${...}`, changeme, example, dummy, test,
 `your_...`, a single repeated character); an environment or config lookup is not
@@ -128,6 +134,8 @@ progress, state and reports. With no EXEC round left the run holds with
 report lists the finding under Security. A deliberate test fixture is exempted
 by a `secret-scan-allow: <path, directory or glob>` line in the work item, one
 per line; its hits are recorded as exempted in `state.json` (`secret_scan`). The
+marker exempts hits of this every-route scan only: the SECURITY stage's six
+whole-delivery rules are not affected by it. The
 scan catches the realistic mistake of committing a real credential; obfuscated or
 deliberately hidden values are out of scope.
 

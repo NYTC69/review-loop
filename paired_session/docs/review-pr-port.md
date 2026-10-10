@@ -289,8 +289,9 @@ pattern of `review_only`):
   - on the user's explicit request, it shows the exact command bound to the pinned target,
     `gh pr review <pinned PR URL> --comment --body-file <report>`, together with the target repository, the PR number
     and the head OID the report reviewed;
-  - before it asks, it scans the exact body file with the SECURITY preflight's content rules (`RULES` in
-    `scripts/content_rules.py`, used by `scripts/security_preflight.py`, through a single-file entry that LG2-b adds; matched values are never printed).
+  - before it asks, it scans the exact body file with every content rule of `scripts/content_rules.py` (the body is
+    published text, so the `added-text` rules apply too, not only the six the whole-delivery SECURITY scan uses),
+    through the single-file entry of `scripts/security_preflight.py` that LG2-b adds; matched values are never printed.
     Any hit refuses the post, and the report stays local with the rule and line named. The rules are patterns: they
     do not catch every secret (for example a password quoted from `~/.netrc`), so the full body below is the human
     check;

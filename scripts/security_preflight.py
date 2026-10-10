@@ -4,6 +4,10 @@
 The scanner inventories exactly the tracked and non-ignored untracked files
 bound by the manifest, including staged work. It never follows symlinks, writes
 source or ignore files, or prints matched secret values.
+
+The content rules live in scripts/content_rules.py. The manifest scan covers the
+whole worktree, so it applies only that table's WHOLE_DELIVERY rules; `--file`
+(a review-pr post body) is published text and applies every rule.
 """
 from __future__ import annotations
 
@@ -65,12 +69,11 @@ class ScanError(Exception):
     pass
 
 
-def _content_findings(content: bytes) -> list:
-    """(rule, line) under the shared table scripts/content_rules.py (V312-S), one per rule and line; never the value."""
-    found = content_rules.scan_text(content.decode("utf-8", "replace"))
-    if len(found) > MAX_FINDINGS:
-        raise ScanError("finding-count limit exceeded")
-    return found
+def _delivery_hits(content: bytes):
+    """(rule, line) per match of the WHOLE_DELIVERY rules of scripts/content_rules.py (the six rules this scan has always
+    had), in rule and then text order; never the value. scan() reads every file of the delivery, touched by the run or not,
+    so the ADDED_TEXT rules (V312-S: jwt, sk- keys, the generic assignment) do not apply here."""
+    return content_rules.hits(content.decode("utf-8", "replace"), content_rules.WHOLE_DELIVERY)
 
 
 def _report(**fields) -> dict:
@@ -194,11 +197,15 @@ def _read_and_scan(root: str, path: str, expected: dict, total_left: int) -> tup
             after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
         ) or size != expected.get("size") or raw_hash.hexdigest() != expected.get("sha256"):
             raise ScanError("file changed or no longer matches the manifest")
-        # Several markers on one line collapse to one finding per rule and line.
-        matched = [{"rule": rule, "path": path, "line": line} for rule, line in _content_findings(bytes(content))]
+        for rule, line in _delivery_hits(bytes(content)):
+            matched.append({"rule": rule, "path": path, "line": line})
+            if len(matched) > MAX_FINDINGS:
+                raise ScanError("finding-count limit exceeded")
     finally:
         os.close(fd)
-    return size, matched
+    # Several markers on one line collapse to one finding per rule and line.
+    unique = {(item["rule"], item["path"], item["line"]): item for item in matched}
+    return size, list(unique.values())
 
 
 def _bind_findings_to_git_state(findings: list, state: dict) -> list:
@@ -242,7 +249,11 @@ def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
         raise ScanError("content scan limit exceeded")
     if process.returncode:
         raise ScanError("cannot read staged blob for " + path)
-    findings = [{"rule": rule, "path": path, "line": line, "source": "index"} for rule, line in _content_findings(content)]
+    findings = []
+    for rule, line in _delivery_hits(content):
+        findings.append({"rule": rule, "path": path, "line": line, "source": "index"})
+        if len(findings) > MAX_FINDINGS:
+            raise ScanError("finding-count limit exceeded")
     return len(content), findings
 
 
@@ -331,12 +342,13 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
 
 
 def scan_file(path: str) -> list:
-    """One file under the content rules (the review-pr post body, LG2-b2): rule and line only, never the matched value."""
+    """One file under every content rule (the review-pr post body, LG2-b2): rule and line only, never the matched value.
+    The body is text the run publishes, so this is an ADDED_TEXT scan: a report that quotes a JWT or an sk- key is refused."""
     content = Path(path).read_bytes()
     if len(content) > MAX_FILE_BYTES:
         raise ScanError("content scan limit exceeded")
-    return [{"rule": rule, "line": line}
-            for rule, line in sorted(_content_findings(content), key=lambda item: (item[1], item[0]))]
+    found = content_rules.scan_text(content.decode("utf-8", "replace"), content_rules.ADDED_TEXT)
+    return [{"rule": rule, "line": line} for rule, line in sorted(found, key=lambda item: (item[1], item[0]))]
 
 
 def start_coverage(repo_path: str) -> dict:
