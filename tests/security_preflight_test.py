@@ -102,9 +102,12 @@ def test_scans_manifest_bound_tracked_and_untracked_files_without_secret_values(
     assert "A" * 20 not in json.dumps(result)
 
 
+BODY = "aZ3kQ9mP2xL7vN4bR8tY6wC1" * 2   # key material as base64 text; a marker alone is not a hit (V313)
+
+
 def test_scans_staged_content_and_detects_private_key_block(repo, tmp_path):
     marker = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
-    (repo / "src.py").write_text("safe = True\n# " + marker + "\n")
+    (repo / "src.py").write_text("safe = True\n" + marker + "\n" + BODY + "\n")
     git(repo, "add", "src.py")
     manifest = candidate(repo, tmp_path)
     result = sp.scan(str(repo), str(manifest))
@@ -113,8 +116,21 @@ def test_scans_staged_content_and_detects_private_key_block(repo, tmp_path):
                for row in result["findings"])
 
 
+def test_private_key_marker_without_key_material_is_clean(repo, tmp_path):   # V313: both shapes held every run of a consumer
+    begin, end = "-----BEGIN " + "PRIVATE KEY-----", "-----END " + "PRIVATE KEY-----"
+    (repo / "signing.ts").write_text("const der = pem.replace(/" + begin + "|" + end + "|\\s/g, '');\n")
+    (repo / "signing_test.ts").write_text("const pem = `" + begin + "\\n${base64(der)}\\n" + end + "\\n`;\n")
+    result = sp.scan(str(repo), str(candidate(repo, tmp_path)))
+    assert (result["status"], result["findings"], result["scanned_files"]) == ("clean", [], 4)
+    (repo / "signing_test.ts").write_text("const pem = `" + begin + "\\n" + BODY + "\\n" + end + "\\n`;\n")   # a real key
+    result = sp.scan(str(repo), str(candidate(repo, tmp_path)))
+    assert result["status"] == "blocked"
+    assert [(row["rule"], row["path"], row["line"]) for row in result["findings"]] == [
+        ("private-key-block", "signing_test.ts", 1)]
+
+
 def test_scans_staged_blob_even_when_worktree_is_safe(repo, tmp_path):
-    (repo / "app.py").write_text("# -----BEGIN " + "ENCRYPTED PRIVATE KEY-----\n")
+    (repo / "app.py").write_text('KEY = "-----BEGIN ' + 'ENCRYPTED PRIVATE KEY-----\\n' + BODY + '"\n')
     git(repo, "add", "app.py")
     (repo / "app.py").write_text("safe current worktree\n")
     manifest = candidate(repo, tmp_path)
@@ -136,7 +152,7 @@ def test_scans_index_only_sensitive_path_after_worktree_deletion(repo, tmp_path)
 
 
 def test_staged_blob_scan_ignores_git_replace_refs(repo, tmp_path):
-    (repo / "app.py").write_text("# -----BEGIN " + "PRIVATE KEY-----\n")
+    (repo / "app.py").write_text("-----BEGIN " + "PRIVATE KEY-----\n" + BODY + "\n")
     git(repo, "add", "app.py")
     (repo / "app.py").write_text("safe worktree\n")
     oid = git(repo, "rev-parse", ":app.py").decode().strip()
@@ -160,7 +176,7 @@ def test_stale_manifest_fails_before_scan(repo, tmp_path):
 
 def test_symlink_target_is_not_followed(repo, tmp_path):
     secret = tmp_path / "outside.pem"
-    secret.write_text("-----BEGIN " + "PRIVATE KEY-----\n")
+    secret.write_text("-----BEGIN " + "PRIVATE KEY-----\n" + BODY + "\n")
     (repo / "link.txt").symlink_to(secret)
     manifest = candidate(repo, tmp_path)
     result = sp.scan(str(repo), str(manifest))

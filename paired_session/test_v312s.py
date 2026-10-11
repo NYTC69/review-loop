@@ -6,7 +6,12 @@ run lists it; `secret-scan-allow:` work-item lines exempt deliberate fixtures.
 Bounded normal-use regressions (owner rule: users and models are assumed benign): the realistic mistake of committing a
 real credential, not obfuscated or deliberately hidden secrets. Every credential-shaped value below is built at runtime,
 so the repository itself carries no literal the scanner matches.
+
+V313 narrowed the rules on the hits of 704 real commits (one true credential, thirteen commits blocked on a false hit):
+V313Tests pins each shape that must still hit and each that no longer does.
 """
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +33,8 @@ from paired_session.lifecycle_test_helpers import use_lifecycle_on
 
 rc = f23.rc
 RAND = 'aZ3kQ9mP2xL7vN4bR8tY6wC1'
-JWT = 'eyJ' + 'hbGciOiJIUzI1NiJ9' + '.' + 'eyJ' + 'yb2xlIjoic2VydmljZV9yb2xlIn0' + '.' + 'Qm9kZ3hKc2lPa1pXN2VyYm5yX3c'
+JWT = ('eyJ' + 'hbGciOiJIUzI1NiJ9' + '.' + 'eyJ' + 'yb2xlIjoic2VydmljZV9yb2xlIn0' + '.' + 'Qm9kZ3hKc2lPa1pXN2VyYm5yX3c'
+       + 'aZ3kQ9mP2xL7vN4b')   # V313: a signature-length third segment (43 characters)
 VALUES = {'jwt': JWT,
           'sk-key': 'sk-' + RAND + RAND,
           'anthropic-key': 'sk-' + 'ant-api03-' + RAND + RAND,
@@ -38,7 +44,9 @@ VALUES = {'jwt': JWT,
           'slack-token': 'xox' + 'b-123456789012-1234567890123-' + RAND,
           'google-api-key': 'AI' + 'za' + RAND + 'Kq8Lm2Np4Rt',
           'stripe-live-key': 'sk' + '_live_' + RAND}
-PRIVATE_KEY = '-----BEGIN ' + 'RSA PRIVATE KEY-----'
+MARKER = '-----BEGIN ' + 'RSA PRIVATE KEY-----'
+KEY_BODY = (RAND * 3)[:64]   # one line of key material, as base64 text
+PRIVATE_KEY = MARKER + '\\n' + KEY_BODY   # V313: a key in one string with \n escapes; the marker alone is not a hit
 GENERIC = 'Hq7Zr2Lm9Px4Tv8Kw3Ny6'
 SERVICE = 'config/service.py'
 WITH_SECRET = f'import os\nSUPABASE_KEY = "{JWT}"\n'
@@ -74,7 +82,7 @@ class ScannerTests(unittest.TestCase):
         for line, rule in (('KEY = "gh' + 'p_' + 'A' * 36 + '"', 'github-token'),   # unfiltered, as SECURITY validated them
                            ('id = "AKIA' + 'IOSFODNN7EXAMPLE"', 'aws-access-key-id'),
                            ('id = "ASIA' + 'Q7' * 8 + '"', 'aws-access-key-id'),
-                           ('# -----BEGIN ' + 'ENCRYPTED PRIVATE KEY-----', 'private-key-block')):
+                           ('# -----BEGIN ' + 'ENCRYPTED PRIVATE KEY-----\\n' + KEY_BODY, 'private-key-block')):   # V313: with a key
             with self.subTest(line=line):
                 self.assertEqual(leak_scan.scan_line(line), rule)
 
@@ -154,6 +162,16 @@ class ScannerTests(unittest.TestCase):
                                 {'path': 'new file.py', 'line': 2, 'kind': 'private-key-block'}])
         self.assertNotIn(JWT, json.dumps(hits))
 
+    def test_a_private_key_marker_and_its_body_on_the_next_added_line_are_one_hit_at_the_marker(self):   # V313
+        end = '-----END ' + 'RSA PRIVATE KEY-----'
+        patch_text = ('diff --git a/deploy.py b/deploy.py\nindex 1..2 100644\n--- a/deploy.py\n+++ b/deploy.py\n'
+                      f'@@ -1,2 +1,6 @@\n import os\n+{MARKER}\n+{KEY_BODY}\n+{KEY_BODY}\n+{end}\n context = 1\n'
+                      f'@@ -9,3 +13,4 @@\n a = 1\n+{MARKER}\n {KEY_BODY}\n b = 2\n'        # the body is not an added line
+                      f'@@ -20,2 +25,4 @@\n c = 1\n+KEY = """{MARKER}\n+  {KEY_BODY}\n d = 2\n')
+        self.assertEqual(leak_scan.scan_patch(patch_text),
+                         [{'path': 'deploy.py', 'line': 2, 'kind': 'private-key-block'},
+                          {'path': 'deploy.py', 'line': 26, 'kind': 'private-key-block'}])
+
     def test_allow_markers(self):
         workitem = ('# Task\nsecret-scan-allow: tests/fixtures/*.json\n- secret-scan-allow: `docs/samples/`\n'
                     'Mentioning secret-scan-allow: inline is not a marker.\n')
@@ -162,6 +180,127 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(leak_scan.exempt('tests/fixtures/jwt.json', allow))
         self.assertTrue(leak_scan.exempt('docs/samples/a/b.md', allow))
         self.assertFalse(leak_scan.exempt('src/app.py', allow))
+
+
+def segment(data) -> str:
+    """One base64url segment, unpadded, of a JSON object or of bytes."""
+    raw = data if isinstance(data, bytes) else json.dumps(data, separators=(',', ':')).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+
+
+def noise(size: int, seed: str = 'v313') -> bytes:
+    """`size` bytes that look random, the same on every run."""
+    out = b''
+    while len(out) < size:
+        out += hashlib.sha256(f'{seed}{len(out)}'.encode()).digest()
+    return out[:size]
+
+
+def letters_and_digits(size: int) -> str:
+    return (RAND * (size // len(RAND) + 1))[:size]
+
+
+class V313Tests(unittest.TestCase):
+    """The rules as narrowed on real history: every shape that must still hit, and the false hits that are gone."""
+    END = '-----END ' + 'RSA PRIVATE KEY-----'
+
+    def both_scans(self, text: str) -> tuple:
+        """([(rule, line)] of the whole-delivery scan, the same of the added-line scan of a new file that holds `text`)."""
+        lines = text.split('\n')
+        patch_text = (f'diff --git a/k.py b/k.py\nnew file mode 100644\n--- /dev/null\n+++ b/k.py\n@@ -0,0 +1,{len(lines)} @@\n'
+                      + ''.join(f'+{line}\n' for line in lines))
+        return (content_rules.scan_text(text, content_rules.WHOLE_DELIVERY),
+                [(hit['kind'], hit['line']) for hit in leak_scan.scan_patch(patch_text)])
+
+    def test_the_shape_of_the_true_credential_still_hits(self):   # the one true credential of the replay: 36 / 138 / 43
+        claims = {'iss': 'supabase', 'ref': letters_and_digits(20).lower(), 'role': 'service_role', 'iat': 1700000000,
+                  'exp': 2000000000}
+        token = '.'.join((segment({'alg': 'HS256', 'typ': 'JWT'}), segment(claims), segment(noise(32))))
+        self.assertEqual([len(part) for part in token.split('.')], [36, 138, 43])
+        for line in (f'SUPABASE_KEY = "{token}"', f'key = "{token}"', f'curl -H "Authorization: Bearer {token}"'):
+            with self.subTest(line=line[:16]):
+                self.assertEqual(leak_scan.scan_line(line), 'jwt')
+        self.assertEqual(self.both_scans(f'import os\nSUPABASE_KEY = "{token}"'), ([], [('jwt', 2)]))
+
+    def test_a_private_key_hits_in_both_scans_as_a_block_and_as_one_string(self):
+        hit = lambda line: [('private-key-block', line)]
+        for form, text, line in (
+                ('block', f'x = 1\n{MARKER}\n{KEY_BODY}\n{KEY_BODY}\n{self.END}\ny = 2', 2),
+                ('indented block', f'x = 1\nprivate_key: |\n  {MARKER}\n  {KEY_BODY}\n  {self.END}', 3),
+                ('CRLF block', f'x = 1\r\n{MARKER}\r\n{KEY_BODY}\r\n{self.END}', 2),
+                ('one string', f'x = 1\nPEM = "{MARKER}\\n{KEY_BODY}\\n{self.END}\\n"', 2),
+                ('one string, \\r\\n', f'{{\n"private_key": "{MARKER}\\r\\n{KEY_BODY}\\r\\n{self.END}"\n}}', 2)):
+            with self.subTest(form=form):
+                self.assertEqual(self.both_scans(text), (hit(line), hit(line)))
+
+    def test_a_private_key_marker_without_key_material_is_not_a_hit(self):
+        regex = f'const body = pem.replace(/{MARKER}|{self.END}|\\s/g, "");'        # an alternation of the two markers
+        template = f'const pem = `{MARKER}\\n${{base64(der)}}\\n{self.END}\\n`;'    # around a value computed at run time
+        for form, text in (('regex', regex), ('template', template), ('marker only', f'# {MARKER}'),
+                           ('marker and prose', f'{MARKER}\n(paste the key of your provider here)\n{self.END}'),
+                           ('short body', f'{MARKER}\n{KEY_BODY[:39]}\n{self.END}')):
+            with self.subTest(form=form):
+                self.assertEqual(self.both_scans(f'x = 1\n{text}\ny = 2'), ([], []))
+                self.assertIsNone(leak_scan.scan_line(text.split('\n')[0]))
+
+    def test_a_jwt_needs_a_signature_length_third_segment(self):
+        head = segment({'alg': 'HS256'})
+        self.assertEqual(len(head), 20)
+        for sizes in ((20, 11), (27, 20), (138, 42)):   # the fake tokens of unit tests: 20/20/11 and 20/27/20
+            token = '.'.join((head, *map(letters_and_digits, sizes)))
+            for line in (f'let jwt = "{token}"', f'let token = "{token}"', f'"access_token": "{token}",'):
+                with self.subTest(sizes=sizes, line=line[:14]):   # not a jwt, and not caught again under a token name
+                    self.assertIsNone(leak_scan.scan_line(line))
+        token = '.'.join((head, letters_and_digits(27), letters_and_digits(43)))
+        self.assertEqual(leak_scan.scan_line(f'let token = "{token}"'), 'jwt')
+
+    def test_signed_data_with_a_certificate_chain_header_is_not_a_credential(self):
+        chain = [base64.b64encode(noise(1100, f'cert{n}')).decode() for n in range(3)]
+        body, signature = segment(noise(2400, 'payload')), segment(noise(64, 'signature'))
+        signed = '.'.join((segment({'alg': 'ES256', 'x5c': chain}), body, signature))   # as an App Store signed transaction
+        self.assertGreater(len(signed), 9000)
+        self.assertTrue(content_rules.random_like(signed) and not content_rules.placeholder(signed))   # x5c is the reason
+        for line in (f'"signedTransactionInfo": "{signed}",', f'"transaction_token": "{signed}"', f'JWS = "{signed}"'):
+            with self.subTest(line=line[:24]):
+                self.assertIsNone(leak_scan.scan_line(line))
+        for name, header in (('no x5c', segment({'alg': 'ES256', 'kid': 'k1'})),
+                             ('x5c as a value', segment({'alg': 'ES256', 'kid': 'x5c'})),
+                             ('not JSON', segment(b'{"alg":"ES256","x5c":["' + noise(30).hex().encode())),
+                             ('not base64', 'eyJ' + letters_and_digits(34))):
+            with self.subTest(header=name):   # a header that does not decode as JSON has no x5c
+                self.assertEqual(leak_scan.scan_line(f'JWS = "{header}.{body}.{signature}"'), 'jwt')
+
+    def test_publishable_keys_and_public_names_are_not_secrets(self):
+        value = letters_and_digits(31)
+        for line in (f'SUPABASE_KEY = "sb_publishable_{value}"', f"const supabaseKey = 'sb_publishable_{value}';",
+                     f'stripe_key = "pk_live_{value}"', f'stripe_key = "pk_test_{value}"',
+                     f'NEXT_PUBLIC_API_KEY = "{value}"', f'"publicKey": "{value}",', f'publishableKey: "{value}"',
+                     f'PUBLISHABLE_TOKEN = "{value}"'):
+            with self.subTest(line=line.split(value)[0]):
+                self.assertIsNone(leak_scan.scan_line(line))
+        for line in (f'SUPABASE_KEY = "sb_secret_{value}"', f'stripe_key = "live_{value}"', f'api_key = "{value}"'):
+            with self.subTest(line=line.split(value)[0]):
+                self.assertEqual(leak_scan.scan_line(line), 'generic-secret-assignment')
+
+    def test_a_composite_id_joined_with_a_bar_or_a_hash_is_not_random(self):
+        words = ('mainevent', 'day2flight', 'table14seat')
+        for joiner in '|#':
+            with self.subTest(joiner=joiner):
+                self.assertIsNone(leak_scan.scan_line(f'event_key = "{joiner.join(words)}"'))
+                self.assertIsNone(leak_scan.scan_line(f'EXTINCT_KEY = "{joiner.join(words)}"'))
+                self.assertEqual(leak_scan.scan_line(f'event_key = "{joiner.join((*words, letters_and_digits(16)))}"'),
+                                 'generic-secret-assignment')   # a random run of 16+ characters is still one
+        self.assertEqual(leak_scan.scan_line(f'event_key = "{"".join(words)}"'), 'generic-secret-assignment')   # no separator
+
+    def test_the_other_credential_shapes_still_hit(self):
+        value = letters_and_digits(40)
+        self.assertEqual(leak_scan.scan_line(f'api_key = "{value}"'), 'generic-secret-assignment')
+        for prefix, rule in (('sk-', 'sk-key'), ('sk-' + 'ant-', 'anthropic-key'), ('sk-' + 'proj-', 'openai-project-key')):
+            with self.subTest(rule=rule):
+                self.assertEqual(leak_scan.scan_line(f'client = Client("{prefix}{value}")'), rule)
+        five = ('aws-access-key-id', 'github-token', 'slack-token', 'google-api-key', 'stripe-live-key')
+        expected = [(rule, line) for line, rule in enumerate(five, 1)]   # the other whole-delivery rules, in both scans
+        self.assertEqual(self.both_scans('\n'.join(f'V = "{VALUES[rule]}"' for rule in five)), (expected, expected))
 
 
 class SecretScanRunTests(unittest.TestCase):

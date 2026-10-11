@@ -111,19 +111,29 @@ added lines of the run's change (`context/delta.patch`: tracked changes against
 the base plus new untracked files; a review-only or review-pr run, the change
 under review). The rules are `scripts/content_rules.py`, one table with a scope
 per rule. Added lines are text the run adds, so this scan applies every rule:
-the six `whole-delivery` rules (`-----BEGIN ... PRIVATE KEY-----` blocks,
-`AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and `github_pat_` tokens, Slack
-`xox[baprs]-` tokens, Google `AIza` keys, Stripe live keys) and the `added-text`
-rules: JWTs (`eyJ` plus three base64url segments), `sk-`, `sk-ant-` and
-`sk-proj-` keys, and a name that contains key, secret, token or password given a
-quoted literal of 20+ characters without spaces. The SECURITY preflight
+the six `whole-delivery` rules (a `-----BEGIN ... PRIVATE KEY-----` marker
+followed by key material: 40+ base64 characters after optional line breaks,
+`\n` escapes and spaces, so a regex or a template that only names the marker is
+not a hit, and a marker line with the key body on the next added line is one hit
+at the marker's line; `AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and
+`github_pat_` tokens, Slack `xox[baprs]-` tokens, Google `AIza` keys, Stripe
+live keys) and the `added-text` rules: JWTs (`eyJ` plus three base64url
+segments, the third of 43+ characters, the shortest standard signature; not a
+token whose header has an `x5c` certificate chain, which is signed data), `sk-`,
+`sk-ant-` and `sk-proj-` keys, and a name that contains key, secret, token or
+password given a quoted literal of 20+ characters without spaces (not a value
+that starts with `sb_publishable_`, `pk_live_` or `pk_test_`, not a name that
+contains `public` or `publishable`, and not a JWT-shaped value, which the JWT
+rule alone judges). The SECURITY preflight
 (`scripts/security_preflight.py`) reads the whole worktree, files the run never
 touched included, and holds on any hit with no repair, so it applies only the six
-`whole-delivery` rules, exactly as before V312-S: a JWT-shaped sample or a
+`whole-delivery` rules, the six it had before V312-S: a JWT-shaped sample or a
 key-named literal the repository already contained does not hold a run. Its
 `--file` scan of a review-pr post body is published text and applies every rule.
 The added rules need a value that mixes
-letters and digits with one random-looking run of 16+ characters and skip
+letters and digits with one random-looking run of 16+ characters (`_`, `.`, `:`,
+`/`, `-`, `|` and `#` separate runs, so a composite id of short words is not
+one) and skip
 placeholders (`xxx`, `<...>`, `${...}`, changeme, example, dummy, test,
 `your_...`, a single repeated character); an environment or config lookup is not
 a quoted literal and never matches. A hit is one program finding (`secret-scan`, severity SECURITY) that

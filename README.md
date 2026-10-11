@@ -396,8 +396,9 @@ EXEC approval needs their own run evidence (`self_run_evidence`; a review-pr rep
 command may approve statically).
 
 **Secret scan** — On every route, `--lifecycle-mode off` included, the coordinator scans the lines the change adds
-for hardcoded credentials (JWTs, `sk-` / `sk-ant-` / `sk-proj-` keys, AWS key ids, GitHub, Slack, Google and Stripe
-live tokens, private-key blocks, and a key/secret/token/password name given a long random-looking quoted literal)
+for hardcoded credentials (JWTs, `sk-` / `sk-ant-` / `sk-proj-` keys, AWS key ids, GitHub, Slack, Google and
+Stripe live tokens, private-key blocks (a BEGIN marker followed by key material), and a key/secret/token/password
+name given a long random-looking quoted literal that is not a publishable key)
 before each EXEC review verdict and before the gate. A hit is a blocking finding for the author that names only
 `path:line` and the rule, never the value; with no EXEC round left the run holds, and a review-pr report lists it.
 Exempt a deliberate test fixture with a `secret-scan-allow: <path or glob>` line in the work item (one per line).

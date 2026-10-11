@@ -21,10 +21,19 @@ _spec.loader.exec_module(content_rules)
 ALLOW_RE = re.compile(r'(?m)^[ \t>*-]*secret-scan-allow:[ \t]*(\S.*?)[ \t]*$')
 
 
+def scan_block(text: str) -> list:
+    """(line, rule) of the first credential on each line of one block of added lines, lines counted from 1. A private-key
+    marker and the key body on the next added line are one hit, at the marker's line."""
+    first = {}
+    for rule, line in content_rules.scan_text(text, content_rules.ADDED_TEXT):
+        first.setdefault(line, rule)
+    return sorted(first.items())
+
+
 def scan_line(text: str) -> Optional[str]:
     """The rule of the first credential on one added line, else None."""
-    found = content_rules.scan_text(text, content_rules.ADDED_TEXT)
-    return found[0][0] if found else None
+    found = scan_block(text)
+    return found[0][1] if found else None
 
 
 def scan_patch(patch: str, unquote: Callable[[str], Optional[str]] = lambda body: body) -> list[dict]:
@@ -39,14 +48,18 @@ def scan_patch(patch: str, unquote: Callable[[str], Optional[str]] = lambda body
         if name.startswith('"') and name.endswith('"'):
             name = unquote(name[1:-1]) or name
         name = name[2:] if name.startswith('b/') else name
-        number = 0
+        number, runs = 0, []                                         # runs: [first line, lines] per run of consecutive added lines
         for line in ('@@' + body).splitlines():
             if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):
                 number = int(hunk.group(1)) - 1
             elif line.startswith(('+', ' ')):
                 number += 1
-                if line.startswith('+') and (kind := scan_line(line[1:])):
-                    hits.append({'path': name, 'line': number, 'kind': kind})
+                if line.startswith('+') and runs and runs[-1][0] + len(runs[-1][1]) == number:
+                    runs[-1][1].append(line[1:])
+                elif line.startswith('+'):
+                    runs.append([number, [line[1:]]])
+        for first, lines in runs:
+            hits += [{'path': name, 'line': first + line - 1, 'kind': kind} for line, kind in scan_block('\n'.join(lines))]
     return hits
 
 

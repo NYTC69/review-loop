@@ -4983,7 +4983,8 @@ class Coordinator:
         for section in re.split(r'(?m)^(?=diff --git )', path.read_text() if path.is_file() else ''):
             if not (markers := list(dict.fromkeys(self._introduced_history('context/delta.patch', section)))):
                 continue
-            name = next((line[6:] for line in section.splitlines() if line.startswith('+++ b/')), 'a changed file')
+            # git ends the header of a path that contains a space with a tab: a separator, not the name (as leak_scan)
+            name = next((line[6:].rstrip('\t') for line in section.splitlines() if line.startswith('+++ b/')), 'a changed file')
             number, found = 0, set()
             for line in section[len(section.split('\n@@', 1)[0]):].splitlines():
                 if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):

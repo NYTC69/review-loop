@@ -86,6 +86,16 @@ class AuthorDeltaHistoryTests(unittest.TestCase):
         self.assertEqual(len(self.shadows), 1)
         self.assertEqual((self.co.state['status'], self.co.state['next']), ('ACTIVE', 'gate'))
 
+    def test_a_path_with_a_space_is_reported_without_gits_trailing_tab(self):   # V313: "+++ b/<path>\t" in the patch
+        spaced = 'web/players list.test.js'
+        self.t.write(spaced, WITH_IDS)
+        self.review(shadow_scans=True)
+        self.assertIn(f'+++ b/{spaced}\t\n', (self.co.context / 'delta.patch').read_text())
+        [row] = self.scan_rows()
+        self.assertEqual(row['file'], f'{spaced}:1')
+        self.assertIn(f"'F010' at {spaced}:1, 'F010' at {spaced}:2", row['summary'])
+        self.assertNotIn('\t', row['summary'] + self.co.state['delivered_review'])
+
     def test_the_hit_list_is_bounded(self):   # FIELD-31b
         self.t.write('web/many.js', ''.join(f'// F010 note {n}\n' for n in range(12)))
         self.review(shadow_scans=True)
