@@ -113,7 +113,8 @@ under review). The rules are `scripts/content_rules.py`, one table with a scope
 per rule. Added lines are text the run adds, so this scan applies every rule:
 the six `whole-delivery` rules (a `-----BEGIN ... PRIVATE KEY-----` marker
 followed by key material: 40+ base64 characters after optional line breaks,
-`\n` escapes and spaces, so a regex or a template that only names the marker is
+`\n` escapes (with one backslash or more, as in a JSON document stored as a
+string) and spaces, so a regex or a template that only names the marker is
 not a hit, and a marker line with the key body on the next added line is one hit
 at the marker's line; `AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and
 `github_pat_` tokens, Slack `xox[baprs]-` tokens, Google `AIza` keys, Stripe
@@ -136,7 +137,9 @@ letters and digits with one random-looking run of 16+ characters (`_`, `.`, `:`,
 one) and skip
 placeholders (`xxx`, `<...>`, `${...}`, changeme, example, dummy, test,
 `your_...`, a single repeated character); an environment or config lookup is not
-a quoted literal and never matches. A hit is one program finding (`secret-scan`, severity SECURITY) that
+a quoted literal and never matches. Accepted residual: a password-shaped literal
+whose segments between those separators are all shorter than 16 characters is
+not a hit. A hit is one program finding (`secret-scan`, severity SECURITY) that
 the author repairs in a normal EXEC round; the scan closes it once the lines are
 gone. It names `path:line (kind)` only, never the value, in the ledger, prompts,
 progress, state and reports. With no EXEC round left the run holds with

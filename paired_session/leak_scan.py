@@ -1,7 +1,8 @@
 """V312-S: a cheap, deterministic scan of the lines a run's change adds for hardcoded credentials.
 
 The scan reads context/delta.patch (tracked changes against the base plus new untracked files) and reports `path`,
-`line` and the rule only, never the matched value. The rules are scripts/content_rules.py; added lines are text the run
+`line` and the rule only, never the matched value. The coordinator passes that patch with the files' own line endings
+(V314): a patch line ends at `\n` only, so `line` is git's and an editor's number in a file with a form feed or a bare `\r`. The rules are scripts/content_rules.py; added lines are text the run
 adds, so this is an ADDED_TEXT scan and applies every rule of that table. The SECURITY stage's whole-delivery scan
 (scripts/security_preflight.py) reads files the run never touched and applies only the table's WHOLE_DELIVERY rules.
 """
@@ -49,7 +50,7 @@ def scan_patch(patch: str, unquote: Callable[[str], Optional[str]] = lambda body
             name = unquote(name[1:-1]) or name
         name = name[2:] if name.startswith('b/') else name
         number, runs = 0, []                                         # runs: [first line, lines] per run of consecutive added lines
-        for line in ('@@' + body).splitlines():
+        for line in ('@@' + body).split('\n'):                      # a patch line ends at \n only: not at a form feed or a bare \r
             if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):
                 number = int(hunk.group(1)) - 1
             elif line.startswith(('+', ' ')):

@@ -27,11 +27,12 @@ ADDED_TEXT = 'added-text'
 B64URL = r'[A-Za-z0-9_-]'
 # (rule, pattern, scope, filtered). The sources below never match themselves, so the repository carries no matching literal.
 # private-key-block: the BEGIN marker and then key material, i.e. 40+ base64 characters after optional line breaks (real
-# ones, or the \n / \r\n escapes of a string literal) and spaces. A regex or a string that only names the markers and
-# a template around a value computed at run time are not keys.
+# ones, or the \n / \r\n escapes of a string literal, with one backslash or more: a JSON document stored as a string
+# escapes them twice) and spaces. A regex or a string that only names the markers and a template around a value computed
+# at run time are not keys.
 RULES = (
     ('private-key-block', re.compile(r'-----BEGIN (?:(?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY|ENCRYPTED PRIVATE KEY)-----'
-                                     r'(?:\\[rn]|[\r\n \t])*[A-Za-z0-9+/]{40,}'), WHOLE_DELIVERY, False),
+                                     r'(?:\\+[rn]|[\r\n \t])*[A-Za-z0-9+/]{40,}'), WHOLE_DELIVERY, False),
     ('aws-access-key-id', re.compile(r'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b', re.A), WHOLE_DELIVERY, False),
     ('github-token', re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})\b', re.A), WHOLE_DELIVERY, False),
     ('slack-token', re.compile(r'\bxox[baprs]-[A-Za-z0-9-]{20,}\b', re.A), WHOLE_DELIVERY, False),

@@ -9,6 +9,9 @@ so the repository itself carries no literal the scanner matches.
 
 V313 narrowed the rules on the hits of 704 real commits (one true credential, thirteen commits blocked on a false hit):
 V313Tests pins each shape that must still hit and each that no longer does.
+
+V314 (the gate follow-ups): a PEM whose line breaks are escaped twice, the 40-character boundary of the key body, the
+ledger row after a partial removal at the gate HOLD, and line numbers in a file with a form feed or a bare `\\r`.
 """
 import base64
 import hashlib
@@ -47,6 +50,7 @@ VALUES = {'jwt': JWT,
 MARKER = '-----BEGIN ' + 'RSA PRIVATE KEY-----'
 KEY_BODY = (RAND * 3)[:64]   # one line of key material, as base64 text
 PRIVATE_KEY = MARKER + '\\n' + KEY_BODY   # V313: a key in one string with \n escapes; the marker alone is not a hit
+TWICE, TWICE_CRLF = '\\\\n', '\\\\r\\\\n'   # V314: a line break escaped twice (two backslashes and the letter)
 GENERIC = 'Hq7Zr2Lm9Px4Tv8Kw3Ny6'
 SERVICE = 'config/service.py'
 WITH_SECRET = f'import os\nSUPABASE_KEY = "{JWT}"\n'
@@ -78,7 +82,7 @@ class ScannerTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIsNone(leak_scan.scan_line(line))
 
-    def test_the_rules_security_had_before_the_shared_table_keep_their_behavior(self):
+    def test_the_whole_delivery_rules_hit_without_the_random_and_placeholder_filters(self):
         for line, rule in (('KEY = "gh' + 'p_' + 'A' * 36 + '"', 'github-token'),   # unfiltered, as SECURITY validated them
                            ('id = "AKIA' + 'IOSFODNN7EXAMPLE"', 'aws-access-key-id'),
                            ('id = "ASIA' + 'Q7' * 8 + '"', 'aws-access-key-id'),
@@ -229,14 +233,21 @@ class V313Tests(unittest.TestCase):
                 ('indented block', f'x = 1\nprivate_key: |\n  {MARKER}\n  {KEY_BODY}\n  {self.END}', 3),
                 ('CRLF block', f'x = 1\r\n{MARKER}\r\n{KEY_BODY}\r\n{self.END}', 2),
                 ('one string', f'x = 1\nPEM = "{MARKER}\\n{KEY_BODY}\\n{self.END}\\n"', 2),
-                ('one string, \\r\\n', f'{{\n"private_key": "{MARKER}\\r\\n{KEY_BODY}\\r\\n{self.END}"\n}}', 2)):
+                ('one string, \\r\\n', f'{{\n"private_key": "{MARKER}\\r\\n{KEY_BODY}\\r\\n{self.END}"\n}}', 2),
+                # V314: a JSON document stored as a string writes each line break with two backslashes
+                ('escaped twice', f'x = 1\nCREDS = "{{\\"private_key\\": \\"{MARKER}{TWICE}{KEY_BODY}{TWICE}{self.END}{TWICE}\\"}}"', 2),
+                ('escaped twice, \\r\\n', f'x = 1\nCREDS = "{MARKER}{TWICE_CRLF}{KEY_BODY}{TWICE_CRLF}{self.END}"', 2),
+                ('a body of exactly 40 characters', f'x = 1\n{MARKER}\n{KEY_BODY[:40]}\n{self.END}', 2)):   # V314: the boundary
             with self.subTest(form=form):
                 self.assertEqual(self.both_scans(text), (hit(line), hit(line)))
 
     def test_a_private_key_marker_without_key_material_is_not_a_hit(self):
         regex = f'const body = pem.replace(/{MARKER}|{self.END}|\\s/g, "");'        # an alternation of the two markers
         template = f'const pem = `{MARKER}\\n${{base64(der)}}\\n{self.END}\\n`;'    # around a value computed at run time
-        for form, text in (('regex', regex), ('template', template), ('marker only', f'# {MARKER}'),
+        twice = template.replace('\\n', TWICE)                                      # V314: the same template, escaped twice
+        self.assertEqual(twice.count(TWICE), 3)
+        for form, text in (('regex', regex), ('template', template), ('template, escaped twice', twice),
+                           ('marker only', f'# {MARKER}'), ('marker and escapes only', f'PEM = "{MARKER}{TWICE}{TWICE}"'),
                            ('marker and prose', f'{MARKER}\n(paste the key of your provider here)\n{self.END}'),
                            ('short body', f'{MARKER}\n{KEY_BODY[:39]}\n{self.END}')):
             with self.subTest(form=form):
@@ -462,6 +473,24 @@ class SecretScanRunTests(unittest.TestCase):
         self.assertEqual((row['file'], row['summary']), ('app.py:2', 'the change adds a hardcoded credential at app.py:2 (jwt)'))
         self.assertEqual(co.state['secret_scan']['exempted'], [f'{fixture}:1 (jwt)'])   # the marker still matches
 
+    def test_a_form_feed_or_a_bare_carriage_return_before_a_hit_does_not_move_its_line(self):   # V314 (v3.1.2 gate note)
+        paged = ('def first():\n    return 1\n\x0c\n'                       # a page break on its own line, one before indented
+                 '\x0c    # the second page\n' 'a = 1\r    b = 2\n')        # text, and a bare \r inside a line: five lines
+        hit, end = f'KEY = "{JWT}"\n', '-----END ' + 'RSA PRIVATE KEY-----'
+        co = self.start(files={f23.SWIFT: f23.BASE_SWIFT, 'paged.py': paged})
+        self.t.write('paged.py', paged + hit)                                # tracked: the three lines above are hunk context
+        self.t.write('new_paged.py', paged + hit)                            # untracked: every line is an added line
+        self.t.write('inline.py', f'note = 1\rTOKEN = "{VALUES["github-token"]}"\n')   # after a bare \r on its own line
+        self.t.write('windows.py', f'x = 1\r\n{MARKER}\r\n{KEY_BODY}\r\n{end}\r\ny = 2\r\n{hit[:-1]}\r\n')   # CRLF: as before
+        self.review()
+        line = paged.count('\n') + 1                                         # git's and an editor's number: a count of \n
+        self.assertEqual(line, 6)
+        self.assertEqual(co.state['secret_scan']['blocking'],
+                         [f'paged.py:{line} (jwt)', 'inline.py:1 (github-token)', f'new_paged.py:{line} (jwt)',
+                          'windows.py:2 (private-key-block)', 'windows.py:6 (jwt)'])
+        self.assertEqual(self.rows()[0]['file'], f'paged.py:{line}')
+        self.assertEqual(co._delta_patch()[0], co._delta_patch(raw=True)[0].replace('\r\n', '\n').replace('\r', '\n'))   # the review view
+
     def test_the_gate_scans_a_tree_that_changed_after_the_review(self):
         co = self.start()
         co.state['next'] = 'gate'
@@ -477,6 +506,35 @@ class SecretScanRunTests(unittest.TestCase):
         self.assertEqual(co.state['status'], 'HOLD')
         self.assertTrue(co.state['hold_reason'].startswith(f'secret scan: the change still adds a hardcoded credential at {SERVICE}:2 (jwt)'))
         self.assert_value_never_written()
+
+    def test_a_partial_removal_at_the_gate_hold_leaves_an_open_row_for_the_remaining_hit(self):   # V314 (v3.1.2 gate note)
+        other = VALUES['sk-key']
+        fake_clis = lambda action: rc.parser().parse_args([action, *self.t.h.command()[3:]])   # resume() drives: no real CLI
+        self.t.commit({f23.SWIFT: f23.BASE_SWIFT})
+        self.co = co = rc.Coordinator(fake_clis('run'))
+        co.state.update(phase='EXEC', next='gate', exec_rounds=co.exec_round_limit())
+        co.save()
+        self.t.write(SERVICE, WITH_SECRET + f'OPENAI = "{other}"\n')         # two hits, on lines 2 and 3
+        with self.invoke():
+            co.gate_turn()
+        self.assertEqual(co.state['status'], 'HOLD')
+        [first] = self.rows()
+        self.assertEqual((first['status'], first['summary']),
+                         ('open', f'the change adds a hardcoded credential at {SERVICE}:2 (jwt), {SERVICE}:3 (sk-key)'))
+        self.t.write(SERVICE, REPAIRED + f'OPENAI = "{other}"\n')            # the operator removes one of them and resumes
+        self.co = co = rc.Coordinator(fake_clis('resume'))
+        self.assertEqual(co.state['sequence'], first['origin_round'])        # the scan runs again under the same sequence
+        with self.invoke():
+            self.assertEqual(co.resume(), 'HOLD')
+        self.assertEqual(self.calls, [])                                     # no turn: the gate's scan held again
+        self.assertTrue(co.state['hold_reason'].startswith(
+            f'secret scan: the change still adds a hardcoded credential at {SERVICE}:3 (sk-key);'), co.state['hold_reason'])
+        [row] = [row for row in self.rows() if row['status'] == 'open']      # the remaining hit is on record as open
+        self.assertEqual((row['file'], row['summary']),
+                         (f'{SERVICE}:3', f'the change adds a hardcoded credential at {SERVICE}:3 (sk-key)'))
+        self.assertEqual(json.loads((co.run_dir / 'state.json').read_text())['finding_ledger'], co.state['finding_ledger'])
+        self.assert_value_never_written()
+        self.assert_value_never_written(other)
 
 
 class SecretScanEndToEndTests(unittest.TestCase):

@@ -3250,9 +3250,12 @@ class Coordinator:
         finally:
             index.unlink(missing_ok=True)
 
-    def _git(self, args: list[str], ok=(0,)) -> str:
+    def _git(self, args: list[str], ok=(0,), raw: bool = False) -> str:
+        """`raw` keeps git's own line endings; the text mode default turns `\\r\\n` and a bare `\\r` into `\\n`."""
         proc = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, text=True, errors='replace')
+                              stderr=subprocess.PIPE, **({} if raw else {'text': True, 'errors': 'replace'}))
+        if raw:
+            proc.stdout, proc.stderr = proc.stdout.decode(errors='replace'), proc.stderr.decode(errors='replace')
         if proc.returncode not in ok:
             raise RuntimeError('git ' + ' '.join(args) + ' failed: ' + proc.stderr.strip())
         return proc.stdout
@@ -3300,15 +3303,16 @@ class Coordinator:
             elif source.is_file():
                 shutil.copy2(source, destination)
 
-    def _delta_patch(self) -> tuple[str, list[str]]:
-        """The run's change: tracked changes against the base plus every new untracked file, and those untracked names."""
+    def _delta_patch(self, raw: bool = False) -> tuple[str, list[str]]:
+        """The run's change: tracked changes against the base plus every new untracked file, and those untracked names.
+        `raw` (the secret scan) keeps the line endings of the files, so that one patch line is one line of the file."""
         base = self.state.get('base_commit')
         diff = ['diff', *candidate_tree.NO_EXT_DIFF, '--src-prefix=a/', '--dst-prefix=b/']   # whatever diff.mnemonicPrefix or diff.noprefix the operator's git config sets
-        tracked = self._git([*diff, '--binary', base, '--'] if base else [*diff, '--binary', '--'])
+        tracked = self._git([*diff, '--binary', base, '--'] if base else [*diff, '--binary', '--'], raw=raw)
         untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
         additions = []
         for name in untracked:
-            additions.append(self._git([*diff, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1)))
+            additions.append(self._git([*diff, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1), raw=raw))
         return tracked + ''.join(additions), untracked
 
     def materialize_review_context(self) -> None:
@@ -5013,7 +5017,7 @@ class Coordinator:
         on every route, whatever the reviewers saw: the author repairs it in a normal EXEC round, a report run lists it.
         Hits under a `secret-scan-allow:` path of the work item are recorded as exempted. Only path:line and the pattern
         kind are written, never the value. One open row carries the current hit list; a clean scan closes it."""
-        hits = leak_scan.scan_patch(self._delta_patch()[0], self._git_unquote)
+        hits = leak_scan.scan_patch(self._delta_patch(raw=True)[0], self._git_unquote)
         workitem = self.context / 'workitem.md'
         allow = leak_scan.allow_patterns(workitem.read_text(errors='replace') if workitem.is_file() else '')
         blocking = [hit for hit in hits if not leak_scan.exempt(hit['path'], allow)]
@@ -5043,7 +5047,10 @@ class Coordinator:
                                         'glob>` line in the work item of a new run, because this run\'s work item is frozen')}
         if same := next((row for row in self.open_findings() if row['source'] == 'secret-scan'), None):
             return [{'id': same['id'], **finding}]   # the same hit list, still open: one row, not one per round
-        return self.record_findings('secret-scan', phase, sequence, [finding])
+        # V314: a rescan under the same sequence (a resume at the gate HOLD after a partial removal) closed that
+        # sequence's row above; its own index keeps record_findings from handing the closed row back
+        index = sum(row['source'] == 'secret-scan' and row['origin_round'] == sequence for row in self.state['finding_ledger'])
+        return self.record_findings('secret-scan', phase, sequence, [finding], [index])
 
     def _secret_scan_hold_reason(self) -> str:
         blocking = self.state['secret_scan']['blocking']
