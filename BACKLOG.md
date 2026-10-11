@@ -1,12 +1,8 @@
-**Last updated**: 2026-10-08
+**Last updated**: 2026-10-11
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
-
-- **CLI auto-update validation:** v2.13.5 implementation shipped; remaining: record one real efficient run surviving a CLI auto-update.
-
-- ~~Lifecycle-off staged removal: remaining test migration (OFF-2, owner 2026-10-09).~~ — Closed as superseded by ADR-19 (2026-10-09 18:50 JST): off remains supported; staged deletion and remaining migration requirement cancelled. OFF-3 class-A migrations to on stay; tests may use either route.
 
 ## P2 — normal
 
@@ -23,10 +19,6 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - Progress (2026-09-25, `691edf3`): resume can raise the saved timeout only up to 7200 s; the run #5 failure already used the 7200 s timeout, and an in-flight turn cannot be extended. Whether to raise the cap or add a per-phase EXEC timeout is an open owner decision; this item remains open.
   - Progress (2026-09-26, R10-3): added a distinct EXEC author timeout (default 7200 s, maximum 14400 s), resume can raise it within the cap, and each launched receipt records its fixed timeout. Fake-CLI tests cover default/general timeout separation, EXEC use, bounded resume persistence, and cap rejection; offline checks and review evidence are recorded in the Round 10 report. Closure evidence is recorded after the batch commit.
   - Progress (2026-09-26, R11-1b): EXEC default now follows a larger general timeout up to the 14400 s cap; legacy state on resume derives the same bounded fallback. Resume recognizes only explicit CLI values as raises; project-config defaults preserve the saved timeout.
-- **Paired-session coordinator gap: evidence-isolation guard matches any `evidence/` path.** — **Fixed in v3.0.4 (V304)**: typed workspace paths pass; unresolved fallback retains literal run prefixes, bare relative evidence paths and role isolation without matching nested workspace evidence paths.
-
-- **Paired-session process: terminal-review tail** — Owner decision deferred: adopt class-wide repair batches and define which known-deferred findings terminal reviewers should record without reopening work. This policy is not adopted now.
-
 ## P3 — nice to have / someday
 
 ~~- [new] Paired-session coordinator gap: killed turns lose their usage. (added 2026-09-23)~~ (closed offline 2026-09-26 via `cfe92994d99bbb819122c6bc861daf292f58df07`; fake-Claude and fake-Codex regressions persist two request-usage records before SIGKILL, retain the killed receipt/turn record, and recover a pre-kill active snapshot into one abandoned-turn record without double counting. No real provider run is claimed.)
@@ -43,7 +35,23 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ~~Mirror the 10 stop-and-surface lint assertions to the Claude-side `skills/plan/SKILL.md` and `skills/execute/SKILL.md` so Claude-side regressions of lock-release, hallucination guards, and the git-diff failure bullet are statically caught. (added 2026-05-06)~~ (closed 2026-05-07, see 6c0dfd7 — 4 of the 10 mirrored as Claude-side `claude_*` cases (3 `contains` companions + 1 per-site `pattern_requires_adjacent`) implementing the v2.6.22 three-layer defense. The other 6 dispatch-site assertions are deliberately NOT mirrored: Claude SKILLs delegate Executor/Reviewer dispatch to `docs/protocol/planning.md` so the analogous needles are absent on Claude bodies and `pattern_requires_adjacent` would silently vacuous-pass per `tests/run_skill_lint_test.py:176-180`. Plan via review-loop:plan session 8fac7f57 (R1 REQUEST_CHANGES → R2 APPROVE, codex gpt-5.5); execute Round 1 first-pass APPROVE; lint 268→272 case-level PASS / 0 FAIL; unit tests 28/28 OK. Plugin v2.6.22 → v2.6.23.)
 
+- Credential scan follow-ups from the v3.1.3 gate (non-blocking; batch them when a release is due anyway). (added 2026-10-11)
+  - Doubly escaped PEM is missed by both scans (`scripts/content_rules.py`, `private-key-block`): a JSON string inside a string writes the line break as `\\n`. Changing `\\[rn]` to `\\+[rn]` in the pattern covers it; the gate checked on a copy that the existing tests pass and the two consumers' false-hit shapes still do not hit.
+  - The 40-character boundary of the key body has no test: the mutation `{40,}` -> `{41,}` survives (tests cover 39 = no hit and 64 = hit). Add one assertion at exactly 40.
+  - The vertical bar and `#` as separators also apply to password-shaped literals (`scripts/content_rules.py`, `random_like`): `password = "...#...#..."` with every segment under 16 characters hit in v3.1.2 and no longer does. Accepted residual (the same gap already existed for `-`, `_`, `.`); add one sentence under README "deliberately left". If evidence appears later, apply the two separators only to names without password/passwd.
+  - Rename `test_the_rules_security_had_before_the_shared_table_keep_their_behavior` (`paired_session/test_v312s.py`): its private-key case now carries a key body, so "keep their behavior" is no longer accurate for it.
+  - Carried from the v3.1.2 gate, same batch: ledger row reuse after a partial removal (not reproduced); line numbers for a bare CR.
+  - Evidence: `.worktrees/paired-session-next-batch/.compass/results/lanea/gate-v313-out.txt` (non-blocking notes 1-3, 5); supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`, entry "v3.1.3 released".
+
 ## Done (recent, trimmed quarterly)
+
+- ~~**Paired-session process: terminal-review tail** — Owner decision deferred: adopt class-wide repair batches and define which known-deferred findings terminal reviewers should record without reopening work. This policy is not adopted now~~ (closed 2026-10-11, see owner decision 2026-10-11 — closed as overtaken: the separate terminal-review process is gone (one gate per run); MINOR/LOW and an approving gate's MEDIUM/LOW are recorded as advisory with an optional once-per-run `--advisory-fix-round`; blocking findings carry `[class: ...]` labels, a class repeated across consecutive BLOCKs HOLDs, and a re-reported open finding is not a new one. Not built: a known-deferred list for the gate; reopen as a new item if field feedback shows the gate re-raising decided items)
+
+- ~~**CLI auto-update validation:** v2.13.5 implementation shipped; remaining: record one real efficient run surviving a CLI auto-update~~ (closed 2026-10-11, see poker-news-bot run `~/paired-runs/poker-news-bot/runs300/WI-140` — Claude CLI 2.1.295 → 2.1.296 landed 2026-10-10 23:36 JST between a HOLD and the resume; the coordinator recorded it under `program_updates`, re-froze `operator_programs`, ran the gate on the new version and reached DONE at 23:46 with no program-change HOLD)
+
+- ~~**Paired-session coordinator gap: evidence-isolation guard matches any `evidence/` path.** — **Fixed in v3.0.4 (V304)**: typed workspace paths pass; unresolved fallback retains literal run prefixes, bare relative evidence paths and role isolation without matching nested workspace evidence paths~~ (closed 2026-10-11, see v3.0.4, fe775df)
+
+- ~~Lifecycle-off staged removal: remaining test migration (OFF-2, owner 2026-10-09).~~ — Closed as superseded by ADR-19 (2026-10-09 18:50 JST): off remains supported; staged deletion and remaining migration requirement cancelled. OFF-3 class-A migrations to on stay; tests may use either route (closed 2026-10-11, see ADR-19, d6e79ab)
 
 - **Fresh-scan rejected legitimate product model names (Astra/Opus/...)** — **Fixed in v3.0.3 (V303-A)** — Done: v3.0.3 exempts legitimate product model names named in the frozen work item while retaining review-history checks.
 
