@@ -10,7 +10,7 @@
 - 其余限额和限流提示的识别没有变化（Claude 的限额窗口事件、API 错误消息、HTTP 429 等）；普通错误仍按原来的方式计入调用次数。
 - 用 v3.1.4 停在 `CLI exit 1` 的 run 不需要特别处理：额度恢复后照常 `resume`。
 
-**审查**：Codex 额度已用完，这一批的审查按规则改由 Opus 做，一轮 APPROVE；fresh Opus 终审 APPROVE；新增 3 个测试、扩充 1 个，已有断言都保留。
+**审查**：做这一批时 Codex 额度已用完，审查先按规则由 Opus 做（一轮 APPROVE，一条小建议已修），fresh Opus 终审 APPROVE；额度恢复后 Codex 复审 APPROVE，没有问题。新增 3 个测试、扩充 1 个，已有断言都保留。
 
 ### v3.1.4：凭据扫描的几处小修正
 
