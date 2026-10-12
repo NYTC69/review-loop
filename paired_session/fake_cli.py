@@ -240,6 +240,13 @@ def main():
         if os.environ.get('FAKE_RATE_LIMIT_STAGE_FIRST'):   # ratelimit: a writer that changed the index before the provider refused
             (Path.cwd() / 'rate-limit-stray.txt').write_text('stray\n')
             __import__('subprocess').run(['git', 'add', 'rate-limit-stray.txt'], check=True)
+        if os.environ.get('FAKE_RATE_LIMIT_CODEX_USAGE'):   # V315: the codex-cli 0.160.0 usage limit, JSONL on stdout with U+2019
+            text = ('You\u2019ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits '
+                    'or try again at Oct 18th, 2026 12:57 PM.')
+            events = ({'type': 'error', 'message': text}, {'type': 'turn.failed', 'error': {'message': text}})
+            sys.stdout.buffer.write(''.join(json.dumps(event, ensure_ascii=False) + '\n' for event in events).encode())
+            print('ERROR codex_core::session: failed to record rollout items: thread fake-codex-thread not found', file=sys.stderr)
+            return 1
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
     session = 'fake-codex-thread'
