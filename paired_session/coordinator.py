@@ -322,7 +322,7 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
         r'\btoo many requests\b|\brate[_ -]limit(?:_exceeded|_error| exceeded| error)\b|'
         r'\brate limit(?: has been| was)? (?:reached|exceeded)\b|'
         r'\b(?:subscription|usage|quota) (?:rate )?limit (?:has been )?(?:reached|exceeded)\b|'
-        r"\byou(?:['\u2019]| a)?ve hit (?:your )?(?:(?:usage|weekly|daily|monthly|session|opus|sonnet|\d+-hour|five-hour|"
+        r"\byou(?:['\u2019]| ha)?ve hit (?:your )?(?:(?:usage|weekly|daily|monthly|session|opus|sonnet|\d+-hour|five-hour|"
         r"seven-day|7-day) )?limit\b|\binsufficient_quota\b)"
     )
     confirmed = bool(strong_message.search(stderr))

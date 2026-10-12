@@ -46,6 +46,12 @@ class ClassifierTests(unittest.TestCase):
             for apostrophe in ("'", '\u2019'):   # V315: the typographic apostrophe too
                 with self.subTest(text=text, apostrophe=ascii(apostrophe)):
                     self.assertEqual(rc.classify_rate_limit_failure(1, text.replace("'", apostrophe) + '\n')['kind'], 'rate_limited')
+        for text in ('You have hit your usage limit', 'You have hit your 5-hour limit'):   # V315: the pattern read " a" for " ha"
+            with self.subTest(text=text):
+                self.assertEqual(rc.classify_rate_limit_failure(1, text + '\n'), {'kind': 'rate_limited', 'reset_hint': None})
+        for text in ('You ave hit your usage limit', 'You have hit an unexpected error'):   # the typo's own wording; not a limit
+            with self.subTest(text=text):
+                self.assertIsNone(rc.classify_rate_limit_failure(1, text + '\n'))
 
     def test_the_codex_usage_limit_with_a_typographic_apostrophe_is_rate_limited(self):   # V315
         self.assertIn('\u2019', CODEX_LIMIT)
