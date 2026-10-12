@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.1.5：认出 Codex 的用量上限提示
+
+**修复**
+- Codex 用量用完时，run 现在会停在"额度用完"的 HOLD（`hold_kind: rate_limited`），带上 CLI 给的恢复时间，失败的那一步不计入调用次数；恢复后 `resume` 会重派同一步。此前 Codex CLI 0.160.0 的提示用的是弯撇号（`You’ve hit your usage limit`），coordinator 只认直撇号，结果 run 以笼统的 `CLI exit 1` 结束，还多算了一次调用。来自 2026-10-12 的现场：四个真实 run 同时这样停下。
+- 同一条规则里的一个旧笔误：本意是接受 "You have hit your … limit"，实际接受的是 "You ave hit …"。现在接受前者，不再接受后者。
+
+**不变**
+- 其余限额和限流提示的识别没有变化（Claude 的限额窗口事件、API 错误消息、HTTP 429 等）；普通错误仍按原来的方式计入调用次数。
+- 用 v3.1.4 停在 `CLI exit 1` 的 run 不需要特别处理：额度恢复后照常 `resume`。
+
+**审查**：Codex 额度已用完，这一批的审查按规则改由 Opus 做，一轮 APPROVE；fresh Opus 终审 APPROVE；新增 3 个测试、扩充 1 个，已有断言都保留。
+
 ### v3.1.4：凭据扫描的几处小修正
 
 处理 v3.1.3 和 v3.1.2 两次终审留下的不阻塞建议，不加新机制。
