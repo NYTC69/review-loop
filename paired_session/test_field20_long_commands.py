@@ -55,6 +55,7 @@ class LongProbeCommandTests(unittest.TestCase):
             self.assertIn(rc.LONG_COMMAND_RULE, prompt)
             self.assertLess(prompt.index(rc.LONG_COMMAND_RULE), prompt.index('Allowed exact command:\npython3 -m unittest'))
         self.assertIn(rc.LONG_COMMAND_RULE, co.allowed_command_prompt())   # reviewer, gate, docs and specialist prompts
+        self.assertIn(f'gets {rc.LONG_COMMAND_TIMEOUT_MS} for a long command.', rc.LONG_COMMAND_RULE)
         self.assertIsNone(re.search(r'\b(?:Claude|Codex|Opus|Astra)\b', rc.LONG_COMMAND_RULE, re.I))   # fresh-role history scan
 
 

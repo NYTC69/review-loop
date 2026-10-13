@@ -157,6 +157,7 @@ DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 DEFAULT_TIMEOUT_SECONDS = 2700
+LONG_COMMAND_TIMEOUT_MS = 3600000
 MAX_TIMEOUT_SECONDS = 86400   # timeoutcap: one day per non-EXEC turn or coordinator test run (an existing run starts with --timeout 20000)
 MAX_RESUME_TIMEOUT_SECONDS = MAX_TIMEOUT_SECONDS
 TIMEOUT_RANGE_ERROR = f'--timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds'
@@ -938,7 +939,7 @@ LONG_COMMAND_RULE = ('Run each command to completion before the next one and nev
                      'A result with a session_id and no exit_code is still running: poll that session until the result carries an '
                      'exit_code (code-mode cells of exactly: const r = await tools.write_stdin({"session_id":<that id>,"chars":"",'
                      '"yield_time_ms":30000}); text(JSON.stringify(r));). Polls are not extra commands. '
-                     'A Bash tool call that takes a timeout parameter gets 600000 for a long command.')   # no vendor names: fresh-role scan
+                     f'A Bash tool call that takes a timeout parameter gets {LONG_COMMAND_TIMEOUT_MS} for a long command.')   # no vendor names: fresh-role scan
 
 
 def command_not_completed(row: dict) -> bool:
@@ -6159,8 +6160,12 @@ class Coordinator:
                                            for row in observed_commands):
                 unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
                                  for row in observed_commands)   # FIELD-20
+                timeout = next((match.group(1).strip() for row in observed_commands
+                                if command_invokes_test(row.get('command', ''), self.args.test_command)
+                                and (match := TOOL_TIMEOUT_RE.match(str(row.get('output') or '')))), None)
                 raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
-                                 + ('; the configured test was not observed to completion (no exit status when the turn ended)'
+                                 + (f' (the command timed out after {timeout} in the role\'s command tool)' if timeout else
+                                    '; the configured test was not observed to completion (no exit status when the turn ended)'
                                     if unfinished else ''))
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
@@ -8987,6 +8992,11 @@ class Coordinator:
 
 def cli_env() -> dict:
     env = os.environ.copy()
+    # Let a foreground long command finish; retain a larger operator budget per variable.
+    for name in ('BASH_DEFAULT_TIMEOUT_MS', 'BASH_MAX_TIMEOUT_MS'):
+        try: value = int(env.get(name, ''))
+        except ValueError: value = 0
+        if value < LONG_COMMAND_TIMEOUT_MS: env[name] = str(LONG_COMMAND_TIMEOUT_MS)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     # `claude -p` starts Agent subagents in the background by default: the turn then emits an
     # interim result before the subagent finishes and a second one afterwards. Foreground
