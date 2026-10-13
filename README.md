@@ -189,8 +189,8 @@ FINISH or POLISH-Q fix, a DOCS write outside the docs or a DOCS-review REVISE op
 first, then the gate). SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
 additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
 256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
-committed and left unchanged or removed by the run are printed once as a NOTE and recorded in the SECURITY receipt;
-such a file over 8 MiB is not content-scanned and is named in the NOTE.
+committed and left unchanged are printed once as a NOTE and recorded in the SECURITY receipt; a path the run removed
+and that is still in the index is also named in a NOTE. Such a file over 8 MiB is not content-scanned and is named in the NOTE.
 A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
 A SECURITY HOLD is never repaired by the run: fix it outside the run and resume (the EXEC review and the gate run again).
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.

@@ -170,7 +170,9 @@ class SecurityRunScopeTests(unittest.TestCase):
 
     def test_many_preexisting_hits_are_bounded_and_notes_show_twenty_paths(self):
         names = [f'dist/{n:03d}.js.map' for n in range(501)]
-        self.commit_files({name: b'ordinary file\n' for name in names})
+        files = {name: b'ordinary file\n' for name in names}
+        files.update({f'old/hit-{n:03d}.txt': ('AKIA' + 'ABCDEFGHIJKLMNOP' + '\n').encode() for n in range(200)})
+        self.commit_files(files)
         co, _ = wt.WorktreeLifecycleActivationTests.at_security(self)
         output = io.StringIO()
         with contextlib.redirect_stdout(output), mock.patch.object(co, '_security_review_turn',
@@ -181,10 +183,19 @@ class SecurityRunScopeTests(unittest.TestCase):
         preflight = receipt['preflight']
         self.assertEqual(preflight['findings'], [])
         self.assertEqual(len(preflight['preexisting_findings']), sp.MAX_PREEXISTING_FINDINGS)
-        self.assertEqual(preflight['preexisting_truncated'], 2)
+        self.assertEqual(preflight['preexisting_truncated'], 2 * (501 + 200) - sp.MAX_PREEXISTING_FINDINGS)
         self.assertEqual(len(receipt['preexisting_sensitive_paths']), 501)
         self.assertIn('dist/019.js.map and 481 more (see the SECURITY receipt)', output.getvalue())
         self.assertNotIn('dist/020.js.map', output.getvalue())
+        prompt = co._security_scan_note_prompt()
+        self.assertIn('dist/019.js.map and 481 more (see the SECURITY receipt)', prompt)
+        self.assertIn('old/hit-019.txt and 180 more (see the SECURITY receipt)', prompt)
+        self.assertEqual(prompt.count('old/hit-000.txt'), 1)
+        self.assertNotIn('dist/020.js.map', prompt)
+        self.assertNotIn('old/hit-020.txt', prompt)
+        self.assertNotIn('in_head', prompt)
+        self.assertNotIn('in_index', prompt)
+        self.assertLess(len(prompt), 4000)
 
     def test_removed_base_paths_are_notes_but_new_or_changed_staged_hits_block(self):
         token = ('AKIA' + 'ABCDEFGHIJKLMNOP' + '\n').encode()
@@ -215,6 +226,16 @@ class SecurityRunScopeTests(unittest.TestCase):
         report = self.scan_current(baseline)
         self.assertEqual(report['status'], 'blocked')
         self.assertEqual({r['path'] for r in report['findings']}, {'added.pem'})
+        self.run_dir = self.root / 'added-deleted-run'
+        co, _ = wt.WorktreeLifecycleActivationTests.at_security(self)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            co.worktree_security_turn()
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertIn('SECURITY sensitive paths: added.pem', co.state['hold_reason'])
+        [receipt] = [r for r in co.state['lifecycle']['receipts'] if r['stage'] == 'SECURITY']
+        self.assertEqual(receipt['preexisting_sensitive_paths'], [])
+        self.assertNotIn('NOTE: pre-existing', output.getvalue())
         # A changed base blob staged before deletion is also still blocking.
         (self.workspace / 'deploy.pem').write_bytes(token)
         rc.subprocess.run(['git', 'add', '-f', 'deploy.pem'], cwd=self.workspace, check=True)
@@ -284,14 +305,14 @@ class SecurityRunScopeTests(unittest.TestCase):
         [prompt] = prompts
         self.assertIn('deploy.pem', prompt)
         self.assertIn('settings.txt', prompt)
-        self.assertIn('aws-access-key-id', prompt)
+        self.assertIn('pre-existing security content hits, not changed by this run: settings.txt', prompt)
         self.assertIn('already committed and left unchanged', prompt)
         self.assertIn('SECURITY notes, not findings of this run', prompt)
         self.assertIn("review the run's change as before", prompt)
         self.assertNotIn(token, prompt)
         report = wt.wl.delivery_report(co.state, 'test-run', 'test work',
                                       {'auto_commit': False, 'commit': None})
-        self.assertIn('已提交且未改动：敏感路径 1 个，内容命中 2 条，因大小未扫描 1 个文件', report)
+        self.assertIn('已提交且未改动：敏感路径 1 个，内容命中 1 条，因大小未扫描 1 个文件', report)
 
     def write_prompt(self, prompt):
         path = self.root / 'security-prompt.txt'

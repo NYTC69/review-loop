@@ -6633,6 +6633,8 @@ class Coordinator:
         self.save()
         all_sensitive = self._sensitive_paths()
         changed = set(self._changed_paths(deleted=True))
+        base = self.state['config'].get('review_base') or 'HEAD'
+        changed.update(filter(None, self._git(['diff', '--cached', '--name-only', '-z', '--no-renames', base]).split('\0')))
         preflight = self._security_preflight(request['request_id'])
         removed = set(preflight.get('removed_paths', []))
         sensitive = [row for row in all_sensitive if row['path'] in changed and row['path'] not in removed]
@@ -6654,10 +6656,7 @@ class Coordinator:
         if preflight.get('skipped_preexisting_files'):
             notes.append('content scan skipped oversized pre-existing files, unchanged or removed by this run: ' +
                          self._security_note_paths(preflight['skipped_preexisting_files']))
-        self.state['lifecycle']['security_scan_notes'] = {
-            'sensitive_paths': preexisting, 'content_hits': [row for row in preflight.get('preexisting_findings', [])
-                                                          if row.get('line') is not None],
-            'preexisting_truncated': preflight.get('preexisting_truncated', 0)}
+        self.state['lifecycle']['security_scan_notes'] = notes
         printed = self.state['lifecycle'].setdefault('security_notes', [])
         for note in notes:
             if note not in printed:
@@ -6813,7 +6812,7 @@ class Coordinator:
         if self.state['config'].get('review_report') or not notes:
             return ''
         return ('The following sensitive paths and content hits were already committed and left unchanged by this run '
-                '(or removed where marked): ' + json.dumps(notes, ensure_ascii=True) + '.\n'
+                '(or removed where marked):\n' + '\n'.join(notes) + '\n'
                 "They are recorded as SECURITY notes, not findings of this run; review the run's change as before.\n")
 
     def _security_review_turn(self, tree: str, request_id: str) -> dict:
