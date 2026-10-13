@@ -46,9 +46,10 @@ What these flags deliver:
 | Gate | strict | efficient |
 |---|---|---|
 | Permission probe before run, resume and reject (`probe_gate`); `_probe_gate_required` re-checks after an uncertain turn | required | not required. `permission-probe` still runs and its report is still recorded |
-| Claude author opt-in or probe PASS (`claude_author_verified`, in `_execute_locked` and `drive`) | required | not required |
+| Claude author probe PASS (`claude_author_verified`, in `_execute_locked` and `drive`) | required | not required |
 | Codex CLI sandbox-contract verification (`codex_contract_verified`) | required | not required |
-| `--accept-probe-skip`, `--accept-unverified-claude-author`, `--accept-unverified-codex-cli` | honoured | unnecessary: accepted but not recorded or checked |
+| `--accept-unverified-codex-cli` | honoured with `--reason` | unnecessary: accepted with `--reason`, but not recorded or checked |
+| `--accept-probe-skip`, `--accept-unverified-claude-author` | refused (removed); use `permission-probe` | refused (removed); no probe waiver needed |
 | Evidence guard (`sensitive_access`) | holds | log-only: the reason goes to `receipt['evidence_guard']['would_hold']` |
 | Codex capability scan (`codex_capabilities`: MCP servers, profiles, permissions in the Codex config) | refuses | refuses. It keeps the sandbox configuration honest (B) |
 
@@ -162,7 +163,7 @@ turn's processes, then restores the workspace by hand.
 
 ## 6. Lifecycle hook (D-7)
 
-- D-7 ("lifecycle refuses probe waivers") is W1a's `worktree_lifecycle.refuse_waivers`. Since lane A INT-2c it applies only when `Coordinator.strict` is true; an efficient lifecycle run notes a waiver as unneeded and records none, like any efficient run.
+- D-7 ("lifecycle refuses probe waivers") is W1a's strict-only internal `worktree_lifecycle.refuse_waivers` check. The public surface first refuses the removed Claude-author and probe-skip flags in both modes. Efficient mode needs no waiver; the supported `--accept-unverified-codex-cli` is unneeded and not recorded.
 
 ## 7. Tests
 

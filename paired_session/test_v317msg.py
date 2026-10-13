@@ -62,7 +62,12 @@ class RecoveryHintTests(unittest.TestCase):
 
     def rejected_tree(self, route, terminal=False):
         flags = ('--lifecycle-mode', route, '--shadow', 'off', '--max-invocations', '60')
-        env = {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'}
+        # Give each route the same initial code; the previous subcase's fake author
+        # output must not make this route's recovery write an unchanged tree.
+        (self.workspace / 'sum_ints.py').write_text(
+            'def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+            '        raise TypeError("ints only")\n    return sum(values)\n')
+        env = {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1', 'FAKE_AUTHOR_WRITE_NEW_TREE': ''}
         done = self.run_coordinator(*flags, env=env)
         self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
         if terminal:
@@ -78,8 +83,8 @@ class RecoveryHintTests(unittest.TestCase):
         self.assertIn('rejected-tree', reason)
         hint = reason.split('; ', 1)[1]
         if terminal:
-            self.assertIn('reject --scope-change, or abort', hint)
-            self.assert_public_hint(hint, [['reject', '--scope-change'], ['abort']])
+            self.assertEqual(hint, 'post-DONE rejection limit reached; note and resume, reject --scope-change, or abort')
+            self.assert_public_hint(hint, [['note'], ['resume'], ['reject', '--scope-change'], ['abort']])
         elif route == 'off':
             self.assertEqual(hint, 'note, change the workspace and resume, note --scope-change, or abort')
             self.assert_public_hint(hint, [['note'], ['resume'], ['note', '--scope-change'], ['abort']])
@@ -88,6 +93,18 @@ class RecoveryHintTests(unittest.TestCase):
         # The same HOLD reason is persisted in the operator report and progress stream.
         self.assertIn(reason, (self.run_dir / 'review-comparison.md').read_text())
         self.assertIn(reason, (self.run_dir / 'progress.jsonl').read_text())
+
+        if terminal:
+            unchanged = self.run_operator_action('resume', *flags, env=env)
+            self.assertEqual(unchanged.returncode, 2, unchanged.stdout + unchanged.stderr)
+            self.assertEqual(self.state()['hold_reason'], reason)
+            noted = self.run_operator_action('note', *flags, '--text', 'Recheck integer inputs.', env=env)
+            self.assertEqual(noted.returncode, 0, noted.stdout + noted.stderr)
+            self.assertNotIn('terminal_hold_kind', self.state())
+            # Keep credential environment names stable; allow the fake author to apply the note.
+            resumed = self.run_operator_action('resume', *flags, env={'FAKE_AUTHOR_NO_REJECTION_CHANGE': '', 'FAKE_AUTHOR_WRITE_NEW_TREE': '1'})
+            self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+            self.assertEqual(self.state()['operator_notes'][-1]['status'], 'delivered')
 
     def test_rejected_tree_hint_on_both_routes(self):
         for route in ('off', 'on'):

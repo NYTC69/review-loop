@@ -166,8 +166,8 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   run_dir or author-tmp is a workspace profile). Before W1a a workspace `.review-loop/paired-session.json`
   value was stopped only by the blanket refusal; W1a added an explicit check that keeps the "lifecycle
   remains disabled" message substring.
-- Added in W1a, strict only since D-EFF: strict lifecycle runs refuse `--accept-unverified-claude-author` and
-  `--accept-probe-skip`; a verified probe-cache reuse is allowed.
+- Added in W1a; today the public surface refuses `--accept-unverified-claude-author` and
+  `--accept-probe-skip` in both modes (removed). Strict runs may use a verified probe-cache reuse.
 - Added in W1a, moved by W1b–W3a: a W run reaches DONE only after a READY SECURITY receipt, and until W3b
   `accept` refuses a W DONE, so a real run never silently skips a stage.
 - Added in W3a-2: after the SECURITY clean scan a fresh security reviewer (reviewer role, EXEC reviewer

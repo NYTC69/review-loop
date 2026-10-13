@@ -3700,7 +3700,7 @@ class Coordinator:
                 reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
                            if terminal_kind == 'rejection_limit' else '; note, change the workspace, or abort')
             else:
-                reason += ('; post-DONE rejection limit reached; reject --scope-change, or abort'
+                reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
                            if terminal_kind == 'rejection_limit' else
                            '; note, change the workspace and resume, note --scope-change, or abort')
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
