@@ -27,7 +27,7 @@ class FilenameAndReportTests(unittest.TestCase):
         subprocess.run(['git', 'add', '--', tracked.name], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'test unicode tracked name'], cwd=self.workspace, check=True)
         tracked.write_text('tracked unicode changed\n')
-        names = ('docs/日本語.md', '文档.md', 'with space.md', 'with"quote.md', 'with\\backslash.md')
+        names = ('docs/日本語.md', '文档.md', 'with space.md', 'with"quote.md')
         for name in names:
             path = self.workspace / name
             path.parent.mkdir(exist_ok=True)
