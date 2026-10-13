@@ -10,7 +10,8 @@ from paired_session import worktree_lifecycle as wl
 
 rc, DONE = twl.rc, twl.DONE
 RUN = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '80', '--max-exec-rounds', '1')
-ADVISORY = {'FAKE_EXEC_MINOR_REVISE': '1'}   # every EXEC review leaves a MINOR finding; the final round lets it pass
+ADVISORY = {'FAKE_EXEC_MINOR_REVISE': '1'}   # every EXEC review is an advisory-only REVISE (one MINOR finding): it is approved
+                                             # with advisory at the round cap, or after the phase's one repair attempt
 
 
 class AdvisoryFixRoundTests(unittest.TestCase):

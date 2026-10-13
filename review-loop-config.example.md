@@ -17,7 +17,9 @@
 # and its files deleted).
 # entry: paired-session
 
-# soft_limit_plan: 3            # --max-plan-rounds; at the cap the run HOLDs and `resume --add-rounds N` continues it
+# soft_limit_plan: 3            # --max-plan-rounds; a blocking review at the cap HOLDs and `resume --add-rounds N`
+                                # continues it; an eligible advisory-only review at the cap is approved with its rows
+                                # left open as advisory
 # soft_limit_exec: 4            # --max-exec-rounds
 # auto_commit: false            # review-only runs (/review-loop on existing code, code-quality-loop): false keeps the
                                 # accepted change uncommitted (with lifecycle on: normally one local commit at accept, never a push);
