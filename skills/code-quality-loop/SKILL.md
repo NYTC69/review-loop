@@ -25,7 +25,7 @@ continue as absent. Then:
      when it is absent.
   2. Map the arguments; a refused one stops here with its line, before any handoff:
      - `[max-rounds]` N: an integer of at least 2 becomes `--max-exec-rounds N` (round 1 reviews the existing
-       change; the cap ends in a HOLD) and wins over `soft_limit_exec`; absent, the paired-session skill's usual
+       change; blocking reviews at the cap end in a HOLD) and wins over `soft_limit_exec`; absent, the paired-session skill's usual
        mapping applies (`soft_limit_exec`, else the coordinator default). Anything else is refused:
        `code-quality-loop: max-rounds must be an integer of at least 2 on the paired route (round 1 reviews the existing change)`.
      - `--skip-reorganize`: print `code-quality-loop: --skip-reorganize has no effect; the paired route never reorganizes`.

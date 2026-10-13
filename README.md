@@ -343,7 +343,7 @@ uses the author's vendor, and the test command is the one the skill confirms wit
 | Key | Default | Description |
 |-----|---------|-------------|
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
-| `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; at the cap the run HOLDs and `resume --add-rounds N` continues it |
+| `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; blocking reviews at the cap HOLD and `resume --add-rounds N` continues them |
 | `soft_limit_exec` | `4` | `--max-exec-rounds`: the same for EXEC |
 | `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept` with lifecycle on, never a push; lifecycle off returns the uncommitted tree; both honour an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
@@ -414,8 +414,12 @@ key-named-literal rules apply only to lines the run adds and to a review-pr post
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
 
-**Round Caps** — Hard round caps (plan 3 / exec 4 unless set) end in a HOLD; at that HOLD
-`resume --add-rounds N` continues the same run (L100).
+**Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 4 unless set) end in a HOLD;
+`resume --add-rounds N` continues the same run (L100). An eligible advisory-only PLAN/EXEC REVISE
+gets one repair attempt per phase, then exits with open rows recorded as advisory; at the cap it
+exits without requiring an attempt. Writer replay permits this exit only at its cap. EXEC requires
+a successful configured test, own run evidence and the same reviewed tree. See
+[the advisory rules](paired_session/README.md#minor-only-review-revisions).
 
 **Quality Polish (POLISH-Q)** — With lifecycle on, after the gate and FINISH, read-only specialists review the change: the language
 reviewers for the changed file types (`go-reviewer`, `rust-reviewer`, `python-reviewer`,

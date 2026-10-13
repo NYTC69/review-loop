@@ -111,8 +111,8 @@ Create `.review-loop/config.md` in your project to customize:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `entry` | absent (paired-session) | `paired-session` (`legacy` is refused since v2.13.0); routes every `/review-loop` (Claude) or review-loop skill (Codex) request, review-pr and code-quality-loop (see Entry above) |
-| `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (a hard cap that HOLDs) |
-| `soft_limit_exec` | unset → 4 | Becomes `--max-exec-rounds` (a hard cap that HOLDs) |
+| `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (a hard cap that HOLDs blocking reviews) |
+| `soft_limit_exec` | unset → 4 | Becomes `--max-exec-rounds` (a hard cap that HOLDs blocking reviews) |
 | `docs_file` | `CHANGELOG.md` | Becomes `--docs-file`; `""` to skip |
 | `skip_quality_polish` | false | Becomes `--skip-quality-polish` |
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |
@@ -147,12 +147,11 @@ review_focus: |
 ## Key features
 
 - **Independent review** — the reviewer, shadow and gate never share the author's session
-- **Hard caps** — blocking reviews at the plan and exec round limits end in a HOLD; on your request the same run
-  continues with `resume --add-rounds N` (1-10). An advisory-only PLAN/EXEC REVISE gets one repair attempt per phase.
-  The next eligible advisory-only review, or one at the cap, is approved with open findings recorded as advisory.
-  Blocking rounds do not reset the attempt. EXEC still requires a passed configured test, own run evidence
-  and a review of the current tree. A blocking finding still open is never approved this way:
-  the author repairs it, and at the round limit the run HOLDs
+- **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
+  Eligible advisory-only reviews get one repair attempt per phase, then advisory acceptance, or exit at the cap
+  without an attempt. Writer replay takes the advisory exit only at its cap. Blocking rounds preserve the attempt; send-back
+  grants a new EXEC attempt. EXEC needs a passed configured test, own run evidence and the current tree.
+  See [the advisory rules](../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
 - **Project-specific config** — tailor review priorities per project
 

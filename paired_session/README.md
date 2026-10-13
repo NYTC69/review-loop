@@ -57,7 +57,8 @@ except during a writer replay.
 The final PLAN/EXEC round keeps the same advisory exit without requiring an
 attempt. Advisory-only means MINOR/LOW findings without a security flag,
 and/or only earlier non-blocking rows reported `still_open`, with no blocking
-row open. Those rows remain open and labeled advisory in the ledger and report.
+row open. Those rows remain open and labeled advisory in the ledger and report
+until a later reviewer confirms they are fixed or withdraws them with evidence.
 The raw REVISE and effective verdict are recorded separately. The next phase
 receives the rows as non-blocking context.
 
@@ -643,7 +644,7 @@ continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
 next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
-`run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
+At that round-limit HOLD, `run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
 inspect whether `round_limit_hold.hold_reason` equals the current `hold_reason`.
 Other exits are `note --scope-change` or `abort`. Ordinary notes cannot extend a cap.
 
@@ -654,7 +655,10 @@ record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
 no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope
 feedback to one more EXEC author turn. That turn goes through the configured
 review again and forces a gate review. Rejections are saved and limited to two
-by default; exhausting the limit puts the run on `HOLD`.
+by default; exhausting the limit puts the run on `HOLD`. At a rejected-tree
+rejection-limit HOLD, use `note` and `resume` for a new author ingest,
+`reject --scope-change` for a successor, or `abort`; plain resume cannot accept
+the rejected tree.
 Acceptance requires DONE; at HOLD, use note and resume when an author turn is
 available, a scope-change successor, or abort.
 

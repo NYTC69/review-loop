@@ -49,12 +49,11 @@ Not on Codex:
 - Codex loads the skills from the installed plugin (`codex plugin add review-loop@review-loop-marketplace`,
   see `docs/install-codex.md`), not from the workspace.
 - macOS only: every entry refuses another host (`paired-session needs macOS; Linux and other hosts are not supported`).
-- A blocking review at the plan or exec round limit ends in a HOLD; on your request the same run continues with
-  `resume --add-rounds N` (1-10). An advisory-only PLAN/EXEC REVISE gets one repair attempt per phase.
-  The next eligible advisory-only review, or one at the cap, is approved with open findings recorded as advisory.
-  Blocking rounds do not reset the attempt. EXEC still requires a passed configured test, own run evidence
-  and a review of the current tree. A blocking finding still open is never approved this way:
-  the author repairs it, and at the round limit the run HOLDs.
+- **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
+  Eligible advisory-only reviews get one repair attempt per phase, then advisory acceptance, or exit at the cap
+  without an attempt. Writer replay takes the advisory exit only at its cap. Blocking rounds preserve the attempt; send-back
+  grants a new EXEC attempt. EXEC needs a passed configured test, own run evidence and the current tree.
+  See [the advisory rules](../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
   paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in

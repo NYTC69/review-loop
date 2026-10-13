@@ -74,16 +74,20 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         self.assertEqual((state['exec_rounds'], 'lifecycle' in state), (2, False))
         self.assertEqual(self.exec_verdicts(state)[0], ('APPROVE', 'APPROVE'))   # the review before the gate blocked
 
-    def test_with_a_round_left_the_author_is_dispatched_again(self):
-        done = self.gate_shaped(*OFF, '--max-exec-rounds', '3')
-        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
-        state = self.state()
-        self.assertEqual(self.exec_verdicts(state), [('APPROVE', 'APPROVE'), ('REVISE', 'REVISE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
-        authors = [turn['sequence'] for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC']
-        self.assertEqual((len(authors), state['exec_rounds']), (3, 3))   # round 2 of 3 went to the author, as before
-        row = self.assert_exit(state, 'LOW')
-        prompt = (self.run_dir / 'evidence' / f'{authors[2]:03d}-exec-author.prompt.txt').read_text()
-        self.assertIn(json.dumps({'id': row['id'], 'fixed': False, 'evidence': 'fake: not addressed'})[1:-1], prompt)
+    def test_first_advisory_revise_repairs_and_second_exits_with_a_round_left(self):
+        for route in (OFF, ON):
+            with self.subTest(route=route):
+                (self.root / 'gate-once').unlink(missing_ok=True)
+                self.run_dir = self.root / ('second-advisory-' + route[1])
+                done = self.gate_shaped(*route, '--max-exec-rounds', '4')
+                self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+                state = self.state()
+                self.assertEqual(self.exec_verdicts(state), [('APPROVE', 'APPROVE'), ('REVISE', 'REVISE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
+                authors = [turn['sequence'] for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC']
+                self.assertEqual((len(authors), state['exec_rounds']), (3, 3))   # first advisory REVISE repairs; second exits before the cap (V317-ONCE)
+                row = self.assert_exit(state, 'LOW')
+                prompt = (self.run_dir / 'evidence' / f'{authors[2]:03d}-exec-author.prompt.txt').read_text()
+                self.assertIn(json.dumps({'id': row['id'], 'fixed': False, 'evidence': 'fake: not addressed'})[1:-1], prompt)
 
     def test_a_gate_high_still_open_at_the_last_round_holds(self):
         held = self.gate_shaped(*OFF, '--max-exec-rounds', '2', keep='reject bool')
@@ -153,11 +157,16 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         co.reviewer_turn()
         return co.state
 
-    def test_plan_still_open_minor_at_limit_holds(self):
-        state = self.review('plan', [('persistent-reviewer', 'MINOR')], phase='PLAN')
-        self.assertEqual((state['status'], state.get('hold_reason')), ('HOLD', 'PLAN round limit reached'))
-        self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
-        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+    def test_plan_still_open_minor_at_limit_advances_with_advisory(self):
+        # V317-PLAN permits this exit; test_v317_plan separately pins the blocking cap.
+        for route in ('off', 'on'):
+            with self.subTest(route=route):
+                state = self.review('plan-' + route, [('persistent-reviewer', 'MINOR')], phase='PLAN',
+                                    flags=('--lifecycle-mode', route))
+                self.assertEqual((state['status'], state.get('hold_reason')), ('ACTIVE', None))
+                self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+                self.assertTrue(all(row.get('advisory') and row['status'] == 'open' for row in state['finding_ledger']))
+                self.assertEqual((state['phase'], state['next']), ('EXEC', 'author'))
 
     def test_review_only_gate_low_at_limit_reaches_done(self):
         for route in (OFF, ON):
