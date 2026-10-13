@@ -707,7 +707,8 @@ break the run; an approval that ends the review (a gate without blockers, or a
 reviewer approval with no gate to follow) breaks it. When one class appears in
 each of three consecutive BLOCKs, the run HOLDs `structural fix / re-scope
 needed: finding class ...` with the finding ids per verdict, after routing the
-next turn to the author; the round-limit HOLD keeps precedence and its override.
+next turn to the author; the round-limit HOLD keeps precedence; use
+`resume --add-rounds N`, `note --scope-change`, or `abort`.
 The HOLD closes no finding and never accepts. Use `note` with a structural plan
 and `resume`, `note --scope-change`, or `abort`; after the HOLD the count starts
 afresh, so the same class HOLDs again only after three more BLOCKs. The history

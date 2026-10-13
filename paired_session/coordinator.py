@@ -3161,7 +3161,7 @@ class Coordinator:
         if passed: return True, ''
         if self._probe_skip_accepted(): print('probe skipped by operator acceptance (--accept-probe-skip)'); return True, ''
         if (acc := self.state.get('probe_skip_override') or {}).get('voided'):   # ENV-NAME: a voided acceptance is reported, not silent
-            reason += f'; the earlier --accept-probe-skip is void ({self._void_text(acc)}; pass --accept-probe-skip --reason TEXT again or run permission-probe)'
+            reason += f'; the earlier --accept-probe-skip is void ({self._void_text(acc)}; run permission-probe)'
         if lifecycle_spine.fake_dispatch_guard(self.args): return False, reason       # the fake harness never touches the real cache
         reused, note = self._probe_cache_reuse()
         return (True, '') if reused else (False, reason + '; ' + note)
@@ -3700,8 +3700,9 @@ class Coordinator:
                 reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
                            if terminal_kind == 'rejection_limit' else '; note, change the workspace, or abort')
             else:
-                reason += '; note, change the workspace, or accept --override-rejection --reason TEXT'
-                if terminal_kind == 'rejection_limit': reason += '; post-DONE rejection limit reached; accept or abort'
+                reason += ('; post-DONE rejection limit reached; reject --scope-change, or abort'
+                           if terminal_kind == 'rejection_limit' else
+                           '; note, change the workspace and resume, note --scope-change, or abort')
         keep_rejection_limit = (self.state.get('status') == 'HOLD' and
                                 self.state.get('terminal_hold_kind') == 'rejection_limit')
         self.set_effective_verdict('HOLD')
@@ -9360,8 +9361,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
               co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
     if status == 'HOLD' and co.at_round_limit_hold():   # L100: the continue option first
         print('NEXT: resume --add-rounds N (1-10) continues this run with N more rounds; '
-              + ('' if worktree_lifecycle.is_worktree(co.state) else 'accept --override-rejection --reason TEXT accepts the held tree; ')
-              + 'note --scope-change starts a successor run; or abort')
+              'note --scope-change starts a successor run; or abort')
     print(status + (' (acceptance pending)' if status == 'DONE' else
                     ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
     return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
