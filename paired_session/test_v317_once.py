@@ -134,6 +134,98 @@ class AdvisoryOnceTests(unittest.TestCase):
                                      'APPROVE_WITH_ADVISORY' if second else 'REVISE')
                     co = replay
 
+    def test_blocking_reviews_first_do_not_consume_an_advisory_attempt(self):
+        for phase in ('PLAN', 'EXEC'):
+            with self.subTest(phase=phase):
+                self.run_dir = self.root / phase
+                co = self.coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '6',
+                                      '--max-plan-rounds', '6')
+                (co.context / 'plan.md').write_text('Implement the helper.\n')
+                for rounds, severity in ((1, 'MAJOR'), (2, None)):
+                    co.state[phase.lower() + '_rounds'] = rounds
+                    self.record_review(co, phase, severity)
+                    co.reviewer_turn()
+                    self.assertEqual((co.state['next'], co.state['review_verdicts'][-1]['effective_verdict']),
+                                     ('author', 'REVISE'))
+                    self.assertNotIn(phase, co.state.get('advisory_repair_attempts', {}))
+                [blocker] = co.blocking_open_findings()
+                co.state[phase.lower() + '_rounds'] = 3
+                sequence = self.record_review(co, phase, 'MINOR', prior_findings=[
+                    {'id': blocker['id'], 'disposition': 'fixed', 'evidence': 'fixed in repair'}])
+                co.reviewer_turn()
+                self.assertEqual((co.state['next'], co.state['review_verdicts'][-1]['effective_verdict']),
+                                 ('author', 'REVISE'))
+                self.assertEqual(co.state['advisory_repair_attempts'], {phase: sequence})
+                co.state[phase.lower() + '_rounds'] = 4
+                self.record_review(co, phase)
+                co.reviewer_turn()
+                self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_plan_attempt_does_not_consume_exec_attempt(self):
+        co, plan_attempt = self.start('PLAN')
+        co.state['plan_rounds'] = 2
+        self.record_review(co, 'PLAN')
+        co.reviewer_turn()
+        self.assertEqual((co.state['phase'], co.state['next']), ('EXEC', 'author'))
+        co.state['exec_rounds'] = 1
+        exec_attempt = self.record_review(co, 'EXEC', 'MINOR')
+        co.reviewer_turn()
+        self.assertEqual((co.state['next'], co.state['review_verdicts'][-1]['effective_verdict']), ('author', 'REVISE'))
+        self.assertEqual(co.state['advisory_repair_attempts'], {'PLAN': plan_attempt, 'EXEC': exec_attempt})
+        co.state['exec_rounds'] = 2
+        self.record_review(co, 'EXEC')
+        co.reviewer_turn()
+        self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_operator_send_back_grants_one_new_exec_advisory_attempt(self):
+        for route, flags in (('off', OFF), ('on', ON)):
+            with self.subTest(route=route):
+                self.run_dir = self.root / route
+                flags = (*flags, '--max-exec-rounds', '6', '--max-invocations', '80')
+                done = self.run_coordinator(*flags, env={'FAKE_EXEC_MINOR_REVISE': '1'})
+                self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+                co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
+                first = co.state['advisory_repair_attempts']['EXEC']
+                self.assertEqual(co.state['exec_rounds'], 2)
+                text = 'Fix the remaining advisory.'
+                co.args.expect = co.operator_intent('reject', text, None)['digest']
+                self.assertEqual(co.reject(text, None), 'ACTIVE')
+                self.assertNotIn('EXEC', co.state['advisory_repair_attempts'])
+                # The send-back author changes the tree, then its review leaves the advisory open.
+                with (co.workspace / 'tracked.txt').open('a') as stream:
+                    stream.write('repair after operator feedback\n')
+                co.state['exec_rounds'] = 3
+                new_attempt = self.record_review(co, 'EXEC')
+                co.reviewer_turn()
+                self.assertEqual((co.state['next'], co.state['review_verdicts'][-1]['effective_verdict']), ('author', 'REVISE'))
+                self.assertEqual(co.state['advisory_repair_attempts']['EXEC'], new_attempt)
+                self.assertGreater(new_attempt, first)
+                co.state['exec_rounds'] = 4
+                self.record_review(co, 'EXEC')
+                co.reviewer_turn()
+                self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+                self.assertLess(co.state['exec_rounds'], co.exec_round_limit())
+
+    def test_resume_add_rounds_preserves_the_phase_attempt(self):
+        for phase in ('PLAN', 'EXEC'):
+            with self.subTest(phase=phase):
+                self.run_dir = self.root / phase
+                co, first = self.start(phase)
+                co.state[phase.lower() + '_rounds'] = (co.plan_round_limit() if phase == 'PLAN' else co.exec_round_limit())
+                self.record_review(co, phase, 'MAJOR')
+                co.reviewer_turn()
+                self.assertEqual((co.state['status'], co.state['hold_reason']),
+                                 ('HOLD', phase + ' round limit reached'))
+                co.args.add_rounds = 1
+                resumed = rc.Coordinator(co.args)
+                # Inspect the real resume transition before dispatching the extension's author.
+                with patch.object(resumed, 'drive', return_value='ACTIVE'):
+                    self.assertEqual(resumed.resume(), 'ACTIVE')
+                state = json.loads(resumed.state_path.read_text())
+                self.assertEqual(state['advisory_repair_attempts'], {phase: first})
+                self.assertEqual(state['next'], 'author')
+                self.assertEqual(state['round_extensions'][-1]['n'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

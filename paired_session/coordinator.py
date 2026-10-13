@@ -4239,6 +4239,7 @@ class Coordinator:
         self.state['pending_rejection_id'] = rejection_id
         self.state.update(status='ACTIVE', phase='EXEC', next='author', gate_ran=False,
                           delivered_review='')
+        self.state.get('advisory_repair_attempts', {}).pop('EXEC', None)
         self.state['force_gate_after_reject'] = True
         self.save()
         self.write_comparison()
@@ -7439,7 +7440,7 @@ class Coordinator:
                          and not self.blocking_open_findings())
         attempt = self.state.get('advisory_repair_attempts', {}).get(phase)
         advisory_exit = (advisory_only
-                         and (at_phase_limit or (attempt is not None and attempt < result['sequence']))
+                         and (at_phase_limit or (not replaying and attempt is not None and attempt < result['sequence']))
                          and (phase == 'PLAN' or
                               (self.configured_test_succeeded(result['answer'])
                                and not self.configured_test_failed(result['answer'])

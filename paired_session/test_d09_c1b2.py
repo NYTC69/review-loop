@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from paired_session import test_worktree_lifecycle as twl
+from paired_session import test_v317_once as once
 
 rc, DONE = twl.rc, twl.DONE
 CODE = ''.join(f'VALUE_{n} = {n}\n' for n in range(30))
@@ -116,6 +117,28 @@ class D09C1b2Tests(unittest.TestCase):
                                 FAKE_EXEC_REVISE_IF_FILE=str(self.workspace / 'writer_note.py'))
         self.rolled_back(co, status, base, 'reviewer', ['simplifier'])
         self.assertFalse((self.workspace / 'writer_note.py').exists())
+
+    def test_advisory_first_replay_review_rolls_back_even_with_an_exec_attempt(self):
+        base = self.change()
+        co = rc.Coordinator(rc.parser().parse_args(self.command(*RUN)[2:]))
+        life = co.state['lifecycle']
+        life['quality_writers'] = {'base_oid': base, 'base_capture': co._writer_capture(self.root / 'base-capture'),
+                                   'simplifier': {'state': 'wrote', 'sequence': 5},
+                                   'test-writer': {'state': 'wrote', 'sequence': 6}}
+        life['receipts'] = [{'stage': 'POLISH-Q', 'epoch': 0, 'candidate_oid': base,
+                            'output_oid': base, 'request_id': 'w-POLISH-Q-0-0'}]
+        co.state.update(sequence=6, exec_rounds=2, advisory_repair_attempts={'EXEC': 1})
+        co._writer_replay()
+        (self.workspace / 'new_code.py').write_text(CODE + '# writer change\n')
+        once.AdvisoryOnceTests.record_review(self, co, 'EXEC', 'MINOR')
+        self.assertLess(co.state['exec_rounds'], co.exec_round_limit())
+        co.reviewer_turn()
+        self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
+        self.assertEqual(co.state['advisory_repair_attempts'], {'EXEC': 1})
+        self.assertEqual((co.state['lifecycle']['stage'], co.state['next']), ('DOCS', 'docs'))
+        for writer in ('simplifier', 'test-writer'):
+            self.assertEqual(co.state['lifecycle']['quality_writers'][writer]['state'], 'rolled-back:review')
+        self.assertEqual(rc.git_snapshot(self.workspace)[0], base)
 
     def test_a_replay_reviewer_hold_rolls_back_to_base(self):   # HOLD is not APPROVE either
         base = self.change()

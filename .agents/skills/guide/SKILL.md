@@ -53,7 +53,8 @@ Not on Codex:
   `resume --add-rounds N` (1-10). An advisory-only PLAN/EXEC REVISE gets one repair attempt per phase.
   The next eligible advisory-only review, or one at the cap, is approved with open findings recorded as advisory.
   Blocking rounds do not reset the attempt. EXEC still requires a passed configured test, own run evidence
-  and the same snapshot. Any blocking finding still open means HOLD.
+  and a review of the current tree. A blocking finding still open is never approved this way:
+  the author repairs it, and at the round limit the run HOLDs.
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
   paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in

@@ -52,7 +52,8 @@ the turn receipt.
 
 Each phase allows one repair attempt for an advisory-only persistent reviewer
 REVISE. The first goes to the author if a round remains. A later eligible
-advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left.
+advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left,
+except during a writer replay.
 The final PLAN/EXEC round keeps the same advisory exit without requiring an
 attempt. Advisory-only means MINOR/LOW findings without a security flag,
 and/or only earlier non-blocking rows reported `still_open`, with no blocking
@@ -62,11 +63,17 @@ receives the rows as non-blocking context.
 
 The attempt is recorded when the REVISE is sent to the author. It survives
 resume; replaying that reviewer result takes the same path. A later blocking
-round does not reset it or grant another advisory attempt. EXEC still requires
-a successful configured test, no observed test failure, the reviewer's own run
+round does not reset it or grant another advisory attempt.
+An operator send-back (`reject`) grants one new EXEC advisory attempt;
+`resume --add-rounds`, gate repair, the POLISH-Q fix leg and DOCS/FINISH
+re-reviews do not.
+EXEC still requires a successful configured test, no observed test failure, the reviewer's own run
 evidence, and the same snapshot. Blocking findings retain the normal repair
 loop or round-limit HOLD. The opt-in advisory fix round keeps its own single
 attempt; its eligible advisory re-review exits immediately.
+Blocking means CRITICAL, MAJOR, any security-flagged finding, or a gate's
+CRITICAL/HIGH; such a row still open at the cap is the `PLAN round limit reached`
+/ `EXEC round limit reached` HOLD.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.

@@ -151,7 +151,8 @@ review_focus: |
   continues with `resume --add-rounds N` (1-10). An advisory-only PLAN/EXEC REVISE gets one repair attempt per phase.
   The next eligible advisory-only review, or one at the cap, is approved with open findings recorded as advisory.
   Blocking rounds do not reset the attempt. EXEC still requires a passed configured test, own run evidence
-  and the same snapshot. Any blocking finding still open means HOLD
+  and a review of the current tree. A blocking finding still open is never approved this way:
+  the author repairs it, and at the round limit the run HOLDs
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
 - **Project-specific config** — tailor review priorities per project
 
