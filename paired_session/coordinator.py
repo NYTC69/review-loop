@@ -8992,11 +8992,11 @@ class Coordinator:
 
 def cli_env() -> dict:
     env = os.environ.copy()
-    # Let a foreground long command finish; retain a larger operator budget per variable.
-    for name in ('BASH_DEFAULT_TIMEOUT_MS', 'BASH_MAX_TIMEOUT_MS'):
-        try: value = int(env.get(name, ''))
-        except ValueError: value = 0
-        if value < LONG_COMMAND_TIMEOUT_MS: env[name] = str(LONG_COMMAND_TIMEOUT_MS)
+    # Raise the maximum for explicit long-command timeouts; leave the default untouched.
+    # Preserve a larger operator maximum, though the role rule still requests 3600000 ms.
+    try: value = int(env.get('BASH_MAX_TIMEOUT_MS', ''))
+    except ValueError: value = 0
+    if value < LONG_COMMAND_TIMEOUT_MS: env['BASH_MAX_TIMEOUT_MS'] = str(LONG_COMMAND_TIMEOUT_MS)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     # `claude -p` starts Agent subagents in the background by default: the turn then emits an
     # interim result before the subagent finishes and a second one afterwards. Foreground

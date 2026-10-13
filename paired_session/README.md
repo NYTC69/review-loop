@@ -213,14 +213,16 @@ with a session id and no exit code while the command keeps running. Every probe,
 reviewer, gate, docs-reviewer and specialist prompt now tells the role to poll a
 still-running command until it has an exit code, never to start another command
 or end the turn before that, and to give a long Bash call the 3600000 ms timeout.
-A role's single command may run up to 60 minutes; a configured test command that
+A role's single command may run up to 60 minutes within the turn's `--timeout`
+(default 2700 s for reviewer and gate turns); a configured test command that
 needs longer must be split or shortened.
 A command started but never completed (no exit status when the turn ended, or
 `-1`) is reported as `allowed-command-not-completed` by the probe and as "not
 observed to completion" in an EXEC or DOCS approval HOLD, not as an ordinary
 failure. One observed completed exit-0 run of the exact configured command is
 still required. The remaining limits are the per-dispatch timeout (`--timeout`)
-and the command tool's timeout (reported as `allowed-command-timeout`, above);
+and the command tool's timeout (reported as `allowed-command-timeout` by the
+probe, and as a command-tool timeout cause in the EXEC approval HOLD reason);
 a test command longer than either cannot be observed to completion.
 Write launcher logs (for example `permission-probe ... > probe.log`) outside the
 run dir's parent: the Claude author probe watches the entries beside the run dir,

@@ -21,10 +21,14 @@ class CommandEnvironmentTests(unittest.TestCase):
                     os.environ.update(dict.fromkeys(TIMEOUT_VARS, supplied))
                 env = rc.cli_env()
                 expected = '7200000' if supplied == '7200000' else str(rc.LONG_COMMAND_TIMEOUT_MS)
-                self.assertEqual([env[name] for name in TIMEOUT_VARS], [expected, expected])
-                self.assertEqual(os.environ.get(TIMEOUT_VARS[0]), supplied)
+                self.assertEqual(env[TIMEOUT_VARS[1]], expected)
+                if supplied is None:
+                    self.assertNotIn(TIMEOUT_VARS[0], env)
+                else:
+                    self.assertEqual(env[TIMEOUT_VARS[0]], supplied)
+                self.assertEqual(os.environ, dict.fromkeys(TIMEOUT_VARS, supplied) if supplied is not None else {})
 
-    def test_variables_keep_their_independent_larger_values(self):
+    def test_default_is_untouched_when_maximum_is_raised(self):
         with patch.dict(os.environ, dict(zip(TIMEOUT_VARS, ('7200000', 'bad')))):
             env = rc.cli_env()
         self.assertEqual(env[TIMEOUT_VARS[0]], '7200000')
@@ -64,11 +68,20 @@ class PromptTests(unittest.TestCase):
             self.assertIn(rc.LONG_COMMAND_RULE, prompt)
 
     def test_command_budget_does_not_change_frozen_resume_values(self):
-        with patch.object(rc, 'LONG_COMMAND_TIMEOUT_MS', 600000):
-            co = self.coordinator('--lifecycle-mode', 'off')
+        # Literal pre-change inputs: comparing two runs of today's code alone misses drift.
+        old_child_env = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}
+        self.assertEqual(rc.CLAUDE_CHILD_ENV, old_child_env)
+        with patch.object(rc, 'LONG_COMMAND_TIMEOUT_MS', 600000), patch.object(rc, 'CLAUDE_CHILD_ENV', old_child_env):
+            co = self.coordinator('--lifecycle-mode', 'off', '--reviewer-vendor', 'claude',
+                                  '--gate-vendor', 'claude')
             self.assertIsNone(co._program_state()[1])
             frozen = copy.deepcopy({key: co.state[key] for key in
                                     ('config', 'role_dispatch_manifest', 'operator_programs')})
+        self.assertEqual(frozen['role_dispatch_manifest']['role_flags']['reviewer']['claude_child_env'], old_child_env)
+        for inputs in (frozen['config'], frozen['role_dispatch_manifest']['role_flags'],
+                       co.author_flags(), co.reviewer_flags(), co.gate_flags()):
+            for name in TIMEOUT_VARS:
+                self.assertNotIn(name, json.dumps(inputs, sort_keys=True))
         args = copy.deepcopy(co.args)
         args.action = 'resume'
         resumed = rc.Coordinator(args)
