@@ -265,7 +265,7 @@ def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
     return len(content), findings
 
 
-def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) -> dict:
+def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None, run_changes_only: bool = False) -> dict:
     repo = ds.repository(repo_path)
     if manifest is None:
         if manifest_path is None:
@@ -285,6 +285,13 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
     paths = manifest["current"]["worktree"]
     index = manifest["current"]["index"]
     scanned_blobs = {}
+    base = manifest["baseline"]["state"]["head_paths"]
+    unchanged = {
+        path for path, entry in base.items()
+        if ds.identity(paths.get(path)) == ds.identity(entry)
+        and all(ds.identity(row) == ds.identity(entry) for row in index.get(path, []))
+    } if run_changes_only else set()
+    skipped = []
 
     def append(rows):
         rows = list(rows)
@@ -301,6 +308,12 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
             if mode not in {"100644", "100755"}:
                 raise ScanError(f"unsupported file mode for {path!r}")
             append(_path_findings(path))
+            if path in unchanged and expected["size"] > MAX_FILE_BYTES:
+                if expected["size"] > MAX_TOTAL_BYTES - total:
+                    raise ScanError("total content scan limit exceeded: " + path)
+                total += expected["size"]
+                skipped.append(path)
+                continue
             size, content = _read_and_scan(repo["worktree"], path, expected, MAX_TOTAL_BYTES - total)
             scanned += 1
             total += size
@@ -314,6 +327,8 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
                     continue
                 if entry["mode"] not in {"100644", "100755"}:
                     raise ScanError(f"unsupported staged file entry for {path!r}")
+                if path in skipped:
+                    continue
                 if entry["oid"] in scanned_blobs:
                     append(dict(row, path=path, source="index") for row in scanned_blobs[entry["oid"]][1])
                     continue
@@ -327,13 +342,16 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
         _bind_findings_to_git_state(findings, manifest["current"])
         return _report(status="incomplete", manifest_fingerprint=manifest["fingerprint"],
                        scanned_files=scanned, scanned_bytes=total, findings=findings,
+                       skipped_preexisting_files=skipped,
                        coverage_complete=False, ignore_coverage=[], ignore_coverage_complete=False,
                        reason=type(exc).__name__ + ": " + str(exc),
                        current_fingerprint=ds.fingerprint(current))
 
+    _bind_findings_to_git_state(findings, manifest["current"])
+    preexisting = [row for row in findings if row["path"] in unchanged]
+    findings = [row for row in findings if row["path"] not in unchanged]
     after = ds.capture_state(repo)
     fresh = after == manifest["current"]
-    _bind_findings_to_git_state(findings, manifest["current"])
     findings.sort(key=lambda item: (item["path"], item["rule"], item["line"] or 0))
     owned_gitignores = frozenset(
         row["path"] for row in manifest["task_delta"]
@@ -345,6 +363,7 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None) ->
     status = "stale" if not fresh else "blocked" if findings else "review-required" if not ignore_ok else "clean"
     return _report(status=status, manifest_fingerprint=manifest["fingerprint"],
                    scanned_files=scanned, scanned_bytes=total, findings=findings,
+                   preexisting_findings=preexisting, skipped_preexisting_files=skipped,
                    coverage_complete=fresh, ignore_coverage=ignores,
                    ignore_coverage_complete=ignore_ok, current_fingerprint=ds.fingerprint(after))
 
@@ -375,6 +394,8 @@ def main(argv=None) -> int:
     mode.add_argument("--ignore-coverage", action="store_true",
                       help="print only the start-time .gitignore coverage (start_coverage) as JSON; exit 0")
     mode.add_argument("--file", help="scan one file with the content rules only; print rule and line as JSON; exit 1 on a match")
+    parser.add_argument("--run-changes-only", action="store_true",
+                        help="record unchanged base files as notes; skip their oversized content")
     parser.add_argument("--output", help="optional immutable JSON report path")
     args = parser.parse_args(argv)
     if args.file:
@@ -396,7 +417,7 @@ def main(argv=None) -> int:
     try:
         repo = ds.repository(args.repo)
         ds.validate_output(repo, args.output)
-        report = scan(repo["worktree"], args.manifest)
+        report = scan(repo["worktree"], args.manifest, run_changes_only=args.run_changes_only)
         ds.emit(report, args.output)
         if (report["status"] == "clean" and report["coverage_complete"]
                 and report.get("ignore_coverage_complete") is True):

@@ -6604,7 +6604,7 @@ class Coordinator:
     def worktree_security_turn(self) -> None:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
         run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
-        hit or finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
+        hit in a changed file or reviewer finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
         if self.state['config'].get('review_report'):
             return self._report_security_turn()
         life = self.state['lifecycle']
@@ -6631,8 +6631,28 @@ class Coordinator:
                                '; fix them outside the run and resume (EXEC replays), or abort')
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
-        sensitive = self._sensitive_paths()
+        all_sensitive = self._sensitive_paths()
+        changed = set(self._changed_paths(deleted=True))
+        sensitive = [row for row in all_sensitive if row['path'] in changed]
+        preexisting = [row for row in all_sensitive if row['path'] not in changed]
         preflight = self._security_preflight(request['request_id'])
+        notes = []
+        if preexisting:
+            notes.append('pre-existing sensitive-looking paths, not changed by this run: ' +
+                         ', '.join(row['path'] for row in preexisting))
+        content_notes = [row for row in preflight.get('preexisting_findings', []) if row.get('line') is not None]
+        if content_notes:
+            notes.append('pre-existing security content hits, not changed by this run: ' +
+                         ', '.join(sorted({row['path'] for row in content_notes})))
+        if preflight.get('skipped_preexisting_files'):
+            notes.append('content scan skipped oversized pre-existing files, not changed by this run: ' +
+                         ', '.join(preflight['skipped_preexisting_files']))
+        printed = self.state['lifecycle'].setdefault('security_notes', [])
+        for note in notes:
+            if note not in printed:
+                print('NOTE: ' + note)
+                printed.append(note)
+        self.save()
         reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive)]
                      if sensitive else []), *([preflight['reason']] if preflight['reason'] else [])]
         review = None
@@ -6645,7 +6665,8 @@ class Coordinator:
             reasons.append('SECURITY tree changed during the stage; resume replays EXEC review and gate')
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
             **request, 'status': 'HOLD' if reasons else 'READY', 'output_oid': after,
-            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive, 'preflight': preflight, 'review': review})
+            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive,
+            'preexisting_sensitive_paths': preexisting, 'notes': notes, 'preflight': preflight, 'review': review})
         for key in ('security_turn', 'security_review'):
             self.state['lifecycle'].pop(key, None)
         if reasons:
@@ -6876,13 +6897,16 @@ class Coordinator:
         if proc.returncode:
             return {'status': 'unavailable', 'reason': f'security preflight unavailable: delivery_scope manifest exited '
                                                        f'{proc.returncode}: {proc.stderr.strip()[-300:]}'}
-        proc = self._security_script('security_preflight.py', '--manifest', str(manifest), '--output', str(report))
+        proc = self._security_script('security_preflight.py', '--manifest', str(manifest), '--output', str(report),
+                                     *([] if self.state['config'].get('review_report') else ['--run-changes-only']))
         try:
             document = json.loads(report.read_text())
         except (OSError, ValueError):
             document = {}
         result = {'exit': proc.returncode, 'status': document.get('status', 'unknown'), 'report': str(report),
                   'scanned_files': document.get('scanned_files'),
+                  'preexisting_findings': document.get('preexisting_findings', []),
+                  'skipped_preexisting_files': document.get('skipped_preexisting_files', []),
                   'findings': [{key: row.get(key) for key in ('rule', 'path', 'line')} for row in document.get('findings', [])],
                   'uncovered_ignore': [row['category'] for row in document.get('ignore_coverage', []) if not row.get('covered')]}
         clean = (proc.returncode == 0 and result['status'] == 'clean' and document.get('coverage_complete') is True and

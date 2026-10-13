@@ -905,15 +905,16 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, 'now a directory or reached through a symlink: docs/guide.md'):
             co.worktree_docs_turn()
 
-    def test_security_holds_on_a_sensitive_path_and_on_secret_content(self):
+    def test_security_holds_on_an_added_sensitive_path_and_on_added_secret_content(self):
         key = 'AKIA' + 'ABCDEFGHIJKLMNOP'   # an AWS access key id shape, built at runtime
+        # Exercise the whole-delivery SECURITY scan, independently of the unchanged added-line scan.
+        self.workitem.write_text(self.workitem.read_text() + '\nsecret-scan-allow: settings.txt\n')
         for name, content, needle in (('deploy.pem', 'not a real key\n', 'SECURITY sensitive paths: deploy.pem (key-certificate)'),
                                       ('settings.txt', f'aws_key = {key}\n', 'aws-access-key-id in settings.txt')):
             with self.subTest(name=name):
                 self.run_dir = self.root / name
                 (self.workspace / name).write_text(content)
                 rc.subprocess.run(['git', 'add', '-f', name], cwd=self.workspace, check=True)
-                rc.subprocess.run(['git', 'commit', '-qm', 'add ' + name], cwd=self.workspace, check=True)
                 result = self.run_coordinator('--lifecycle-mode', 'on')
                 self.assertIn(needle, result.stdout, result.stdout + result.stderr)
                 self.assertNotIn(key, result.stdout + result.stderr)   # values are never printed
@@ -921,8 +922,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 [security] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
                 self.assertEqual((security['status'], state['status']), ('HOLD', 'HOLD'))
                 self.assertEqual(security['preflight']['status'], 'blocked')
-                rc.subprocess.run(['git', 'rm', '-q', name], cwd=self.workspace, check=True)
-                rc.subprocess.run(['git', 'commit', '-qm', 'drop ' + name], cwd=self.workspace, check=True)
+                rc.subprocess.run(['git', 'rm', '-qf', name], cwd=self.workspace, check=True)
 
     def at_security(self):
         co = rc.Coordinator(self.args())

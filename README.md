@@ -186,7 +186,9 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 In PLAN a blocking finding goes back to the author for the next plan round. From EXEC on, a blocking finding of the
 reviewer, the shadow or the gate goes back to the author; FINISH fixes what blocks delivery in its own session; a
 FINISH or POLISH-Q fix, a DOCS write outside the docs or a DOCS-review REVISE opens a new EXEC round (the reviewer
-first, then the gate). A SECURITY finding is a HOLD, never repaired by the run: fix it outside the run and resume
+first, then the gate). SECURITY records untouched base files with sensitive-looking paths or content hits in a NOTE and
+its receipt; oversized untouched base files are skipped with a NOTE. A hit in an added, changed or renamed file, or a
+security reviewer finding, is a HOLD, never repaired by the run: fix it outside the run and resume
 (the EXEC review and the gate run again).
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
