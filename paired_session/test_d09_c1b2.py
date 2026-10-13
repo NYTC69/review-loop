@@ -118,27 +118,36 @@ class D09C1b2Tests(unittest.TestCase):
         self.rolled_back(co, status, base, 'reviewer', ['simplifier'])
         self.assertFalse((self.workspace / 'writer_note.py').exists())
 
-    def test_advisory_first_replay_review_rolls_back_even_with_an_exec_attempt(self):
+    def test_advisory_first_replay_review_keeps_write_and_attempts(self):
         base = self.change()
-        co = rc.Coordinator(rc.parser().parse_args(self.command(*RUN)[2:]))
-        life = co.state['lifecycle']
-        life['quality_writers'] = {'base_oid': base, 'base_capture': co._writer_capture(self.root / 'base-capture'),
-                                   'simplifier': {'state': 'wrote', 'sequence': 5},
-                                   'test-writer': {'state': 'wrote', 'sequence': 6}}
-        life['receipts'] = [{'stage': 'POLISH-Q', 'epoch': 0, 'candidate_oid': base,
-                            'output_oid': base, 'request_id': 'w-POLISH-Q-0-0'}]
-        co.state.update(sequence=6, exec_rounds=2, advisory_repair_attempts={'EXEC': 1})
-        co._writer_replay()
-        (self.workspace / 'new_code.py').write_text(CODE + '# writer change\n')
-        once.AdvisoryOnceTests.record_review(self, co, 'EXEC', 'MINOR')
-        self.assertLess(co.state['exec_rounds'], co.exec_round_limit())
-        co.reviewer_turn()
-        self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
-        self.assertEqual(co.state['advisory_repair_attempts'], {'EXEC': 1})
-        self.assertEqual((co.state['lifecycle']['stage'], co.state['next']), ('DOCS', 'docs'))
-        for writer in ('simplifier', 'test-writer'):
-            self.assertEqual(co.state['lifecycle']['quality_writers'][writer]['state'], 'rolled-back:review')
-        self.assertEqual(rc.git_snapshot(self.workspace)[0], base)
+        for name, attempts in (('exec', {'EXEC': 1}), ('plan', {'PLAN': 2}), ('none', {})):
+            with self.subTest(attempts=attempts):
+                self.run_dir = self.root / name
+                (self.workspace / 'new_code.py').write_text(CODE)
+                co = rc.Coordinator(rc.parser().parse_args(self.command(*RUN)[2:]))
+                life = co.state['lifecycle']
+                life['quality_writers'] = {'base_oid': base, 'base_capture': co._writer_capture(self.root / (name + '-capture')),
+                                           'simplifier': {'state': 'wrote', 'sequence': 5},
+                                           'test-writer': {'state': 'wrote', 'sequence': 6}}
+                life['receipts'] = [{'stage': 'POLISH-Q', 'epoch': 0, 'candidate_oid': base,
+                                    'output_oid': base, 'request_id': 'w-POLISH-Q-0-0'}]
+                co.state.update(sequence=6, exec_rounds=2, advisory_repair_attempts=attempts.copy())
+                co._writer_replay()
+                written = CODE + '# writer change\n'
+                (self.workspace / 'new_code.py').write_text(written)
+                snapshot = rc.git_snapshot(self.workspace)[0]
+                once.AdvisoryOnceTests.record_review(self, co, 'EXEC', 'MINOR')
+                self.assertLess(co.state['exec_rounds'], co.exec_round_limit())
+                co.reviewer_turn()
+                self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+                self.assertEqual(co.state['advisory_repair_attempts'], attempts)
+                self.assertEqual((co.state['lifecycle']['stage'], co.state['next']), ('EXEC', 'gate'))
+                for writer in ('simplifier', 'test-writer'):
+                    self.assertEqual(co.state['lifecycle']['quality_writers'][writer]['state'], 'wrote')
+                self.assertEqual(rc.git_snapshot(self.workspace)[0], snapshot)
+                self.assertNotEqual(snapshot, base)
+                self.assertEqual((self.workspace / 'new_code.py').read_text(), written)
+                self.assertFalse(any(t['role'] == 'author' for t in co.state['turns']))
 
     def test_a_replay_reviewer_hold_rolls_back_to_base(self):   # HOLD is not APPROVE either
         base = self.change()

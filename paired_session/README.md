@@ -54,7 +54,7 @@ Each phase allows one repair attempt for an advisory-only persistent reviewer
 REVISE. The first goes to the author if a round remains. A later eligible
 advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left.
 In a quality-writer replay an eligible advisory-only REVISE takes this exit at
-any round, without an attempt, and the writer change is kept.
+any round, without consuming or resetting an attempt, and the writer change is kept.
 The final PLAN/EXEC round keeps the same advisory exit without requiring an
 attempt. Advisory-only means MINOR/LOW findings without a security flag,
 and/or only earlier non-blocking rows reported `still_open`, with no blocking
@@ -319,7 +319,8 @@ The explicit test command runs first on the reviewed tree (a red baseline skips
 both) and again after each change. A kept change (`wrote`) replays EXEC review,
 shadow, gate, FINISH and the specialists before DOCS, on its own budget of one
 replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`).
-An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`;
+An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`
+at any round, without consuming or resetting the phase's repair attempt;
 other non-approvals roll it back (`rolled-back:review`), only the named writer
 when files are disjoint (the other is reviewed again). A test writer that lowers
 the number of test cases is rolled back (`rolled-back:tests`). Other outcomes:
@@ -646,6 +647,9 @@ continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
 next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
+At a round-limit HOLD produced by a write (FINISH, DOCS, a SECURITY-stage change,
+or a writer rollback), the round is already used; a plain `resume` keeps the HOLD
+and `resume --add-rounds N` continues with the pending review.
 At that round-limit HOLD, `run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
 inspect whether `round_limit_hold.hold_reason` equals the current `hold_reason`.
 Other exits are `note --scope-change` or `abort`. Ordinary notes cannot extend a cap.

@@ -149,8 +149,9 @@ review_focus: |
 - **Independent review** — the reviewer, shadow and gate never share the author's session
 - **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
   Eligible advisory-only reviews get one repair attempt per phase, then advisory acceptance, or exit at the cap
-  without an attempt. Writer replay takes the advisory exit only at its cap. Blocking rounds preserve the attempt; send-back
-  grants a new EXEC attempt. EXEC needs a passed configured test, own run evidence and the current tree.
+  without an attempt. Writer replay takes the advisory exit at any round and preserves the attempt.
+  Blocking rounds preserve it; send-back grants a new EXEC attempt. EXEC needs a passed configured test,
+  own run evidence and the current tree.
   See [the advisory rules](../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
 - **Project-specific config** — tailor review priorities per project

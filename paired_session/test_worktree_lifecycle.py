@@ -213,6 +213,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(security['preflight']['uncovered_ignore'], start['uncovered'])   # one computation, one answer
         self.assertIn('To recover, add the patterns to the tracked .gitignore in the worktree, neither committed nor staged',
                       state['hold_reason'])
+        self.assertIn('plain resume keeps the HOLD; resume --add-rounds N (1-10) continues with the pending review',
+                      state['hold_reason'])
         (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)   # the operator's in-run edit, not committed
         resumed = self.run_operator_action('resume', '--lifecycle-mode', 'on')
         self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)

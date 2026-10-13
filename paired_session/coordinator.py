@@ -6697,7 +6697,9 @@ class Coordinator:
             ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) + '. To recover, add the patterns to '
              'the tracked .gitignore in the worktree, neither committed nor staged (an edit made during the run counts and '
              'ships with the delivery; undo a commit by restoring HEAD to the run\'s parent, keeping the edit) and resume: '
-             'EXEC review and gate replay, then FINISH..SECURITY, within the EXEC round limit. An edit already present when '
+             'EXEC review and gate replay, then FINISH..SECURITY, within the EXEC round limit. If the change produces a '
+             'round-limit HOLD, the round is already used: plain resume keeps the HOLD; resume --add-rounds N '
+             '(1-10) continues with the pending review. An edit already present when '
              'the run started does not count as the run\'s own: restore the file to HEAD, or abort, commit it, start a new '
              'run' if result['uncovered_ignore'] else '') +
             (f'; {proc.stderr.strip()[-300:]}' if proc.returncode not in (0, 1) and proc.stderr.strip() else ''))
