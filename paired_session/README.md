@@ -54,8 +54,8 @@ A persistent reviewer REVISE containing only MINOR/LOW findings is accepted as
 `APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round. Its raw
 REVISE and effective workflow verdict are recorded separately. Those findings
 remain open and are labeled advisory in the findings ledger and report until a
-later reviewer confirms they are fixed; the next phase receives them as
-non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
+later reviewer confirms they are fixed or withdraws them with evidence; the next
+phase receives them as non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
 loop. CRITICAL, MAJOR, SECURITY-flagged, and observed test failures are never
 downgraded; EXEC requires a successful observed configured test.
 At the final PLAN/EXEC round the same exit applies to a REVISE without any finding

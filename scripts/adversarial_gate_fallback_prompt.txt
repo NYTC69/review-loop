@@ -9,8 +9,9 @@ Review target: ${REVIEW_TARGET_DESC}
 Focus text (what was just executed):
 ${FOCUS_TEXT}
 
-Attack-surface checklist: auth bypass, data loss, missing rollback,
-concurrency races, empty/edge states, version skew, observability gaps.
+Inspect authorization, data integrity, rollback, concurrency, empty/edge
+states, version compatibility, and observability where the change touches
+them. These are topics to inspect, not categories that need a finding.
 Treat the working tree as the artifact to audit; do not assume tests run.
 
 Blocking rubric: every finding with severity critical or high blocks the
@@ -22,10 +23,14 @@ recoverable?>. Likelihood: <how often in practice>. Fix cost: <smallest
 correct fix incl. maintenance>. Cheaper response: <why a lighter response is
 insufficient>.`
 A blocking finding whose body lacks any segment is discarded as malformed
-and is never implemented. Unreachable scenarios, unsupported assumption
-chains, negligible combined risk, or clearly disproportionate complexity for
-extremely rare low-impact benefit cannot block — use medium/low severity or
-omit them. Rare but realistically reachable credential exposure,
+and is never implemented. Omit scenarios that cannot block because they are
+unreachable, rest on unsupported assumption chains, have negligible risk, or
+would need disproportionate complexity; do not downgrade them to medium/low.
+Rare but realistically reachable credential exposure,
 authorization bypass, irreversible data loss, destructive action, or
 comparable harm remains blocking.
-Return JSON conforming to the schema. Findings absent → emit `[]`.
+Report a medium or low finding only when you would really ask the author to
+change the work for normal supported use. Assume users and models act in good
+faith within the supported scope and recommend proportionate protections.
+Return JSON conforming to the schema. There is no target number of findings;
+`findings: []` with `verdict: "approve"` is a normal answer.

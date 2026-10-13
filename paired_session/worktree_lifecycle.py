@@ -278,7 +278,7 @@ def owned_ledger(owned):
         return ''
     return (f'Open finding ledger ({len(owned)} open, owned by you): give each a prior_findings disposition '
             '(fixed, withdrawn or still_open) with evidence from the current tree, and do not repeat these '
-            'findings in full_review.\n' + ''.join(f"- {row['id']}: {row['summary']}\n" for row in owned))
+            'findings in full_review.\n' + ''.join(f"- {row['id']}: [severity={row['severity']}] {row['summary']}\n" for row in owned))
 
 
 def specialist_prompt(name, body, test_command, owned, protocol, change='the uncommitted change in this worktree'):

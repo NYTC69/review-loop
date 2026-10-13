@@ -271,6 +271,14 @@ def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
             'agent_body_sha256': agents, 'gate_prompt_path': str(prompt_path.resolve()),
             'gate_prompt_sha256': prompt_hash}
 REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
+REVIEW_INCLUSION_GUIDANCE = ('Report a new finding only when you would ask the author to change the work for a concrete failure or material waste in normal supported use; there is no target finding count, and full_review: [] is a normal answer. '
+    'Assume users and models act in good faith within the supported scope and recommend proportionate protections.')
+LEDGER_DISPOSITION_GUIDANCE = ('A still_open disposition records that a finding is unresolved and does not by itself require REVISE. '
+    'Reviewer CRITICAL/MAJOR/SECURITY findings, security-tagged rows, and an adversarial gate\'s CRITICAL/HIGH block. '
+    'A gate\'s MEDIUM/LOW and a reviewer\'s MINOR/LOW without the security tag are advisory; you may APPROVE while such rows stay open. '
+    'Do not raise another role\'s advisory row to a blocker only because it is still open. '
+    'Keep giving every listed row its disposition; withdraw with evidence a row that does not meet the reporting standard only if you may withdraw it: '
+    'rows owned by a specialist or security-reviewer may be fixed or withdrawn only by their owner.')
 APPROVE_CONVERSION_NOTE = ('An APPROVE that leaves any blocking or security-tagged finding open is never accepted (in PLAN and EXEC it is converted to REVISE): close the finding with evidence in prior_findings, or return REVISE.')   # persistent reviewer only: the shadow prompt must not mention prior_findings
 
 
@@ -4547,12 +4555,14 @@ class Coordinator:
         owned = ('Other roles own further open findings that are not listed here; do not report their issues again as new '
                  'findings.\n' if len(findings) < len(self.open_findings()) else '')   # HYGIENE-2 (B4): only a W run hides some
         if not findings:
-            return 'Open finding ledger: none. Return an empty prior_findings array.\n' + owned + APPROVE_CONVERSION_NOTE
-        rows = '\n'.join(f"- {finding['id']}: {finding['summary']}" for finding in findings)
+            return ('Open finding ledger: none. Return an empty prior_findings array.\n' +
+                    LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
+        rows = '\n'.join(f"- {finding['id']}: [source={finding['source']}; severity={finding['severity']}"
+                         + ('; security-tagged' if finding.get('security') else '') + f"] {finding['summary']}" for finding in findings)
         return ('Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
                 'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n'
                 'Never report a listed finding again as a new one; its disposition above is its report.\n'
-                + owned + APPROVE_CONVERSION_NOTE)
+                + LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
 
     def _guidance_texts(self) -> list[str]:
         config = (getattr(self, 'state', None) or {}).get('config') or {}
@@ -4594,7 +4604,7 @@ class Coordinator:
                 self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
-                REVIEW_SEVERITY_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
+                REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
                 self.inspection_prompt(role),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
@@ -4633,7 +4643,7 @@ class Coordinator:
                 f'Work item: {self.context / "workitem.md"}',
                 f'Plan under review: {self.context / "plan.md"}',
                 'Review only the plan for correctness, completeness, scope, and a credible verification strategy.',
-                REVIEW_SEVERITY_GUIDANCE,
+                REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE,
                 'No implementation exists yet and none is expected in PLAN. Program delta files are empty by design.',
                 'Read existing workspace source to check the plan against current behaviour. Findings about missing source files, implementation, or tests are out of scope.',
                 self.inspection_prompt(role), self.allowed_command_prompt(), self.verified_claims_prompt(),
@@ -4647,7 +4657,7 @@ class Coordinator:
             self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
             self.inspection_prompt(role),
-            REVIEW_SEVERITY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
+            REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
             REVIEW_HISTORY_GUIDANCE,
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
