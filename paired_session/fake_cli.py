@@ -388,6 +388,10 @@ def main():
                 body = '[class: ' + os.environ['FAKE_FINDING_CLASS'] + '] ' + body
             findings = [{'severity': 'high', 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3,
                          'confidence': 0.9, 'recommendation': 'reject bool', 'body': body}]
+            if blocking and (extra := os.environ.get('FAKE_GATE_BLOCK_WITH')):   # V316: low|medium next to the blocker
+                findings.append({'severity': extra, 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3, 'confidence': 0.8,
+                                 'recommendation': 'simplify the helper',
+                                 'body': 'Non-blocking cleanup suggested by the fake gate.'})
         elif os.environ.get('FAKE_GATE_MINOR') or os.environ.get('FAKE_GATE_LOW'):
             findings = [{'severity': 'low' if os.environ.get('FAKE_GATE_LOW') else 'medium',
                          'file': 'sum_ints.py', 'line_start': 1,
@@ -553,6 +557,14 @@ def main():
             revise = True
             prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'docs entry still wrong'}
                      for finding_id in open_ids]
+        keep, keep_if = os.environ.get('FAKE_EXEC_STILL_OPEN'), os.environ.get('FAKE_EXEC_STILL_OPEN_IF_FILE')
+        if keep and role == 'reviewer' and phase == 'EXEC' and (not keep_if or Path(keep_if).exists()):
+            # V316: the open rows whose ledger line has this text stay open; REVISE without a finding of its own
+            kept = {line[2:].split(':', 1)[0] for line in prompt.splitlines() if line.startswith('- F') and keep in line}
+            if kept & set(open_ids):
+                revise, findings = True, []
+                prior = [{**row, 'disposition': 'still_open', 'evidence': 'fake: not addressed'} if row['id'] in kept else row
+                         for row in prior]
         if 'Role: shadow,' in prompt or 'Role: shadow,' in prompt.replace('fresh isolated ', ''):
             prior = None
         answer = {'status': 'REVISE' if revise else 'APPROVE',

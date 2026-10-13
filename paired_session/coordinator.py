@@ -7415,8 +7415,13 @@ class Coordinator:
         advisory = self.state.get('advisory_fix') or {}   # ADVFIX: the round's re-review lets a pure-advisory REVISE pass,
         if phase == 'EXEC' and advisory.get('state') == 'ran' and advisory.get('epoch') == (self.state.get('lifecycle') or {}).get('epoch'):
             at_phase_limit = True   # as at the final round: one fix round, never a second for advisory findings
-        advisory_exit = (answer['status'] == 'REVISE' and reviewer_findings_advisory
-                         and self.findings_are_advisory(answer['full_review'])
+        # V316 (owner 2026-10-13): a REVISE without any finding that only reports earlier rows still_open (field: gate
+        # MEDIUM/LOW rows after a repair round) takes the same exit; blocking_open_findings() below keeps blocking rows a HOLD
+        still_open = [row for row in answer['prior_findings'] if row.get('disposition') == 'still_open']
+        only_still_open = phase == 'EXEC' and not answer['full_review'] and bool(still_open)
+        advisory_exit = (answer['status'] == 'REVISE'
+                         and ((reviewer_findings_advisory and self.findings_are_advisory(answer['full_review']))
+                              or only_still_open)
                          and at_phase_limit
                          and (phase == 'PLAN' or
                               (self.configured_test_succeeded(result['answer'])
@@ -7426,7 +7431,7 @@ class Coordinator:
                               answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
                          and not self.blocking_open_findings())
         if advisory_exit:
-            self.mark_advisory_findings(answer['full_review'])
+            self.mark_advisory_findings(answer['full_review'] or still_open)
             answer['status'] = 'APPROVE'
         new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
         refusal = None
