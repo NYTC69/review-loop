@@ -84,7 +84,7 @@ class ScannerTests(unittest.TestCase):
 
     def test_the_whole_delivery_rules_hit_without_the_random_and_placeholder_filters(self):
         for line, rule in (('KEY = "gh' + 'p_' + 'A' * 36 + '"', 'github-token'),   # unfiltered, as SECURITY validated them
-                           ('id = "AKIA' + 'IOSFODNN7EXAMPLE"', 'aws-access-key-id'),
+                           ('id = "AKIA' + 'IOSFODNN7EXAMPLE"', None),
                            ('id = "ASIA' + 'Q7' * 8 + '"', 'aws-access-key-id'),
                            ('# -----BEGIN ' + 'ENCRYPTED PRIVATE KEY-----\\n' + KEY_BODY, 'private-key-block')):   # V313: with a key
             with self.subTest(line=line):

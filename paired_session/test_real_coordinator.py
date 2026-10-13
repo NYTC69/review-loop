@@ -80,6 +80,9 @@ def allowed_tool_values(command):
 
 class RealCoordinatorTests(unittest.TestCase):
     def setUp(self):
+        git_env = patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
+        git_env.start()
+        self.addCleanup(git_env.stop)
         temp_root = Path(__file__).parent / 'test-tmp'
         temp_root.mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=temp_root)

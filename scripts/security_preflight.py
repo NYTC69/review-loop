@@ -174,6 +174,11 @@ def ignore_coverage(repo: str, owned_gitignores: frozenset = frozenset()) -> lis
     return rows
 
 
+def _scan_limit_error(path: str, size: int) -> ScanError:
+    return ScanError(f"content scan limit exceeded: {path!r}, size {size} bytes; "
+                     f"file limit {MAX_FILE_BYTES} bytes; total limit {MAX_TOTAL_BYTES} bytes")
+
+
 def _read_and_scan(root: str, path: str, expected: dict, total_left: int) -> tuple:
     fd = _open_regular(root, path)
     raw_hash, size = hashlib.sha256(), 0
@@ -182,14 +187,14 @@ def _read_and_scan(root: str, path: str, expected: dict, total_left: int) -> tup
     try:
         before = os.fstat(fd)
         if before.st_size > MAX_FILE_BYTES or before.st_size > total_left:
-            raise ScanError("content scan limit exceeded")
+            raise _scan_limit_error(path, before.st_size)
         while True:
             chunk = os.read(fd, 65536)
             if not chunk:
                 break
             size += len(chunk)
             if size > MAX_FILE_BYTES or size > total_left:
-                raise ScanError("content scan limit exceeded")
+                raise _scan_limit_error(path, size)
             raw_hash.update(chunk)
             content.extend(chunk)
         after = os.fstat(fd)
@@ -236,7 +241,7 @@ def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
             if len(chunks) > limit:
                 process.terminate()
                 process.wait()
-                raise ScanError("content scan limit exceeded")
+                raise _scan_limit_error(path, len(chunks))
         content = bytes(chunks)
         if process.wait() != 0:
             raise ScanError("cannot read staged blob for " + path)
@@ -246,7 +251,7 @@ def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
     if not content:
         return 0, []
     if len(content) > MAX_FILE_BYTES or len(content) > total_left:
-        raise ScanError("content scan limit exceeded")
+        raise _scan_limit_error(path, len(content))
     if process.returncode:
         raise ScanError("cannot read staged blob for " + path)
     findings = []
@@ -346,7 +351,7 @@ def scan_file(path: str) -> list:
     The body is text the run publishes, so this is an ADDED_TEXT scan: a report that quotes a JWT or an sk- key is refused."""
     content = Path(path).read_bytes()
     if len(content) > MAX_FILE_BYTES:
-        raise ScanError("content scan limit exceeded")
+        raise _scan_limit_error(path, len(content))
     found = content_rules.scan_text(content.decode("utf-8", "replace"), content_rules.ADDED_TEXT)
     return [{"rule": rule, "line": line} for rule, line in sorted(found, key=lambda item: (item[1], item[0]))]
 

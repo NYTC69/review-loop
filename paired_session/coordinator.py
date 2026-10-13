@@ -2445,7 +2445,8 @@ class Coordinator:
             if 'on' in (self.args.shadow, self.args.adversarial_gate):   # FIELD-30: what the fresh scan would hold on, before any turn
                 if markers := self._introduced_history('original-workitem', self.workitem.read_text(), self._head_commit() or ''):
                     raise ValueError(f'independence check rejected history in original-workitem: {markers[0]}; the fresh '
-                                     'shadow and gate would hold on it, so reword the work item before starting the run')
+                                     'shadow and gate would hold on it. The phrase reads as this run\'s review history; say it another '
+                                     'way, or put it in backticks when the repository already contains it')
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -4513,7 +4514,7 @@ class Coordinator:
             return '\n'.join([
                 f'Role: persistent {self.args.author_vendor} plan author. Phase: PLAN.',
                 f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
-                contract,
+                contract, self._docs_reserved_note('plan'),
                 'PLAN only: return a plan; do not implement, edit the workspace, or run implementation checks.',
                 'The body must be the current plan only. Integrate corrections into its sections; do not include reviewer ids, verdict history, or response-to-reviewer narratives.',
                 ('Delivered plan review:\n' + prior) if prior else 'No delivered plan review on this turn.',
@@ -4554,10 +4555,23 @@ class Coordinator:
         life = self.state['lifecycle']
         return {**dict.fromkeys(life.get('docs_pre_owned', []), 'pre-owned'), **life.get('docs_owned', {})}
 
-    def _docs_reserved_note(self) -> str:
+    def _docs_reserved_note(self, audience: str = 'implementer') -> str:
+        if not worktree_lifecycle.is_worktree(self.state) or self.state['config'].get('review_report'):
+            return ''
         pre = set(self.state['lifecycle'].get('docs_pre_owned', [])) - set(self.state['lifecycle'].get('docs_owned', {}))
         owned = {path for path in self._docs_owned() if path not in pre}
-        reserved = [path for path in self._docs_allowlist() if path not in owned | pre]
+        paths = set(self._docs_allowlist())
+        if self.state['config'].get('docs_file'):
+            paths.add(Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix())
+        reserved = sorted(paths - owned - pre)
+        if audience == 'plan':
+            return ('Documentation written by the DOCS stage after implementation, not by this plan: ' +
+                    ', '.join(reserved) + '. Do not plan edits to these files; say what they should cover, if anything.'
+                    if reserved else '')
+        if audience == 'review':
+            return ('These documentation files are written by the DOCS stage after this review, and the implementer '
+                    'must not edit them: ' + ', '.join(reserved) + '. A missing or outdated entry there is not a finding now.'
+                    if reserved else '')
         return ' '.join([*(['Reserved for the DOCS stage; do not edit: ' + ', '.join(reserved) + '.'] if reserved else []),
                          *(['Written by the DOCS stage; edit only to fix a delivered docs finding: ' +
                             ', '.join(sorted(owned)) + '.'] if owned else []),
@@ -4656,7 +4670,7 @@ class Coordinator:
                 f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
                 'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
                 REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
-                self.inspection_prompt(role),
+                self.inspection_prompt(role), self._docs_reserved_note('review'),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
                 self._test_instruction(),
@@ -4694,6 +4708,7 @@ class Coordinator:
                 f'Work item: {self.context / "workitem.md"}',
                 f'Plan under review: {self.context / "plan.md"}',
                 'Review only the plan for correctness, completeness, scope, and a credible verification strategy.',
+                self._docs_reserved_note('review'),
                 REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE,
                 'No implementation exists yet and none is expected in PLAN. Program delta files are empty by design.',
                 'Read existing workspace source to check the plan against current behaviour. Findings about missing source files, implementation, or tests are out of scope.',
@@ -4707,7 +4722,7 @@ class Coordinator:
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
             self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
-            self.inspection_prompt(role),
+            self.inspection_prompt(role), self._docs_reserved_note('review'),
             REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
             REVIEW_HISTORY_GUIDANCE,
@@ -4726,7 +4741,7 @@ class Coordinator:
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
             '\nAudit the complete current git delta in ' + str(self.workspace))
-        return (filled + '\n' + self._test_instruction() +
+        return (filled + '\n' + self._docs_reserved_note('review') + '\n' + self._test_instruction() +
                 '\n' + self.allowed_command_prompt() +
                 '\nRead program-materialized delta.patch, delta.stat, status.txt, and optional delta-since-last-review.patch in: ' + str(self.context) +
                 '\n' + self.inspection_prompt('gate') +
@@ -6267,7 +6282,7 @@ class Coordinator:
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
             (self.context / 'plan.md').read_text(), self.args.test_command, self._docs_reserved_note(),
-            bool(self.state.get('review_only'))))
+            bool(self.state.get('review_only'))) + '\n' + LONG_COMMAND_RULE)
         self.render(result, 'finisher', 'FINISH')
         answer = result['answer']
         receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
@@ -6760,9 +6775,11 @@ class Coordinator:
                   'uncovered_ignore': [row['category'] for row in document.get('ignore_coverage', []) if not row.get('covered')]}
         clean = (proc.returncode == 0 and result['status'] == 'clean' and document.get('coverage_complete') is True and
                  document.get('ignore_coverage_complete') is True)
+        display_findings = list(dict.fromkeys((row['path'], row['rule']) for row in result['findings']))
         result['reason'] = None if clean else (
             f"security preflight {result['status']} (exit {proc.returncode})" +
-            ''.join(f'; {row["rule"]} in {row["path"]}' for row in result['findings'][:10]) +
+            (f"; {document['reason']}" if document.get('reason') else '') +
+            ''.join(f'; {rule} in {path}' for path, rule in display_findings[:10]) +
             ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) + '. To recover, add the patterns to '
              'the tracked .gitignore in the worktree, neither committed nor staged (an edit made during the run counts and '
              'ships with the delivery; undo a commit by restoring HEAD to the run\'s parent, keeping the edit) and resume: '
@@ -6973,7 +6990,7 @@ class Coordinator:
         paths = self._changed_paths()
         paths = paths if writer == 'simplifier' else [path for path in paths if worktree_lifecycle.is_test_path(path)]
         prompt = lambda: worktree_lifecycle.writer_prompt(writer, self._simplifier_body() if writer == 'simplifier' else '',
-                                                          paths, self.args.test_command, self._docs_reserved_note())
+                                                          paths, self.args.test_command, self._docs_reserved_note()) + '\n' + LONG_COMMAND_RULE
         result, state = None, None
         while state is None and result is None:
             life = self.state['lifecycle']   # lifecycle_spine.begin replaces the dict: count on the current one

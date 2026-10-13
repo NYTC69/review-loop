@@ -11,8 +11,11 @@ import pytest
 from scripts import materialize_pr as mp
 
 
+GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+
 def git(repo, *args):
-    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+    return subprocess.check_output(["git", "-C", str(repo), *args], env={**os.environ, **GIT_ENV}, text=True).strip()
 
 
 @pytest.fixture
@@ -30,7 +33,7 @@ def setup(tmp_path, monkeypatch):
     git(repo, "commit", "-qm", "base")
     base = git(repo, "rev-parse", "HEAD")
     remote = tmp_path / "target.git"
-    subprocess.run(["git", "clone", "-q", "--bare", str(repo), str(remote)], check=True)
+    subprocess.run(["git", "clone", "-q", "--bare", str(repo), str(remote)], env={**os.environ, **GIT_ENV}, check=True)
     git(repo, "remote", "add", "origin", str(remote))
     git(repo, "checkout", "-qb", "topic")
     (repo / "file").write_text("unpushed\n")

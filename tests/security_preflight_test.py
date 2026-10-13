@@ -13,8 +13,11 @@ from scripts import delivery_scope as ds
 from scripts import security_preflight as sp
 
 
+GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+
 def git(repo, *args):
-    return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.STDOUT)
+    return subprocess.check_output(["git", "-C", str(repo), *args], env={**os.environ, **GIT_ENV}, stderr=subprocess.STDOUT)
 
 
 def candidate(repo, tmp_path):
