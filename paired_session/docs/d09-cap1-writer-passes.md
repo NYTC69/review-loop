@@ -77,9 +77,11 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   `rolled-back:review`. Rows the replay closed return to their starting status. New still-open rows are withdrawn
   with rollback evidence, except rows that `blocking_open_findings()` treats as blocking and whose file is outside
   every writer's changed files: those remain open, are delivered to the author through the existing EXEC repair
-  path, and use the usual round-limit HOLD. No POLISH-Q rollback receipt is signed while those blockers remain;
-  after repair the normal review, shadow, gate, FINISH and specialist chain runs again. Replay round accounting
-  stays unchanged. Writer-file blockers are withdrawn because the writer code is gone; advisory rows are withdrawn too.
+  path, and use the usual round-limit HOLD. This route signs no POLISH-Q rollback receipt. After repair the normal
+  review, shadow, gate, FINISH and specialist chain runs again. The repair uses the replay's own fix round; the
+  writers do not run again on the repaired tree. A blocker whose file any writer changed is withdrawn with the
+  rollback, even when it concerns original code in that file: the rule looks at the file only. Only a blocker in a
+  file no writer changed is kept; advisory rows are withdrawn too.
   When no such outside blocker remains, it sets `stage = POLISH-Q`, `candidate_oid = base_oid` (the epoch stays)
   and signs a POLISH-Q READY spine receipt with `output_oid = base_oid`, citing the previous epoch's receipts on
   that byte-identical digest (EXEC approval, gate, FINISH, clean specialists). Then `advance` goes to DOCS.
@@ -165,7 +167,9 @@ Fake-CLI tests through the real W path, asserting receipts, stage order, markers
 5. `test_writer_hold_changed_tree`: HOLD with a write → `rolled-back:hold`, no local run.
 6. `test_writer_failed_attempt`: a write then timeout or malformed → restored, `exhausted`; a zero-tool turn retries once.
 7. `test_writer_rollback_review`: the replay reviewer REVISEs (and, separately, the gate fails) → `base_oid` restored,
-   findings `withdrawn`, POLISH-Q receipt on `base_oid`, DOCS; no further round. Rounds one short of the limit →
+   writer-file blockers and advisory findings `withdrawn`; when no outside-file blocker remains, POLISH-Q receipt
+   on `base_oid`, DOCS, no further round. An outside-file blocker stays open, reaches EXEC author repair (or the
+   usual round-limit HOLD), and the chain runs again without a rollback receipt. Rounds one short of the limit →
    `skipped:budget`. The simplifier skipped, the test writer writes, the reviewer REVISEs → restored from
    `base_capture`.
 8. `test_writer_executor`: red baseline → `skipped:no-green-baseline`, no writer call; a test command that rewrites a
