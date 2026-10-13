@@ -57,11 +57,17 @@ def _location(row: dict) -> str:
 
 def _explanation(row: dict, indent: str) -> list:
     text = str((row.get('body') if row.get('source') == 'adversarial-gate' else row.get('failure_scenario')) or '').strip()
-    return [indent + line for line in text.splitlines()] if text and text != str(row.get('summary', '')).strip() else []
+    summary = str(row.get('summary', '')).strip()
+    if row.get('source') == 'adversarial-gate':
+        label = re.match(r'\[class:[^\]]*\]', text)
+        if label and summary.startswith(label[0]):
+            text = text[len(label[0]):].lstrip()
+            summary = summary[len(label[0]):].lstrip()
+    return [indent + line for line in text.splitlines()] if text and text != summary else []
 
 
 def _credential_key(row: dict):
-    """The two deterministic scanners' single-hit ledger formats: path, line and rule, never a credential value."""
+    """The two deterministic scanners' per-hit display formats: path, line and rule, never a credential value."""
     summary = str(row.get('summary', ''))
     if row.get('source') == 'secret-scan':
         match = re.fullmatch(r'the change adds a hardcoded credential at (.+):(\d+) \(([^()]+)\)', summary)
@@ -72,20 +78,46 @@ def _credential_key(row: dict):
     return None
 
 
+def _credential_rows(rows: list) -> list:
+    """Expand aggregate scanner summaries into display rows, each still referring to the original ledger ID."""
+    expanded = []
+    prefix = 'the change adds a hardcoded credential at '
+    for row in rows:
+        summary = str(row.get('summary', ''))
+        if row.get('source') != 'secret-scan' or not summary.startswith(prefix):
+            expanded.append(row)
+            continue
+        text = summary[len(prefix):]
+        hits = list(re.finditer(r'(?:^|, )(.+?):(\d+) \(([^()]+)\)(?=, |$)', text))
+        if len(hits) <= 1:
+            expanded.append(row)
+            continue
+        for hit in hits:
+            path, line, rule = hit.groups()
+            expanded.append({**row, 'file': f'{path}:{line}',
+                             'summary': prefix + f'{path}:{line} ({rule})', 'aggregate_scan': True})
+        tail = text[hits[-1].end():].lstrip(', ')
+        if tail:
+            expanded.append({**row, 'file': '', 'summary': 'Additional credentials in aggregate scan: ' + tail,
+                             'aggregate_scan': True})
+    return expanded
+
+
 def _report_groups(rows: list) -> list:
     # Merge scanners before severity sections: preflight's Critical severity determines the section.
+    rows = _credential_rows(rows)
     scans = {_credential_key(row): row for row in rows if row.get('source') == 'secret-scan' and _credential_key(row)}
     paired, consumed = {}, set()
     for row in rows:
         scan = scans.get(_credential_key(row)) if row.get('source') == 'security-preflight' else None
-        if scan and scan['id'] not in consumed:
+        if scan and (scan['id'], _credential_key(scan)) not in consumed:
             paired[row['id']] = scan
-            consumed.add(scan['id'])
+            consumed.add((scan['id'], _credential_key(scan)))
     groups = []
     for severity, _ in (*SECTIONS, ('OTHER', 'Other')):
-        found = [row for row in rows if row['id'] not in consumed and _section(row) == severity]
-        for group in _merged(found):
-            groups.append((severity, [item for row in group for item in ([row, paired[row['id']]] if row['id'] in paired else [row])]))
+        found = [row for row in rows if (row['id'], _credential_key(row)) not in consumed and _section(row) == severity]
+        groups.extend((severity, [row, paired[row['id']]]) for row in found if row['id'] in paired)
+        groups.extend((severity, group) for group in _merged([row for row in found if row['id'] not in paired]))
     return groups
 
 
@@ -100,6 +132,8 @@ def _line(group: list, section: str) -> str:
     credential = _same_credential(group)
     more = (' (same credential, both sources)' if credential else
             f' ({len(group)} similar reports, each listed; they may still be separate issues)' if len(group) > 1 else '')
+    if any(row.get('aggregate_scan') for row in group):
+        more += ' (per-hit view of aggregate secret-scan finding)'
     lines = [f"- **{', '.join(row['id'] for row in group)}** [{roles}{'' if own == section else ', ' + own}] "
              f"`{_location(first)}`: {first.get('summary', '')}{more}"]
     lines += _explanation(first, '  ')

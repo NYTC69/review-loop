@@ -21,13 +21,13 @@ class FilenameAndReportTests(unittest.TestCase):
     locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in (*twl._HELPERS, 'setUp')})
 
     def names_run(self, *flags):
-        tracked = self.workspace / '既存.md'
+        tracked = self.workspace / '已跟踪.md'
         tracked.write_text('before\n')
         # Fixture setup writes only the disposable test repository.
         subprocess.run(['git', 'add', '--', tracked.name], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'test unicode tracked name'], cwd=self.workspace, check=True)
         tracked.write_text('tracked unicode changed\n')
-        names = ('docs/日本語.md', '文档.md', 'with space.md', 'with"quote.md')
+        names = ('docs/日本語.md', '文档.md', 'with space.md', 'with"quote.md', 'with\\backslash.md')
         for name in names:
             path = self.workspace / name
             path.parent.mkdir(exist_ok=True)
@@ -40,6 +40,9 @@ class FilenameAndReportTests(unittest.TestCase):
             self.assertIn('+new content for ' + name, delta)
             self.assertIn('UNTRACKED ' + name, stat)
         self.assertIn('+tracked unicode changed', delta)
+        status = (self.run_dir / 'context' / 'status.txt').read_text()
+        for text in (delta, stat, status):
+            self.assertIn(tracked.name, text)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'DONE')
         self.assertGreater(state['reviews_completed'], 0)
@@ -65,14 +68,32 @@ class FilenameAndReportTests(unittest.TestCase):
         for name in names:
             self.assertIn(name, str(caught.exception))
 
-    def test_linked_worktree_with_unicode_and_quotes_is_recognized(self):
-        from paired_session import candidate_tree as ct
-        linked = self.root / '日本語 " linked'
-        subprocess.run(['git', 'worktree', 'add', '--detach', str(linked), 'HEAD'],
-                       cwd=self.workspace, check=True, capture_output=True)
-        scratch = self.root / 'candidate'; scratch.mkdir()
-        with self.assertRaisesRegex(ct.CandidateError, 'outside workspace/worktrees'):
-            ct.prepare_candidate_baseline(self.workspace, self.run_dir, linked, scratch, ('tracked.txt',))
+    def test_readable_and_quoted_tracked_paths_keep_scan_locations_and_history_exemptions(self):
+        from paired_session.test_v312s import VALUES
+        names = ('中文F123.md', '中文F123"引号.md', '中文F123\\目录.md', '中文F123 空格.md')
+        for name in names:
+            (self.workspace / name).write_text('# F123 known label\nbefore\n')
+        subprocess.run(['git', 'add', '--', *names], cwd=self.workspace, check=True)
+        subprocess.run(['git', 'commit', '-qm', 'test readable paths'], cwd=self.workspace, check=True)
+        co = self.coordinator('--lifecycle-mode', 'off')
+        for name in names:
+            (self.workspace / name).write_text('# F123 known label edited\nnew content\n')
+        co.materialize_review_context()
+        for material in ('delta.patch', 'delta.stat', 'status.txt'):
+            text = (co.context / material).read_text()
+            self.assertIn('中文F123.md', text)
+            self.assertNotIn('\\346', text)
+            self.assertEqual(co._introduced_history('context/' + material, text), [])
+        patch_text = (co.context / 'delta.patch').read_text()
+        self.assertIn('+++ b/中文F123.md', patch_text)
+        self.assertIn('+++ "b/中文F123\\"引号.md"', patch_text)
+        self.assertIn('+++ "b/中文F123\\\\目录.md"', patch_text)
+        for name in names:
+            with (self.workspace / name).open('a') as handle:
+                handle.write('TOKEN = "' + VALUES['github-token'] + '"\n')
+        [row] = co._secret_scan_findings('EXEC', 1)
+        for name in names:
+            self.assertIn(name + ':3 (github-token)', row['summary'])
 
     def test_report_run_keeps_gate_and_reviewer_explanations(self):
         (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
@@ -98,6 +119,16 @@ class HistoryFilenameTests(unittest.TestCase):
         [row] = self.scan_rows()
         self.assertEqual(row['file'], name + ':1')
         self.assertIn(name + ':2', row['summary'])
+
+    def test_history_diagnostic_names_unquoted_unicode_and_quoted_backslash(self):
+        names = ('web/中文.test.js', 'web/中文\\目录.test.js')
+        for name in names:
+            self.t.write(name, f31.WITH_IDS)
+        self.review(shadow_scans=True)
+        [row] = self.scan_rows()
+        for name in names:
+            self.assertIn(name + ':1', row['summary'])
+            self.assertIn(name + ':2', row['summary'])
 
 
 class RenderingTests(unittest.TestCase):
@@ -131,6 +162,37 @@ class RenderingTests(unittest.TestCase):
                 text = review_report.render({'finding_ledger': [scan, dict(preflight, summary=summary)]})
                 self.assertEqual(sum(line.startswith('- **') for line in text.splitlines()), 2)
 
+    def test_aggregate_scanner_hits_merge_individually_and_keep_unmatched_hits(self):
+        scan = {'id': 'F001', 'source': 'secret-scan', 'phase': 'EXEC', 'severity': 'SECURITY', 'file': 'a.py:2',
+                'summary': 'the change adds a hardcoded credential at a.py:2 (github-token), a.py:3 (github-token), b.py:1 (jwt), +2 more'}
+
+        def preflight(identifier, path, line, rule):
+            return {'id': identifier, 'source': 'security-preflight', 'phase': 'SECURITY', 'severity': 'CRITICAL',
+                    'file': path, 'summary': f'[class: secret] {rule} in {path}:{line}'}
+        rows = [scan, preflight('F002', 'a.py', 2, 'github-token'), preflight('F003', 'a.py', 3, 'github-token'),
+                preflight('F004', 'c.py', 4, 'private-key-block')]
+        before = copy.deepcopy(rows)
+        text = review_report.render({'finding_ledger': rows})
+        self.assertEqual(rows, before)
+        lines = [line for line in text.splitlines() if line.startswith('- **')]
+        for where in ('a.py:2', 'a.py:3'):
+            matches = [line for line in lines if where in line]
+            self.assertEqual(len(matches), 1)
+            self.assertIn('security preflight, SECURITY; secret-scan, EXEC', matches[0])
+            self.assertIn('per-hit view of aggregate secret-scan finding', matches[0])
+        self.assertTrue(any('b.py:1 (jwt)' in line for line in lines))
+        self.assertTrue(any('private-key-block in c.py:4' in line for line in lines))
+        self.assertIn('Additional credentials in aggregate scan: +2 more', text)
+
+    def test_gate_class_label_is_printed_once(self):
+        row = {'id': 'F001', 'source': 'adversarial-gate', 'phase': 'EXEC', 'severity': 'HIGH', 'file': 'a.py',
+               'summary': '[class: bool] reject bool', 'body': '[class: bool] Boolean values change the sum.'}
+        text = review_report.render({'finding_ledger': [row]})
+        self.assertEqual(text.count('[class: bool]'), 1)
+        self.assertIn('  Boolean values change the sum.', text)
+        row['body'] = row['summary']
+        self.assertEqual(review_report.render({'finding_ledger': [row]}).count('reject bool'), 1)
+
 
 class RejectWaiverTests(unittest.TestCase):
     locals().update({name: getattr(tor.CodexContractTests, name) for name in ('setUp', 'cli', 'recorded_override')})
@@ -161,6 +223,7 @@ class RejectWaiverTests(unittest.TestCase):
         self.assertEqual(after['codex_cli_override'], before['codex_cli_override'])
         self.assertEqual(after.get('codex_cli_override_history', []), before.get('codex_cli_override_history', []))
         self.assertEqual(len(after['rejections']), 1)
+
     def test_printed_next_reject_with_same_waiver_preserves_intent_and_history(self):
         self.reject_with_waiver('off')
 

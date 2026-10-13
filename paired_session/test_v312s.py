@@ -607,6 +607,19 @@ class ReviewOnlySecretScanTests(unittest.TestCase):
 
     def test_a_review_only_report_run_lists_it_as_a_blocking_security_finding(self):
         self.change()
+        result = self.run_coordinator('--review-only', '--review-report', '--lifecycle-mode', 'on')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = self.state()
+        self.assertEqual(state['status'], 'REPORTED')
+        [row] = [row for row in state['finding_ledger'] if row['source'] == 'secret-scan']
+        self.assertEqual((row['severity'], row['security'], row['status']), ('SECURITY', True, 'open'))
+        report = (self.run_dir / 'review-report.md').read_text()
+        security = report.split('## Security', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(f'the change adds a hardcoded credential at {SERVICE}:2 (jwt)', security)
+        self.assertEqual(self.leaked(JWT, result.stdout), [])
+
+    def test_a_report_merges_the_github_token_reported_by_both_scanners(self):
+        self.change()
         # V317-FA: a rule shared by both scanners exercises report-only de-duplication. JWT is added-text only.
         value = VALUES['github-token']
         (self.workspace / SERVICE).write_text(f'import os\nGITHUB_TOKEN = "{value}"\n')

@@ -3350,7 +3350,7 @@ class Coordinator:
         """The run's change: tracked changes against the base plus every new untracked file, and those untracked names.
         `raw` (the secret scan) keeps the line endings of the files, so that one patch line is one line of the file."""
         base = self.state.get('base_commit')
-        diff = ['diff', *candidate_tree.NO_EXT_DIFF, '--src-prefix=a/', '--dst-prefix=b/']   # whatever diff.mnemonicPrefix or diff.noprefix the operator's git config sets
+        diff = ['-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, '--src-prefix=a/', '--dst-prefix=b/']   # whatever diff.mnemonicPrefix or diff.noprefix the operator's git config sets
         tracked = self._git([*diff, '--binary', base, '--'] if base else [*diff, '--binary', '--'], raw=raw)
         untracked = self._git_names(['ls-files', '-z', '--others', '--exclude-standard'])
         additions = []
@@ -3361,14 +3361,14 @@ class Coordinator:
     def materialize_review_context(self) -> None:
         """Create program-owned, read-only review views without reviewer Git Bash access."""
         base = self.state.get('base_commit')
-        stat = self._git(['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, base, '--'] if base else
-                         ['diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, '--'])
+        stat = self._git(['-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, base, '--'] if base else
+                         ['-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, *STAT_FULL_PATHS, '--'])
         delta, untracked = self._delta_patch()
         untracked_stat = ''.join(f'UNTRACKED {name} ({(self.workspace / name).lstat().st_size} bytes)\n'
                                  for name in untracked)
         atomic_text(self.context / 'delta.patch', delta)
         atomic_text(self.context / 'delta.stat', stat + untracked_stat)
-        atomic_text(self.context / 'status.txt', self._git(['status', '--short', '--untracked-files=all']))
+        atomic_text(self.context / 'status.txt', self._git(['-c', 'core.quotepath=false', 'status', '--short', '--untracked-files=all']))
         since = self.context / 'delta-since-last-review.patch'
         baseline = self.internal / 'last-review'
         if self.state.get('reviews_completed', 0) and baseline.exists():
