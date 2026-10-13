@@ -382,6 +382,8 @@ def main():
                 blocking = '1'
         if (flag := os.environ.get('FAKE_GATE_BLOCK_IF_FILE')) and Path(flag).exists():   # D09 C1-b2: block a writer replay
             blocking = '1'
+        if os.environ.get('FAKE_WRITER_BLOCK_SOURCE') == 'gate' and (Path.cwd() / 'writer_note.py').exists():
+            blocking = '1'
         malformed = os.environ.get('FAKE_GATE_MALFORMED')
         findings = []
         if blocking or malformed:
@@ -390,7 +392,7 @@ def main():
                     else 'Trigger: bool input only.')
             if os.environ.get('FAKE_FINDING_CLASS'):
                 body = '[class: ' + os.environ['FAKE_FINDING_CLASS'] + '] ' + body
-            findings = [{'severity': 'high', 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3,
+            findings = [{'severity': 'high', 'file': os.environ.get('FAKE_GATE_FINDING_FILE', 'sum_ints.py'), 'line_start': 1, 'line_end': 3,
                          'confidence': 0.9, 'recommendation': 'reject bool', 'body': body}]
             if blocking and (extra := os.environ.get('FAKE_GATE_BLOCK_WITH')):   # V316: low|medium next to the blocker
                 findings.append({'severity': extra, 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3, 'confidence': 0.8,
@@ -493,6 +495,10 @@ def main():
             revise = True   # D09 C1-b2: a writer replay's reviewer asks for changes while the writer's file exists
             findings = [{'severity': 'MAJOR', 'file': os.path.relpath(os.path.realpath(flag), os.path.realpath(Path.cwd())), 'summary': 'the writer change regresses behaviour',
                          'failure_scenario': 'the simplified branch drops a case'}]
+        if phase == 'EXEC' and role == os.environ.get('FAKE_WRITER_BLOCK_SOURCE') and (Path.cwd() / 'writer_note.py').exists():
+            revise = True
+            findings = [{'severity': 'MAJOR', 'file': 'sum_ints.py', 'summary': 'original change still needs repair',
+                         'failure_scenario': 'bool is accepted as int'}]
         if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MINOR_REVISE'):
             revise = True
             findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',

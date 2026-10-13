@@ -111,14 +111,15 @@ class D09FTests(unittest.TestCase):
     def test_the_targets_need_disjoint_files_and_findings_inside_one_set(self):
         co = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:]))
         marker = {'simplifier': {'files': ['a.py']}, 'test-writer': {'files': ['tests/test_a.py']}}
-        replay = {'writers': ['simplifier', 'test-writer'], 'sequence': 10}
+        replay = {'writers': ['simplifier', 'test-writer'], 'sequence': 10, 'statuses': {}}
         finding = lambda file, seq=11: co.record_findings('persistent-reviewer', 'EXEC', seq, [
             {'severity': 'MAJOR', 'file': file, 'summary': 'regression ' + str(file), 'failure_scenario': 'x'}])
         finding('tests/test_a.py:12')
         self.assertEqual(co._writer_review_targets(replay, marker), ['test-writer'])
         self.assertEqual(co._writer_review_targets({**replay, 'partial': True}, marker), [])   # the second failure: both
         self.assertEqual(co._writer_review_targets(replay, {**marker, 'test-writer': {'files': ['a.py']}}), [])   # overlap
-        finding('elsewhere.py', 12)   # a finding outside both sets
+        [outside] = finding('elsewhere.py', 12)   # whole rollback must retain this blocker
+        self.assertEqual([r['id'] for r in co._writer_unrelated_findings(replay, marker)], [outside['id']])
         self.assertEqual(co._writer_review_targets(replay, marker), [])
         co.state['finding_ledger'][-1]['status'] = 'fixed'
         finding('', 13)   # a finding with no file

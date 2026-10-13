@@ -7193,8 +7193,9 @@ class Coordinator:
 
     def _writer_review_rollback(self, source: str, sequence: int) -> bool:
         """§2 "one chance in review": a non-approval other than eligible advisory REVISE, or a failing gate,
-        opens no fix round. The tree goes back to base_oid from base_capture (verified); the replay's findings are withdrawn and
-        the ledger rows it closed are reopened, with the evidence; the writers that wrote are `rolled-back:review`; a
+        rolls back the writers without a writer fix round. The tree goes back to base_oid from base_capture (verified); the replay's findings are withdrawn and
+        the ledger rows it closed are reopened, with the evidence. New blockers outside writer files stay open and
+        take EXEC repair; otherwise the writers that wrote are `rolled-back:review`; a
         POLISH-Q READY receipt on base_oid cites the previous epoch's receipts on that digest; then DOCS."""
         life = self.state.get('lifecycle') or {}
         replay = life.get('writer_replay')
@@ -7217,12 +7218,24 @@ class Coordinator:
                 self.round_limit_hold('EXEC round limit reached after a writer rollback')
             self.save()
             return True
+        retained = self._writer_unrelated_findings(replay, marker)
         diff = self._writer_rollback('review', {'capture': marker['base_capture'], 'input_oid': base}, sequence)
         self._revert_replay_findings(replay, sequence, f'the writer change was rolled back to base_oid after the replay {source} '
-                                                       '(rolled-back:review)')
+                                                       '(rolled-back:review)', retain={row['id'] for row in retained})
         for writer in replay['writers']:
             self._writer_state(writer, {**marker[writer], 'state': 'rolled-back:review', 'output_oid': base, 'review': source,
                                         'review_diff': diff})
+        if retained:
+            life.pop('writer_replay')
+            life['candidate_oid'] = None
+            self.state.update(next='author', gate_ran=False, pending_reviewer_result_sequence=None,
+                              delivered_review=worktree_lifecycle.delivered_findings(source, retained))
+            self.set_effective_verdict('REVISE')
+            if self.state['exec_rounds'] >= self.exec_round_limit():
+                self.round_limit_hold('EXEC round limit reached after adversarial gate' if source == 'gate'
+                                      else 'EXEC round limit reached')
+            self.save()
+            return True
         convergence = life.get('exec_convergence') or {}   # the previous epoch's EXEC approval and gate on this digest
         cites = {**({'exec_reviewer': convergence.get('reviewer_sequence'), 'gate': convergence.get('gate_sequence')}
                     if convergence.get('tree') == base else {}),
@@ -7238,15 +7251,24 @@ class Coordinator:
         self.save()
         return True
 
-    def _revert_replay_findings(self, replay: dict, sequence: int, note: str) -> None:
-        """§2: rows the replay closed go back to their start status, rows it raised that are still open are withdrawn."""
+    def _revert_replay_findings(self, replay: dict, sequence: int, note: str, retain: set = frozenset()) -> None:
+        """§2: rows the replay closed go back to their start status, rows it raised that are still open are withdrawn unless retained."""
         for row in self.state['finding_ledger']:
+            if row['id'] in retain:
+                continue
             before = replay['statuses'].get(row['id'])
             if row['status'] != (before or 'withdrawn') and (before or row['status'] == 'open'):
                 row['status'] = before or 'withdrawn'
                 row['status_history'].append({'round': sequence, 'status': row['status'], 'evidence': note})
                 self._progress_finding(row)
         self.write_ledger()
+
+    def _writer_unrelated_findings(self, replay: dict, marker: dict) -> list[dict]:
+        """New open blockers on code outside every writer's files survive a whole-group rollback."""
+        files = {path for writer in worktree_lifecycle.QUALITY_WRITERS['both']
+                 for path in (marker.get(writer) or {}).get('files', [])}
+        return [row for row in self.blocking_open_findings() if row['id'] not in replay['statuses'] and
+                re.sub(r':\d+.*$', '', str(row.get('file') or '').strip()).removeprefix('./') not in files]
 
     def _writer_review_targets(self, replay: dict, marker: dict) -> list[str]:
         """D09 F2 (owner 2026-10-06, "文件不重叠时分开回滚"): on the replay's first failure, when the two writers changed

@@ -72,14 +72,18 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   reviewer reviews the writer diff, then the shadow and gate, FINISH, and POLISH-Q's specialists on the new tree. No
   writer output reaches DOCS without that chain. If the digest = `base_oid` there is no transition.
 - **One chance in review (`rolled-back:review`).** An eligible advisory-only replay REVISE keeps the change as
-  `APPROVE_WITH_ADVISORY`; other non-approvals or a failing gate roll it back without a fix round. The rollback restores
-  the tree to `base_oid` (`base_capture`, verified), closes the findings that replay raised as `withdrawn` with that
-  evidence (as C ~7080 withdraws malformed
-  gate findings), and marks each writer that wrote `rolled-back:review`. It sets the lifecycle to `stage = POLISH-Q`,
-  `candidate_oid = base_oid` (the epoch stays) and signs a POLISH-Q READY spine receipt with `output_oid = base_oid`,
-  citing the previous epoch's receipts on that byte-identical digest (EXEC approval, gate, FINISH, clean specialists).
-  Then `advance` goes to DOCS. A later FINISH write or specialist blocker in the
-  replay follows the normal rules (the replay's own fix round covers it).
+  `APPROVE_WITH_ADVISORY`; other non-approvals or a failing gate roll it back without a writer fix round: the
+  coordinator rolls the tree back to `base_oid` (`base_capture`, verified) and marks each writer that wrote
+  `rolled-back:review`. Rows the replay closed return to their starting status. New still-open rows are withdrawn
+  with rollback evidence, except rows that `blocking_open_findings()` treats as blocking and whose file is outside
+  every writer's changed files: those remain open, are delivered to the author through the existing EXEC repair
+  path, and use the usual round-limit HOLD. No POLISH-Q rollback receipt is signed while those blockers remain;
+  after repair the normal review, shadow, gate, FINISH and specialist chain runs again. Replay round accounting
+  stays unchanged. Writer-file blockers are withdrawn because the writer code is gone; advisory rows are withdrawn too.
+  When no such outside blocker remains, it sets `stage = POLISH-Q`, `candidate_oid = base_oid` (the epoch stays)
+  and signs a POLISH-Q READY spine receipt with `output_oid = base_oid`, citing the previous epoch's receipts on
+  that byte-identical digest (EXEC approval, gate, FINISH, clean specialists). Then `advance` goes to DOCS.
+  A later FINISH write or specialist blocker in the replay follows the normal rules (the replay's own fix round covers it).
   **Per writer when files are disjoint** (D09-F F2, owner 2026-10-06): if both writers wrote, their changed file sets
   are disjoint, and every blocking finding the replay raised names a file of exactly one writer, only that writer's
   files go back to their `base_oid` content (`rolled-back:review`); the other stays `wrote`, the replay's findings are
@@ -123,12 +127,12 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
 - **Cost (gate estimate, LG1 configuration).** A typical change (≥ 20 code lines, tests changed, a command set): 2
   writer calls, 2 local runs, and almost always one replay (reviewer, shadow, gate, finisher, about 4 specialists):
   **about +10 invocations, about +70%** on LG1's 14; wall time not measured. A REVISE in the replay costs no extra
-  round (`rolled-back:review`). Under the default `--max-invocations 25` (`q_reserved` 8) an LG1-sized run often has no
+  round (`rolled-back:review`) unless a new blocker outside writer files requires EXEC repair. Under the default `--max-invocations 25` (`q_reserved` 8) an LG1-sized run often has no
   headroom left at POLISH-Q, so the writers are **often `skipped:budget`** unless the operator raises it by about 10.
 - **What this changes in e2e-2b1** (its simplifier rules are superseded for both writers; C1-c amends the doc):
   - item states `successful`/`rolled-back`/`exhausted` → the states above, for the test writer too;
   - "restore the old OID but keep the new epoch, rerun EXEC review/gate" → rollback happens before any transition, so
-    no epoch opens; after a replay, `rolled-back:review` returns to `base_oid` without a new round;
+    no epoch opens; after a replay, `rolled-back:review` returns to `base_oid` without a new round unless an outside blocker needs repair;
   - "never reuse old-epoch receipts" → one exception: the `rolled-back:review` receipt cites the previous epoch's
     receipts on the byte-identical `base_oid` digest;
   - "`exhausted` HOLDs and blocks restart/successor before PLAN" → `exhausted` is a skip (the passes are optional);

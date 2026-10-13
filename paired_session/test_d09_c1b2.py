@@ -1,7 +1,8 @@
 """D09 C1-b2 (paired_session/docs/d09-cap1-writer-passes.md §2 "Reviewer after a writer" and "One chance in review", §5):
 a kept writer change replays EXEC review, shadow, gate, FINISH and the specialists before DOCS (exec_rounds + 1, like a
-FINISH write); a non-approval other than eligible advisory REVISE, or a failing gate, rolls back instead of a fix
-round. A kept change needs a passing local check (C1-b3's executor, test_d09_c1b3.py); these tests drive the run in
+FINISH write); a non-approval other than eligible advisory REVISE, or a failing gate, rolls the tree back to base_oid
+instead of a fix round. New blockers outside writer files take EXEC repair; writer-file and advisory rows are withdrawn.
+A kept change needs a passing local check (C1-b3's executor, test_d09_c1b3.py); these tests drive the run in
 process with `_writer_local_check` patched, so the replay paths are tested apart from the test command."""
 import json
 import os
@@ -188,7 +189,7 @@ class D09C1b2Tests(unittest.TestCase):
     def test_a_failing_replay_gate_rolls_back_to_base(self):
         base = self.change()
         co, status = self.drive(FAKE_WRITER_WRITE='simplifier', FAKE_WRITER_FILE='writer_note.py',
-                                FAKE_GATE_BLOCK_IF_FILE=str(self.workspace / 'writer_note.py'))
+                                FAKE_GATE_BLOCK_IF_FILE=str(self.workspace / 'writer_note.py'), FAKE_GATE_FINDING_FILE='writer_note.py')
         self.rolled_back(co, status, base, 'gate', ['simplifier'])
 
     def test_a_test_writer_change_alone_is_restored_from_base_capture(self):   # the simplifier skipped (small change)
@@ -199,27 +200,33 @@ class D09C1b2Tests(unittest.TestCase):
         state = self.rolled_back(co, status, base, 'reviewer', ['test-writer'])
         self.assertEqual(state['lifecycle']['quality_writers']['simplifier']['state'], 'skipped:small')
 
-    def test_the_rollback_reopens_what_the_replay_closed_and_withdraws_what_it_raised(self):
+    def test_the_rollback_reopens_closed_rows_and_retains_only_unrelated_blockers(self):
         base = self.change()
         co = rc.Coordinator(rc.parser().parse_args(self.command(*RUN)[2:]))
         [old] = co.record_findings('persistent-reviewer', 'EXEC', 1, [
             {'severity': 'LOW', 'file': 'new_code.py', 'summary': 'advisory naming', 'failure_scenario': 'x'}])
         life = co.state['lifecycle']
         life['quality_writers'] = {'base_oid': base, 'base_capture': co._writer_capture(self.root / 'base-capture'),
-                                   'simplifier': {'state': 'wrote', 'sequence': 5}}
+                                   'simplifier': {'state': 'wrote', 'sequence': 5, 'files': ['writer_note.py']}}
         life['receipts'] = [{'stage': 'POLISH-Q', 'epoch': 0, 'candidate_oid': base, 'output_oid': base, 'request_id': 'w-POLISH-Q-0-0'}]
         co._writer_replay()
-        (self.workspace / 'new_code.py').write_text(CODE + '# simplifier edit\n')
+        (self.workspace / 'writer_note.py').write_text('# simplifier edit\n')
         row = next(r for r in co.state['finding_ledger'] if r['id'] == old['id'])
         row['status'] = 'fixed'   # the replay reviewer closed it on the writer's diff
         [new] = co.record_findings('persistent-reviewer', 'EXEC', 50, [   # the replay review's own round
             {'severity': 'MAJOR', 'file': 'new_code.py', 'summary': 'regression', 'failure_scenario': 'y'}])
+        extra = co.record_findings('persistent-reviewer', 'EXEC', 51, [
+            {'severity': 'MAJOR', 'file': 'writer_note.py', 'summary': 'writer regression', 'failure_scenario': 'x'},
+            {'severity': 'MINOR', 'file': 'elsewhere.py', 'summary': 'advisory', 'failure_scenario': 'x'}])
         self.assertNotEqual(new['id'], old['id'])
         self.assertTrue(co._writer_review_rollback('reviewer', 50))
         statuses = {r['id']: r['status'] for r in co.state['finding_ledger']}
-        self.assertEqual((statuses[old['id']], statuses[new['id']]), ('open', 'withdrawn'))
+        self.assertEqual((statuses[old['id']], statuses[new['id']]), ('open', 'open'))
+        self.assertEqual([statuses[r['id']] for r in extra], ['withdrawn', 'withdrawn'])
+        self.assertIn(new['id'], co.state['delivered_review'])
+        self.assertFalse(any(r.get('role') == 'writer-rollback' for r in co.state['lifecycle']['receipts']))
         self.assertEqual((co.state['lifecycle']['stage'], co.state['next'], rc.git_snapshot(self.workspace)[0]),
-                         ('DOCS', 'docs', base))
+                         ('EXEC', 'author', base))
         self.assertFalse(co._writer_review_rollback('reviewer', 99))   # no replay: the normal fix round
 
     # --- gate LOW: a zero-tool turn that wrote is exhausted and rolled back, with no retry ---------------------------------
