@@ -276,7 +276,7 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
     common_dir = Path(common_text)
     if not common_dir.is_absolute(): common_dir = workspace / common_dir
     worktree_roots = [Path(line[9:]) for line in
-                      _git(['worktree', 'list', '--porcelain'], cwd=workspace, env=env).splitlines()
+                      _git(['worktree', 'list', '--porcelain', '-z'], cwd=workspace, env=env).split('\0')
                       if line.startswith('worktree ')]
     protected = [workspace, run_dir, Path(git_dir_text).resolve(), common_dir.resolve(), *worktree_roots]
     if any(not _outside(parent, root) for parent in (candidate_parent, metadata_parent)
@@ -551,8 +551,8 @@ def rebuild_candidate_from_oid(baseline: CandidateBaseline,
     parent = baseline.root.parent.parent.resolve()
     common = Path(_git(['rev-parse', '--git-common-dir'], cwd=baseline.workspace, env=_git_env()))
     if not common.is_absolute(): common = baseline.workspace / common
-    linked = [Path(line[9:]) for line in _git(['worktree', 'list', '--porcelain'],
-                                              cwd=baseline.workspace, env=_git_env()).splitlines()
+    linked = [Path(line[9:]) for line in _git(['worktree', 'list', '--porcelain', '-z'],
+                                              cwd=baseline.workspace, env=_git_env()).split('\0')
               if line.startswith('worktree ')]
     protected = (baseline.workspace, baseline.run_dir, baseline.git_dir,
                  baseline.index.parent, common.resolve(), *linked)

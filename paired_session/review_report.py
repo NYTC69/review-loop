@@ -5,7 +5,8 @@ MAJOR -> Important, MINOR -> Suggestions), each finding with its role, file and 
 the roles that ran with their tool-use counts and the stages that did not complete; whether tests ran; and a fixed
 Recommended Actions list. "Strengths" is not invented: the ledger has none. REPORT-DEDUPE: similar reports from several
 roles (same file, severity and security flag, near-duplicate summary) share one row with every id and role, labelled as
-similar reports (not claimed to be one issue); every other report's summary stays listed below it.
+similar reports (not claimed to be one issue); every other report's summary stays listed below it. The two deterministic
+credential scanners share one line for an identical path, line and rule, even across severity sections.
 """
 import re
 from collections import Counter
@@ -48,15 +49,66 @@ def _merged(rows: list) -> list:
     return [group[2] for group in groups]
 
 
+def _location(row: dict) -> str:
+    path = row.get('file') or '-'
+    start, end = row.get('line_start'), row.get('line_end')
+    return f'{path}:{start}' + (f'-{end}' if end is not None and end != start else '') if start is not None else path
+
+
+def _explanation(row: dict, indent: str) -> list:
+    text = str((row.get('body') if row.get('source') == 'adversarial-gate' else row.get('failure_scenario')) or '').strip()
+    return [indent + line for line in text.splitlines()] if text and text != str(row.get('summary', '')).strip() else []
+
+
+def _credential_key(row: dict):
+    """The two deterministic scanners' single-hit ledger formats: path, line and rule, never a credential value."""
+    summary = str(row.get('summary', ''))
+    if row.get('source') == 'secret-scan':
+        match = re.fullmatch(r'the change adds a hardcoded credential at (.+):(\d+) \(([^()]+)\)', summary)
+        return match.groups() if match else None
+    if row.get('source') == 'security-preflight':
+        match = re.fullmatch(r'\[class: secret\] (\S+) in (.+):(\d+)', summary)
+        return (match[2], match[3], match[1]) if match else None
+    return None
+
+
+def _report_groups(rows: list) -> list:
+    # Merge scanners before severity sections: preflight's Critical severity determines the section.
+    scans = {_credential_key(row): row for row in rows if row.get('source') == 'secret-scan' and _credential_key(row)}
+    paired, consumed = {}, set()
+    for row in rows:
+        scan = scans.get(_credential_key(row)) if row.get('source') == 'security-preflight' else None
+        if scan and scan['id'] not in consumed:
+            paired[row['id']] = scan
+            consumed.add(scan['id'])
+    groups = []
+    for severity, _ in (*SECTIONS, ('OTHER', 'Other')):
+        found = [row for row in rows if row['id'] not in consumed and _section(row) == severity]
+        for group in _merged(found):
+            groups.append((severity, [item for row in group for item in ([row, paired[row['id']]] if row['id'] in paired else [row])]))
+    return groups
+
+
+def _same_credential(group: list) -> bool:
+    return len(group) == 2 and _credential_key(group[0]) is not None and _credential_key(group[0]) == _credential_key(group[1])
+
+
 def _line(group: list, section: str) -> str:
-    """One report row: every id and role of a merged group and the first report's file and summary; every other report's
-    summary stays visible, indented below it, so a wrong merge hides nothing."""
+    """Every row keeps its own location and explanation, including in merged groups."""
     first, own = group[0], str(group[0].get('severity')).upper()
     roles = '; '.join(dict.fromkeys(f"{_role(row)}, {row.get('phase')}" for row in group))
-    more = f' ({len(group)} similar reports, each listed; they may still be separate issues)' if len(group) > 1 else ''
-    return '\n'.join([f"- **{', '.join(row['id'] for row in group)}** [{roles}{'' if own == section else ', ' + own}] "
-                      f"`{first.get('file') or '-'}`: {first.get('summary', '')}{more}",
-                      *(f"  - {row['id']} [{_role(row)}, {row.get('phase')}]: {row.get('summary', '')}" for row in group[1:])])
+    credential = _same_credential(group)
+    more = (' (same credential, both sources)' if credential else
+            f' ({len(group)} similar reports, each listed; they may still be separate issues)' if len(group) > 1 else '')
+    lines = [f"- **{', '.join(row['id'] for row in group)}** [{roles}{'' if own == section else ', ' + own}] "
+             f"`{_location(first)}`: {first.get('summary', '')}{more}"]
+    lines += _explanation(first, '  ')
+    for row in group[1:]:
+        if not credential:
+            location = f" `{_location(row)}`:" if row.get('line_start') is not None else ''
+            lines.append(f"  - {row['id']} [{_role(row)}, {row.get('phase')}]:{location} {row.get('summary', '')}")
+        lines += _explanation(row, '    ' if not credential else '  ')
+    return '\n'.join(lines)
 
 
 def _role(row: dict) -> str:
@@ -160,11 +212,13 @@ def render(state: dict) -> str:
             lines.append(f'- POLISH-Q specialists: skipped ({reason})')
     lines += ['', '## Verdicts', *(f'- {who}: {verdict}' for who, verdict in _verdicts(state) if verdict)]
     rows = [row for row in state.get('finding_ledger', []) if row.get('status') not in ('withdrawn', 'fixed')]
+    groups = _report_groups(rows)
     for severity, title in (*SECTIONS, ('OTHER', 'Other')):
-        found = [row for row in rows if _section(row) == severity]
+        found = [group for section, group in groups if section == severity]
         if severity == 'OTHER' and not found:
             continue
-        lines += ['', f'## {title} ({len(found)})']
-        lines += [_line(group, severity) for group in _merged(found)] or ['- none']
+        count = sum(1 if _same_credential(group) else len(group) for group in found)
+        lines += ['', f'## {title} ({count})']
+        lines += [_line(group, severity) for group in found] or ['- none']
     lines += ['', '## Recommended Actions', *(f'{index}. {text}' for index, text in enumerate(RECOMMENDED, 1)), '']
     return '\n'.join(lines)

@@ -607,6 +607,9 @@ class ReviewOnlySecretScanTests(unittest.TestCase):
 
     def test_a_review_only_report_run_lists_it_as_a_blocking_security_finding(self):
         self.change()
+        # V317-FA: a rule shared by both scanners exercises report-only de-duplication. JWT is added-text only.
+        value = VALUES['github-token']
+        (self.workspace / SERVICE).write_text(f'import os\nGITHUB_TOKEN = "{value}"\n')
         result = self.run_coordinator('--review-only', '--review-report', '--lifecycle-mode', 'on')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = self.state()
@@ -614,9 +617,13 @@ class ReviewOnlySecretScanTests(unittest.TestCase):
         [row] = [row for row in state['finding_ledger'] if row['source'] == 'secret-scan']
         self.assertEqual((row['severity'], row['security'], row['status']), ('SECURITY', True, 'open'))
         report = (self.run_dir / 'review-report.md').read_text()
-        security = report.split('## Security', 1)[1].split('\n## ', 1)[0]
-        self.assertIn(f'the change adds a hardcoded credential at {SERVICE}:2 (jwt)', security)
-        self.assertEqual(self.leaked(JWT, result.stdout), [])
+        critical = report.split('## Critical', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(f'github-token in {SERVICE}:2', critical)
+        self.assertIn('secret-scan, EXEC', critical)
+        self.assertIn('security preflight, SECURITY', critical)
+        self.assertEqual(sum(line.startswith('- **') for line in critical.splitlines()), 1)
+        self.assertEqual(len([row for row in state['finding_ledger'] if row['source'] in ('secret-scan', 'security-preflight')]), 2)
+        self.assertEqual(self.leaked(value, result.stdout), [])
 
     def test_a_review_only_run_holds_when_the_fix_rounds_leave_it(self):
         self.change()

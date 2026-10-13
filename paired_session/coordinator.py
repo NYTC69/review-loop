@@ -3352,7 +3352,7 @@ class Coordinator:
         base = self.state.get('base_commit')
         diff = ['diff', *candidate_tree.NO_EXT_DIFF, '--src-prefix=a/', '--dst-prefix=b/']   # whatever diff.mnemonicPrefix or diff.noprefix the operator's git config sets
         tracked = self._git([*diff, '--binary', base, '--'] if base else [*diff, '--binary', '--'], raw=raw)
-        untracked = self._git(['ls-files', '--others', '--exclude-standard']).splitlines()
+        untracked = self._git_names(['ls-files', '-z', '--others', '--exclude-standard'])
         additions = []
         for name in untracked:
             additions.append(self._git([*diff, '--no-index', '--binary', '--', '/dev/null', name], ok=(0, 1), raw=raw))
@@ -3459,6 +3459,7 @@ class Coordinator:
                      'source': source, 'finding_index': finding_index,
                      'severity': severity, 'file': finding.get('file', ''),
                      'summary': summary, 'status': 'open',
+                     **{key: finding[key] for key in ('line_start', 'line_end') if key in finding},
                      'security': bool(finding.get('security')),
                      'failure_scenario': finding.get('failure_scenario', ''),
                      'body': finding.get('body', ''),
@@ -4073,7 +4074,7 @@ class Coordinator:
         if record := self.state.get('review_only'):   # LG1-c: the index may hold the reviewed change, fully staged at start
             if hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest() != record['index_at_start']:
                 raise ValueError('auto_commit refuses an index changed since the review-only run started; restore it or abort')
-        elif staged := self._git(['diff-index', '--cached', '--name-only', 'HEAD']).split():
+        elif staged := self._git_names(['diff-index', '--cached', '--name-only', '-z', 'HEAD']):
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
         if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
             raise ValueError('auto_commit refuses core.autocrlf; unset it or accept with auto_commit false')
@@ -5074,7 +5075,10 @@ class Coordinator:
             if not (markers := list(dict.fromkeys(self._introduced_history('context/delta.patch', section)))):
                 continue
             # git ends the header of a path that contains a space with a tab: a separator, not the name (as leak_scan)
-            name = next((line[6:].rstrip('\t') for line in section.splitlines() if line.startswith('+++ b/')), 'a changed file')
+            name = next((line[4:].rstrip('\t') for line in section.splitlines() if line.startswith('+++ ')), '')
+            if name.startswith('"') and name.endswith('"'):
+                name = self._git_unquote(name[1:-1]) or name
+            name = name[2:] if name.startswith('b/') else 'a changed file'
             number, found = 0, set()
             for line in section[len(section.split('\n@@', 1)[0]):].splitlines():
                 if hunk := re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', line):
@@ -9432,10 +9436,12 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too; report runs keep skipping it (residual)
             and not lifecycle_spine.fake_dispatch_guard(args)):
         if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
-            replace_override(co.state, 'codex_cli_override', {
-                'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
-                'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
-            co.save()
+            override = co.state.get('codex_cli_override') or {}
+            if not (override.get('version') == version and override.get('actor') == 'operator' and not override.get('voided')):
+                replace_override(co.state, 'codex_cli_override', {
+                    'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
+                    'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
+                co.save()
         if not (verified := co.codex_contract_verified())[0]:
             return co.refused(verified[1])
     if co.strict and args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):   # D-EFF: a probe waiver matters in strict only
