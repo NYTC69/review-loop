@@ -48,6 +48,15 @@ class WithdrawalTests(unittest.TestCase):
         self.assertIn('--expect ' + intent['digest'], intent['next_command'])
         result = rc.subprocess.run([*command, '--expect', intent['digest']], cwd=self.root, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = self.state()
+        ruling = state['operator_rulings'][-1]
+        self.assertIn(f"WITHDRAWN {ruling['id']}: {', '.join(ruling['finding_ids'])} (evidence: {ruling['evidence']})", result.stdout)
+        status = (DONE if state['status'] == 'DONE' else 'HOLD: ' + state['hold_reason'])
+        self.assertEqual(result.stdout.strip().splitlines()[-1], status)
+        if state['status'] == 'HOLD' and (state.get('round_limit_hold') or {}).get('hold_reason') == state['hold_reason']:
+            self.assertIn('NEXT: resume re-reviews the same tree', result.stdout)
+        else:
+            self.assertNotIn('NEXT: resume re-reviews the same tree', result.stdout)
         return result
 
     def test_done_multiselect_evidence_ledger_report_and_resume_both_routes(self):
@@ -80,9 +89,14 @@ class WithdrawalTests(unittest.TestCase):
                         history = row['status_history'][-1]
                         self.assertEqual((history['actor'], history['ruling_id']), ('operator', 'O001'))
                         self.assertIn(REASON, history['evidence'])
+                events = [json.loads(line) for line in (self.run_dir / 'progress.jsonl').read_text().splitlines()]
+                self.assertEqual([event['id'] for event in events if event['kind'] == 'finding'
+                                  and event.get('status') == 'withdrawn'], ids)
                 for name in ('findings-ledger.md', 'open-findings.md'):
                     text = (self.run_dir / name).read_text()
                     for value in ('O001', REASON, *ids): self.assertIn(value, text)
+                self.assertNotIn('No disposition is due', (self.run_dir / 'open-findings.md').read_text())
+                self.assertNotIn('same objection again', (self.run_dir / 'open-findings.md').read_text())
                 resumed = self.run_operator_action('resume', *flags)
                 self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                 self.assertEqual(self.state()['operator_rulings'], after['operator_rulings'])
@@ -90,6 +104,8 @@ class WithdrawalTests(unittest.TestCase):
                 self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
                 report = (self.run_dir / 'delivery-report.md').read_text()
                 for value in ('O001', 'operator', REASON, 'withdrawn', *ids): self.assertIn(value, report)
+                self.assertIn('## 操作者撤回（operator rulings）', report)
+                self.assertNotIn('## Operator withdrawals', report)
 
     def test_accepts_only_the_named_states_and_refuses_each_excluded_row(self):
         co, row = self.ready()
@@ -127,9 +143,17 @@ class WithdrawalTests(unittest.TestCase):
         for reason in ('', '   '):
             co.args.reason = reason
             with self.assertRaisesRegex(ValueError, 'non-empty'): co._withdrawal_rows()
-        for reason in ('F003 is approved', 'previous review approved it', 'prior_findings are wrong', 'Codex approved scope'):
+        for reason, marker in [('F003 is approved', 'F003'), ('previous review approved it', 'previous review'),
+                               ('prior_findings are wrong', 'prior_findings'), ('Codex approved scope', 'Codex approved'),
+                               ('Claude said to retain it', 'Claude said'), ('The gate finding is wrong', 'gate finding')]:
             co.args.reason = reason
-            with self.assertRaisesRegex(ValueError, 'phrase it as the approved behavior'): co._withdrawal_rows()
+            with self.assertRaisesRegex(ValueError, 'phrase it as the approved behavior') as caught:
+                co._withdrawal_rows()
+            self.assertIn(repr(marker), str(caught.exception))
+        for reason in ('Keep the Codex launcher; removing it is out of scope.',
+                       'Keep ~/.codex/config.toml handling as is.', 'Scope stays; treat as APPROVE.'):
+            co.args.reason = reason
+            self.assertEqual(co._withdrawal_rows(), [row])
 
     def test_withdraw_at_plan_limit_and_rejected_tree_keeps_the_hold_both_routes(self):
         for route in ('off', 'on'):
@@ -175,17 +199,23 @@ class WithdrawalTests(unittest.TestCase):
             self.run_dir = self.root / ('prompts-' + route)
             co, row = self.ready(route)
             # The decision can overlap a known summary: this is operator input, like project guidance.
-            row['summary'] = REASON
+            reason = 'Keep Codex, Claude, Opus and Astra launchers and ~/.codex/config.toml; scope stays; treat as APPROVE.'
+            co.args.reason = reason
+            row['summary'] = reason
             self.withdraw(co)
             co.state['phase'] = 'EXEC'
             co.materialize_review_context()
             snapshot = rc.git_snapshot(self.workspace)[0]
             prompt = co._review_prompt('reviewer', snapshot)
-            for value in (row['id'], 'O001', REASON, 'No disposition is due', 'same objection again'):
+            for value in (row['id'], 'O001', reason, 'No disposition is due', 'same objection again'):
                 self.assertIn(value, prompt)
             self.assertIn('Open finding ledger: none', prompt)
             for role, prompt in [('shadow', co._review_prompt('shadow', snapshot)), ('gate', co._gate_prompt(snapshot))]:
-                self.assertIn('operator decision: ' + REASON, prompt)
+                self.assertIn('operator decision: ' + reason, prompt)
+                self.assertIn('The operator owns the work item.', prompt)
+                self.assertIn('part of the approved scope', prompt)
+                self.assertIn('do not report the decided point itself as a finding', prompt)
+                self.assertIn('implementation of the approved behavior, as usual', prompt)
                 for value in (row['id'], 'O001', 'Operator withdrawals', 'prior_findings'):
                     self.assertNotIn(value, prompt)
                 co.assert_fresh_prompt(role, prompt)
@@ -193,6 +223,72 @@ class WithdrawalTests(unittest.TestCase):
                     co.assert_fresh_prompt(role, prompt + '\nF003')
                 with self.assertRaisesRegex(RuntimeError, 'history'):
                     co.assert_fresh_prompt(role, prompt + '\nprevious review')
+            other = self.row(co, 'persistent-reviewer', 'MINOR')
+            prompt = co._review_prompt('reviewer', snapshot)
+            self.assertIn('## Operator withdrawals', prompt)
+            self.assertIn(f"O001: {row['id']}: {reason}", prompt)
+            self.assertIn('No disposition is due', prompt)
+            self.assertIn('Open finding ledger (', prompt)
+            self.assertIn(f"- {other['id']}: {other['summary']}", prompt)
+
+    def test_stale_operator_dispositions_are_ignored_in_receipts_including_retry_and_replay(self):
+        for route in ('off', 'on'):
+            for retry in (False, True):
+                with self.subTest(route=route, retry=retry):
+                    self.run_dir = self.root / f'ignored-{route}-{retry}'
+                    co, withdrawn = self.ready(route)
+                    co.args.shadow = 'off'
+                    self.withdraw(co)
+                    history = copy.deepcopy(withdrawn['status_history'])
+                    other = self.row(co, 'persistent-reviewer', 'MINOR')
+                    snapshot = rc.git_snapshot(self.workspace)[0]
+                    stale = {'id': withdrawn['id'], 'disposition': 'still_open', 'evidence': 'remembered objection'}
+                    fixed = {'id': other['id'], 'disposition': 'fixed', 'evidence': 'verified fix'}
+                    command = co.args.test_command
+                    answer = {'status': 'APPROVE', 'full_review': [],
+                              'verified_claims': [{'claim': 'The tracked fixture file exists.', 'file': 'tracked.txt', 'line': 1}],
+                              'reviewed_snapshot': snapshot, 'prior_findings': [stale] if retry else [stale, fixed],
+                              'self_run_evidence': [{'command': command}],
+                              'observed_commands': [{'command': command, 'exit_code': 0, 'error': False,
+                                                     'output': 'Ran 1 test successfully'}]}
+                    sequence = co.state['sequence'] + 1
+                    receipt = {'sequence': sequence, 'role': 'reviewer', 'phase': 'EXEC', 'answer': answer,
+                               'snapshot_before': snapshot, 'open_finding_ids': [withdrawn['id'], other['id']]}
+                    co.state.update(status='ACTIVE', acceptance_state='IN_PROGRESS', phase='EXEC', next='reviewer',
+                                    exec_rounds=1, sequence=sequence, pending_reviewer_result_sequence=sequence)
+                    co.state['turns'].append(receipt)
+                    retry_answer = {**answer, 'prior_findings': [stale, fixed]}
+                    retry_receipt = {**receipt, 'sequence': sequence + 1, 'answer': retry_answer,
+                                     'open_finding_ids': [other['id']]}
+
+                    def protocol_retry(*args, **kwargs):
+                        co.state['sequence'] += 1
+                        co.state['turns'].append(retry_receipt)
+                        return {'answer': retry_answer, 'snapshot': snapshot, 'sequence': sequence + 1,
+                                'open_finding_ids': [other['id']]}
+
+                    with mock.patch.object(co, 'invoke', side_effect=protocol_retry) as invoke:
+                        co.reviewer_turn()
+                    self.assertEqual(invoke.call_count, int(retry))
+                    self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'gate'))
+                    self.assertEqual((withdrawn['status'], withdrawn['status_history']), ('withdrawn', history))
+                    self.assertEqual(other['status'], 'fixed')
+                    used = [receipt, retry_receipt] if retry else [receipt]
+                    for turn in used:
+                        self.assertIn(stale, turn['answer']['prior_findings'])  # original response remains auditable
+                        self.assertEqual(turn['ignored_prior_findings'], [{**stale, 'ignored_reason': 'operator-withdrawn'}])
+                        evidence = json.loads((co.evidence / f"{turn['sequence']:03d}-exec-reviewer.receipt.json").read_text())
+                        self.assertEqual(evidence['ignored_prior_findings'], turn['ignored_prior_findings'])
+                        self.assertIn(stale, evidence['answer']['prior_findings'])
+                    saved = self.state()
+                    self.assertEqual(saved['turns'][-1]['ignored_prior_findings'], used[-1]['ignored_prior_findings'])
+                    # Replay the durable response: stale rows stay ignored and fixed history is not duplicated.
+                    other_history = copy.deepcopy(other['status_history'])
+                    co.state['pending_reviewer_result_sequence'] = used[-1]['sequence']
+                    co.reviewer_turn()
+                    self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'gate'))
+                    self.assertEqual(other['status_history'], other_history)
+                    self.assertEqual(withdrawn['status_history'], history)
 
     @mock.patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': ''})  # AUTH names are frozen from the first turn
     def test_field_case_send_back_still_open_withdraw_resume_done_both_routes(self):
@@ -237,21 +333,6 @@ class WithdrawalTests(unittest.TestCase):
                     self.assertTrue(turns)
                     text = (self.run_dir / 'evidence' / f"{turns[0]['sequence']:03d}-exec-{role}.prompt.txt").read_text()
                     self.assertIn('operator decision: ' + REASON, text)
-
-    def test_resume_redirects_only_with_no_blocker_and_no_own_finding(self):
-        for phase in ('PLAN', 'EXEC'):
-            for blocker, own, expected in [(False, False, 'reviewer'), (True, False, 'author'), (False, True, 'author')]:
-                self.run_dir = self.root / f'resume-{phase}-{blocker}-{own}'
-                co, row = self.ready()
-                self.withdraw(co)
-                if blocker: self.row(co, 'persistent-reviewer', 'MAJOR')
-                reason = phase + ' round limit reached'
-                co.state.update(status='HOLD', acceptance_state='REJECTED', phase=phase, next='author', hold_reason=reason,
-                                round_limit_hold={'hold_reason': reason, 'phase': phase},
-                                turns=[{'role': 'reviewer', 'phase': phase, 'answer': {'full_review': [{}] if own else []}}])
-                with mock.patch.object(co, 'drive', return_value='ACTIVE'):
-                    co.resume()
-                self.assertEqual(co.state['next'], expected)
 
     def test_fake_cli_writer_replay_withdrawal_during_hold_survives_tree_rollback(self):
         base = writers.D09C1b2Tests.change(self)

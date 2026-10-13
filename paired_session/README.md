@@ -82,7 +82,10 @@ status, which may still be HOLD after later checks.
 
 Operator rulings are persistent review input on both lifecycle routes. The
 persistent reviewer sees the withdrawn ids and reasons, owes no disposition for
-them, and must not raise the same objection as a new finding. Fresh shadow and
+them, and must not raise the same objection as a new finding. If the reviewer
+still returns such a disposition, it is ignored and recorded as
+`ignored_prior_findings` in the receipt; other dispositions keep their normal
+validation. Fresh shadow and
 gate turns receive only `operator decision: <reason>`, without finding ids or
 review history. The fresh-prompt scan accepts this operator decision channel
 like frozen project guidance; ordinary review history remains subject to the scan.
@@ -95,8 +98,9 @@ review narratives (for example "previous review" or "response to reviewer"),
 including `context/plan.md` and `context/workitem.md`. FIELD-23 prevents ACCIDENTAL carry-over of review history into a fresh context;
 it does not defend against an author who deliberately evades the check.
 Deliberate evasion is a known residual. Review independence otherwise rests on
-the fresh session and the gate templates. Prompts exempt only operator inputs
-(frozen project guidance and the decision channel described above).
+the fresh session and the gate templates, which stay unexempted. Prompts exempt
+only operator inputs (frozen project guidance and the decision channel described
+above).
 With a run's `base_commit`, both delta patches scan only added (`+`) lines,
 excluding `+++` headers; context and removed lines are never scanned. A match is
 exempt if the same matched text, case-insensitively, occurs anywhere in that
@@ -686,14 +690,17 @@ Acceptance requires DONE; at HOLD, use note and resume when an author turn is
 available, a scope-change successor, or abort.
 
 Use `withdraw-findings --finding F003 [--finding F007 ...] --reason TEXT` to
-record an operator ruling that approved behavior stays. First issue the same
+record an operator ruling that approved behavior stays, only on the user's
+explicit decision naming the findings and reason, never in handsfree mode or
+on the host's own judgment. First issue the same
 command with `--intent-only`, then submit it with `--expect <digest>`; ids and
 reason are bound to the intent and mutation runs under the run/workspace leases.
 Allowed states are DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, and
 a rejected-tree HOLD. Unknown or closed ids, an empty reason, security-tagged
 or SECURITY rows, specialist/security-reviewer-owned rows, gate CRITICAL/HIGH
 rows and `secret-scan` rows are refused. Phrase the reason as approved behavior,
-without finding ids or review-history markers, for example:
+without finding ids, review-history phrases or model/vendor approval attributions;
+bare model/vendor names are allowed. A refusal names the matched text. For example:
 
 ```sh
 bin/paired-session withdraw-findings --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" --finding F003 --reason 'Expanded export scope is approved and stays.' --intent-only
@@ -705,11 +712,11 @@ operator attribution, reason and intent. Evidence is in
 `evidence/operator-ruling-Oxxx.json`; the ledger, open-findings document and
 acceptance delivery report include the ruling. Withdrawal changes no tree,
 starts no author turn and counts as no rejection. DONE remains acceptance
-pending: accept or send back as before. At a round-limit HOLD, if no blocking
-row remains and the last reviewer verdict had no finding of its own, plain
-`resume` re-dispatches the reviewer on the same tree. Otherwise the existing
-exits apply; a rejected tree remains rejected. Rulings survive resume and writer
-replay rollback. This command does not reopen lifecycle stages at DONE.
+pending: accept or send back as before. At a round-limit HOLD caused by the
+reviewer verdict, plain `resume` already re-dispatches the reviewer on the same
+tree, even when other rows remain open or the reviewer had findings of its own.
+Withdrawal adds no continuation route; the existing exits apply. A rejected tree
+remains rejected. Rulings survive resume and writer replay rollback. This command does not reopen lifecycle stages at DONE.
 
 Before accepting or rejecting, request an operator intent for the exact action.
 It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,

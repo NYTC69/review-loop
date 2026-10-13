@@ -241,8 +241,8 @@ A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and say
   `.review-loop/config.md` keeps it uncommitted. The main pipeline commits only when the operator profile sets
   `auto_commit` and lifecycle is on. Lifecycle off always returns the uncommitted tree. Nothing is ever pushed.
 - **reject** — with your note, the run reopens EXEC and the author works on it.
-- **withdraw-findings** — overrule eligible open findings with a persistent operator decision; use `--finding`, `--reason`, then intent/`--expect` (see [operator commands](paired_session/README.md#acceptance-rejection-and-round-limits)).
-- Under `handsfree` the agent never accepts or rejects.
+- **withdraw-findings** — overrule eligible open findings only on the user's explicit decision naming the findings and reason, never in handsfree mode; use `--finding`, `--reason`, then intent/`--expect` (see [operator commands](paired_session/README.md#acceptance-rejection-and-round-limits)).
+- Under `handsfree` the agent never accepts, rejects or withdraws findings.
 
 ## Run control
 
@@ -350,7 +350,7 @@ uses the author's vendor, and the test command is the one the skill confirms wit
 | `soft_limit_exec` | `4` | `--max-exec-rounds`: the same for EXEC |
 | `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept` with lifecycle on, never a push; lifecycle off returns the uncommitted tree; both honour an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
-| `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` are never run |
+| `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` / `withdraw-findings` are never run |
 | `review_focus` | `""` | Project-specific review priorities (free text); paired-session: `--review-focus` (L105), frozen at run start, for the reviewer, shadow and gate |
 | `quality_focus` | `""` | Paired-session: `--quality-focus` (L105), frozen at run start, for the POLISH-Q specialists |
 | `review_style` | `""` | Tone and rules for all reviews (free text); paired-session: `--review-style` (L105), frozen at run start, for every review role |

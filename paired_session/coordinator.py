@@ -3678,7 +3678,8 @@ class Coordinator:
                                            for cell in cells) + ' |')
         if not rows:
             lines += ['', 'No open or declined findings.']
-        if self.state.get('operator_rulings'): lines.append(self.operator_rulings_prompt())
+        if self.state.get('operator_rulings'):
+            lines += ['', '## Operator withdrawals', *self.operator_ruling_lines()]
         atomic_text(self.run_dir / 'open-findings.md', '\n'.join(lines) + '\n')
 
     @staticmethod
@@ -4253,8 +4254,10 @@ class Coordinator:
             raise ValueError('withdraw-findings requires DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, or a rejected-tree HOLD')
         reason = self.args.reason or ''
         if not reason.strip(): raise ValueError('withdraw-findings requires a non-empty --reason')
-        if self._history_markers('operator-decision', reason):
-            raise ValueError('withdraw-findings reason contains a finding id or review-history marker; phrase it as the approved behavior, without ids or review history (for example: Expanded export scope is approved and stays.)')
+        marker = (LEDGER_ID_RE.search(reason) or FRESH_HISTORY_RE.search(reason) or
+                  re.search(r'\b(?:Claude|Codex|Opus|Astra)\s+(?:approved|said)\b', reason, re.I))
+        if marker:
+            raise ValueError(f'withdraw-findings reason contains a finding id or review-history marker: {marker.group(0)!r}; phrase it as the approved behavior, without ids or review history (for example: Expanded export scope is approved and stays.)')
         ids = sorted(set(self.args.finding or []))
         if not ids: raise ValueError('withdraw-findings requires --finding ID (repeat for multiple rows)')
         rows = []
@@ -4286,20 +4289,42 @@ class Coordinator:
             row['status_history'].append({'round': self.state['sequence'], 'status': 'withdrawn',
                                          'evidence': f"Operator ruling {ruling_id}: {record['reason']}",
                                          'actor': 'operator', 'ruling_id': ruling_id})
+            self._progress_finding(row)
         self.save()
         self.write_ledger()
         self.write_open_findings()
         self.write_comparison()
         return self.state['status']
 
+    def operator_ruling_lines(self) -> list[str]:
+        return [f"- {row['id']}: {', '.join(row['finding_ids'])}: {row['reason']}"
+                for row in self.state.get('operator_rulings', [])]
+
     def operator_rulings_prompt(self, fresh=False) -> str:
         rulings = self.state.get('operator_rulings', [])
         if not rulings: return ''
         if fresh:
-            return '\n## Operator decisions\n' + '\n'.join('operator decision: ' + row['reason'] for row in rulings) + '\n'
-        return ('\n## Operator withdrawals\n' + '\n'.join(
-            f"- {row['id']}: {', '.join(row['finding_ids'])}: {row['reason']}" for row in rulings) +
-            '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n')
+            return ('\n## Operator decisions\n'
+                    'The operator owns the work item. Treat these decisions as part of the approved scope; '
+                    'do not report the decided point itself as a finding. Review everything else, including '
+                    'implementation of the approved behavior, as usual.\n' +
+                    '\n'.join('operator decision: ' + row['reason'] for row in rulings) + '\n')
+        return ('\n## Operator withdrawals\n' + '\n'.join(self.operator_ruling_lines()) +
+                '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n')
+
+    def _ignore_operator_dispositions(self, result: dict) -> None:
+        """Persistent threads may remember withdrawn ids; retain their stale dispositions only as receipt evidence."""
+        withdrawn = {finding_id for ruling in self.state.get('operator_rulings', []) for finding_id in ruling['finding_ids']}
+        dispositions = result['answer']['prior_findings']
+        ignored = [row for row in dispositions if row['id'] in withdrawn]
+        result['answer']['prior_findings'] = [row for row in dispositions if row['id'] not in withdrawn]
+        if result.get('open_finding_ids') is not None:
+            result['open_finding_ids'] = [finding_id for finding_id in result['open_finding_ids'] if finding_id not in withdrawn]
+        if ignored:
+            receipt = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
+            receipt['ignored_prior_findings'] = [{**row, 'ignored_reason': 'operator-withdrawn'} for row in ignored]
+            atomic_json(self.evidence / f"{receipt['sequence']:03d}-{receipt['phase'].lower()}-reviewer.receipt.json", receipt)
+            self.save()
 
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
         refuse_removed_options(self.args)
@@ -7592,6 +7617,7 @@ class Coordinator:
         self.save()
         snapshot = result['snapshot']
         answer = result['answer']
+        self._ignore_operator_dispositions(result)
         try:
             missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                result.get('open_finding_ids'), 'persistent-reviewer')
@@ -7606,6 +7632,7 @@ class Coordinator:
             result = self.invoke('reviewer', phase, retry_prompt, review_schema())
             result['answer'] = copy.deepcopy(result['answer'])
             answer = result['answer']
+            self._ignore_operator_dispositions(result)
             try:
                 missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                   result.get('open_finding_ids'), 'persistent-reviewer')
@@ -8947,11 +8974,6 @@ class Coordinator:
         if add is None and self.at_round_limit_hold() and self.state['exec_rounds'] > self.exec_round_limit():
             return 'HOLD'   # stage writes already used the next round; an extension must authorize its review
         if add is not None: self._add_rounds(add)
-        elif self.at_round_limit_hold() and self.state.get('operator_rulings') and not self.blocking_open_findings():
-            last = next((turn for turn in reversed(self.state['turns'])
-                         if turn['role'] == 'reviewer' and turn['phase'] == self.state['phase'] and turn.get('answer')), None)
-            if last and not last['answer'].get('full_review'):
-                self.state.update(next='reviewer', pending_reviewer_result_sequence=None)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
@@ -9531,7 +9553,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
         print(co.scope_change(args.text, args.file))
         return 0
     if args.action == 'withdraw-findings':
-        print(co.withdraw_findings())
+        status = co.withdraw_findings()
+        ruling = co.state['operator_rulings'][-1]
+        print(f"WITHDRAWN {ruling['id']}: {', '.join(ruling['finding_ids'])} (evidence: {ruling['evidence']})")
+        if co.at_round_limit_hold(): print('NEXT: resume re-reviews the same tree')
+        print(status + (' (acceptance pending)' if status == 'DONE' else ': ' + co.state.get('hold_reason', '')))
         return 0
     if args.action == 'note':
         print('NOTE: ' + co.note(args.text, args.file))

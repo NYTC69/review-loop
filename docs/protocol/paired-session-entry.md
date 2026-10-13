@@ -313,7 +313,7 @@ a plugin version mismatch.
 
 Later commands on an existing run (`resume`, `permission-probe
 --retry-uncertain`, `abort`, `reject`, `accept`, `note`,
-`attach-verification`) pass the saved `state.json` `config.lifecycle_mode`
+`attach-verification`, `withdraw-findings`) pass the saved `state.json` `config.lifecycle_mode`
 value and the run's original workspace, work item, run directory, profile and
 options, never the current default. Saved off runs use this release normally.
 Report DONE/HOLD and the run directory. On
@@ -356,7 +356,7 @@ option `--polish-round on|off` remains an accepted deprecated no-op (removed in 
 the stage receipts, open findings, operator verification records still valid
 for the tree, and whether the run's frozen `config.auto_commit` (the operator
 profile, the CLI or the review-only default) will make one local commit on
-acceptance with lifecycle on. Off acceptance returns the uncommitted tree; offer `accept` or `reject`. Never accept or reject
+acceptance with lifecycle on. Off acceptance returns the uncommitted tree; offer `accept` or `reject`, or `withdraw-findings` for eligible rows. Never accept, reject or withdraw findings
 under handsfree, and never on your own judgment:
 - Accept only after the user explicitly accepts in this conversation. Run
   `accept --intent-only` with the user's reason as `--reason TEXT` (or no
@@ -369,6 +369,14 @@ under handsfree, and never on your own judgment:
   `reject --intent-only --text NOTE`, show the digest, then run
   `reject --expect <digest> --text NOTE` in the host's long-command form (it
   reopens EXEC and dispatches model turns) and inspect the final status.
+- Withdraw findings only on the user's explicit decision naming the findings
+  and a nonempty reason. At DONE (acceptance pending), a PLAN/EXEC round-limit
+  HOLD or a rejected-tree HOLD, run `withdraw-findings --intent-only --finding ID
+  --reason TEXT` (repeat `--finding` for each named id), show the digest, then run
+  the same command with `--expect <digest>` instead of `--intent-only`. Relay
+  the ruling/evidence, next-step hint and status. This dispatches no model turn
+  and records no rejection. It is never the host's own decision or an action
+  under handsfree. Use the operator reference for eligibility and reason rules.
 - At a round-limit HOLD, use `resume --add-rounds N` on the user's instruction; acceptance requires DONE.
 
 Do not imply user acceptance or delivery authorization from DONE.

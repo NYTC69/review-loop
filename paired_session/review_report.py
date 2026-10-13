@@ -183,7 +183,7 @@ def delivery_section(state: dict) -> str:
             lines.append(f'- {title}：{len(found)} 条' + ('（' + '，'.join(f'{s} {n}' for s, n in statuses.items()) + '）' if found else '')
                          + (f"；未关闭：{', '.join(open_ids)}" if open_ids else ''))
     if state.get('operator_rulings'):
-        lines += ['', '## Operator withdrawals', *[
+        lines += ['', '## 操作者撤回（operator rulings）', *[
             f"- {row['id']} (operator): {', '.join(row['finding_ids'])}: {row['reason']}"
             for row in state['operator_rulings']]]
     verdicts = [f'- {who}：{verdict}' for who, verdict in _verdicts(state) if verdict] or ['- 无']

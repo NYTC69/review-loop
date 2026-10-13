@@ -147,6 +147,14 @@ key `entry` is `paired-session` or absent and the work is fresh, an existing pla
 code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
 legacy workflow was removed in v2.13.0.
 
+Operator commands (`accept`, `reject`, `withdraw-findings`) follow the shared
+entry contract. Run `withdraw-findings` only on the user's explicit decision
+naming the findings and a nonempty reason, never on the host's own judgment or
+in handsfree mode. Issue `--intent-only --finding ID --reason TEXT` first
+(repeat `--finding` for each named id), show the digest, then submit the same
+command with `--expect <digest>` instead of `--intent-only`. Relay the ruling,
+evidence, next-step hint and status; withdrawal dispatches no model turn.
+
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 
 For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value. For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile. When the user chooses off for those entries, pass `--lifecycle-mode off` in both commands. Compare the saved lifecycle mode with that selected mode for the backstop; saved off runs continue with off.
