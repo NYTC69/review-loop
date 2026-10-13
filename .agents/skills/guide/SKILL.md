@@ -56,5 +56,5 @@ Not on Codex:
   paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
   `docs/protocol/paired-session-entry.md` (Profile and settings).
-- A review of existing code is a review-only run: `accept` makes one local commit by default (never a push);
-  `auto_commit: false` in `.review-loop/config.md` keeps the accepted change uncommitted.
+- A review of existing code is a review-only run. With lifecycle on, `accept` normally makes one local commit (never a push);
+  `auto_commit: false` in `.review-loop/config.md` keeps the accepted change uncommitted. Lifecycle off stops after the gate; acceptance returns the uncommitted tree.

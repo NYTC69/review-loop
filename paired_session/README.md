@@ -78,12 +78,12 @@ With a run's `base_commit`, both delta patches scan only added (`+`) lines,
 excluding `+++` headers; context and removed lines are never scanned. A match is
 exempt if the same matched text, case-insensitively, occurs anywhere in that
 file at the base commit (post-image path; for renames, also pre-image path).
-New files and binaries get no exemption. A base marker reused anywhere in the
+New files and binaries get no base-text exemption. Bare model names in added text can still qualify for the work-item exception. A base marker reused anywhere in the
 same file therefore passes, including copies: this is a documented residual.
 The exempt text is the whole match ("Claude approved", not "Claude") and must
 occur at the base as a whole word ("APPROVE" is not in "approved"). Another
 known residual, on the strict side: a file moved without `git mv` (`mv`, or `rm`
-plus a new file) appears as a new untracked file and gets no exemption, so a
+plus a new file) appears as a new untracked file and gets no base-text exemption, so a
 base marker in it holds; use `git mv`. In a review-only run (FIELD-26) the change
 as created is the user's code, not review history: a match is also exempt when
 the same file in the run's creation mirror (`internal/review-start`) contains
@@ -95,9 +95,11 @@ while a path a fix round adds is caught; a ledger-id or verdict shaped path
 (`docs/F001.md`, `APPROVE.txt`) is still refused at creation (FIELD-11). A
 scope-change successor keeps its parent's creation mirror for this.
 In `delta.stat` and `status.txt`, matches inside paths that exist at the base
-commit are exempt. In `plan.md` and `workitem.md`, a match is exempt only inside
-backticks or a fenced code block and only if its matched text occurs in a file
-at the base commit. Unquoted narrative is scanned as before. Without a
+commit are exempt. Repository quotations in `plan.md` and `workitem.md` get the base-text exemption only inside
+backticks or fenced code blocks, with the matched text present in a file at the base commit.
+Bare Claude, Codex, Opus and Astra names have separate prose exceptions. For added product text, name the model in the frozen work item
+as a whole word or a numeric model ID such as `claude-opus-5-5` or `gpt-6-astra`.
+Names such as `pre-Opus` and paths such as `/opt/claude-opus-5-5/` do not establish this exception. Attribution, vendor paths, finding IDs and verdict words remain subject to the scan. Without a
 `base_commit`, the old scan applies. The same helper applies to fresh shadow,
 gate, PLAN approval and review-only creation inputs.
 When a shadow or gate is
@@ -152,8 +154,9 @@ progress, state and reports. With no EXEC round left the run holds with
 `secret scan: the change still adds a hardcoded credential at ...`; a review-pr
 report lists the finding under Security. A deliberate test fixture is exempted
 by a `secret-scan-allow: <path, directory or glob>` line in the work item, one
-per line; its hits are recorded as exempted in `state.json` (`secret_scan`). The
-marker exempts hits of this every-route scan only: the SECURITY stage's six
+per line; its hits are recorded as exempted in `state.json` (`secret_scan`).
+Declare exemptions before starting the run. If a deliberate fixture or false positive appears later, start a new run with the exemption; resume uses the frozen work item.
+The marker exempts hits of this every-route scan only: the SECURITY stage's six
 whole-delivery rules are not affected by it. Lines the FINISH, POLISH-Q and DOCS
 writers add after the gate are covered by those six SECURITY rules, not by the
 added rules, unless the stage sends the run back through EXEC (the review and
@@ -241,7 +244,7 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
-The paired-session skill passes `--lifecycle-mode on` (D-4) only when no operator/workspace profile sets `lifecycle_mode`; when one does, it omits the flag so the profile value applies, and when the user chooses off, it passes `--lifecycle-mode off`. The frozen config also records exact
+The paired-session skill always passes `--lifecycle-mode on` for review-pr report mode, overriding a profile's off value. Other entries follow the profile, or default to on; a user may select `--lifecycle-mode off` for those entries. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
 in 3.0: a profile that still sets it is refused as an unsupported key);
 outside-workspace or wildcard doc paths are refused. The real lifecycle is the
@@ -256,7 +259,10 @@ write outside the docs allowlist reopens EXEC review and gate, an allowlisted
 write gets a fresh docs review that must run the test) and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
 security reviewer (any hit or finding HOLDs), then reaches DONE (acceptance
-pending). `accept --expect` on a W DONE accepts it without touching refs or
+pending). DOCS records supported changes and observed results. Final review, security and commit facts belong to the delivery report.
+The DOCS reviewer assigns at least MAJOR to false or unsupported DOCS-stage statements.
+Nonexistent test, check or result claims by any author are also at least MAJOR.
+Other pre-existing inaccuracies use normal severity judgment. `accept --expect` on a W DONE accepts it without touching refs or
 the index, or with an operator `auto_commit: true` makes one hook-free local
 commit of exactly the accepted tree (never a push; `auto_commit` defaults to
 true for a `--review-only` W run and to false otherwise, and an explicit CLI or

@@ -34,14 +34,14 @@ continue as absent. Then:
      - Any other argument: refused,
        `code-quality-loop: unknown argument <arg>; usage: /review-loop:code-quality-loop [max-rounds]`.
      - `auto_commit: false` in `.review-loop/config.md`: hand over `--auto-commit false` (absent or `true`: the
-       review-only default, one local commit at `accept`).
+       review-only default, one local commit at `accept` with lifecycle on; off returns the uncommitted tree).
      - `judgment_model` or `cheap_model` set in `.review-loop/config.md`: print, per key,
        `code-quality-loop: <key> in .review-loop/config.md is not applied by paired-session; models come from the operator profile`.
        (`review_focus`, `review_style` and `quality_focus` are passed to the run by the paired-session skill.)
   3. Print
-     `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
+     `code-quality-loop: with lifecycle on, the paired route reviews, fixes, simplifies and consolidates tests. Acceptance normally makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted). With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree. It does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
   4. Invoke the `paired-session` skill with `--code-quality-loop` and the mapped `--max-exec-rounds N` and
      `--auto-commit false` (if any), and end this skill. It follows the shared contract's Code-quality-loop entry: a review-only run on
-     the uncommitted change with the quality writers on, ending at DONE (or HOLD); `accept` writes the delivery report.
+     the uncommitted change with the quality writers on when lifecycle is on, ending at DONE (or HOLD); `accept` writes the delivery report.
   5. If the paired-session skill reports `stage A failure: <reason>`, report
      `code-quality-loop: paired-session entry refused (<reason>)` and stop (nothing falls back).

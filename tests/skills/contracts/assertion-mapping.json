@@ -131,7 +131,7 @@
     "paired_session_skill_lifecycle_mode_on": [
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "Pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically, only when no operator/workspace profile sets `lifecycle_mode`"
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
       },
       {
         "path": "skills/paired-session/SKILL.md",
@@ -143,7 +143,7 @@
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "Pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically, only when no operator/workspace profile sets `lifecycle_mode`"
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
@@ -155,15 +155,15 @@
       },
       {
         "path": "skills/paired-session/SKILL.md",
-        "needle": "pass it only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value)"
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "pass it only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value)"
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "so when a profile sets `lifecycle_mode`, omit the flag (or pass the profile's value) in both commands"
+        "needle": "When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile."
       }
     ],
     "paired_session_skill_saved_lifecycle_mode": [
@@ -235,11 +235,11 @@
     "cql_loss_notice": [
       {
         "path": "skills/code-quality-loop/SKILL.md",
-        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs"
+        "needle": "code-quality-loop: with lifecycle on, the paired route reviews, fixes, simplifies and consolidates tests. Acceptance normally makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted). With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree. It does not reorganize, run static-analysis artifacts, load a design document or sweep project docs"
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs"
+        "needle": "code-quality-loop: with lifecycle on, the paired route reviews, fixes, simplifies and consolidates tests. Acceptance normally makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted). With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree. It does not reorganize, run static-analysis artifacts, load a design document or sweep project docs"
       }
     ],
     "cql_set_entry_notice": [

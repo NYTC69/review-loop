@@ -233,13 +233,13 @@ A review-pr run follows EXEC review, shadow, GATE, POLISH-Q and SECURITY to REPO
 ## Ending a run
 
 A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and says why). Nothing is delivered at DONE:
-- **accept** — only on your explicit decision. The agent accepts the tree that passed SECURITY and shows the delivery
+- **accept** — only on your explicit decision. The agent accepts the approved tree. Lifecycle on requires SECURITY to pass; lifecycle off stops after the gate. It shows the delivery
   report it writes, `delivery-report.md` in the run directory (in Chinese: the stages, the commit, the finding counts
   by severity and final status with the ids still open, the rounds, the verdicts and the token totals). A review-only run (`/review-loop`
-  on existing code, code-quality-loop) makes one local commit by default when its commit checks pass (otherwise the
+  on existing code, code-quality-loop) with lifecycle on makes one local commit by default when its commit checks pass (otherwise the
   change stays uncommitted and `accept` lists the files to commit yourself); `auto_commit: false` in
   `.review-loop/config.md` keeps it uncommitted. The main pipeline commits only when the operator profile sets
-  `auto_commit`. Nothing is ever pushed.
+  `auto_commit` and lifecycle is on. Lifecycle off always returns the uncommitted tree. Nothing is ever pushed.
 - **reject** — with your note, the run reopens EXEC and the author works on it.
 - Under `handsfree` the agent never accepts or rejects.
 
@@ -403,6 +403,7 @@ before each EXEC review verdict and before the gate. A hit is a blocking finding
 `path:line` and the rule, never the value; with no EXEC round left the run holds, and a review-pr report lists it.
 The line is git's: a file with CR-only line endings is one line for git, so a hit anywhere in it is reported at line 1.
 Exempt a deliberate test fixture with a `secret-scan-allow: <path or glob>` line in the work item (one per line).
+Declare exemptions before starting the run. If a deliberate fixture or false positive appears later, start a new run with the exemption; resume uses the frozen work item.
 The rules are one table (`scripts/content_rules.py`) with a scope per rule: the SECURITY stage scans the whole
 delivery, files the run never touched included, with only the six rules it always had (private-key blocks, AWS key
 ids, GitHub, Slack, Google and Stripe live tokens), and the marker does not exempt those; the JWT, `sk-` and

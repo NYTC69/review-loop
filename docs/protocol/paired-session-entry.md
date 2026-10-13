@@ -78,7 +78,7 @@ form, so a value that starts with "-" is not read as an option; the run freezes 
 review focus and style to the reviewer, the shadow and the gate, quality focus and style to the POLISH-Q
 specialists, never to the author). `auto_commit` applies to a review-only run only (whatever entry started
 it): `auto_commit: false` becomes `--auto-commit false` (the review-loop and code-quality-loop entries hand it
-over), and absent or `true` keeps the review-only default (one local commit at `accept`), with no warning. On
+over), and absent or `true` keeps the review-only default (one local commit at `accept` with lifecycle on; off returns the uncommitted tree), with no warning. On
 the main pipeline do not apply, but print a warning for, `auto_commit: true`
 (`review-loop: auto_commit in .review-loop/config.md is not applied by
 paired-session; set it in the operator profile`), and for a `reviewer_model` /
@@ -113,6 +113,7 @@ scratch space inside a repository then fall back to /tmp, which the Codex
 read-only sandbox denies; `run` warns about it) with goal, acceptance criteria, scope, and verification.
 The first line is the title, `# <one-line summary of the task>`: `accept` uses it as the commit title and the delivery report names the work item with it, so never a generic heading such as `# Work item`.
 Add a `secret-scan-allow: <path or glob>` line (one per path) only when the user says a secret-like literal under that path is a deliberate test fixture; the coordinator's secret scan otherwise blocks it.
+Declare exemptions before starting the run. If a deliberate fixture or false positive appears later, start a new run with the exemption; resume uses the frozen work item.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
@@ -138,10 +139,10 @@ ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
   with `--base` also `git diff --name-status <ref>`). Route only a task-related
   change: if a path is unrelated to the request, ask whether to review it too (a
   declined question is a failed stage A check). With `auto_commit`, every
-  reviewed path is delivered. A review-only run defaults to `auto_commit: true`
+  reviewed path is delivered. With lifecycle on, a review-only run defaults to `auto_commit: true`
   (owner 2026-10-06); `auto_commit: false` in `.review-loop/config.md` (as `--auto-commit false`, see Profile
   and settings), an explicit `--auto-commit false` or operator-profile
-  `auto_commit: false` wins, and `accept` then lists the uncommitted files. `--plan-only` does not apply: refuse it in stage A.
+  `auto_commit: false` wins, and `accept` then lists the uncommitted files. Lifecycle off always returns the uncommitted tree. `--plan-only` does not apply: refuse it in stage A.
 - `WORKITEM.md` starts with a title that names the change (`# <one-line summary
   of the change>`, see Work item), then states the review goal (one line such as
   "Review the change for correctness" is enough) and carries no review history
@@ -168,7 +169,7 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
 - Notices: the code-quality-loop skill owns its entry line and loss notice (its Step 0). If they are not already in this conversation's visible output, print them verbatim as the first output after this contract is loaded, before any stage A check or coordinator command:
   `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` (key set) or
   `code-quality-loop: paired-session review-only run (the default entry)` (key absent), then
-  `code-quality-loop: the paired route reviews, fixes, simplifies and consolidates tests, and accept makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted); it does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
+  `code-quality-loop: with lifecycle on, the paired route reviews, fixes, simplifies and consolidates tests. Acceptance normally makes one local commit (never a push; `auto_commit: false` in .review-loop/config.md keeps it uncommitted). With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree. It does not reorganize, run static-analysis artifacts, load a design document or sweep project docs`.
 - CLIs: the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI
   check of Stage A checks here; a missing CLI is a failed stage A check.
 - Test command: as for any review-only run (profile `test_command`, else the verified project command).
@@ -180,7 +181,7 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   pass one `--max-exec-rounds` value, the same to `permission-probe` and `run`.
 - Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass
   it. Otherwise the review-only default applies (`auto_commit: true` unless the profile says false; no
-  warning for `auto_commit` on this handoff): `accept` makes one local commit and never pushes.
+  warning for `auto_commit` on this handoff). With lifecycle on, `accept` normally makes one local commit and never pushes. Lifecycle off returns the uncommitted tree.
 - `WORKITEM.md`: the first line is `# code-quality-loop: <one-line summary of the uncommitted change>` (the commit title), then
   the goal "Review and improve the quality of the uncommitted change: correctness, error
   handling, tests and simplicity; fix what the reviews find." No review history. `quality_focus` and
@@ -253,11 +254,11 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 
 ## Safety mode and the first commands
 
-Pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`, identically, only when no operator/workspace profile sets `lifecycle_mode`.
-The CLI value overrides any profile value, so when a profile sets `lifecycle_mode`, omit the flag (or pass the
-profile's value) in both commands. Never pass
+For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value.
+For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`.
+When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile. Never pass
 `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative.
-When the user selects the stop-after-gate route, pass `--lifecycle-mode off` in both commands.
+For entries other than review-pr, when the user selects the stop-after-gate route, pass `--lifecycle-mode off` in both commands.
 The removed `--adversarial-gate off`, `--override-rejection`,
 `--accept-unverified-claude-author` and `--accept-probe-skip` options are refused.
 Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, and permission-probe for strict runs.
@@ -293,9 +294,9 @@ before starting the next; do not start a second run while one is active.
 Once `RUN_DIR/state.json` exists (strict: after the probe, before `run`), read
 its frozen `config` and print one start line from it: author, reviewer and gate
 vendor and model; plan and exec rounds, invocations and timeout; docs file and
-skip-quality-polish; and which values came from `.review-loop/config.md`. In
-strict mode, if `config.lifecycle_mode` differs from the selected mode (`on` by default,
-`off` for the stop-after-gate route, the profile's `lifecycle_mode` when it sets one), run `abort` with the run's
+skip-quality-polish; and which values came from `.review-loop/config.md`.
+For review-pr, the selected mode is always `on`. Other entries use the profile's `lifecycle_mode`, or `on` by default; the user may select `off`.
+In strict mode, if `config.lifecycle_mode` differs from the selected mode, run `abort` with the run's
 saved options and report a plugin version mismatch instead of starting the run.
 
 While the run is active, do not call plain `status`: it needs the run lease

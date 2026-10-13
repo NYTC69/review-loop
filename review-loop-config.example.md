@@ -20,7 +20,8 @@
 # soft_limit_plan: 3            # --max-plan-rounds; at the cap the run HOLDs and `resume --add-rounds N` continues it
 # soft_limit_exec: 4            # --max-exec-rounds
 # auto_commit: false            # review-only runs (/review-loop on existing code, code-quality-loop): false keeps the
-                                # accepted change uncommitted (default: one local commit at accept, never a push);
+                                # accepted change uncommitted (with lifecycle on: normally one local commit at accept, never a push);
+                                # lifecycle off stops after the gate; acceptance returns the uncommitted tree;
                                 # main pipeline: not applied (true prints a warning; the operator profile decides)
 # docs_file: CHANGELOG.md       # --docs-file; "" skips the docs entry
 # handsfree: false              # true: a stage A question fails the entry; accept/reject are never run

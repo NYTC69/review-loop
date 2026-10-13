@@ -33,9 +33,9 @@ review-loop entry (resolves `entry`, runs the stage A checks)
 | Command | What it does |
 |---|---|
 | `/review-loop <work item>` | The default entry: fresh work → paired-session; existing code → paired-session `run --review-only`; an existing plan → paired-session with the plan as the work item (Entry below) |
-| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator directly: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
+| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator directly: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security with lifecycle on. Lifecycle off stops after the gate; acceptance returns the uncommitted tree. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
 | `/review-loop:review-pr [PR number\|PR URL\|ref] [aspects]` | Paired-session report mode (below) |
-| `/review-loop:code-quality-loop [max-rounds]` | A review-only paired-session run on the uncommitted change (one fix round for the non-blocking findings, quality writers on; `accept` commits locally unless `auto_commit: false`); `--legacy`, `--reorganize` and `entry: legacy` are refused (legacy removed in v2.13.0) |
+| `/review-loop:code-quality-loop [max-rounds]` | A review-only paired-session run on the uncommitted change (with lifecycle on, one fix round for the non-blocking findings, quality writers on; `accept` normally commits locally unless `auto_commit: false`; lifecycle off stops after the gate and acceptance returns the uncommitted tree); `--legacy`, `--reorganize` and `entry: legacy` are refused (legacy removed in v2.13.0) |
 | `/review-loop:reorganize` | Reorganizes code file structure without changing behaviour (standalone) |
 | `/review-loop:guide` | This guide |
 
@@ -118,7 +118,7 @@ Create `.review-loop/config.md` in your project to customize:
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |
 | `review_style` | "" | Tone and rules for the review roles and the POLISH-Q specialists |
 | `quality_focus` | "" | Quality priorities for the POLISH-Q specialists |
-| `auto_commit` | — | A review-only run (`/review-loop` on existing code, code-quality-loop) makes one local commit at `accept` by default; `false` here keeps it uncommitted. Not applied on the main pipeline (`true` prints a warning; set it in the operator profile) |
+| `auto_commit` | — | A review-only run (`/review-loop` on existing code, code-quality-loop) with lifecycle on normally makes one local commit at `accept`; `false` here keeps it uncommitted. Lifecycle off returns the uncommitted tree. Not applied on the main pipeline (`true` prints a warning; set it in the operator profile) |
 | `handsfree` | false | Blocks stage A questions (any such question fails) and acceptance |
 
 Unset paired-session caps are plan 3 / exec 4 rounds. `reviewer_model` and `executor_model` only warn
