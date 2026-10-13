@@ -14,7 +14,7 @@ class InterruptedReplay(Exception):
 
 class WriterReplayAdvisoryTests(unittest.TestCase):
     locals().update({name: getattr(d09.D09C1b2Tests, name) for name in
-                    (*d09.twl._HELPERS, 'setUp', 'git', 'state', 'change', 'stages')})
+                    (*d09.twl._HELPERS, 'setUp', 'git', 'state', 'change', 'stages', 'drive')})
 
     def run_replay(self, prior=False, mixed=False, change=None, interrupt=False):
         base = self.change()
@@ -92,6 +92,30 @@ class WriterReplayAdvisoryTests(unittest.TestCase):
         state, _ = self.run_replay(prior=True, mixed=True)
         rows = self.assert_kept(state)
         self.assertEqual({r['summary'] for r in rows}, {'advisory naming', 'wording nit'})
+
+    def test_advisory_second_review_keeps_the_writer_after_partial_rollback(self):
+        self.change()
+        kept = self.workspace / 'writer_note.py'
+        reverted = self.workspace / 'tests' / 'test_extra.py'
+        co, status = self.drive(FAKE_WRITER_WRITE='simplifier,test-writer',
+                                FAKE_WRITER_FILE_SIMPLIFIER=kept.name,
+                                FAKE_WRITER_FILE_TEST_WRITER='tests/test_extra.py',
+                                FAKE_EXEC_REVISE_IF_FILE=str(reverted),
+                                FAKE_EXEC_MINOR_REVISE_IF_FILE=str(kept))
+        state = co.state
+        marker = state['lifecycle']['quality_writers']
+        self.assertEqual(status, 'DONE', state.get('hold_reason'))
+        self.assertEqual((marker['simplifier']['state'], marker['test-writer']['state']),
+                         ('wrote', 'rolled-back:review'))
+        self.assertTrue(kept.is_file())
+        self.assertFalse(reverted.exists())
+        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds'], state['config']['max_exec_rounds']),
+                         (3, {'start': 1, 'used': 2}, 4))   # ordinary room remains on the second replay review
+        self.assertEqual([(r['reviewer_raw_verdict'], r['effective_verdict']) for r in state['review_verdicts']
+                          if r['phase'] == 'EXEC'],
+                         [('APPROVE', 'APPROVE'), ('REVISE', 'REVISE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
+        self.assertEqual([(r['severity'], r['status'], r.get('advisory', False)) for r in state['finding_ledger']],
+                         [('MAJOR', 'withdrawn', False), ('MINOR', 'open', True)])
 
     def test_resume_after_recording_replay_review_keeps_the_writer_change(self):
         state, _ = self.run_replay(prior=True, interrupt=True)

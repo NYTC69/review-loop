@@ -276,6 +276,13 @@ class RoundLimitStillOpenTests(unittest.TestCase):
             with self.subTest(blocker=name):
                 self.assert_held(self.review(name, [low, blocker]))
 
+    def test_mixed_new_and_prior_advisories_are_marked_at_an_ordinary_exit(self):
+        state = self.review('mixed-advisories', [('adversarial-gate', 'low')], full_review=[
+            {'severity': 'MINOR', 'file': 'tracked.txt', 'summary': 'new wording nit', 'failure_scenario': 'odd comment'}])
+        self.assertEqual((state['status'], state['review_verdicts'][-1]['effective_verdict'],
+                          [(r['status'], r.get('advisory')) for r in state['finding_ledger']]),
+                         ('DONE', 'APPROVE_WITH_ADVISORY', [('open', True), ('open', True)]))
+
     def test_a_failing_test_no_evidence_or_another_tree_at_the_limit_holds(self):
         rows = [('adversarial-gate', 'low')]
         state = self.review('control', rows)

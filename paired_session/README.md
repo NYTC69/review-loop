@@ -52,8 +52,9 @@ the turn receipt.
 
 Each phase allows one repair attempt for an advisory-only persistent reviewer
 REVISE. The first goes to the author if a round remains. A later eligible
-advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left,
-except during a writer replay.
+advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left.
+In a quality-writer replay an eligible advisory-only REVISE takes this exit at
+any round, without an attempt, and the writer change is kept.
 The final PLAN/EXEC round keeps the same advisory exit without requiring an
 attempt. Advisory-only means MINOR/LOW findings without a security flag,
 and/or only earlier non-blocking rows reported `still_open`, with no blocking
@@ -317,10 +318,12 @@ that simplifies the changed code, then one that consolidates the changed tests.
 The explicit test command runs first on the reviewed tree (a red baseline skips
 both) and again after each change. A kept change (`wrote`) replays EXEC review,
 shadow, gate, FINISH and the specialists before DOCS, on its own budget of one
-replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`);
-An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`; other non-approvals
-roll it back (`rolled-back:review`), only the named writer when files are disjoint (the other is reviewed again). A test writer that lowers the number of test cases is rolled
-back (`rolled-back:tests`). Other outcomes: `no-op`, `rolled-back:tests`, `rolled-back:boundary`
+replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`).
+An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`;
+other non-approvals roll it back (`rolled-back:review`), only the named writer
+when files are disjoint (the other is reviewed again). A test writer that lowers
+the number of test cases is rolled back (`rolled-back:tests`). Other outcomes:
+`no-op`, `rolled-back:tests`, `rolled-back:boundary`
 (reserved docs or `.review-loop/` config), `rolled-back:hold`, `exhausted`, and
 the skips `no-test-command`, `small`, `no-test-file`, `budget`,
 `no-green-baseline`. Cost: about +10 invocations for a typical change (two
