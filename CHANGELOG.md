@@ -11,12 +11,13 @@
 - 还有轮数时，这类意见照旧送回作者修。
 - 阻塞的意见（评审的 CRITICAL/MAJOR、安全类、gate 的 CRITICAL/HIGH）在最后一轮仍未解决，照旧 HOLD；配置的测试没通过、评审没有自己的运行证据、评审看的不是当前这份代码，也照旧 HOLD。
 - PLAN 阶段不变。gate 后停的路线（`--lifecycle-mode off`）同样适用这个出口。
+- 已经在旧版本上因轮数用完而 HOLD 的 run 不会因为升级而改变结果：run 绑定启动它的那份程序，换成新版本 `resume` 会被拒绝。用原版本 `resume --add-rounds N` 继续（行为仍是旧的），或者用新版本新开一个 run。
 
 **文档**
 - 凭据扫描读的是 coordinator 为扫描现算的补丁，不是 `context/delta.patch`；只有 CR 换行的文件在 git 里是一行，命中一律报在第 1 行。
 - guide 的 "Hard caps" 一条补了一句，说明上面的出口。
 
-**审查**：Opus 执行；Codex 审查一轮 APPROVE（一条文档措辞建议，已由 Codex 改正）；发版前 fresh Opus 终审和一轮能实际跑测试的 Codex 终审。新增 11 个测试，已有断言都保留。
+**审查**：Opus 执行；Codex 审查一轮 APPROVE（一条文档措辞建议，已由 Codex 改正）；fresh Opus 终审 APPROVE，另加一轮能实际跑测试的 Codex 终审 APPROVE，都没有阻塞项。新增 11 个测试，已有断言都保留。
 
 ### v3.1.5：认出 Codex 的用量上限提示
 
