@@ -59,7 +59,7 @@ value, a duplicate key or an unreadable config prints a warning and routes as a 
 coordinator starts refuses with the reason, whatever the key says (unavailable background or outside-sandbox execution
 is reported as HOLD); nothing falls back to legacy. `/review-loop:legacy <work item>`, `/review-loop:plan` and
 `/review-loop:execute` (Claude) were deleted in v2.13.1; the Codex request "use the legacy review-loop workflow",
-review-pr's `--legacy` and the Codex "legacy review-pr workflow" request are refused. The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, runs with `--lifecycle-mode on`. `--plan-only` on it maps to `run --stop-after-plan`.
+review-pr's `--legacy` and the Codex "legacy review-pr workflow" request are refused. The explicit entry `/review-loop:paired-session <work item>` (Claude) remains available and, like the default entry, follows the selected lifecycle mode (default `on`; `off` is supported). `--plan-only` on it maps to `run --stop-after-plan`.
 
 ## What is and is not routed
 | Situation | Result |
@@ -73,7 +73,7 @@ review-pr's `--legacy` and the Codex "legacy review-pr workflow" request are ref
 | `/review-loop:review-pr` (Claude) or a PR review request (Codex), `entry` absent or `paired-session` | paired-session report mode (Review-pr below) |
 | review-pr with `entry: legacy`, `--legacy` or "the legacy review-pr workflow" | refused (v2.13.0) |
 
-Before the handoff the entry checks the host (macOS on every entry), that both `codex` and `claude` are on PATH (whatever vendors the roles use), background or outside-sandbox execution and the Codex home; the paired-session skill then establishes a dedicated worktree and a test command, asking only when it cannot. A failed check before the first `bin/paired-session` command refuses (or HOLDs), with the key set or absent; nothing falls back to legacy. From the first `bin/paired-session` command on, a refusal or HOLD is reported. Legacy sessions are not imported into paired-session; an existing plan enters as the work item. A paired run is resumed only with `paired-session resume` and its original options; the two workflows never cross.
+Before the handoff the entry checks the host (macOS on every entry), that both `codex` and `claude` are on PATH (whatever vendors the roles use), background or outside-sandbox execution and the Codex home; the paired-session skill then establishes a dedicated worktree for fresh work and a test command, asking only when it cannot. Review-only entries use the worktree that holds the existing change and skip the dedicated-worktree question. A failed check before the first `bin/paired-session` command refuses (or HOLDs), with the key set or absent; nothing falls back to legacy. From the first `bin/paired-session` command on, a refusal or HOLD is reported. Legacy sessions are not imported into paired-session; an existing plan enters as the work item. A paired run is resumed only with `paired-session resume` and its original options; the two workflows never cross.
 
 ## Notices and warnings you will see
 Printed by the `/review-loop` skill text (from v2.13.0; Claude and Codex alike):
@@ -135,7 +135,7 @@ Status values:
 
 | Legacy | paired-session equivalent | Status |
 |---|---|---|
-| `/review-loop` with fresh work (Claude), a fresh review-loop request (Codex) | the paired-session skill runs `run --lifecycle-mode on` | covered |
+| `/review-loop` with fresh work (Claude), a fresh review-loop request (Codex) | the paired-session skill runs `run` with the selected lifecycle mode (default `on`; `off` supported) | covered |
 | Code-exists auto-route (review an existing change) | `run --review-only [--base <ref>]` (D-LG1) | covered |
 | `/review-loop:execute --review-only` | `run --review-only` (the legacy command was deleted in v2.13.1) | covered |
 | Plan-exists auto-route | none: the PLAN author drafts again, and legacy plans are not imported | covered (ADR-15) (L75) |

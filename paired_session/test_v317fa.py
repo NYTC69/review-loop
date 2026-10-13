@@ -57,6 +57,23 @@ class FilenameAndReportTests(unittest.TestCase):
         (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
         self.names_run('--review-only', '--lifecycle-mode', 'on')
 
+    def test_since_last_review_keeps_readable_unicode_paths_on_both_routes(self):
+        name = 'docs/日本語.md'
+        path = self.workspace / name
+        path.parent.mkdir(exist_ok=True)
+        for mode in ('on', 'off'):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('since-last-' + mode)
+                path.write_text('before\n')
+                co = self.coordinator('--lifecycle-mode', mode)
+                co.capture_review_baseline()
+                path.write_text('after\n')
+                co.materialize_review_context()
+                text = (co.context / 'delta-since-last-review.patch').read_text()
+                self.assertIn('/' + name, text)
+                self.assertNotIn('\\346', text)
+                self.assertIn('-before\n+after', text)
+
     def test_staged_refusal_names_are_not_quoted_or_split(self):
         co = self.coordinator('--lifecycle-mode', 'off')
         names = ('文档.md', 'with space.md', 'with"quote.md')

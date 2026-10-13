@@ -190,8 +190,9 @@ plugin cache.
 
 For simultaneous lanes, read [Concurrent runs and isolated Codex homes](docs/concurrent-runs.md).
 
-Use a dedicated Git worktree for each product task and keep run artifacts in a
-sibling directory outside the workspace. Never put `--run-dir` inside the
+Use a dedicated Git worktree for fresh product work; review-only runs use the
+worktree that holds the existing change. Keep run artifacts in a sibling
+directory outside the workspace. Never put `--run-dir` inside the
 workspace: the author can write to the workspace and must not be able to alter
 coordinator state. Keep the run root outside any git repository too: the role
 TMPDIRs live under the run directory, and a project that refuses scratch space

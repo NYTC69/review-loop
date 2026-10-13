@@ -1,6 +1,7 @@
 """V317-FB operator recoveries, driven through fake provider CLIs."""
 import json
 import unittest
+from unittest.mock import patch
 
 from paired_session import test_worktree_lifecycle as twl
 
@@ -28,13 +29,15 @@ class OperatorRecoveryTests(unittest.TestCase):
         for key, value, hint in (
                 ('core.fileMode', 'false', 'set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)'),
                 ('core.autocrlf', 'input', 'unset it (or set it to false in this repository) and accept again')):
-            with self.subTest(key=key):
+            with self.subTest(key=key), patch.dict('os.environ', {
+                    'GIT_CONFIG_GLOBAL': str(self.test_home / '.gitconfig')}):
                 self.run_dir = self.root / key
                 # Use the global autocrlf case: a repository override must also recover it.
                 if key == 'core.autocrlf':
                     (self.test_home / '.gitconfig').write_text('[core]\n\tautocrlf = input\n')
                 else:
                     self.git('config', key, value)
+                self.assertEqual(self.git('config', '--get', key), value)
                 self.done(*ON, '--auto-commit', 'true')
                 for extra in ((), ('--auto-commit', 'false')):
                     refused = self.run_operator_action('accept', *extra)
