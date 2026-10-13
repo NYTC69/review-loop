@@ -505,7 +505,11 @@ class ExecProfileSelectionTests(unittest.TestCase):                             
                 done = subprocess.run([sys.executable, str(trc.FAKE), 'exec', *flag, *profile[2:], '-'], input='Role: reviewer, persistent. Phase: PLAN.',
                                       text=True, capture_output=True, timeout=30)
                 self.assertEqual((done.returncode, done.stdout), (2, ''))
-                self.assertEqual(done.stderr, f"error: unexpected argument '{flag[0].split('=')[0]}' found\n")
+                rejected = flag[0].split('=')[0]
+                self.assertEqual(done.stderr, f"error: unexpected argument '{rejected}' found\n\n"
+                    f"  tip: to pass '{rejected}' as a value, use '-- {rejected}'\n\n"
+                    "Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]\n\n"
+                    "For more information, try '--help'.\n")
         old = ['-P', rc.CODEX_READONLY_PROFILE, *profile[2:]]                                 # the v2.9.6 candidate's argv
         with patch.object(rc, 'codex_readonly_profile_args', return_value=old):
             report = self.probe(self.co(*CODEX_ROLES))

@@ -68,6 +68,38 @@ class OperatorFailureTests(unittest.TestCase):
             {'type': 'error', 'message': 'first\nsecond\r\x00\t' + 'x' * 250}))
         self.assertEqual(reason, 'CLI exit 1: ' + ('first second ' + 'x' * 250)[:200])
 
+    def test_multiline_stderr_prefers_error_line_over_cli_trailers(self):
+        cases = (
+            ('clap', "error: unexpected argument '-P' found\n\n"
+                "  tip: to pass '-P' as a value, use '-- -P'\n\n"
+                "Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]\n\n"
+                "For more information, try '--help'.\n",
+                "error: unexpected argument '-P' found"),
+            ('config', 'Error parsing config.toml: invalid type: string "yes", expected a boolean\n'
+                'in `features.foo`\n',
+                'Error parsing config.toml: invalid type: string "yes", expected a boolean'),
+            ('node', "node:internal/modules/cjs/loader:1143\n  throw err;\n  ^\n\n"
+                "Error: Cannot find module '@openai/codex'\n"
+                "    at Module._resolveFilename (node:internal/modules/cjs/loader:1140:15)\n"
+                "    at Module._load (node:internal/modules/cjs/loader:981:27)\n"
+                "    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:128:12)\n"
+                "    at node:internal/main/run_main_module:28:49 {\n"
+                "  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v22.3.0\n",
+                "Error: Cannot find module '@openai/codex'"),
+            ('warning', 'Warning: terminal color support unavailable\n'
+                'Warning: update check unavailable\n', 'Warning: update check unavailable'),
+        )
+        for mode in ('off', 'on'):
+            for name, stderr, expected in cases:
+                with self.subTest(mode=mode, shape=name):
+                    co = self.failing_coordinator(mode, 'codex', stderr=stderr, code=2)
+                    self.assert_hold(co, 'CLI exit 2: ' + expected)
+                    self.run_dir.rename(self.root / ('done-' + mode + '-' + name))
+        # Leading whitespace and casing are normal CLI variations; the last error wins.
+        self.assertEqual(rc.cli_failure_reason('CLI exit 1', '',
+            'error: first attempt failed\n  ERROR: login required\nhelp tip\n'),
+            'CLI exit 1: ERROR: login required')
+
     def test_recognized_limit_keeps_typed_hold(self):
         for mode in ('off', 'on'):
             with self.subTest(mode=mode):

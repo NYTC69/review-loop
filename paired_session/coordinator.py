@@ -764,7 +764,9 @@ def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
         if isinstance(value, str) and value.strip():
             message = value
     if not message:
-        message = next((line for line in reversed(stderr.splitlines()) if line.strip()), '')
+        lines = [line for line in stderr.splitlines() if line.strip()]
+        message = next((line for line in reversed(lines) if re.match(r'\s*error\b', line, re.I)),
+                       lines[-1] if lines else '')
     message = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', message)
     message = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in message).split())[:200]
     return prefix + (': ' + message if message else '')
@@ -1247,8 +1249,9 @@ def detach(raw_argv: list, run_dir: str) -> int:
         if not answer.startswith(b'ok '):
             print('REFUSED: the detached command did not start: ' + (answer.decode(errors='replace') or 'no answer'))
             return 2
-        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; wait until the detached process has exited (pid in the record), '
-              'then read the last line of its log and `status --brief`; stop with `stop`')
+        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; wait until pid {answer[3:].decode()} has exited '
+              f'(record {record} then reads "exited" with the exit code), then read the last line of its log '
+              'and `status --brief`; stop with `stop`')
         return 0
     os.close(ready)
     try:

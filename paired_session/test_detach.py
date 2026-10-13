@@ -66,6 +66,10 @@ class DetachTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(result.stdout.startswith('DETACHED: pid '), result.stdout)
         pid = int(result.stdout.split()[2].rstrip(';'))
+        record, _ = rc.detach_paths(self.h.run_dir)
+        self.assertIn(f'wait until pid {pid} has exited (record {record} then reads "exited" with the exit code)',
+                      result.stdout)
+        self.assertIn('then read the last line of its log and `status --brief`', result.stdout)
         self.assertLess(time.monotonic() - started, tsc.scaled(10))           # the caller does not wait for the run
         self.assertNotEqual(os.getsid(pid) if alive(pid) else None, os.getsid(0))   # a new session, outside the caller's
         self.assertTrue(self.wait(lambda: self.record().get('status') == 'exited'), self.record())

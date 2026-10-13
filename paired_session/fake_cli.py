@@ -210,7 +210,10 @@ def main():
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
     if vendor == 'codex' and rejected:   # b296-f1e: like codex-cli 0.160.0, `codex exec` has no -P/--permission-profile
         flag = '-P' if rejected.startswith('-P') else '--permission-profile'
-        print(f"error: unexpected argument '{flag}' found", file=sys.stderr)
+        print(f"error: unexpected argument '{flag}' found\n\n"
+              f"  tip: to pass '{flag}' as a value, use '-- {flag}'\n\n"
+              "Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]\n\n"
+              "For more information, try '--help'.", file=sys.stderr)
         return 2
     if vendor == 'claude':
         allowed = [args[index + 1] for index, value in enumerate(args[:-1])
