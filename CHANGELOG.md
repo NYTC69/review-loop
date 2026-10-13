@@ -1,5 +1,24 @@
 # Changelog
 
+### v3.1.6：最后一轮只剩不阻塞的意见时，不再 HOLD
+
+**改动**
+- EXEC 的最后一轮，如果评审自己没有新问题，只是把以前留下的不阻塞意见（比如 gate 的 MEDIUM/LOW）标成"仍未解决"，并且配置的测试通过，run 现在按"通过，留建议"继续（`APPROVE_WITH_ADVISORY`），这些意见保持打开并标为 advisory。此前这种情况以 `EXEC round limit reached` 结束。来自现场：四个真实 run 都这样停下，每个只剩一两条 gate 的低级别意见。
+- 可选的建议修复轮（`advisory_fix_round`）现在确实只修一轮。此前重审若只把旧意见标成"仍未解决"，会继续送回作者，直到轮数用完。
+- 额度用完的 HOLD 现在也带上 "try again in …" 和 "try again later" 这两种恢复提示（此前这两种说法下 HOLD 类型正确，只是没有提示）。
+
+**不变**
+- 还有轮数时，这类意见照旧送回作者修。
+- 阻塞的意见（评审的 CRITICAL/MAJOR、安全类、gate 的 CRITICAL/HIGH）在最后一轮仍未解决，照旧 HOLD；配置的测试没通过、评审没有自己的运行证据、评审看的不是当前这份代码，也照旧 HOLD。
+- PLAN 阶段不变。gate 后停的路线（`--lifecycle-mode off`）同样适用这个出口。
+- 已经在旧版本上因轮数用完而 HOLD 的 run 不会因为升级而改变结果：run 绑定启动它的那份程序，换成新版本 `resume` 会被拒绝。用原版本 `resume --add-rounds N` 继续（行为仍是旧的），或者用新版本新开一个 run。
+
+**文档**
+- 凭据扫描读的是 coordinator 为扫描现算的补丁，不是 `context/delta.patch`；只有 CR 换行的文件在 git 里是一行，命中一律报在第 1 行。
+- guide 的 "Hard caps" 一条补了一句，说明上面的出口。
+
+**审查**：Opus 执行；Codex 审查一轮 APPROVE（一条文档措辞建议，已由 Codex 改正）；fresh Opus 终审 APPROVE，另加一轮能实际跑测试的 Codex 终审 APPROVE，都没有阻塞项。新增 11 个测试，已有断言都保留。
+
 ### v3.1.5：认出 Codex 的用量上限提示
 
 **修复**

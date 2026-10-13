@@ -4,11 +4,6 @@
 
 ## P1 — high priority
 
-- At the EXEC round limit, a re-review that leaves only non-blocking rows open ends as approved-with-advisory instead of HOLD (candidate A; owner approved 2026-10-13). (added 2026-10-13)
-  - Field evidence: four consumer runs held with `EXEC round limit reached` (three on v3.1.3, one on v3.1.4), all with the same shape: the reviewer had no finding of its own, and every row it reported `still_open` was a gate MEDIUM or LOW.
-  - Scope: only at the limit; the reviewer's verdict has no finding of its own; no row in `blocking_open_findings()` is open; the conditions the existing `advisory_exit` requires (configured test passed, reviewer's own run evidence, same snapshot) still apply. Rounds that are still available keep being spent on those rows, as today.
-  - Not in scope: candidate B (a send-back that withdraws findings the operator overrules).
-  - Evidence: supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`, entry "Poker-news-bot round-limit HOLDs on v3.1.3/v3.1.4" and its 2026-10-12 08:40 correction.
 
 ## P2 — normal
 
@@ -41,15 +36,21 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ~~Mirror the 10 stop-and-surface lint assertions to the Claude-side `skills/plan/SKILL.md` and `skills/execute/SKILL.md` so Claude-side regressions of lock-release, hallucination guards, and the git-diff failure bullet are statically caught. (added 2026-05-06)~~ (closed 2026-05-07, see 6c0dfd7 — 4 of the 10 mirrored as Claude-side `claude_*` cases (3 `contains` companions + 1 per-site `pattern_requires_adjacent`) implementing the v2.6.22 three-layer defense. The other 6 dispatch-site assertions are deliberately NOT mirrored: Claude SKILLs delegate Executor/Reviewer dispatch to `docs/protocol/planning.md` so the analogous needles are absent on Claude bodies and `pattern_requires_adjacent` would silently vacuous-pass per `tests/run_skill_lint_test.py:176-180`. Plan via review-loop:plan session 8fac7f57 (R1 REQUEST_CHANGES → R2 APPROVE, codex gpt-5.5); execute Round 1 first-pass APPROVE; lint 268→272 case-level PASS / 0 FAIL; unit tests 28/28 OK. Plugin v2.6.22 → v2.6.23.)
 
-- Follow-ups from the v3.1.4 and v3.1.5 gates (non-blocking; batch them when a release is due anyway). (added 2026-10-13)
+
+## Done (recent, trimmed quarterly)
+
+- ~~At the EXEC round limit, a re-review that leaves only non-blocking rows open ends as approved-with-advisory instead of HOLD (candidate A; owner approved 2026-10-13)~~ (added 2026-10-13) (closed 2026-10-13, see v3.1.6, 0f034e1 — as scoped; the advisory fix round is fixed by the same condition)
+  - Field evidence: four consumer runs held with `EXEC round limit reached` (three on v3.1.3, one on v3.1.4), all with the same shape: the reviewer had no finding of its own, and every row it reported `still_open` was a gate MEDIUM or LOW.
+  - Scope: only at the limit; the reviewer's verdict has no finding of its own; no row in `blocking_open_findings()` is open; the conditions the existing `advisory_exit` requires (configured test passed, reviewer's own run evidence, same snapshot) still apply. Rounds that are still available keep being spent on those rows, as today.
+  - Not in scope: candidate B (a send-back that withdraws findings the operator overrules).
+  - Evidence: supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`, entry "Poker-news-bot round-limit HOLDs on v3.1.3/v3.1.4" and its 2026-10-12 08:40 correction.
+- ~~Follow-ups from the v3.1.4 and v3.1.5 gates (non-blocking; batch them when a release is due anyway)~~ (added 2026-10-13) (closed 2026-10-13, see v3.1.6, 2ede4ee — the four actionable notes done; the accepted ones stay as listed)
   - `paired_session/leak_scan.py` docstring: one overlong line, and it says the scan "reads context/delta.patch" although the coordinator now passes a freshly computed raw patch (v3.1.4 gate).
   - A file with CR-only line endings is one line for git, so every hit in it is reported at line 1; one README sentence could say so (v3.1.4 gate).
   - Reset-hint cues of `classify_rate_limit_failure` do not cover "try again in ..." and "Try again later": the HOLD is still typed `rate_limited`, only the hint is missing (v3.1.5 gate; v3.1.4 behavior).
   - No negative test for another character in the apostrophe slot of the "you've hit ... limit" pattern (v3.1.5 gate).
   - Accepted, no action planned: `head.splitlines()` in the patch-header parse; stderr matched as free text by the limit classifier; the fake CLI switch `FAKE_RATE_LIMIT_CODEX_USAGE` ignores the vendor.
   - Evidence: `.worktrees/paired-session-next-batch/.compass/results/lanea/gate-v315-out.txt`; supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`, entries "v3.1.4 released" and "V315 reviewed and gated".
-
-## Done (recent, trimmed quarterly)
 
 - ~~Credential scan follow-ups from the v3.1.3 gate (non-blocking; batch them when a release is due anyway)~~ (added 2026-10-11) (closed 2026-10-11, see v3.1.4, 5988400 — all six sub-items done; the ledger row reuse was reproduced and fixed, the line numbers with a form feed or a bare CR were fixed)
   - Doubly escaped PEM is missed by both scans (`scripts/content_rules.py`, `private-key-block`): a JSON string inside a string writes the line break as `\\n`. Changing `\\[rn]` to `\\+[rn]` in the pattern covers it; the gate checked on a copy that the existing tests pass and the two consumers' false-hit shapes still do not hit.
