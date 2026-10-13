@@ -37,9 +37,9 @@ On every entry, first check the host and the CLIs: a host that is not macOS
 (`uname -s` is not `Darwin`) is refused with
 `<entry>: paired-session needs macOS; Linux and other hosts are not supported` (`<entry>` is the
 handing-off entry's name, or `paired-session` when this skill was invoked directly),
-and every CLI the resolved roles need must be on PATH (`command -v`; the default
-roles need `codex` and `claude`; the review-loop entry has already checked both on
-a handoff).
+and both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
+resolved roles use: the coordinator binds both binaries at run start (the
+review-loop entry has already checked both on a handoff).
 Identify the intended Git worktree. Use a dedicated task worktree; preserve
 unrelated user changes and do not switch away from a dirty checkout. If a
 dedicated worktree is unavailable, ask before creating one. Determine the
@@ -134,6 +134,8 @@ scope itself. The change is the whole non-ignored worktree against the review
 base, `HEAD` by default (the uncommitted work). Add `--base <ref>` only when the
 user names a base (a branch review, for example `--base main`); it must be an
 ancestor of `HEAD`. Do not stage, commit or stash anything to shape the change.
+The workspace is the worktree that holds the change (normally the current checkout). Do not
+create or switch to a dedicated worktree, and skip the Stage A dedicated-worktree question.
 - Stage A: list the change (`git status --porcelain --untracked-files=all`, and
   with `--base` also `git diff --name-status <ref>`). Route only a task-related
   change: if a path is unrelated to the request, ask whether to review it too (a

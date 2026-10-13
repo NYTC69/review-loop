@@ -30,8 +30,9 @@ Stage A checks (before the first `bin/paired-session` command), read-only, the s
 absent; nothing falls back (there is no legacy route). A failed check refuses: print
 `review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
 - Host: `uname -s` is not `Darwin` → `review-loop: paired-session needs macOS; Linux and other hosts are not supported` (no reason wrapper).
-- CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
-  `codex` and `claude`); a missing one is refused with the reason `needs <cli> for the <role> role`.
+- CLIs: both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
+  resolved roles use: the coordinator binds both binaries at run start; a missing one is refused
+  with the reason `needs <cli> for paired-session program binding`.
 - Outside-sandbox execution: the coordinator needs full host permission outside the Codex
   sandbox; if it cannot be granted, or the approval for a paired-session shell call is declined → HOLD
   with the reason, as the paired-session skill does.

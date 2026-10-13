@@ -16,10 +16,9 @@ top-level `README.md` Quick Start.
 - **Python ≥ 3.11** — the paired-session coordinator and review-loop's helper
   scripts depend on it.
 - **git** — used by the coordinator and its roles to scope diffs.
-- **Claude CLI** — the default paired-session roles use Codex as the author and gate and Claude as the
-  reviewer, so both `codex` and `claude` must be on PATH. To run without Claude, set the roles in the
-  paired-session operator profile (`~/.config/review-loop/paired-session.json`; see
-  `paired_session/paired-session-config.example.json`).
+- **Claude CLI** — both `codex` and `claude` must be on PATH, whatever vendors the paired-session
+  roles use: the coordinator binds both binaries at run start. Role selection in the paired-session
+  operator profile does not remove either CLI requirement.
 - **GitHub CLI (`gh`)** — needed only to review a pull request (a PR number or URL).
 
 ## Install path: marketplace + CLI install

@@ -2730,7 +2730,10 @@ class Coordinator:
         current = workitem_reviewer_commands(self.workitem.read_text())
         frozen = self.state['config']['workitem_reviewer_commands']
         if current != frozen:
-            reason = 'work-item reviewer allowlist changed; run permission-probe before continuing'
+            reason = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
+                      '(then run permission-probe again if it was already run) and resume, or abort and start a new run'
+                      if self.state['config'].get('lifecycle_mode') == 'on' else
+                      'work-item reviewer allowlist changed; run permission-probe before continuing')
             self.hold(reason)
             raise RuntimeError(reason)
         result = []
@@ -3261,7 +3264,10 @@ class Coordinator:
                     self.state['config'][key] = current
                     self.save()
                     continue
-                reason = 'work-item reviewer allowlist changed; run permission-probe before continuing'
+                reason = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
+                          '(then run permission-probe again if it was already run) and resume, or abort and start a new run'
+                          if self.state['config'].get('lifecycle_mode') == 'on' else
+                          'work-item reviewer allowlist changed; run permission-probe before continuing')
                 self.hold(reason)
                 raise RuntimeError(reason)
             if current != value:
@@ -4077,13 +4083,13 @@ class Coordinator:
         elif staged := self._git_names(['diff-index', '--cached', '--name-only', '-z', 'HEAD']):
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
         if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
-            raise ValueError('auto_commit refuses core.autocrlf; unset it or accept with auto_commit false')
+            raise ValueError('auto_commit refuses core.autocrlf; unset it and accept again')
         if self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
-            raise ValueError('auto_commit refuses core.fileMode false; accept with auto_commit false')
+            raise ValueError('auto_commit refuses core.fileMode false; set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
             raise ValueError('auto_commit refuses a repository with submodules; accept with auto_commit false')
         if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
-            raise ValueError('auto_commit refuses skip-worktree (sparse) entries; accept with auto_commit false')
+            raise ValueError('auto_commit refuses skip-worktree (sparse) entries; abort and commit the tree yourself, or start a new run with auto_commit false (the value is frozen at run start)')
         proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
                                            'text', 'eol', 'working-tree-encoding'], cwd=self.workspace,
                                           input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

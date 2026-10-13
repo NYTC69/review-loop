@@ -115,6 +115,8 @@ TEST_COMMAND='the verified project command'
 A review-only request (`--review-only`, or the review-loop handoff of code already implemented)
 follows the shared contract's review-only entry: add `--review-only` (and `--base "$BASE"`
 only when the user named a base) to both blocks.
+The workspace is the worktree that holds the change (normally the current checkout). Do not
+create or switch to a dedicated worktree, and skip the Stage A dedicated-worktree question.
 Add `--auto-commit false` too when the review-loop entry handed it over.
 
 A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the

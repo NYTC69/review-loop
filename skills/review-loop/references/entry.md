@@ -35,8 +35,9 @@ reported to the user and never falls back to legacy.
 absent; nothing falls back (there is no legacy route). A failed check refuses: print
 `review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
 - Host: `uname -s` is not `Darwin` → `review-loop: paired-session needs macOS; Linux and other hosts are not supported` (no reason wrapper).
-- CLIs: every CLI the resolved roles need is on PATH (`command -v`; the default roles need
-  `codex` and `claude`); a missing one is refused with the reason `needs <cli> for the <role> role`.
+- CLIs: both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
+  resolved roles use: the coordinator binds both binaries at run start; a missing one is refused
+  with the reason `needs <cli> for paired-session program binding`.
 - Background commands: this host cannot run long background commands (or Codex cannot run
   outside its sandbox) → report HOLD with the reason, as the paired-session skill does.
 - Codex home: a role is Codex and `${CODEX_HOME:-$HOME/.codex}` is not an existing directory

@@ -298,6 +298,8 @@ Preserves all functionality — this is restructuring, not rewriting.
 
 ### `/review-loop:review-pr [PR number|PR URL|ref] [aspects]`
 
+Git LFS files are reviewed as their pointer files; the LFS content is not fetched or reviewed.
+
 Reviews a change and writes a report; it never fixes, commits, pushes or posts on its own. The input is optional:
 none reviews the local change in the current worktree; a PR number or GitHub PR URL (needs `gh`) or a ref is
 reviewed in a temporary clone under the run root (your checkout is never touched; the clone is removed only when
