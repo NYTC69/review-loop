@@ -60,6 +60,9 @@ cp ~/.claude/plugins/cache/review-loop-marketplace/review-loop/<version>/review-
 > start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
 > to reload plugins while keeping your conversation context. This is a
 > Claude Code caching behavior, not a review-loop limitation.
+> A paired-session run started by an older version is finished with that version when the bundled gate prompt
+> changed (v3.1.7 changes it): the newer version still accepts, aborts or scope-changes such a run and refuses to
+> continue it (`resume`, `permission-probe`, a plain `reject`), naming these exits.
 
 ## Codex
 

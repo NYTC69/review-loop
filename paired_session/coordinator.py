@@ -2422,6 +2422,9 @@ class Coordinator:
                     self.state['config'].get('exec_turn_timeout'),
                     self.state['config'].get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
                 validate_role_models(self.args)
+                if (self.args.action == 'reject' and not getattr(self.args, 'scope_change', False)
+                        and self._other_version_gate_prompt()):   # V317-G1: before the intent and any record
+                    raise ValueError('resume configuration differs: gate_prompt; ' + self._other_version_exits())
             else:
                 self._validate_resume_args()
             scope_request = args.action in ('note', 'reject') and getattr(args, 'scope_change', False)
@@ -2616,6 +2619,20 @@ class Coordinator:
         """The frozen run configuration (a copy)."""
         return dict(self.state['config'])
 
+    def _other_version_gate_prompt(self) -> bool:
+        """V317-G1: the run froze the bundled gate template with another text, so another review-loop version started it."""
+        saved = str(self.state.get('config', {}).get('gate_prompt', ''))
+        return (saved.startswith('<bundled-default>:')
+                and saved != '<bundled-default>:' + hashlib.sha256(DEFAULT_GATE_PROMPT.read_bytes()).hexdigest())
+
+    def _other_version_exits(self) -> str:
+        """V317-G1: the steps that work on such a run (the run is never continued with a different gate template)."""
+        done = self.state.get('status') == 'DONE'
+        scope = 'reject' if done or self.state.get('terminal_hold_kind') == 'rejection_limit' else 'note'
+        return ('this run was started by another review-loop version (the bundled gate prompt differs): continue it with that '
+                f"version, or with this one {'accept it, ' if done else ''}abort it, record a scope change "
+                f'(`{scope} --scope-change`) or start a new run')
+
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
@@ -2758,9 +2775,11 @@ class Coordinator:
             else:
                 prefix = ('configured operator program or PATH changed since permission probe' if self.strict else
                           'operator program or PATH changed since run start')
-                issue = (prefix + ' (changed: '
-                         + ', '.join(sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))) + ')')
-                if not self.strict: issue += '; run `permission-probe` to re-freeze, then resume'
+                changed = sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))
+                issue = prefix + ' (changed: ' + ', '.join(changed) + ')'
+                if 'gate_prompt' in changed and self._other_version_gate_prompt():   # V317-G1: probe and resume are refused there
+                    issue += '; ' + self._other_version_exits()
+                elif not self.strict: issue += '; run `permission-probe` to re-freeze, then resume'
         if issue and hold and self.state.get('status') != 'DONE': self.hold(issue)
         return current, issue
     def reviewer_flags(self) -> dict:
@@ -3271,8 +3290,12 @@ class Coordinator:
                 self.hold(reason)
                 raise RuntimeError(reason)
             if current != value:
+                other_version = key == 'gate_prompt' and all(str(v).startswith('<bundled-default>:') for v in (value, current))
+                if other_version and self.args.action == 'abort':
+                    continue   # V317-G1: abort ends the run and dispatches nothing; every other key is still compared
                 raise ValueError(('role models are fixed for this run: ' if key in ROLE_DESTS else
-                                  'resume configuration differs: ') + key)
+                                  'resume configuration differs: ') + key
+                                 + ('; ' + self._other_version_exits() if other_version else ''))
 
     def save(self) -> None:
         with self._save_lock:
@@ -4087,7 +4110,7 @@ class Coordinator:
         if self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
             raise ValueError('auto_commit refuses core.fileMode false; set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
-            raise ValueError('auto_commit refuses a repository with submodules; accept with auto_commit false')
+            raise ValueError('auto_commit refuses a repository with submodules; abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
             raise ValueError('auto_commit refuses skip-worktree (sparse) entries; abort and commit the tree yourself, or start a new run with auto_commit false (the value is frozen at run start)')
         proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
@@ -4541,6 +4564,9 @@ class Coordinator:
                     'that are reasonable to fix now and rerun relevant checks; for each one you do not fix, give a one-line '
                     'reason in body (dismissed). Summarize per finding id in body.')
         prior = self.state.get('delivered_review', '')
+        if self._advisory_only_review(prior):   # V317-G1: the one advisory-only repair attempt; no blocking row is open
+            task = ('The delivered review left only non-blocking rows open; they do not block approval. Fix the ones worth '
+                    'fixing now and rerun relevant checks; in body, say which rows you fixed and which you left and why.')
         return '\n'.join([
             f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
@@ -4554,6 +4580,12 @@ class Coordinator:
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
         ])
+
+    @staticmethod
+    def _advisory_only_review(delivered: str) -> bool:
+        """V317-G1: the delivered review is the advisory-only repair attempt (marked where the reviewer's REVISE is delivered)."""
+        try: return json.loads(delivered).get('advisory_only') is True
+        except (ValueError, AttributeError): return False
 
     def _docs_allowlist(self) -> list[str]:
         return sorted(Path(path).relative_to(self.workspace).as_posix() for path in self.state['config']['docs_allowlist'])
@@ -7661,16 +7693,23 @@ class Coordinator:
                 self.round_limit_hold(f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
+            # V317-G1: the phase's one advisory-only repair attempt says so and gives each row left open with its summary;
+            # every other REVISE is unchanged
+            repair = advisory_only and attempt in (None, result['sequence'])
+            summaries = {row['id']: row['summary'] for row in self.state['finding_ledger']} if repair else {}
             self.state['delivered_review'] = json.dumps({
                 'source': 'persistent-reviewer+fresh-shadow' if any(
                     row.get('source') == 'fresh-shadow' for row in answer['full_review'])
                     else 'persistent-reviewer', 'status': answer['status'],
+                **({'advisory_only': True} if repair else {}),
                 'findings': [{**{key: row[key] for key in
                                  ('id', 'severity', 'file', 'summary', 'failure_scenario')},
                               'source': row.get('source', 'persistent-reviewer')}
                              for row in answer['full_review']],
                 'prior_findings': [{'id': row['id'], 'fixed': row['disposition'] != 'still_open',
-                                    'evidence': row['evidence']} for row in answer['prior_findings']],
+                                    'evidence': row['evidence'],
+                                    **({'summary': summaries[row['id']]} if row['disposition'] == 'still_open'
+                                       and row['id'] in summaries else {})} for row in answer['prior_findings']],
             }, ensure_ascii=False)
             # V317-ONCE: count only an advisory REVISE actually sent to the author.
             # Keep its sequence so replay of that result still requests the first repair.
@@ -7709,8 +7748,11 @@ class Coordinator:
                     'change nothing else. This turn does not count as a PLAN round. The plan is reviewed again; if it still '
                     'carries review history or differs in substance, the run holds.')
             else:
+                approved = ('The plan was approved with advisory rows left open ('   # V317-G1: not "the reviewer approved"
+                            + ', '.join(row['id'] for row in self.nonblocking_open_findings()) + ')'
+                            if advisory_exit else 'The reviewer approved the plan')
                 self.state['delivered_review'] = (
-                    f'The reviewer approved the plan, but it carries review history ({plan_history}). The independent shadow '
+                    f'{approved}, but it carries review history ({plan_history}). The independent shadow '
                     'and gate refuse a plan that carries review history. Return the same plan with every finding id and every '
                     'reference to earlier reviews removed; change nothing else.')
             self.state['next'] = 'author'

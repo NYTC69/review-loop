@@ -54,7 +54,7 @@ Not on Codex:
   without an attempt. Writer replay takes the advisory exit at any round and preserves the attempt.
   Blocking rounds preserve it; send-back grants a new EXEC attempt. EXEC needs a passed configured test,
   own run evidence and the current tree.
-  See [the advisory rules](../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
+  See [the advisory rules](../../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
   paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
