@@ -509,7 +509,7 @@ class ExecProfileSelectionTests(unittest.TestCase):                             
         old = ['-P', rc.CODEX_READONLY_PROFILE, *profile[2:]]                                 # the v2.9.6 candidate's argv
         with patch.object(rc, 'codex_readonly_profile_args', return_value=old):
             report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual((report['status'], report['failure_reasons']), ('FAIL', ['probe-turn-error: CLI exit 2']))   # R1 l1: the refusal, not a missed scratch write
+        self.assertEqual((report['status'], report['failure_reasons']), ('FAIL', ["probe-turn-error: CLI exit 2: error: unexpected argument '-P' found"]))   # R1 l1: the refusal, not a missed scratch write
 
 
 if __name__ == '__main__':

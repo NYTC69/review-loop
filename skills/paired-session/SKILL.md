@@ -72,7 +72,9 @@ adds only the Claude Code host rules:
   `resume`, `reject --expect` and `permission-probe`: the command returns at
   once (`DETACHED: pid …; log …`) and survives the session's exit; read
   `RUN_DIR/state.json` or `status --brief` for its progress, the log for its
-  final line (a probe's result is `RUN_DIR/permission-probe.json`), and end it
+  final line. Wait until the detached process has exited (the pid in the record),
+  then read the last line of its log and `status --brief` (a probe's result is
+  `RUN_DIR/permission-probe.json`); end it
   only with `stop` (`paired_session/docs/detach.md`). Without `--detach`, do not
   end the turn while a coordinator command runs: poll in bounded foreground calls, reading only
   `status` and `active.phase` from `RUN_DIR/state.json` (or `status --brief`),

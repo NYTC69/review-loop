@@ -609,7 +609,7 @@ may raise the saved author timeout, never lower it; project-config defaults do
 not count as an explicit raise. The value is saved for later turns and
 resumes. An already-running turn keeps the timeout it received when it
 started. The existing `resume --resume-timeout N` option raises the general
-per-turn timeout up to 7200 seconds for phases that use `--timeout`.
+per-turn timeout up to 86400 seconds for phases that use `--timeout`.
 
 An explicit CLI `resume --max-invocations N` may raise the saved invocation cap;
 a lower value is refused and the same value is accepted. Profile/project defaults

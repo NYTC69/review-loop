@@ -153,12 +153,12 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
                         'new_version': '.'.join(map(str, new_version))})
     return updates
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
-MAX_RESUME_TIMEOUT_SECONDS = 7200
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 DEFAULT_TIMEOUT_SECONDS = 2700
 MAX_TIMEOUT_SECONDS = 86400   # timeoutcap: one day per non-EXEC turn or coordinator test run (an existing run starts with --timeout 20000)
+MAX_RESUME_TIMEOUT_SECONDS = MAX_TIMEOUT_SECONDS
 TIMEOUT_RANGE_ERROR = f'--timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds'
 
 
@@ -747,6 +747,29 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         return source.read(max_bytes).decode('utf-8', 'replace')
 
 
+def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
+    """Keep one bounded diagnostic from the CLI output, without terminal controls."""
+    message = ''
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get('type') not in ('error', 'turn.failed') and not (event.get('type') == 'result' and event.get('is_error')):
+            continue
+        error = event.get('error')
+        value = (error.get('message') if isinstance(error, dict) else None) or event.get('message') or event.get('result')
+        if isinstance(value, str) and value.strip():
+            message = value
+    if not message:
+        message = next((line for line in reversed(stderr.splitlines()) if line.strip()), '')
+    message = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', message)
+    message = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in message).split())[:200]
+    return prefix + (': ' + message if message else '')
+
+
 TRUST_HEADER_RE = re.compile(r'^\[projects\.("(?:[^"\\\n]|\\.)*")\]\s*$', re.M)
 FOREIGN_TRUST_MAX_PATHS = 256   # bounds the work; a larger change stays a finding
 FOREIGN_TRUST_MAX_BYTES = 1 << 20   # a default config over 1 MiB is not inspected; its change stays a finding
@@ -1224,8 +1247,8 @@ def detach(raw_argv: list, run_dir: str) -> int:
         if not answer.startswith(b'ok '):
             print('REFUSED: the detached command did not start: ' + (answer.decode(errors='replace') or 'no answer'))
             return 2
-        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; poll `status --brief` (or RUN_DIR/state.json) until DONE or '
-              'HOLD; stop with `stop`')
+        print(f'DETACHED: pid {answer[3:].decode()}; log {log}; wait until the detached process has exited (pid in the record), '
+              'then read the last line of its log and `status --brief`; stop with `stop`')
         return 0
     os.close(ready)
     try:
@@ -5375,7 +5398,7 @@ class Coordinator:
         atomic_json(self.evidence / f'{self.state["sequence"] + 1:03d}-{role}.independence-inputs.json',
                     {'role': role, 'checked_at': time.time(), 'status': 'PASS', 'inputs': checked})
 
-    def _collect(self, vendor: str, path: Path) -> tuple[dict, Optional[str], list[dict], int, list[dict], list[dict]]:
+    def _collect(self, vendor: str, path: Path, stderr_path: Optional[Path] = None) -> tuple[dict, Optional[str], list[dict], int, list[dict], list[dict]]:
         rows = read_json_lines(path)
         commands, calls = observed_events(vendor, rows)
         if vendor == 'codex':
@@ -5391,7 +5414,8 @@ class Coordinator:
                     max(1, len(totals)), commands, calls)
         results = [row for row in rows if row.get('type') == 'result']
         if not results or results[-1].get('is_error'):
-            raise ValueError('Claude emitted no successful result')
+            raise ValueError(cli_failure_reason('Claude emitted no successful result', read_text_tail(path),
+                                                read_text_tail(stderr_path) if stderr_path else ''))
         result = results[-1]
         if len(results) > 1 or (result.get('subagent_stats') or {}).get('started_in_background'):
             raise ValueError('Claude turn is not authoritative: multiple results or a background subagent')
@@ -6041,8 +6065,11 @@ class Coordinator:
                     reset = limit['reset_hint'] or 'reset time unavailable'
                     raise RateLimitError('rate_limited: provider rejected the call; it did not consume the invocation budget; '
                                          + reset)
-                raise ValueError(f'CLI exit {process.returncode}')
-            answer, session, usage, requests, observed_commands, tool_calls = self._collect(receipt['vendor'], stdout_path)
+                failure_prefix = f'CLI exit {process.returncode}'
+                if receipt.get('timed_out'):
+                    raise ValueError(failure_prefix + f' (timed out after {timeout_seconds:g} s)')
+                raise ValueError(cli_failure_reason(failure_prefix, output_text, error_text))
+            answer, session, usage, requests, observed_commands, tool_calls = self._collect(receipt['vendor'], stdout_path, stderr_path)
             reported_model, model_source = reported_provider_model(receipt['vendor'], stdout_path)
             receipt['reported_model'] = reported_model
             receipt['reported_model_source'] = model_source

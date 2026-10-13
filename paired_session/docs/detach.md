@@ -46,7 +46,9 @@ The detached grandchild is an ordinary coordinator process: run lease, workspace
 `uncertain_active`, per-turn process-group cleanup (start, timeout, failure, stop), every Category A/B guard and the exit codes.
 After `stop` the next command sees the interrupted turn as uncertain, as after Ctrl-C today: check the process group, then
 `resume --retry-uncertain` (or `permission-probe --retry-uncertain` for a probe) or `abort`. Progress: `RUN_DIR/state.json`,
-`status --brief`, the log. Without `--detach` nothing changes, including SIGTERM.
+`status --brief`, the log. Wait until the detached process has exited (the pid in the record), then read the last line
+of its log and `status --brief`. A successful permission probe stays ACTIVE with "permission probe passed; run resume
+to continue"; a report run ends in REPORTED. Without `--detach` nothing changes, including SIGTERM.
 
 ## Limits
 - macOS only, like the rest of the coordinator (it uses fork and setsid; Linux is not supported, ADR-15 amendment). A detached run outlives the host session by design; the

@@ -39,6 +39,10 @@ This file adds only the Codex host rules:
   until it completes. Do not cancel it or launch a duplicate while it is
   active, except for the lifecycle-mode backstop, which ends the polled command
   session.
+- Detached commands: with `--detach`, wait until the detached process has
+  exited (the pid in the record), then read the last line of its log and
+  `status --brief`. A successful permission probe stays ACTIVE; a report run
+  ends in REPORTED.
 - Run directory: `$CODEX_HOME/state/paired-session/runs/<task id>`, created by
   the first invocation, which writes the work item there. Resolve `PLUGIN_ROOT`
   again inside each invocation. Write launcher logs under the run root's
