@@ -24,8 +24,9 @@ correct fix incl. maintenance>. Cheaper response: <why a lighter response is
 insufficient>.`
 A blocking finding whose body lacks any segment is discarded as malformed
 and is never implemented. Omit scenarios that cannot block because they are
-unreachable, rest on unsupported assumption chains, have negligible risk, or
-would need disproportionate complexity; do not downgrade them to medium/low.
+unreachable, rest on unsupported assumption chains, have negligible combined risk, or
+would need clearly disproportionate complexity for an extremely rare
+low-impact benefit; do not downgrade them to medium/low.
 Rare but realistically reachable credential exposure,
 authorization bypass, irreversible data loss, destructive action, or
 comparable harm remains blocking.

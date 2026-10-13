@@ -41,19 +41,23 @@ class PromptTests(unittest.TestCase):
                 self.run_dir = self.root / name
                 co = self.coordinator(*flags)
                 rows = self.rows(co)
+                self.assertEqual({row['id'] for row in co.blocking_open_findings()},
+                                 {rows[1]['id'], rows[3]['id'], rows[4]['id']})
                 (co.context / 'plan.md').write_text('# Plan\nReview supported behavior.\n')
                 snap = rc.git_snapshot(self.workspace)[0]
                 for phase in ('PLAN', 'EXEC'):
                     co.state['phase'] = phase
                     prompt = co._review_prompt('reviewer', snap)
                     self.assertIn(THRESHOLD, prompt)
+                    self.assertIn(SEVERE_HARM.replace('remains blocking.', 'is still reported.'), prompt)
                     for sentence in (
                             'A still_open disposition records that a finding is unresolved and does not by itself require REVISE.',
-                            "Reviewer CRITICAL/MAJOR/SECURITY findings, security-tagged rows, and an adversarial gate's CRITICAL/HIGH block.",
-                            "A gate's MEDIUM/LOW and a reviewer's MINOR/LOW without the security tag are advisory; you may APPROVE while such rows stay open.",
+                            'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, every security-tagged row, and source=adversarial-gate with CRITICAL or HIGH.',
+                            'Every other row (MINOR or LOW without the security tag; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open.',
                             "Do not raise another role's advisory row to a blocker only because it is still open.",
-                            'Keep giving every listed row its disposition; withdraw with evidence a row that does not meet the reporting standard only if you may withdraw it:',
-                            'rows owned by a specialist or security-reviewer may be fixed or withdrawn only by their owner.',
+                            'Keep giving every listed row its disposition.',
+                            'An advisory row that you would not report under the rule above (no concrete failure or material waste in normal supported use) may be withdrawn with evidence.',
+                            'Close a blocking row only as fixed, or withdraw it with evidence that the finding itself is wrong.',
                             rc.APPROVE_CONVERSION_NOTE, rc.REVIEW_SEVERITY_GUIDANCE):
                         self.assertIn(sentence, prompt)
                     for row in rows:
@@ -61,12 +65,14 @@ class PromptTests(unittest.TestCase):
                                       ('; security-tagged' if row['security'] else '') + f"] {row['summary']}", prompt)
                 shadow = co._review_prompt('shadow', snap)
                 self.assertIn(THRESHOLD, shadow)
+                self.assertIn(SEVERE_HARM.replace('remains blocking.', 'is still reported.'), shadow)
                 self.assertNotIn('prior_findings', shadow)
                 gate = co._gate_prompt(snap)
                 normalized = ' '.join(gate.split())
                 self.assertIn('You are an adversarial reviewer with a skepticism-by-default stance.', gate)
                 self.assertIn('These are topics to inspect, not categories that need a finding.', gate)
                 self.assertIn('do not downgrade them to medium/low.', gate)
+                self.assertIn('have negligible combined risk, or would need clearly disproportionate complexity for an extremely rare low-impact benefit;', normalized)
                 self.assertIn('Report a medium or low finding only when you would really ask the author to change the work for normal supported use.', normalized)
                 self.assertIn('There is no target number of findings;', normalized)
                 self.assertIn('`findings: []` with `verdict: "approve"` is a normal answer.', normalized)
@@ -77,6 +83,48 @@ class PromptTests(unittest.TestCase):
                 # Exercise the actual fake CLI's ledger block and ID parser, not a copy of it.
                 result = co.invoke('reviewer', 'EXEC', prompt, rc.review_schema())
                 self.assertEqual([r['id'] for r in result['answer']['prior_findings']], [r['id'] for r in rows])
+
+    def test_approve_allows_advisory_still_open_but_gate_high_triggers_rf5(self):
+        for phase, high in (('PLAN', False), ('EXEC', False), ('EXEC', True)):
+            with self.subTest(phase=phase, gate_high=high):
+                self.run_dir = self.root / (phase.lower() + ('-high' if high else '-advisory'))
+                co = self.coordinator('--lifecycle-mode', 'off', '--shadow', 'off')
+                (co.context / 'plan.md').write_text('# Plan\nReview supported behavior.\n')
+                co.record_findings('persistent-reviewer', phase, 1, [
+                    {'severity': 'MINOR', 'file': 'tracked.txt', 'summary': 'advisory', 'failure_scenario': 'material waste'}])
+                if phase == 'EXEC':
+                    co.record_findings('adversarial-gate', phase, 2, [
+                        {'severity': 'LOW', 'file': 'tracked.txt', 'summary': 'gate advisory'}])
+                if high:
+                    co.record_findings('adversarial-gate', phase, 3, [
+                        {'severity': 'HIGH', 'file': 'tracked.txt', 'summary': 'gate blocker', 'failure_scenario': 'breaks behavior'}])
+                ids = [row['id'] for row in co.open_findings()]
+                snap, command, sequence = rc.git_snapshot(self.workspace)[0], co.args.test_command, 4
+                answer = {'status': 'APPROVE', 'reviewed_snapshot': snap, 'full_review': [],
+                          'verified_claims': [{'claim': 'inspected supported behavior', 'file': 'tracked.txt', 'line': 1}],
+                          'prior_findings': [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'unresolved'}
+                                             for finding_id in ids],
+                          'self_run_evidence': [{'command': command}],
+                          'observed_commands': [{'command': command, 'exit_code': 0, 'error': False,
+                                                 'output': 'Ran 1 test successfully'}]}
+                co.state.update(phase=phase, next='reviewer', plan_rounds=1, exec_rounds=1,
+                                sequence=sequence, pending_reviewer_result_sequence=sequence)
+                co.state['turns'].append({'sequence': sequence, 'role': 'reviewer', 'phase': phase,
+                                          'answer': answer, 'snapshot_before': snap, 'open_finding_ids': ids})
+                co.save()
+                with mock.patch.object(co, 'invoke', side_effect=AssertionError('unexpected CLI dispatch')):
+                    co.reviewer_turn()
+                verdict = co.state['review_verdicts'][-1]
+                self.assertEqual(verdict['reviewer_raw_verdict'], 'APPROVE')
+                self.assertEqual(verdict['effective_verdict'], 'REVISE' if high else 'APPROVE')
+                self.assertEqual(co.state['status'], 'ACTIVE')
+                self.assertEqual(co.state['phase'], 'EXEC')
+                self.assertEqual(co.state['next'], 'author' if phase == 'PLAN' or high else 'gate')
+                self.assertEqual([row['id'] for row in co.open_findings()], ids)
+                if high:
+                    self.assertIn(ids[-1], co.state['approve_refusals'][-1]['reason'])
+                else:
+                    self.assertFalse(co.state.get('approve_refusals'))
 
     def test_built_specialist_and_security_prompts_show_owned_severity(self):
         use_lifecycle_on(self, self)

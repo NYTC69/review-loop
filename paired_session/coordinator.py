@@ -272,13 +272,15 @@ def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
             'gate_prompt_sha256': prompt_hash}
 REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
 REVIEW_INCLUSION_GUIDANCE = ('Report a new finding only when you would ask the author to change the work for a concrete failure or material waste in normal supported use; there is no target finding count, and full_review: [] is a normal answer. '
-    'Assume users and models act in good faith within the supported scope and recommend proportionate protections.')
+    'Assume users and models act in good faith within the supported scope and recommend proportionate protections. '
+    'Rare but realistically reachable credential exposure, authorization bypass, irreversible data loss, destructive action, or comparable harm is still reported.')
 LEDGER_DISPOSITION_GUIDANCE = ('A still_open disposition records that a finding is unresolved and does not by itself require REVISE. '
-    'Reviewer CRITICAL/MAJOR/SECURITY findings, security-tagged rows, and an adversarial gate\'s CRITICAL/HIGH block. '
-    'A gate\'s MEDIUM/LOW and a reviewer\'s MINOR/LOW without the security tag are advisory; you may APPROVE while such rows stay open. '
+    'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, every security-tagged row, and source=adversarial-gate with CRITICAL or HIGH. '
+    'Every other row (MINOR or LOW without the security tag; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open. '
     'Do not raise another role\'s advisory row to a blocker only because it is still open. '
-    'Keep giving every listed row its disposition; withdraw with evidence a row that does not meet the reporting standard only if you may withdraw it: '
-    'rows owned by a specialist or security-reviewer may be fixed or withdrawn only by their owner.')
+    'Keep giving every listed row its disposition. '
+    'An advisory row that you would not report under the rule above (no concrete failure or material waste in normal supported use) may be withdrawn with evidence. '
+    'Close a blocking row only as fixed, or withdraw it with evidence that the finding itself is wrong.')
 APPROVE_CONVERSION_NOTE = ('An APPROVE that leaves any blocking or security-tagged finding open is never accepted (in PLAN and EXEC it is converted to REVISE): close the finding with evidence in prior_findings, or return REVISE.')   # persistent reviewer only: the shadow prompt must not mention prior_findings
 
 
