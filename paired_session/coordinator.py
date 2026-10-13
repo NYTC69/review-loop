@@ -6633,20 +6633,31 @@ class Coordinator:
         self.save()
         all_sensitive = self._sensitive_paths()
         changed = set(self._changed_paths(deleted=True))
-        sensitive = [row for row in all_sensitive if row['path'] in changed]
-        preexisting = [row for row in all_sensitive if row['path'] not in changed]
         preflight = self._security_preflight(request['request_id'])
+        removed = set(preflight.get('removed_paths', []))
+        sensitive = [row for row in all_sensitive if row['path'] in changed and row['path'] not in removed]
+        preexisting = [dict(row, removed=True) if row['path'] in removed else row for row in all_sensitive
+                       if row['path'] not in changed or row['path'] in removed]
         notes = []
-        if preexisting:
-            notes.append('pre-existing sensitive-looking paths, not changed by this run: ' +
-                         ', '.join(row['path'] for row in preexisting))
-        content_notes = [row for row in preflight.get('preexisting_findings', []) if row.get('line') is not None]
-        if content_notes:
-            notes.append('pre-existing security content hits, not changed by this run: ' +
-                         ', '.join(sorted({row['path'] for row in content_notes})))
+        for gone, description in ((False, 'not changed by this run'), (True, 'removed by this run')):
+            paths = [row['path'] for row in preexisting if bool(row.get('removed')) == gone]
+            if paths:
+                notes.append('pre-existing sensitive-looking paths, ' + description + ': ' +
+                             self._security_note_paths(paths))
+            paths = [row['path'] for row in preflight.get('preexisting_findings', [])
+                     if row.get('line') is not None and bool(row.get('removed')) == gone]
+            if paths:
+                notes.append('pre-existing security content hits, ' + description + ': ' +
+                             self._security_note_paths(paths))
+        if preflight.get('preexisting_truncated'):
+            notes.append(f"{preflight['preexisting_truncated']} more pre-existing scan hits omitted (see the SECURITY receipt)")
         if preflight.get('skipped_preexisting_files'):
-            notes.append('content scan skipped oversized pre-existing files, not changed by this run: ' +
-                         ', '.join(preflight['skipped_preexisting_files']))
+            notes.append('content scan skipped oversized pre-existing files, unchanged or removed by this run: ' +
+                         self._security_note_paths(preflight['skipped_preexisting_files']))
+        self.state['lifecycle']['security_scan_notes'] = {
+            'sensitive_paths': preexisting, 'content_hits': [row for row in preflight.get('preexisting_findings', [])
+                                                          if row.get('line') is not None],
+            'preexisting_truncated': preflight.get('preexisting_truncated', 0)}
         printed = self.state['lifecycle'].setdefault('security_notes', [])
         for note in notes:
             if note not in printed:
@@ -6792,6 +6803,19 @@ class Coordinator:
             self.save()
         return budget
 
+    @staticmethod
+    def _security_note_paths(paths) -> str:
+        paths = sorted(set(paths))
+        return ', '.join(paths[:20]) + (f' and {len(paths) - 20} more (see the SECURITY receipt)' if len(paths) > 20 else '')
+
+    def _security_scan_note_prompt(self) -> str:
+        notes = self.state['lifecycle'].get('security_scan_notes')
+        if self.state['config'].get('review_report') or not notes:
+            return ''
+        return ('The following sensitive paths and content hits were already committed and left unchanged by this run '
+                '(or removed where marked): ' + json.dumps(notes, ensure_ascii=True) + '.\n'
+                "They are recorded as SECURITY notes, not findings of this run; review the run's change as before.\n")
+
     def _security_review_turn(self, tree: str, request_id: str) -> dict:
         """Fresh security reviewer over the clean scan: any open finding of its own HOLDs (no repair); on the new
         tree an operator fix produced, it disposes its earlier findings (owner only). Only a turn invoke returned
@@ -6819,7 +6843,8 @@ class Coordinator:
                               'configuration or docs; injection; unsafe deserialization; path traversal; missing '
                               'authorization or input validation; unsafe subprocess, file or network handling; '
                               'sensitive files that should be ignored. Do not modify any file. Report every finding '
-                              'in full_review; any finding stops delivery.\n' + worktree_lifecycle.owned_ledger(owned) +
+                              'in full_review; any finding stops delivery.\n' + self._security_scan_note_prompt() +
+                              worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
                 used = self._stage_calls('SECURITY')
@@ -6905,6 +6930,9 @@ class Coordinator:
             document = {}
         result = {'exit': proc.returncode, 'status': document.get('status', 'unknown'), 'report': str(report),
                   'scanned_files': document.get('scanned_files'),
+                  'scanned_bytes': document.get('scanned_bytes'),
+                  'preexisting_truncated': document.get('preexisting_truncated', 0),
+                  'removed_paths': document.get('removed_paths', []),
                   'preexisting_findings': document.get('preexisting_findings', []),
                   'skipped_preexisting_files': document.get('skipped_preexisting_files', []),
                   'findings': [{key: row.get(key) for key in ('rule', 'path', 'line')} for row in document.get('findings', [])],

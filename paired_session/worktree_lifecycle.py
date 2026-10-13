@@ -261,7 +261,11 @@ def delivery_report(state, run_id, workitem, delivery):
                  f"{stage} {row.get('status')}/{row.get('route', '-')}（epoch {row.get('epoch')}）"
                  for stage, row in last.items()),
              f"- SECURITY：敏感路径 {len(security.get('sensitive_paths') or [])} 个；preflight {preflight.get('status')}，"
-             f"扫描 {preflight.get('scanned_files')} 个文件；安全评审 {review.get('status')}",
+             f"扫描 {preflight.get('scanned_files')} 个文件；安全评审 {review.get('status')}；"
+             f"已提交且未改动：敏感路径 {sum(not row.get('removed') for row in security.get('preexisting_sensitive_paths') or [])} 个，"
+             f"内容命中 {sum(row.get('line') is not None and not row.get('removed') for row in preflight.get('preexisting_findings') or [])} 条，"
+             f"因大小未扫描 {len(preflight.get('skipped_preexisting_files') or [])} 个文件"
+             + (f"；另有 {preflight['preexisting_truncated']} 条已有命中未列出" if preflight.get('preexisting_truncated') else ''),
              *writer_report_lines(state),   # D09 C1-a
              advisory_report_line(state),   # ADVFIX
              f"- 未关闭的发现：{len(open_ids)} 条" + (f"（{', '.join(open_ids)}）" if open_ids else ''),

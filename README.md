@@ -186,10 +186,13 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 In PLAN a blocking finding goes back to the author for the next plan round. From EXEC on, a blocking finding of the
 reviewer, the shadow or the gate goes back to the author; FINISH fixes what blocks delivery in its own session; a
 FINISH or POLISH-Q fix, a DOCS write outside the docs or a DOCS-review REVISE opens a new EXEC round (the reviewer
-first, then the gate). SECURITY records untouched base files with sensitive-looking paths or content hits in a NOTE and
-its receipt; oversized untouched base files are skipped with a NOTE. A hit in an added, changed or renamed file, or a
-security reviewer finding, is a HOLD, never repaired by the run: fix it outside the run and resume
-(the EXEC review and the gate run again).
+first, then the gate). SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
+additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
+256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
+committed and left unchanged or removed by the run are printed once as a NOTE and recorded in the SECURITY receipt;
+such a file over 8 MiB is not content-scanned and is named in the NOTE.
+A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
+A SECURITY HOLD is never repaired by the run: fix it outside the run and resume (the EXEC review and the gate run again).
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
 shadow, the gate and the stage reviewers start fresh each time. Default roles: Codex is the author
@@ -412,7 +415,7 @@ The line is git's: a file with CR-only line endings is one line for git, so a hi
 Exempt a deliberate test fixture with a `secret-scan-allow: <path or glob>` line in the work item (one per line).
 Declare exemptions before starting the run. If a deliberate fixture or false positive appears later, start a new run with the exemption; resume uses the frozen work item.
 The rules are one table (`scripts/content_rules.py`) with a scope per rule: the SECURITY stage scans the whole
-delivery, files the run never touched included, with only the six rules it always had (private-key blocks, AWS key
+delivery, files the run never touched included (a hit there is a NOTE, not a HOLD), with only the six rules it always had (private-key blocks, AWS key
 ids, GitHub, Slack, Google and Stripe live tokens), and the marker does not exempt those; the JWT, `sk-` and
 key-named-literal rules apply only to lines the run adds and to a review-pr post body.
 

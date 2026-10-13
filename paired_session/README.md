@@ -163,7 +163,8 @@ that starts with `sb_publishable_`, `pk_live_` or `pk_test_`, not a name that
 contains `public` or `publishable`, and not a JWT-shaped value, which the JWT
 rule alone judges). The SECURITY preflight
 (`scripts/security_preflight.py`) reads the whole worktree, files the run never
-touched included, and holds on hits in added, changed or renamed files with no repair, so it applies only the six
+touched included (a hit there is a NOTE, not a HOLD), and holds on hits in added or changed files with no repair,
+so it applies only the six
 `whole-delivery` rules, the six it had before V312-S: a JWT-shaped sample or a
 key-named literal the repository already contained does not hold a run. Its
 `--file` scan of a review-pr post body is published text and applies every rule.
@@ -289,9 +290,13 @@ and gate run again) and DOCS (a fresh docs writer; a protected path HOLDs, a
 write outside the docs allowlist reopens EXEC review and gate, an allowlisted
 write gets a fresh docs review that must run the test) and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
-security reviewer (hits in added, changed or renamed files and reviewer findings HOLD), then reaches DONE (acceptance
-pending). Untouched base files with sensitive-looking paths or content hits are named once in a NOTE and the SECURITY
-receipt; oversized untouched base files are skipped with a NOTE and recorded in the receipt.
+security reviewer, then reaches DONE (acceptance pending).
+SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
+additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
+256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
+committed and left unchanged or removed by the run are printed once as a NOTE and recorded in the SECURITY receipt;
+such a file over 8 MiB is not content-scanned and is named in the NOTE.
+A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
 DOCS records supported changes and observed results. Final review, security and commit facts belong to the delivery report.
 The DOCS reviewer assigns at least MAJOR to false or unsupported DOCS-stage statements.
 Nonexistent test, check or result claims by any author are also at least MAJOR.

@@ -32,6 +32,7 @@ RULES_VERSION = "security-preflight/v1"
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_FINDINGS = 1000
+MAX_PREEXISTING_FINDINGS = 1000
 
 PATH_RULES = (
     ("key-or-certificate", re.compile(r"\.(?:pem|key|crt|cert|cer|p12|pfx|jks|keystore|ppk|asc|gpg|pgp)$", re.I)),
@@ -182,7 +183,7 @@ def _scan_limit_error(path: str, size: int, total: int = 0, *, more_than: int = 
                      f"file limit {MAX_FILE_BYTES} bytes; total limit {MAX_TOTAL_BYTES} bytes")
 
 
-def _read_and_scan(root: str, path: str, expected: dict, total_left: int) -> tuple:
+def _read_and_scan(root: str, path: str, expected: dict, total_left: int, limit_findings: bool = True) -> tuple:
     fd = _open_regular(root, path)
     raw_hash, size = hashlib.sha256(), 0
     content = bytearray()
@@ -207,7 +208,7 @@ def _read_and_scan(root: str, path: str, expected: dict, total_left: int) -> tup
             raise ScanError("file changed or no longer matches the manifest")
         for rule, line in _delivery_hits(bytes(content)):
             matched.append({"rule": rule, "path": path, "line": line})
-            if len(matched) > MAX_FINDINGS:
+            if limit_findings and len(matched) > MAX_FINDINGS:
                 raise ScanError("finding-count limit exceeded")
     finally:
         os.close(fd)
@@ -224,7 +225,7 @@ def _bind_findings_to_git_state(findings: list, state: dict) -> list:
     return findings
 
 
-def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
+def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int, limit_findings: bool = True) -> tuple:
     """Scan the exact staged blob named by the manifest's index entry."""
     env = os.environ.copy()
     for key in ds.GIT_ENV_OVERRIDES:
@@ -260,7 +261,7 @@ def _scan_git_blob(repo: str, path: str, entry: dict, total_left: int) -> tuple:
     findings = []
     for rule, line in _delivery_hits(content):
         findings.append({"rule": rule, "path": path, "line": line, "source": "index"})
-        if len(findings) > MAX_FINDINGS:
+        if limit_findings and len(findings) > MAX_FINDINGS:
             raise ScanError("finding-count limit exceeded")
     return len(content), findings
 
@@ -291,13 +292,32 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None, ru
         if ds.identity(paths.get(path)) == ds.identity(entry)
         and all(ds.identity(row) == ds.identity(entry) for row in index.get(path, []))
     } if run_changes_only else set()
-    skipped = []
+    removed = {
+        path for path, entry in base.items()
+        if path not in paths and all(ds.identity(row) == ds.identity(entry) for row in index.get(path, []))
+    } if run_changes_only else set()
+    skipped, preexisting = [], []
+    preexisting_truncated = 0
 
     def append(rows):
-        rows = list(rows)
-        if len(findings) + len(rows) > MAX_FINDINGS:
-            raise ScanError("finding-count limit exceeded")
-        findings.extend(rows)
+        nonlocal preexisting_truncated
+        for row in rows:
+            if row["path"] in unchanged or row["path"] in removed:
+                if row["path"] in removed:
+                    row = dict(row, removed=True)
+                if len(preexisting) < MAX_PREEXISTING_FINDINGS:
+                    preexisting.append(row)
+                else:
+                    preexisting_truncated += 1
+            else:
+                if len(findings) >= MAX_FINDINGS:
+                    raise ScanError("finding-count limit exceeded")
+                findings.append(row)
+
+    def informational_fields():
+        _bind_findings_to_git_state(preexisting, manifest["current"])
+        return {"preexisting_findings": preexisting, "preexisting_truncated": preexisting_truncated,
+                "skipped_preexisting_files": skipped, "removed_paths": sorted(removed)}
 
     try:
         for path, expected in sorted(paths.items()):
@@ -309,12 +329,9 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None, ru
                 raise ScanError(f"unsupported file mode for {path!r}")
             append(_path_findings(path))
             if path in unchanged and expected["size"] > MAX_FILE_BYTES:
-                if expected["size"] > MAX_TOTAL_BYTES - total:
-                    raise ScanError("total content scan limit exceeded: " + path)
-                total += expected["size"]
                 skipped.append(path)
                 continue
-            size, content = _read_and_scan(repo["worktree"], path, expected, MAX_TOTAL_BYTES - total)
+            size, content = _read_and_scan(repo["worktree"], path, expected, MAX_TOTAL_BYTES - total, path not in unchanged)
             scanned += 1
             total += size
             scanned_blobs.setdefault(expected["oid"], (size, content))
@@ -329,10 +346,19 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None, ru
                     raise ScanError(f"unsupported staged file entry for {path!r}")
                 if path in skipped:
                     continue
+                if path in removed:
+                    # The base blob is gone from the delivery; retain its hits as notes.
+                    # Oversized removed blobs need no content scan either.
+                    if entry["oid"] not in scanned_blobs:
+                        size = int(ds.git(repo["worktree"], "cat-file", "-s", entry["oid"]))
+                        if size > MAX_FILE_BYTES:
+                            skipped.append(path)
+                            continue
                 if entry["oid"] in scanned_blobs:
                     append(dict(row, path=path, source="index") for row in scanned_blobs[entry["oid"]][1])
                     continue
-                size, content = _scan_git_blob(repo["worktree"], path, entry, MAX_TOTAL_BYTES - total)
+                size, content = _scan_git_blob(repo["worktree"], path, entry, MAX_TOTAL_BYTES - total,
+                                               path not in unchanged and path not in removed)
                 scanned += 1
                 total += size
                 scanned_blobs[entry["oid"]] = (size, content)
@@ -342,14 +368,12 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None, ru
         _bind_findings_to_git_state(findings, manifest["current"])
         return _report(status="incomplete", manifest_fingerprint=manifest["fingerprint"],
                        scanned_files=scanned, scanned_bytes=total, findings=findings,
-                       skipped_preexisting_files=skipped,
+                       **informational_fields(),
                        coverage_complete=False, ignore_coverage=[], ignore_coverage_complete=False,
                        reason=type(exc).__name__ + ": " + str(exc),
                        current_fingerprint=ds.fingerprint(current))
 
     _bind_findings_to_git_state(findings, manifest["current"])
-    preexisting = [row for row in findings if row["path"] in unchanged]
-    findings = [row for row in findings if row["path"] not in unchanged]
     after = ds.capture_state(repo)
     fresh = after == manifest["current"]
     findings.sort(key=lambda item: (item["path"], item["rule"], item["line"] or 0))
@@ -363,7 +387,7 @@ def scan(repo_path: str, manifest_path: str = None, *, manifest: dict = None, ru
     status = "stale" if not fresh else "blocked" if findings else "review-required" if not ignore_ok else "clean"
     return _report(status=status, manifest_fingerprint=manifest["fingerprint"],
                    scanned_files=scanned, scanned_bytes=total, findings=findings,
-                   preexisting_findings=preexisting, skipped_preexisting_files=skipped,
+                   **informational_fields(),
                    coverage_complete=fresh, ignore_coverage=ignores,
                    ignore_coverage_complete=ignore_ok, current_fingerprint=ds.fingerprint(after))
 
