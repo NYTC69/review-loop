@@ -88,6 +88,18 @@ class ClassifierTests(unittest.TestCase):
                 self.assertIsNone(rc.classify_rate_limit_failure(1, message + '\n'))
                 self.assertIsNone(rc.classify_rate_limit_failure(1, '', json.dumps({'type': 'error', 'message': message})))
 
+    def test_specific_hints_beat_try_again_later_across_lines_and_sources(self):
+        generic = 'You’ve hit your usage limit. Try again later.'
+        for hint in ('retry-after: 120', 'resets at 5pm', 'try again at 5pm', 'try again in 120 seconds'):
+            event = json.dumps({'type': 'error', 'message': hint, 'code': 'rate_limit_exceeded'})
+            for stderr, stdout in ((generic + '\n' + hint, ''),
+                                   ('', json.dumps({'type': 'error', 'message': generic + '\n' + hint})),
+                                   (generic, event)):
+                with self.subTest(hint=hint, stderr=stderr):
+                    self.assertEqual(rc.classify_rate_limit_failure(1, stderr, stdout),
+                                     {'kind': 'rate_limited', 'reset_hint': hint})
+        self.assertEqual(rc.classify_rate_limit_failure(1, generic)['reset_hint'], 'Try again later.')
+
     def test_ordinary_errors_stay_billable(self):
         for stdout in ('{"type":"result","is_error":true,"result":"Error: tool crashed","api_error_status":500}',
                        '{"type":"assistant","is_api_error_message":true,"error":"overloaded"}',

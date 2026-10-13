@@ -3,7 +3,9 @@ without any finding that only reports earlier non-blocking rows `still_open` (ga
 ends as APPROVE_WITH_ADVISORY instead of HOLD. A round that is still available, a blocking row left open, a failing
 configured test, no self-run evidence and a changed tree keep their behavior."""
 import json
+import os
 import unittest
+from unittest import mock
 
 from paired_session import test_worktree_lifecycle as twl
 
@@ -15,7 +17,7 @@ ON = ('--lifecycle-mode', 'on', '--max-invocations', '60')
 
 
 class RoundLimitStillOpenTests(unittest.TestCase):
-    locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in (*twl._HELPERS, 'setUp')})
+    locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in (*twl._HELPERS, 'setUp', 'git')})
 
     def state(self):
         return json.loads((self.run_dir / 'state.json').read_text())
@@ -25,6 +27,12 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         reports the rows named `keep` still_open and the others fixed."""
         return self.run_coordinator(*flags, env={'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-once'),
                                                  'FAKE_GATE_BLOCK_WITH': 'low', 'FAKE_EXEC_STILL_OPEN': keep})
+
+    def gate_in_process(self, *flags):
+        with mock.patch.dict(os.environ, {'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-once'),
+                                          'FAKE_GATE_BLOCK_WITH': 'low', 'FAKE_EXEC_STILL_OPEN': KEEP}):
+            co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
+            return co, co.drive()
 
     def exec_verdicts(self, state):
         return [(row['reviewer_raw_verdict'], row['effective_verdict']) for row in state['review_verdicts'] if row['phase'] == 'EXEC']
@@ -117,13 +125,17 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         [row] = [row for row in state['finding_ledger'] if row.get('advisory')]
         self.assertEqual((row['source'], row['severity'], row['status']), ('persistent-reviewer', 'MINOR', 'open'))
 
-    def review(self, name, rows, rounds=2, limit=2, test=(0, 'Ran 1 test successfully'), **change):
-        """One recorded EXEC re-review at round `rounds` of `limit`: REVISE, no finding, every row of `rows` (source,
+    def review(self, name, rows, rounds=2, limit=2, test=(0, 'Ran 1 test successfully'), phase='EXEC', prepare=None, flags=(), run=True, **change):
+        """One recorded re-review at round `rounds` of `limit`: REVISE, no finding, every row of `rows` (source,
         severity) still_open, the configured test observed as `test` (exit code, output; None: not run) on the reviewed
         tree; `change` replaces answer fields."""
         self.run_dir = self.root / name
-        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--max-exec-rounds', str(limit))
-        ids = [co.record_findings(source, 'EXEC', index + 1, [{'severity': severity, 'file': 'tracked.txt', 'summary': 'left open',
+        lifecycle_on = '--lifecycle-mode' in flags and flags[flags.index('--lifecycle-mode') + 1] == 'on'
+        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'on' if lifecycle_on else 'off',
+                              '--max-exec-rounds', str(limit), '--max-plan-rounds', str(limit), *flags)
+        if prepare:
+            prepare(co)
+        ids = [co.record_findings(source, phase, index + 1, [{'severity': severity, 'file': 'tracked.txt', 'summary': 'left open',
                                                               'body': 'b', 'failure_scenario': 'x'}])[0]['id']
                for index, (source, severity) in enumerate(rows)]
         snapshot, command, sequence = rc.git_snapshot(co.workspace)[0], co.args.test_command, co.state['sequence'] + 1
@@ -132,12 +144,113 @@ class RoundLimitStillOpenTests(unittest.TestCase):
                   'self_run_evidence': [{'command': command}],
                   'observed_commands': [{'command': command, 'exit_code': test[0], 'error': bool(test[0]), 'output': test[1]}] if test else [],
                   **change}
-        co.state.update({'phase': 'EXEC', 'exec_rounds': rounds, 'pending_reviewer_result_sequence': sequence, 'sequence': sequence})
-        co.state['turns'].append({'sequence': sequence, 'role': 'reviewer', 'phase': 'EXEC', 'answer': answer,
+        co.state.update({'phase': phase, f'{phase.lower()}_rounds': rounds, 'pending_reviewer_result_sequence': sequence, 'sequence': sequence})
+        co.state['turns'].append({'sequence': sequence, 'role': 'reviewer', 'phase': phase, 'answer': answer,
                                   'snapshot_before': snapshot, 'open_finding_ids': ids})
         co.save()
+        if not run:
+            return co
         co.reviewer_turn()
         return co.state
+
+    def test_plan_still_open_minor_at_limit_holds(self):
+        state = self.review('plan', [('persistent-reviewer', 'MINOR')], phase='PLAN')
+        self.assertEqual((state['status'], state.get('hold_reason')), ('HOLD', 'PLAN round limit reached'))
+        self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
+        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+
+    def test_review_only_gate_low_at_limit_reaches_done(self):
+        for route in (OFF, ON):
+            with self.subTest(route=route):
+                (self.root / 'gate-once').unlink(missing_ok=True)
+                self.run_dir = self.root / ('review-only-' + route[1])
+                (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+                co, status = self.gate_in_process('--review-only', *route, '--max-exec-rounds', '2')
+                self.assertEqual(status, 'DONE', co.state.get('hold_reason'))
+                self.assert_exit(self.state(), 'LOW')
+                self.assertEqual(self.state()['exec_rounds'], 2)
+                (self.root / 'gate-once').unlink()
+
+    def test_secret_still_present_with_low_at_limit_holds(self):
+        (self.workspace / 'settings.txt').write_text('aws_key = ' + 'AKIA' + 'ABCDEFGHIJKLMNOP' + '\n')
+        for route in ('off', 'on'):
+            with self.subTest(route=route):
+                state = self.review('secret-' + route, [('adversarial-gate', 'LOW')], flags=('--lifecycle-mode', route))
+                self.assertEqual(state['status'], 'HOLD')
+                self.assertTrue(state['hold_reason'].startswith('secret scan: the change still adds a hardcoded credential'))
+                self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
+                self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+
+    def test_resume_reuses_the_exit_without_reviewer_or_shadow_dispatch(self):
+        for route in ('off', 'on'):
+            with self.subTest(route=route):
+                co = self.review('replay-' + route, [('adversarial-gate', 'LOW')],
+                                 flags=('--lifecycle-mode', route, '--shadow', 'on'), run=False)
+                # A recorded clean shadow exists after the pending reviewer, as after a crash.
+                sequence = co.state['sequence'] + 1
+                co.state['sequence'] = sequence
+                co.state['turns'].append({'sequence': sequence, 'role': 'shadow', 'phase': 'EXEC',
+                                         'answer': {'status': 'APPROVE', 'full_review': [],
+                                                    'verified_claims': [{'claim': 'checked', 'file': 'tracked.txt', 'line': 1}]},
+                                         'snapshot_before': rc.git_snapshot(co.workspace)[0]})
+                co.save()
+                def crash_after_exit(*args):
+                    co.save()
+                    raise RuntimeError('crash after exit')
+                with mock.patch.object(co, 'capture_review_baseline', side_effect=crash_after_exit):
+                    with self.assertRaisesRegex(RuntimeError, 'crash after exit'):
+                        co.reviewer_turn()
+                saved = json.loads(co.state_path.read_text())
+                self.assertEqual(saved['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+                resumed = rc.Coordinator(co.args)
+                with mock.patch.object(resumed, 'invoke', side_effect=AssertionError('new dispatch')):
+                    resumed.reviewer_turn()
+                self.assertEqual(resumed.state['exec_rounds'], saved['exec_rounds'])
+                self.assertEqual(resumed.state['sequence'], saved['sequence'])
+                self.assertEqual(resumed.state['review_verdicts'], saved['review_verdicts'])
+                self.assertEqual(resumed.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_security_blocker_and_gate_low_exit_exec_but_hold_security(self):
+        # A sensitive delivery path is a SECURITY blocker, independently of the EXEC gate LOW.
+        (self.workspace / 'deploy.pem').write_text('not a real key\n')
+        self.git('add', '-f', 'deploy.pem')
+        self.git('commit', '-qm', 'sensitive delivery fixture')
+        co, status = self.gate_in_process(*ON, '--max-exec-rounds', '2')
+        self.assertEqual(status, 'HOLD')
+        self.assertIn('SECURITY sensitive paths: deploy.pem', co.state['hold_reason'])
+        state = self.state()
+        self.assert_exit(state, 'LOW')
+        self.assertEqual((state['status'], state['lifecycle']['stage']), ('HOLD', 'SECURITY'))
+        self.assertEqual(state['lifecycle']['receipts'][-1]['status'], 'HOLD')
+
+    def test_second_writer_review_at_limit_keeps_the_remaining_write(self):
+        def partial_rollback(co):
+            base = rc.git_snapshot(co.workspace)[0]
+            capture = co._writer_capture(self.root / 'writer-base')
+            life = co.state['lifecycle']
+            life['quality_writers'] = {'base_oid': base, 'base_capture': capture,
+                                      'simplifier': {'state': 'wrote', 'files': ['simplifier.py'], 'sequence': 1},
+                                      'test-writer': {'state': 'wrote', 'files': ['test_writer.py'], 'sequence': 2}}
+            co.state['exec_rounds'] = 0
+            co._writer_replay()
+            (self.workspace / 'simplifier.py').write_text('# simplifier edit\n')
+            (self.workspace / 'test_writer.py').write_text('# kept writer edit\n')
+            co.record_findings('persistent-reviewer', 'EXEC', 3,
+                               [{'severity': 'MAJOR', 'file': 'simplifier.py', 'summary': 'bad simplification',
+                                 'body': 'b', 'failure_scenario': 'x'}])
+            self.assertTrue(co._writer_review_rollback('reviewer', 3))
+            self.assertTrue(co.state['lifecycle']['writer_replay']['partial'])
+            self.assertFalse((self.workspace / 'simplifier.py').exists())
+            self.assertEqual(co.state['exec_rounds'], co.exec_round_limit())
+        co = self.review('writer-second', [('adversarial-gate', 'LOW')], limit=1,
+                         flags=('--lifecycle-mode', 'on'), prepare=partial_rollback, run=False)
+        co.reviewer_turn()   # replay requires the fake shadow even with --shadow off
+        self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+        self.assertEqual(co.state['next'], 'gate')
+        marker = co.state['lifecycle']['quality_writers']
+        self.assertEqual((marker['simplifier']['state'], marker['test-writer']['state']), ('rolled-back:review', 'wrote'))
+        self.assertEqual((self.workspace / 'test_writer.py').read_text(), '# kept writer edit\n')
+        self.assertEqual(co.state['exec_rounds'], co.exec_round_limit())
 
     def assert_held(self, state):
         self.assertEqual((state['status'], state['hold_reason']), ('HOLD', LIMIT))

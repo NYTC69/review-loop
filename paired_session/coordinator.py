@@ -382,11 +382,15 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
     if not confirmed:
         return None
     reset_hint = epoch_hint   # an exact resetsAt beats a parsed phrase
-    reset_cues = ('try again at', 'try again in', 'try again later', 'reset at', 'resets at', 'resets ', 'reset time',
+    reset_cues = ('try again at', 'try again in', 'reset at', 'resets at', 'resets ', 'reset time',
                   'available again at', 'available at', 'retry after', 'retry-after', 'retry_after')
+    fallback_hint = None
     for source in ([] if reset_hint else reset_sources):
         for line in source.splitlines():
             lowered = line.lower()
+            if fallback_hint is None and 'try again later' in lowered:
+                start = lowered.find('try again later')
+                fallback_hint = line[start:start + 240].strip()
             positions = [lowered.find(cue) for cue in reset_cues if lowered.find(cue) >= 0]
             if positions:
                 start = min(positions)
@@ -394,7 +398,7 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
                 break
         if reset_hint:
             break
-    return {'kind': 'rate_limited', 'reset_hint': reset_hint}
+    return {'kind': 'rate_limited', 'reset_hint': reset_hint or fallback_hint}
 
 
 def _global_file_snapshot(path: Path, parser=None) -> dict:
