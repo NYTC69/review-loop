@@ -7418,7 +7418,7 @@ class Coordinator:
         # V316 (owner 2026-10-13): a REVISE without any finding that only reports earlier rows still_open (field: gate
         # MEDIUM/LOW rows after a repair round) takes the same exit; blocking_open_findings() below keeps blocking rows a HOLD
         still_open = [row for row in answer['prior_findings'] if row.get('disposition') == 'still_open']
-        only_still_open = phase == 'EXEC' and not answer['full_review'] and bool(still_open)
+        only_still_open = not answer['full_review'] and bool(still_open)   # V317: PLAN takes the same exit at its cap
         advisory_exit = (answer['status'] == 'REVISE'
                          and ((reviewer_findings_advisory and self.findings_are_advisory(answer['full_review']))
                               or only_still_open)

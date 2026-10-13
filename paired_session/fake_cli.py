@@ -565,6 +565,10 @@ def main():
                 revise, findings = True, []
                 prior = [{**row, 'disposition': 'still_open', 'evidence': 'fake: not addressed'} if row['id'] in kept else row
                          for row in prior]
+        if role == 'reviewer' and phase == 'PLAN' and os.environ.get('FAKE_PLAN_STILL_OPEN') and open_ids:
+            revise, findings = True, []   # V317: re-review leaves prior PLAN rows open, no new finding
+            prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'fake: not addressed'}
+                     for finding_id in open_ids]
         if 'Role: shadow,' in prompt or 'Role: shadow,' in prompt.replace('fresh isolated ', ''):
             prior = None
         answer = {'status': 'REVISE' if revise else 'APPROVE',

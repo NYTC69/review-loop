@@ -50,9 +50,9 @@ Not on Codex:
   see `docs/install-codex.md`), not from the workspace.
 - macOS only: every entry refuses another host (`paired-session needs macOS; Linux and other hosts are not supported`).
 - A plan or exec round limit ends in a HOLD; on your request the same run continues with
-  `resume --add-rounds N` (1-10). At the last EXEC round, a review with no new findings and only
-  earlier non-blocking findings still open is approved with those findings recorded as advisory if the configured
-  test passed; any blocking finding still open means HOLD.
+  `resume --add-rounds N` (1-10). At the last PLAN/EXEC round, a review with no new findings and only
+  earlier non-blocking findings still open is approved with those findings recorded as advisory; EXEC requires
+  the configured test to have passed. Any blocking finding still open means HOLD.
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
   paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in

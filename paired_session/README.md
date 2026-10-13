@@ -58,11 +58,11 @@ later reviewer confirms they are fixed; the next phase receives them as
 non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
 loop. CRITICAL, MAJOR, SECURITY-flagged, and observed test failures are never
 downgraded; EXEC requires a successful observed configured test.
-At the final EXEC round the same exit applies to a REVISE without any finding
+At the final PLAN/EXEC round the same exit applies to a REVISE without any finding
 that only reports earlier non-blocking rows `still_open` (for example a gate's
 MEDIUM/LOW after a repair round): those rows stay open, labeled advisory, and
 the run continues; a blocking row still open (a gate's CRITICAL/HIGH included)
-is the `EXEC round limit reached` HOLD.
+is the `PLAN round limit reached` or `EXEC round limit reached` HOLD.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
