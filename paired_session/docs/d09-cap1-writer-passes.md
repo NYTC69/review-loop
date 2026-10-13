@@ -71,8 +71,7 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
   credited on top of the ordinary limit). The persistent EXEC
   reviewer reviews the writer diff, then the shadow and gate, FINISH, and POLISH-Q's specialists on the new tree. No
   writer output reaches DOCS without that chain. If the digest = `base_oid` there is no transition.
-- **One chance in review (`rolled-back:review`).** If the replay's first reviewer verdict is not APPROVE, or its gate
-  fails, the coordinator does not open a fix round. It rolls the tree back to `base_oid` (`base_capture`, verified), closes the findings that replay raised as `withdrawn` with that evidence (as C ~7080 withdraws malformed
+- **One chance in review (`rolled-back:review`).** An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`; other non-approvals or a failing gate roll it back without a fix round. It rolls the tree back to `base_oid` (`base_capture`, verified), closes the findings that replay raised as `withdrawn` with that evidence (as C ~7080 withdraws malformed
   gate findings), and marks each writer that wrote `rolled-back:review`. It sets the lifecycle to `stage = POLISH-Q`,
   `candidate_oid = base_oid` (the epoch stays) and signs a POLISH-Q READY spine receipt with `output_oid = base_oid`,
   citing the previous epoch's receipts on that byte-identical digest (EXEC approval, gate, FINISH, clean specialists).

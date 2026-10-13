@@ -7080,8 +7080,8 @@ class Coordinator:
             self.round_limit_hold('EXEC round limit reached after a writer pass')
 
     def _writer_review_rollback(self, source: str, sequence: int) -> bool:
-        """§2 "one chance in review": in a writer replay, the first non-APPROVE reviewer verdict or a failing gate opens no
-        fix round. The tree goes back to base_oid from base_capture (verified); the replay's findings are withdrawn and
+        """§2 "one chance in review": a non-approval other than eligible advisory REVISE, or a failing gate,
+        opens no fix round. The tree goes back to base_oid from base_capture (verified); the replay's findings are withdrawn and
         the ledger rows it closed are reopened, with the evidence; the writers that wrote are `rolled-back:review`; a
         POLISH-Q READY receipt on base_oid cites the previous epoch's receipts on that digest; then DOCS."""
         life = self.state.get('lifecycle') or {}
@@ -7462,7 +7462,9 @@ class Coordinator:
                          and not self.blocking_open_findings())
         attempt = self.state.get('advisory_repair_attempts', {}).get(phase)
         advisory_exit = (advisory_only
-                         and (at_phase_limit or (not replaying and attempt is not None and attempt < result['sequence']))
+                         and (at_phase_limit
+                              or (phase == 'EXEC' and replaying)   # V317-REPLAY: keep eligible writer changes with advisories
+                              or (attempt is not None and attempt < result['sequence']))   # V317-ONCE: one attempt per phase
                          and (phase == 'PLAN' or
                               (self.configured_test_succeeded(result['answer'])
                                and not self.configured_test_failed(result['answer'])

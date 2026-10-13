@@ -318,9 +318,8 @@ The explicit test command runs first on the reviewed tree (a red baseline skips
 both) and again after each change. A kept change (`wrote`) replays EXEC review,
 shadow, gate, FINISH and the specialists before DOCS, on its own budget of one
 replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`);
-the replay's first non-approval rolls it back (`rolled-back:review`), only the
-writer the findings name when the two changed different files (the other is
-reviewed again). A test writer that lowers the number of test cases is rolled
+An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`; other non-approvals
+roll it back (`rolled-back:review`), only the named writer when files are disjoint (the other is reviewed again). A test writer that lowers the number of test cases is rolled
 back (`rolled-back:tests`). Other outcomes: `no-op`, `rolled-back:tests`, `rolled-back:boundary`
 (reserved docs or `.review-loop/` config), `rolled-back:hold`, `exhausted`, and
 the skips `no-test-command`, `small`, `no-test-file`, `budget`,
