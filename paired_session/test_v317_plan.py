@@ -1,8 +1,10 @@
 """V317: PLAN prior-only advisory REVISE takes the final-round exit, preserving rewrite-only failure."""
 import json
 import unittest
+from unittest.mock import patch
 
 from paired_session import test_worktree_lifecycle as twl
+from paired_session.test_field11_plan_ledger_ids import PLAN_CLEAN, PLAN_WITH_IDS
 
 rc = twl.rc
 
@@ -55,7 +57,8 @@ class PlanStillOpenTests(unittest.TestCase):
         [author] = [t for t in state['turns'] if t['role'] == 'author' and t['phase'] == 'EXEC']
         prompt = (self.run_dir / 'evidence' / ('%03d-exec-author.prompt.txt' % author['sequence'])).read_text()
         self.assertIn(row['id'], prompt)
-        self.assertIn('advisory', prompt)
+        self.assertIn('"status": "ADVISORY"', prompt)
+        self.assertIn('These findings are explicitly non-blocking.', prompt)
 
     def test_one_round_left_returns_to_the_plan_author(self):
         state = self.review(rounds=2)
@@ -78,6 +81,61 @@ class PlanStillOpenTests(unittest.TestCase):
         self.assertEqual(state['plan_history_rewrite']['failed_history'], 'PLAN reviewer REVISE')
         self.assertIn('rewrite-only PLAN turn was not approved', state['hold_reason'])
         self.assertTrue(state['finding_ledger'][0]['advisory'])
+
+    def test_history_refusal_requests_rewrite_then_approve_or_raw_revise(self):
+        for status in ('APPROVE', 'REVISE'):
+            with self.subTest(rewrite_verdict=status):
+                self.run_dir = self.root / ('history-' + status.lower())
+                co = self.coordinator('--lifecycle-mode', 'off')
+                self.assertEqual((co.args.shadow, co.args.adversarial_gate), ('on', 'on'))
+                co.state.update(phase='PLAN', next='reviewer', plan_rounds=co.args.max_plan_rounds)
+                (co.context / 'plan.md').write_text(PLAN_WITH_IDS)
+                (co.run_dir / 'plan-03.md').write_text(PLAN_WITH_IDS)
+                [row] = co.record_findings('persistent-reviewer', 'PLAN', 1, [
+                    {'severity': 'MINOR', 'file': 'plan.md', 'summary': 'plan advisory',
+                     'failure_scenario': 'detail missing'}])
+                snapshot = rc.git_snapshot(co.workspace)[0]
+
+                def review(sequence, verdict):
+                    answer = {'status': verdict, 'reviewed_snapshot': snapshot, 'full_review': [],
+                              'self_run_evidence': [], 'prior_findings': [
+                                  {'id': row['id'], 'disposition': 'still_open', 'evidence': 'not addressed'}]}
+                    result = {'answer': answer, 'snapshot': snapshot, 'sequence': sequence, 'role': 'reviewer'}
+                    with patch.object(co, 'invoke', return_value=result) as invoke, patch.object(co, 'render'):
+                        co.reviewer_turn()
+                    return invoke.call_args.args[2]
+
+                review(10, 'REVISE')
+                [row] = co.state['finding_ledger']
+                self.assertTrue(row['advisory'])  # conversion happened before FIELD-11 refused the history
+                self.assertEqual((co.state['status'], co.state['phase'], co.state['next']), ('ACTIVE', 'PLAN', 'author'))
+                self.assertEqual(co.state['plan_history_rewrite']['status'], 'requested')
+                self.assertEqual(co.state['review_verdicts'][-1]['reviewer_raw_verdict'], 'REVISE')
+                self.assertIn('PLAN APPROVE rejected: plan: ledger-id-shaped tokens', co.state['approve_refusals'][-1]['reason'])
+                self.assertIn('The coordinator accepted the plan in substance in the last PLAN round, including any advisory findings left open',
+                              co.state['delivered_review'])
+                co.state['turns'].append({'sequence': 11, 'role': 'author', 'phase': 'PLAN'})
+                result = {'answer': {'status': 'READY', 'body': PLAN_CLEAN}, 'snapshot': snapshot,
+                          'sequence': 11, 'role': 'author'}
+                with patch.object(co, 'invoke', return_value=result), patch.object(co, 'render'):
+                    co.author_turn()
+                self.assertEqual(co.state['plan_rounds'], 3)
+                self.assertEqual(co.state['plan_history_rewrite']['status'], 'written')
+                prompt = review(12, status)
+                self.assertIn('the coordinator accepted the previous plan in substance, including any advisory findings left open', prompt)
+                self.assertIn('Rows already recorded as advisory may stay still_open without that alone being a reason for REVISE; '
+                              'approve when the rewritten plan is the same in substance.', prompt)
+                self.assertEqual((row['status'], row['advisory']), ('open', True))
+                if status == 'APPROVE':
+                    self.assertEqual((co.state['status'], co.state['phase'], co.state['next']), ('ACTIVE', 'EXEC', 'author'))
+                    self.assertEqual(co.state['plan_history_rewrite']['status'], 'passed')
+                    self.assertIn('"status": "ADVISORY"', co.state['delivered_review'])
+                else:
+                    self.assertEqual((co.state['status'], co.state['phase']), ('HOLD', 'PLAN'))
+                    self.assertEqual(co.state['plan_history_rewrite']['status'], 'failed')
+                    self.assertEqual(co.state['plan_history_rewrite']['failed_history'], 'PLAN reviewer REVISE')
+                    self.assertIn('rewrite-only PLAN turn was not approved', co.state['hold_reason'])
+                    self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
 
     def test_no_prior_row_still_open_keeps_the_limit_hold(self):
         state = self.review(rows=False)

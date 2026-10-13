@@ -4618,9 +4618,11 @@ class Coordinator:
             if rewrite.get('status') == 'written':   # FIELD-11b: the reviewer decides whether the rewrite changed anything in substance
                 approved = self.run_dir / f"plan-{rewrite['approved_plan_round']:02d}.md"
                 exercise = (exercise + '\n' if exercise else '') + (
-                    'Rewrite-only re-review: you approved the previous plan; this version is meant to differ only by the removal of '
-                    'review history (finding ids, references to earlier reviews). APPROVE only if it is the same plan in substance; '
-                    'return REVISE if the scope, steps, or verification changed.\n## Previously approved plan\n'
+                    'Rewrite-only re-review: the coordinator accepted the previous plan in substance, including any advisory findings left open; '
+                    'this version is meant to differ only by the removal of review history (finding ids, references to earlier reviews). '
+                    'Rows already recorded as advisory may stay still_open without that alone being a reason for REVISE; '
+                    'approve when the rewritten plan is the same in substance. '
+                    'Return REVISE if the scope, steps, or verification changed.\n## Previously accepted plan\n'
                     + (approved.read_text() if approved.is_file() else '(unavailable)'))
             if self._role_vendor(role) == 'codex':
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
@@ -7549,7 +7551,7 @@ class Coordinator:
                     'approved_plan_round': self.state['plan_rounds'], 'approved_plan_sha256': hashlib.sha256((self.context / 'plan.md').read_bytes()).hexdigest()}
                 self.progress('plan_rewrite', status='requested', history=plan_history[:120])
                 self.state['delivered_review'] = (
-                    f'Rewrite-only turn. The reviewer approved the plan in the last PLAN round, but it carries review history '
+                    f'Rewrite-only turn. The coordinator accepted the plan in substance in the last PLAN round, including any advisory findings left open, but it carries review history '
                     f'({plan_history}), which the independent shadow and gate refuse. Return the same plan with every finding id '
                     'and every reference to earlier reviews removed. Do not change the scope, the steps, or the verification; '
                     'change nothing else. This turn does not count as a PLAN round. The plan is reviewed again; if it still '
