@@ -49,9 +49,9 @@ class PlanStillOpenTests(unittest.TestCase):
                                     'FAKE_PLAN_STILL_OPEN': '1', 'FAKE_EXEC_STILL_OPEN': 'plan advisory'})
         self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['plan_rounds'], 3)
+        self.assertEqual(state['plan_rounds'], 2)
         self.assertEqual([(r['reviewer_raw_verdict'], r['effective_verdict']) for r in state['review_verdicts']
-                          if r['phase'] == 'PLAN'], [('REVISE', 'REVISE')] * 2 + [('REVISE', 'APPROVE_WITH_ADVISORY')])
+                          if r['phase'] == 'PLAN'], [('REVISE', 'REVISE')] + [('REVISE', 'APPROVE_WITH_ADVISORY')])
         [row] = state['finding_ledger']
         self.assertEqual((row['phase'], row['status'], row.get('advisory')), ('PLAN', 'open', True))
         [author] = [t for t in state['turns'] if t['role'] == 'author' and t['phase'] == 'EXEC']

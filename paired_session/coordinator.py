@@ -7433,10 +7433,13 @@ class Coordinator:
         # MEDIUM/LOW rows after a repair round) takes the same exit; blocking_open_findings() below keeps blocking rows a HOLD
         still_open = [row for row in answer['prior_findings'] if row.get('disposition') == 'still_open']
         only_still_open = not answer['full_review'] and bool(still_open)   # V317: PLAN takes the same exit at its cap
-        advisory_exit = (answer['status'] == 'REVISE'
+        advisory_only = (answer['status'] == 'REVISE'
                          and ((reviewer_findings_advisory and self.findings_are_advisory(answer['full_review']))
                               or only_still_open)
-                         and at_phase_limit
+                         and not self.blocking_open_findings())
+        attempt = self.state.get('advisory_repair_attempts', {}).get(phase)
+        advisory_exit = (advisory_only
+                         and (at_phase_limit or (attempt is not None and attempt < result['sequence']))
                          and (phase == 'PLAN' or
                               (self.configured_test_succeeded(result['answer'])
                                and not self.configured_test_failed(result['answer'])
@@ -7445,7 +7448,7 @@ class Coordinator:
                               answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
                          and not self.blocking_open_findings())
         if advisory_exit:
-            self.mark_advisory_findings(answer['full_review'] or still_open)
+            self.mark_advisory_findings(answer['full_review'] + still_open)
             answer['status'] = 'APPROVE'
         new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
         refusal = None
@@ -7537,6 +7540,11 @@ class Coordinator:
                 'prior_findings': [{'id': row['id'], 'fixed': row['disposition'] != 'still_open',
                                     'evidence': row['evidence']} for row in answer['prior_findings']],
             }, ensure_ascii=False)
+            # V317-ONCE: count only an advisory REVISE actually sent to the author.
+            # Keep its sequence so replay of that result still requests the first repair.
+            # Later blocking rounds neither consume nor reset the phase's attempt.
+            if advisory_only:
+                self.state.setdefault('advisory_repair_attempts', {}).setdefault(phase, result['sequence'])
             self.state['next'] = 'author'
             if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence); resume routes to the author
                 self.state['pending_reviewer_result_sequence'] = None

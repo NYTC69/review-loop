@@ -50,19 +50,23 @@ the turn receipt.
 
 ## MINOR-only review revisions
 
-A persistent reviewer REVISE containing only MINOR/LOW findings is accepted as
-`APPROVE_WITH_ADVISORY` at the final PLAN/EXEC round. Its raw
-REVISE and effective workflow verdict are recorded separately. Those findings
-remain open and are labeled advisory in the findings ledger and report until a
-later reviewer confirms they are fixed or withdraws them with evidence; the next
-phase receives them as non-blocking context. Non-final PLAN/EXEC REVISE continues its normal repair
-loop. CRITICAL, MAJOR, SECURITY-flagged, and observed test failures are never
-downgraded; EXEC requires a successful observed configured test.
-At the final PLAN/EXEC round the same exit applies to a REVISE without any finding
-that only reports earlier non-blocking rows `still_open` (for example a gate's
-MEDIUM/LOW after a repair round): those rows stay open, labeled advisory, and
-the run continues; a blocking row still open (a gate's CRITICAL/HIGH included)
-is the `PLAN round limit reached` or `EXEC round limit reached` HOLD.
+Each phase allows one repair attempt for an advisory-only persistent reviewer
+REVISE. The first goes to the author if a round remains. A later eligible
+advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left.
+The final PLAN/EXEC round keeps the same advisory exit without requiring an
+attempt. Advisory-only means MINOR/LOW findings without a security flag,
+and/or only earlier non-blocking rows reported `still_open`, with no blocking
+row open. Those rows remain open and labeled advisory in the ledger and report.
+The raw REVISE and effective verdict are recorded separately. The next phase
+receives the rows as non-blocking context.
+
+The attempt is recorded when the REVISE is sent to the author. It survives
+resume; replaying that reviewer result takes the same path. A later blocking
+round does not reset it or grant another advisory attempt. EXEC still requires
+a successful configured test, no observed test failure, the reviewer's own run
+evidence, and the same snapshot. Blocking findings retain the normal repair
+loop or round-limit HOLD. The opt-in advisory fix round keeps its own single
+attempt; its eligible advisory re-review exits immediately.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.

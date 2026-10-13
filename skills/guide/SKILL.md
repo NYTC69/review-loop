@@ -147,10 +147,11 @@ review_focus: |
 ## Key features
 
 - **Independent review** — the reviewer, shadow and gate never share the author's session
-- **Hard caps** — plan and exec round limits end in a HOLD, never a silent stop; on your request the same run
-  continues with `resume --add-rounds N` (1-10). At the last PLAN/EXEC round, a review with no new findings and only
-  earlier non-blocking findings still open is approved with those findings recorded as advisory; EXEC requires
-  the configured test to have passed. Any blocking finding still open means HOLD
+- **Hard caps** — blocking reviews at the plan and exec round limits end in a HOLD; on your request the same run
+  continues with `resume --add-rounds N` (1-10). An advisory-only PLAN/EXEC REVISE gets one repair attempt per phase.
+  The next eligible advisory-only review, or one at the cap, is approved with open findings recorded as advisory.
+  Blocking rounds do not reset the attempt. EXEC still requires a passed configured test, own run evidence
+  and the same snapshot. Any blocking finding still open means HOLD
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
 - **Project-specific config** — tailor review priorities per project
 
