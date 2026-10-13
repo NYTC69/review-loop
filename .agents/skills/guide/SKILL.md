@@ -9,8 +9,9 @@ description: Codex guide for review-loop - the paired-session entry, review-pr a
 
 A review-loop request goes to the Codex `review-loop` skill, which resolves the `entry` key in
 `.review-loop/config.md` and hands the work item to the Codex `paired-session` skill. That skill
-runs the coordinator through plan, implementation, review, finish, polish, docs and security up to
-DONE; it accepts only on your explicit acceptance.
+runs the coordinator through plan, implementation and review. With lifecycle on, finish, polish, docs
+and security follow, up to DONE. With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree.
+It accepts only on your explicit acceptance.
 A request to review existing code hands off the same way as `run --review-only`, and an existing
 plan becomes the work item (PLAN drafts and reviews it again). `entry: legacy`, asking for "the legacy
 review-loop workflow" and resuming a legacy session are refused, and a failed check before the

@@ -812,7 +812,7 @@
       "id": "review_loop_review_only_hands_over_auto_commit_false",
       "kind": "contains",
       "path": "skills/review-loop/references/entry.md",
-      "needle": "`auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false` (absent or `true`: the review-only default, one local commit at `accept`)."
+      "needle": "`auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false` (absent or `true`: the review-only default with lifecycle on, normally one local commit at `accept`). With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree."
     },
     {
       "id": "codex_review_loop_review_only_hands_over_auto_commit_false",

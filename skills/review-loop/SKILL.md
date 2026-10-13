@@ -3,7 +3,7 @@ name: review-loop
 argument-hint: "<work item description> [--handsfree]"
 description: >
   Drive a work item through the paired-session coordinator (plan → review → implement → CR,
-  then polish, docs and security up to acceptance). This entry resolves `entry` and hands off to
+  then polish, docs and security with lifecycle on, up to acceptance). This entry resolves `entry` and hands off to
   the paired-session skill: fresh work, an existing plan (as the work item) or a review of existing
   code. Trigger: "run review-loop on", "start review loop", "let the agents handle",
   or any task the user wants driven by a plan→review→implement→CR cycle.

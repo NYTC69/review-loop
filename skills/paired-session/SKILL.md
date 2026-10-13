@@ -4,7 +4,7 @@ argument-hint: "<work item> [--plan-only | --review-only [--base REF] | --review
 description: >
   Drive an implementation through the paired-session coordinator: independent
   PLAN review, EXEC implementation/review, adversarial gate, then finish,
-  quality polish, docs and security up to operator acceptance.
+  quality polish, docs and security with lifecycle on, up to operator acceptance.
   Trigger in exactly five cases: (1) the user explicitly asks for paired-session
   or names this explicit coordinator entry; (2) the review-loop entry hands off
   because .review-loop/config.md sets `entry: paired-session`; (3) the review-loop

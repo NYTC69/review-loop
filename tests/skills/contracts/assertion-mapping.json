@@ -143,7 +143,7 @@
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
+        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
@@ -155,15 +155,23 @@
       },
       {
         "path": "skills/paired-session/SKILL.md",
+        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands."
+      },
+      {
+        "path": ".agents/skills/paired-session/SKILL.md",
+        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands."
+      },
+      {
+        "path": "docs/protocol/paired-session-entry.md",
+        "needle": "When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile."
+      },
+      {
+        "path": "skills/paired-session/SKILL.md",
         "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
         "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
-      },
-      {
-        "path": "docs/protocol/paired-session-entry.md",
-        "needle": "When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile."
       }
     ],
     "paired_session_skill_saved_lifecycle_mode": [

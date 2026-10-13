@@ -24,7 +24,7 @@ review-loop entry (resolves `entry`, runs the stage A checks)
     ├── PLAN   author drafts the plan → independent reviewer → iterate
     ├── EXEC   author implements → reviewer + shadow review → iterate
     ├── GATE   adversarial gate
-    ├── FINISH → POLISH-Q specialists → docs → security
+    ├── with lifecycle on: FINISH → POLISH-Q specialists → docs → security
     └── DONE (or HOLD) → you accept or reject; nothing ships without your decision
 ```
 

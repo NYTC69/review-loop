@@ -2,7 +2,7 @@
 
 A Claude Code and Codex plugin that drives a work item through the paired-session coordinator: an author and an
 independent reviewer plan and implement it, an adversarial gate checks the result, then finish, quality polish, docs
-and security run, and nothing is delivered until you accept.
+and security run with lifecycle on, and nothing is delivered until you accept.
 
 ## Quick Start
 
@@ -276,8 +276,10 @@ sets `auto_commit`.
 
 ### `/review-loop:code-quality-loop`
 
-A paired-session review-only run on the uncommitted change (review, fix,
-one fix round for the non-blocking findings, simplify, consolidate tests, docs, security; `accept` makes one local commit unless `auto_commit: false`).
+A paired-session review-only run on the uncommitted change. With lifecycle on, it reviews, fixes,
+runs one fix round for non-blocking findings, simplifies, consolidates tests, and runs docs and security.
+Acceptance normally makes one local commit unless `auto_commit: false`. With lifecycle off,
+it stops after the gate; acceptance returns the uncommitted tree.
 Argument: `[max-rounds]`, an integer of at least 2 (round 1 reviews the existing change), which becomes
 `--max-exec-rounds` and wins over `soft_limit_exec`. `--skip-reorganize` is accepted and has no effect;
 `--reorganize`, `--legacy` and `entry: legacy` are refused (run `/review-loop:reorganize <files>` after the run).
@@ -349,7 +351,7 @@ uses the author's vendor, and the test command is the one the skill confirms wit
 | `review_focus` | `""` | Project-specific review priorities (free text); paired-session: `--review-focus` (L105), frozen at run start, for the reviewer, shadow and gate |
 | `quality_focus` | `""` | Paired-session: `--quality-focus` (L105), frozen at run start, for the POLISH-Q specialists |
 | `review_style` | `""` | Tone and rules for all reviews (free text); paired-session: `--review-style` (L105), frozen at run start, for every review role |
-| `skip_quality_polish` | `false` | `true` skips the POLISH-Q specialists and the quality writers; docs and security still run |
+| `skip_quality_polish` | `false` | With lifecycle on, `true` skips the POLISH-Q specialists and the quality writers; docs and security still run |
 
 `reviewer_model` and `executor_model` are not applied: set to anything other than empty or `inherit`, they
 print a warning; models come from the operator profile. The legacy-only keys `reviewer`, `judgment_model`,
@@ -415,7 +417,7 @@ directory outside the workspace; legacy `.review-loop/sessions/` files are left 
 **Round Caps** — Hard round caps (plan 3 / exec 4 unless set) end in a HOLD; at that HOLD
 `resume --add-rounds N` continues the same run (L100).
 
-**Quality Polish (POLISH-Q)** — After the gate and FINISH, read-only specialists review the change: the language
+**Quality Polish (POLISH-Q)** — With lifecycle on, after the gate and FINISH, read-only specialists review the change: the language
 reviewers for the changed file types (`go-reviewer`, `rust-reviewer`, `python-reviewer`,
 `frontend-security-reviewer`) plus `code-reviewer`, `silent-failure-hunter` and `pr-test-analyzer`. The quality
 writers (a fresh simplifier, then test consolidation) are on by default for review-only runs and

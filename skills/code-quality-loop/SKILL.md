@@ -1,6 +1,6 @@
 ---
 name: code-quality-loop
-description: "Iterative review-fix loop on the uncommitted change: reviews, fixes, simplifies and consolidates tests, as a paired-session review-only run (`run --review-only`). The legacy loop was removed in v2.13.0: `entry: legacy`, `--legacy` and `--reorganize` are refused."
+description: "Iterative review-fix loop on the uncommitted change: with lifecycle on, reviews, fixes, simplifies and consolidates tests, as a paired-session review-only run (`run --review-only`). The legacy loop was removed in v2.13.0: `entry: legacy`, `--legacy` and `--reorganize` are refused."
 argument-hint: "[max-rounds]"
 ---
 
