@@ -2056,16 +2056,18 @@ def missing_rubric(body: str) -> list[str]:
 
 
 def codex_sessions_dir() -> Path:
-    return Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'sessions'
+    return Path(os.environ.get('CODEX_HOME') or str(Path.home() / '.codex')).expanduser().resolve() / 'sessions'
 
 
-def codex_rollout_usage(session: Optional[str], start: float, end: float) -> list[dict]:
+def codex_rollout_usage(session: Optional[str], start: float, end: float,
+                        lower_bound: Optional[float] = None) -> list[dict]:
     """Read per-request last_token_usage records for this CLI interval."""
     if not session:
         return []
     paths = list(codex_sessions_dir().rglob('*' + session + '*.jsonl'))
     if len(paths) != 1:
         return []
+    lower_bound = start - 1 if lower_bound is None else lower_bound
     found, seen = [], set()
     with paths[0].open(errors='replace') as source:
         for line_no, line in enumerate(source, 1):
@@ -2075,7 +2077,7 @@ def codex_rollout_usage(session: Optional[str], start: float, end: float) -> lis
                 if row.get('type') != 'event_msg' or payload.get('type') != 'token_count' or not payload.get('info'):
                     continue
                 stamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
-                if not start - 1 <= stamp <= end + 1:
+                if not lower_bound <= stamp <= end + 1:
                     continue
                 info = payload['info']
                 signature = json.dumps(info.get('total_token_usage', {}), sort_keys=True)
@@ -4297,6 +4299,21 @@ class Coordinator:
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
             return verified
+        # The child may have finished writing after the coordinator stopped. Rebuild from
+        # the evidence rather than appending to the partial usage persisted before the stop.
+        if sequence is not None and receipt.get('vendor') in ('claude', 'codex') and receipt.get('phase'):
+            path = self.evidence / f'{sequence:03d}-{receipt["phase"].lower()}-{receipt["role"]}.stdout.jsonl'
+            recovered = {**receipt, 'usage_requests': [], 'model_requests': 0}
+            self._drain_usage_stream(path, 0, b'', None, recovered, final=True)
+            if receipt['vendor'] == 'codex':
+                per_request = codex_rollout_usage(recovered.get('provider_session_id'),
+                                                 receipt.get('start', 0), time.time(),
+                                                 receipt.get('usage_lower_bound'))
+                if per_request:
+                    recovered['usage_requests'] = per_request
+                    recovered['model_requests'] = len(per_request)
+            if recovered['usage_requests']:
+                receipt.update(usage_requests=recovered['usage_requests'], model_requests=recovered['model_requests'])
         usage = receipt.get('usage_requests', [])
         provider_usage = 'reported' if usage else 'unknown'
         row = {**receipt, 'recovered_at': time.time(), 'group_gone': True,
@@ -5448,6 +5465,25 @@ class Coordinator:
                     if type(output) is int and output != receipt['usage_requests'][active_request]['output']:
                         receipt['usage_requests'][active_request]['output'] = output
                         changed = True
+            elif (receipt['vendor'] == 'claude' and row.get('type') == 'assistant'
+                  and row.get('parent_tool_use_id')):
+                message = row.get('message', {})
+                use = message.get('usage', {})
+                requests = receipt.setdefault('usage_requests', [])
+                message_id = message.get('id')
+                previous = next((request for request in requests
+                                 if message_id and request.get('message_id') == message_id), None)
+                output = max(use.get('output_tokens', 0), (previous or {}).get('output', 0))
+                request = {'input': (use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0)
+                                     + use.get('cache_read_input_tokens', 0)),
+                           'cached': use.get('cache_read_input_tokens', 0), 'output': output,
+                           'source': 'subagent-message', 'message_id': message_id}
+                if previous is None:
+                    requests.append(request)
+                    changed = True
+                elif previous != request:
+                    previous.update(request)
+                    changed = True
             elif receipt['vendor'] == 'codex' and row.get('type') == 'thread.started':
                 receipt['provider_session_id'] = row.get('thread_id')
                 changed = True
@@ -5489,7 +5525,7 @@ class Coordinator:
                     if row.get('type') != 'event_msg' or payload.get('type') != 'token_count' or not isinstance(info, dict):
                         continue
                     stamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
-                    if not receipt['start'] - 1 <= stamp <= now + 1:
+                    if not receipt.get('usage_lower_bound', receipt['start'] - 1) <= stamp <= now + 1:
                         continue
                     signature = json.dumps(info.get('total_token_usage', {}), sort_keys=True)
                     if signature in rollout_seen:
@@ -5794,6 +5830,9 @@ class Coordinator:
                    'role_identity_sha256': self.state.get('role_dispatch_manifest_sha256'),
                    'timeout_seconds': timeout_seconds,
                    'invocation_budget_counted': False, 'usage_requests': [], 'model_requests': 0}
+        # Reporting only: a continued session must not count the previous turn's last request again.
+        receipt['usage_lower_bound'] = max(now - 1, self.state['last_end'].get(role, now - 1)) if (
+            not fresh and self.state['sessions'].get(role)) else now - 1
         if role == 'reviewer':
             receipt['open_finding_ids'] = [row['id'] for row in self._reviewer_open_findings()]
         if rejection:
@@ -6009,7 +6048,7 @@ class Coordinator:
             receipt['reported_model_source'] = model_source
             receipt['model_identity'] = model_identity_status(receipt['model'], reported_model)
             if receipt['vendor'] == 'codex':
-                per_request = codex_rollout_usage(session, receipt['start'], receipt['end'])
+                per_request = codex_rollout_usage(session, receipt['start'], receipt['end'], receipt['usage_lower_bound'])
                 if per_request:
                     usage, requests = per_request, len(per_request)
                 attempts, code_calls = codex_rollout_attempts(session, receipt['start'], receipt['end'])
