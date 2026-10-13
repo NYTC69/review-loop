@@ -419,7 +419,8 @@ directory outside the workspace; legacy `.review-loop/sessions/` files are left 
 **Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 4 unless set) end in a HOLD;
 `resume --add-rounds N` continues the same run (L100). An eligible advisory-only PLAN/EXEC REVISE
 gets one repair attempt per phase, then exits with open rows recorded as advisory; at the cap it
-exits without requiring an attempt. Writer replay permits this exit only at its cap. EXEC requires
+exits without requiring an attempt. In a quality-writer replay it exits at any round and the writer
+change is kept. EXEC requires
 a successful configured test, own run evidence and the same reviewed tree. See
 [the advisory rules](paired_session/README.md#minor-only-review-revisions).
 

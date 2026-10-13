@@ -73,7 +73,7 @@ EXEC still requires a successful configured test, no observed test failure, the 
 evidence, and the same snapshot. Blocking findings retain the normal repair
 loop or round-limit HOLD. The opt-in advisory fix round keeps its own single
 attempt; its eligible advisory re-review exits immediately.
-Blocking means CRITICAL, MAJOR, any security-flagged finding, or a gate's
+Blocking means CRITICAL, MAJOR, SECURITY, any security-flagged finding, or a gate's
 CRITICAL/HIGH; such a row still open at the cap is the `PLAN round limit reached`
 / `EXEC round limit reached` HOLD.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
