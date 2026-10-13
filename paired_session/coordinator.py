@@ -2407,7 +2407,7 @@ class Coordinator:
                         self.state.get('item_blockers_complete') != spec.get('item_blockers_complete')):
                     raise ValueError('saved successor item identity or blockers differ')
             self._review_only_args(self.state['config'])
-            if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
+            if self.args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
                 if (getattr(self.args, 'max_invocations_explicit', False) and
@@ -2431,7 +2431,7 @@ class Coordinator:
             if self.state.get('status') == 'ABORTED' and not scope_request:
                 raise ValueError('run was ABORTED by scope change; start its successor')
         else:
-            if self.args.action in ('accept', 'reject', 'note', 'attach-verification'):
+            if self.args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
                 raise ValueError(f'{self.args.action} requires an existing coordinator run')
             if not (self.workspace / '.git').exists():
                 raise ValueError('--workspace must be a git worktree')
@@ -3678,6 +3678,7 @@ class Coordinator:
                                            for cell in cells) + ' |')
         if not rows:
             lines += ['', 'No open or declined findings.']
+        if self.state.get('operator_rulings'): lines.append(self.operator_rulings_prompt())
         atomic_text(self.run_dir / 'open-findings.md', '\n'.join(lines) + '\n')
 
     @staticmethod
@@ -4196,8 +4197,10 @@ class Coordinator:
 
     def operator_intent(self, action, text, file, expected=None, required=False) -> dict:
         refuse_removed_options(self.args)
-        if action not in ('accept', 'reject'): raise ValueError('intent action must be accept or reject')
-        payload = (Path(file).expanduser().read_text() if file else text or self.args.reason or '').encode()
+        if action not in ('accept', 'reject', 'withdraw-findings'): raise ValueError('intent action must be accept, reject or withdraw-findings')
+        if action == 'withdraw-findings': self._withdrawal_rows()
+        payload = ((self.args.reason or '') if action == 'withdraw-findings' else
+                   (Path(file).expanduser().read_text() if file else text or self.args.reason or '')).encode()
         index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
         tree_sha, tree_snapshot = git_snapshot(self.workspace)
         data = {'action': action, 'uid': os.getuid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
@@ -4206,6 +4209,7 @@ class Coordinator:
                 'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
                 'state_sha256': hashlib.sha256(json.dumps(self.state, sort_keys=True).encode()).hexdigest(),
                 'payload_sha256': hashlib.sha256(payload).hexdigest()}
+        if action == 'withdraw-findings': data['finding_ids'] = sorted(set(self.args.finding))
         if worktree_lifecycle.is_worktree(self.state):   # W3b: the intent names the stage receipts it accepts
             data['receipts_sha256'] = hashlib.sha256(json.dumps(self.state['lifecycle']['receipts'], sort_keys=True).encode()).hexdigest()
             data['head_ref'] = self._head_ref()   # rel210-fixA: the branch an auto_commit moves (None: detached HEAD)
@@ -4215,7 +4219,7 @@ class Coordinator:
                 self.state['status'] != 'HOLD' or self.state.get('active') or self.state.get('uncertain_active') or
                 tree_sha != self._override_tree()):
             raise ValueError('override requires HOLD rejected-tree or a round-limit HOLD, unchanged held tree, and non-empty --reason')
-        if not override: self.refuse_rejected_tree(stale_done=True)
+        if not override and action != 'withdraw-findings': self.refuse_rejected_tree(stale_done=True)
         if required and not expected:   # FIELD-25: name the full next command, digest filled in
             raise ValueError(f'intent is stale or missing: {action} needs --expect with the digest of {action} --intent-only; '
                              f'to {action} the run as it is now, run: {self.next_intent_command(data["digest"], action)}')
@@ -4240,6 +4244,63 @@ class Coordinator:
             tracked = set(subprocess.check_output(['git', 'ls-files', '-z'], cwd=self.workspace).decode().split('\0'))
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
+    def _withdrawal_rows(self) -> list[dict]:
+        allowed = ((self.state['status'] == 'DONE' and self.state.get('acceptance_state') == 'PENDING') or
+                   (self.state['status'] == 'HOLD' and
+                    ((self.at_round_limit_hold() and self.state['round_limit_hold'].get('phase') in ('PLAN', 'EXEC')) or
+                     self.state.get('hold_reason', '').startswith('rejected-tree'))))
+        if not allowed:
+            raise ValueError('withdraw-findings requires DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, or a rejected-tree HOLD')
+        reason = self.args.reason or ''
+        if not reason.strip(): raise ValueError('withdraw-findings requires a non-empty --reason')
+        if self._history_markers('operator-decision', reason):
+            raise ValueError('withdraw-findings reason contains a finding id or review-history marker; phrase it as the approved behavior, without ids or review history (for example: Expanded export scope is approved and stays.)')
+        ids = sorted(set(self.args.finding or []))
+        if not ids: raise ValueError('withdraw-findings requires --finding ID (repeat for multiple rows)')
+        rows = []
+        for finding_id in ids:
+            row = next((row for row in self.state['finding_ledger'] if row['id'] == finding_id), None)
+            if row is None: raise ValueError(f'unknown finding id: {finding_id}')
+            if row['status'] != 'open': raise ValueError(f'finding {finding_id} is already closed')
+            severity, owner = row['severity'].upper(), row.get('owner_role', '')
+            if (row.get('security') or severity == 'SECURITY' or owner == 'security-reviewer' or
+                    owner.startswith('specialist:') or row['source'] == 'secret-scan' or
+                    (row['source'] == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))):
+                raise ValueError(f'finding {finding_id} cannot be withdrawn by withdraw-findings: security, specialist ownership, secret-scan, and gate CRITICAL/HIGH rows are excluded')
+            rows.append(row)
+        return rows
+
+    def withdraw_findings(self) -> str:
+        rows = self._withdrawal_rows()
+        intent = self.operator_intent('withdraw-findings', None, None, self.args.expect, required=True)
+        rulings = self.state.setdefault('operator_rulings', [])
+        ruling_id = f'O{len(rulings) + 1:03d}'
+        record = {'id': ruling_id, 'author': 'operator', 'uid': os.getuid(),
+                  'timestamp': datetime.now().astimezone().isoformat(),
+                  'finding_ids': [row['id'] for row in rows], 'reason': self.args.reason, 'intent': intent,
+                  'evidence': str(self.evidence / f'operator-ruling-{ruling_id}.json')}
+        atomic_json(Path(record['evidence']), record)
+        rulings.append(record)
+        for row in rows:
+            row['status'] = 'withdrawn'
+            row['status_history'].append({'round': self.state['sequence'], 'status': 'withdrawn',
+                                         'evidence': f"Operator ruling {ruling_id}: {record['reason']}",
+                                         'actor': 'operator', 'ruling_id': ruling_id})
+        self.save()
+        self.write_ledger()
+        self.write_open_findings()
+        self.write_comparison()
+        return self.state['status']
+
+    def operator_rulings_prompt(self, fresh=False) -> str:
+        rulings = self.state.get('operator_rulings', [])
+        if not rulings: return ''
+        if fresh:
+            return '\n## Operator decisions\n' + '\n'.join('operator decision: ' + row['reason'] for row in rulings) + '\n'
+        return ('\n## Operator withdrawals\n' + '\n'.join(
+            f"- {row['id']}: {', '.join(row['finding_ids'])}: {row['reason']}" for row in rulings) +
+            '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n')
+
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
         refuse_removed_options(self.args)
         self._refuse_report_feedback()
@@ -4633,14 +4694,15 @@ class Coordinator:
 
     def open_findings_prompt(self) -> str:
         findings = self._reviewer_open_findings()
+        notice = self.operator_rulings_prompt()
         owned = ('Other roles own further open findings that are not listed here; do not report their issues again as new '
                  'findings.\n' if len(findings) < len(self.open_findings()) else '')   # HYGIENE-2 (B4): only a W run hides some
         if not findings:
-            return ('Open finding ledger: none. Return an empty prior_findings array.\n' +
+            return (notice + 'Open finding ledger: none. Return an empty prior_findings array.\n' +
                     LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
         rows = '\n'.join(f"- {finding['id']}: [source={finding['source']}; severity={finding['severity']}"
                          + ('; security-tagged' if finding.get('security') else '') + f"] {finding['summary']}" for finding in findings)
-        return ('Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
+        return (notice + 'Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
                 'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n'
                 'Never report a listed finding again as a new one; its disposition above is its report.\n'
                 + LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
@@ -4652,7 +4714,8 @@ class Coordinator:
     def _mask_guidance(self, text: str) -> str:
         """L105: the frozen guidance is operator text, not review history: masked in one pass (longest first, so overlapping
         texts stay whole) wherever a fresh role's prompt is checked."""
-        texts = sorted(self._guidance_texts(), key=len, reverse=True)
+        texts = sorted(self._guidance_texts() + ([self.operator_rulings_prompt(fresh=True)]
+                       if self.state.get('operator_rulings') else []), key=len, reverse=True)
         return re.sub('|'.join(map(re.escape, texts)), '<project-guidance>', text) if texts else text
 
     def _guidance(self, keys: tuple) -> str:
@@ -4694,7 +4757,7 @@ class Coordinator:
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
-            ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json)
+            ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt(fresh=True) + opv.prompt_block(self, snapshot, atomic_json)
         fresh_note = 'Use your persistent thread history across PLAN and EXEC.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -4768,7 +4831,7 @@ class Coordinator:
                 '\n' + REVIEW_HISTORY_GUIDANCE +
                 '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
-                opv.prompt_block(self, snapshot, atomic_json))
+                self.operator_rulings_prompt(fresh=True) + opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -7253,8 +7316,9 @@ class Coordinator:
 
     def _revert_replay_findings(self, replay: dict, sequence: int, note: str, retain: set = frozenset()) -> None:
         """§2: rows the replay closed go back to their start status, rows it raised that are still open are withdrawn unless retained."""
+        withdrawn = {finding_id for ruling in self.state.get('operator_rulings', []) for finding_id in ruling['finding_ids']}
         for row in self.state['finding_ledger']:
-            if row['id'] in retain:
+            if row['id'] in retain or row['id'] in withdrawn:
                 continue
             before = replay['statuses'].get(row['id'])
             if row['status'] != (before or 'withdrawn') and (before or row['status'] == 'open'):
@@ -8883,6 +8947,11 @@ class Coordinator:
         if add is None and self.at_round_limit_hold() and self.state['exec_rounds'] > self.exec_round_limit():
             return 'HOLD'   # stage writes already used the next round; an extension must authorize its review
         if add is not None: self._add_rounds(add)
+        elif self.at_round_limit_hold() and self.state.get('operator_rulings') and not self.blocking_open_findings():
+            last = next((turn for turn in reversed(self.state['turns'])
+                         if turn['role'] == 'reviewer' and turn['phase'] == self.state['phase'] and turn.get('answer')), None)
+            if last and not last['answer'].get('full_review'):
+                self.state.update(next='reviewer', pending_reviewer_result_sequence=None)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''
         self.state.pop('hold_kind', None); self.state.pop('rate_limit', None)
@@ -9065,7 +9134,7 @@ def config_bool(value):
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
-                                      'accept', 'reject', 'note', 'status', 'attach-verification', 'stop'])
+                                      'accept', 'reject', 'withdraw-findings', 'note', 'status', 'attach-verification', 'stop'])
     p.add_argument('--detach', action='store_true',
                    help='run, resume, reject or permission-probe in a new session, outside the host\'s process tree, and return '
                         'at once with its pid and log; poll `status --brief`; `stop` ends it (docs/detach.md)')
@@ -9160,7 +9229,7 @@ def parser() -> argparse.ArgumentParser:
                    help='operator override: run Codex roles (author, reviewer or gate) on an unverified codex-cli version (needs --reason)')
     p.add_argument('--accept-unverified-claude-author', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--accept-probe-skip', action='store_true', help=argparse.SUPPRESS)
-    p.add_argument('--reason', help='operator reason for acceptance or the unverified codex-cli version')
+    p.add_argument('--reason', help='operator reason for acceptance, withdraw-findings or the unverified codex-cli version')
     p.add_argument('--text', help='operator rejection note (reject action)')
     p.add_argument('--file', help='read operator rejection note from this file (reject action)')
     p.add_argument('--override-rejection', action='store_true', help=argparse.SUPPRESS)
@@ -9171,7 +9240,8 @@ def parser() -> argparse.ArgumentParser:
     av.add_argument('--log', help='its log file, outside the workspace and run dir (copied into the run evidence)')
     av.add_argument('--log-sha256', help='sha256 of that log; a mismatch is refused')
     av.add_argument('--note', help='non-empty operator note')
-    p.add_argument('--expect', help='operator intent digest required by accept/reject')
+    p.add_argument('--finding', action='append', help='withdraw-findings: open finding ID; repeat to withdraw several at DONE (acceptance pending), PLAN/EXEC round-limit HOLD or rejected-tree HOLD; requires --reason and intent/--expect')
+    p.add_argument('--expect', help='operator intent digest required by accept/reject/withdraw-findings')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
     p.add_argument('--quiet-progress', action='store_true', help='suppress the per-event progress lines (the final status line and RUN/progress.jsonl stay)')
@@ -9200,7 +9270,7 @@ def old_gate_vendor(author_vendor: str) -> str:   # the opposite-vendor rule, no
 
 
 def restores_run(args: argparse.Namespace) -> bool:
-    return args.action in ('accept', 'reject', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
+    return args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
 def validate_allowed_models(allowed) -> None:
@@ -9460,6 +9530,9 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
+    if args.action == 'withdraw-findings':
+        print(co.withdraw_findings())
+        return 0
     if args.action == 'note':
         print('NOTE: ' + co.note(args.text, args.file))
         return 0
@@ -9607,7 +9680,7 @@ def main(argv=None) -> int:
     if args.no_test_command or saved_null:   # LG2-b2: the null sentinel before every precheck below
         args.test_command = None
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
-    if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action == 'accept') and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
+    if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action in ('accept', 'withdraw-findings')) and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
         flags = ('--accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip'
                  if refuse_removed_options(args) else '--accept-unverified-codex-cli')
         print('REFUSED: ' + flags + ' needs --reason and run, resume or reject')
@@ -9678,7 +9751,7 @@ def main(argv=None) -> int:
         with ProbeParentLock(args, workspace, run_dir) as probe_lock, run_lease(Path(args.run_dir)):   # FIELD-13: the parent lock first
             probe_lock.after_mkdir()
             args._probe_lock = probe_lock if probe_lock.whole else None
-            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
+            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)

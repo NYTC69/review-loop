@@ -1544,7 +1544,7 @@ sys.exit(result.returncode)
         refused = subprocess.run(invalid, cwd=self.root, text=True,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(refused.returncode, 2)
-        self.assertIn('intent action must be accept or reject', refused.stdout)
+        self.assertIn('intent action must be accept, reject or withdraw-findings', refused.stdout)
         issued = self.issue_operator_intent('accept')
         self.assertEqual(issued.returncode, 0, issued.stdout + issued.stderr)
         missing = self.command('--skip-probe'); missing[2] = 'accept'

@@ -241,6 +241,7 @@ A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and say
   `.review-loop/config.md` keeps it uncommitted. The main pipeline commits only when the operator profile sets
   `auto_commit` and lifecycle is on. Lifecycle off always returns the uncommitted tree. Nothing is ever pushed.
 - **reject** — with your note, the run reopens EXEC and the author works on it.
+- **withdraw-findings** — overrule eligible open findings with a persistent operator decision; use `--finding`, `--reason`, then intent/`--expect` (see [operator commands](paired_session/README.md#acceptance-rejection-and-round-limits)).
 - Under `handsfree` the agent never accepts or rejects.
 
 ## Run control

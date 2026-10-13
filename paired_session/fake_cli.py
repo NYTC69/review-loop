@@ -121,7 +121,8 @@ def emit_claude(answer, session, extra_commands=None):
         for index, evidence in enumerate(evidence_rows):
             tool_id = 'fake-tool-' + str(index)
             command = evidence['command']
-            if os.environ.get('FAKE_REVIEW_NO_TEST_EVENT') and command == 'python3 -m unittest':
+            if (os.environ.get('FAKE_REVIEW_NO_TEST_EVENT') or
+                    (os.environ.get('FAKE_PERSISTENT_REVIEW_NO_TEST_EVENT') and 'prior_findings' in answer)) and command == 'python3 -m unittest':
                 continue
             forbidden = command.startswith(('echo ', 'git checkout', 'git --literal-pathspecs checkout', 'rm ', 'git diff --output=',
                                              'git log --output=', 'git show --output=')) or ' > ' in command
@@ -398,6 +399,10 @@ def main():
                 findings.append({'severity': extra, 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3, 'confidence': 0.8,
                                  'recommendation': 'simplify the helper',
                                  'body': 'Non-blocking cleanup suggested by the fake gate.'})
+        elif (scope := os.environ.get('FAKE_GATE_SCOPE')) and 'operator decision: ' + scope not in prompt:
+            findings = [{'severity': 'medium', 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3,
+                         'confidence': 0.8, 'recommendation': 'expanded export scope',
+                         'body': 'The export change exceeds the approved scope.'}]
         elif os.environ.get('FAKE_GATE_MINOR') or os.environ.get('FAKE_GATE_LOW'):
             findings = [{'severity': 'low' if os.environ.get('FAKE_GATE_LOW') else 'medium',
                          'file': 'sum_ints.py', 'line_start': 1,
