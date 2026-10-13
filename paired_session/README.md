@@ -112,9 +112,10 @@ only at the shadow or gate. The work item is never rewritten: a work item with
 
 Secret scan (V312-S, every route, `--lifecycle-mode off` included): before each
 EXEC review verdict is accepted and before the gate, `leak_scan.py` reads the
-added lines of the run's change (`context/delta.patch`: tracked changes against
-the base plus new untracked files; a review-only or review-pr run, the change
-under review). The rules are `scripts/content_rules.py`, one table with a scope
+added lines of the run's change (a patch the coordinator computes for the scan,
+the change of `context/delta.patch` with the files' own line endings: tracked
+changes against the base plus new untracked files; a review-only or review-pr
+run, the change under review). The rules are `scripts/content_rules.py`, one table with a scope
 per rule. Added lines are text the run adds, so this scan applies every rule:
 the six `whole-delivery` rules (a `-----BEGIN ... PRIVATE KEY-----` marker
 followed by key material: 40+ base64 characters after optional line breaks,

@@ -69,6 +69,25 @@ class ClassifierTests(unittest.TestCase):
                 self.assertIsNone(rc.classify_rate_limit_failure(1, '', json.dumps({'type': 'error', 'message': message})))
                 self.assertIsNone(rc.classify_rate_limit_failure(1, message + '\n'))
 
+    def test_another_character_in_the_apostrophe_slot_is_not_a_limit(self):   # V316 (v3.1.5 gate note)
+        for slot in ('`', 'x'):
+            message = f'You{slot}ve hit your usage limit'
+            with self.subTest(slot=slot):
+                self.assertIsNone(rc.classify_rate_limit_failure(1, message + '\n'))
+                self.assertIsNone(rc.classify_rate_limit_failure(1, '', json.dumps({'type': 'error', 'message': message})))
+
+    def test_try_again_in_and_try_again_later_are_reset_hints(self):   # V316 (v3.1.5 gate note): the hint only
+        for hint in ('Try again in 3 days 2 hours 5 minutes.', 'Try again later.'):
+            message = 'You’ve hit your usage limit. ' + hint
+            for case, (stderr, stdout) in {'stderr': (message + '\n', ''),
+                                           'event': ('', json.dumps({'type': 'error', 'message': message}))}.items():
+                with self.subTest(hint=hint, case=case):
+                    self.assertEqual(rc.classify_rate_limit_failure(1, stderr, stdout), {'kind': 'rate_limited', 'reset_hint': hint})
+        for message in ('The tool crashed; try again later.', 'Network error. Try again in 5 minutes.'):   # a cue is not a limit
+            with self.subTest(message=message):
+                self.assertIsNone(rc.classify_rate_limit_failure(1, message + '\n'))
+                self.assertIsNone(rc.classify_rate_limit_failure(1, '', json.dumps({'type': 'error', 'message': message})))
+
     def test_ordinary_errors_stay_billable(self):
         for stdout in ('{"type":"result","is_error":true,"result":"Error: tool crashed","api_error_status":500}',
                        '{"type":"assistant","is_api_error_message":true,"error":"overloaded"}',

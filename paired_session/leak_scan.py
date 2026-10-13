@@ -1,10 +1,12 @@
 """V312-S: a cheap, deterministic scan of the lines a run's change adds for hardcoded credentials.
 
-The scan reads context/delta.patch (tracked changes against the base plus new untracked files) and reports `path`,
-`line` and the rule only, never the matched value. The coordinator passes that patch with the files' own line endings
-(V314): a patch line ends at `\n` only, so `line` is git's and an editor's number in a file with a form feed or a bare `\r`. The rules are scripts/content_rules.py; added lines are text the run
-adds, so this is an ADDED_TEXT scan and applies every rule of that table. The SECURITY stage's whole-delivery scan
-(scripts/security_preflight.py) reads files the run never touched and applies only the table's WHOLE_DELIVERY rules.
+The scan reads a git patch of the run's change (tracked changes against the base plus new untracked files) and
+reports `path`, `line` and the rule only, never the matched value. The coordinator computes that patch for each scan
+with the files' own line endings (V314), not from context/delta.patch: a patch line ends at `\n` only, so `line` is
+git's and an editor's number in a file with a form feed or a bare `\r`. The rules are scripts/content_rules.py; added
+lines are text the run adds, so this is an ADDED_TEXT scan and applies every rule of that table. The SECURITY stage's
+whole-delivery scan (scripts/security_preflight.py) reads files the run never touched and applies only the table's
+WHOLE_DELIVERY rules.
 """
 import fnmatch
 import importlib.util

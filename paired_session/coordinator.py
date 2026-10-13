@@ -372,7 +372,7 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
     if not confirmed:
         return None
     reset_hint = epoch_hint   # an exact resetsAt beats a parsed phrase
-    reset_cues = ('try again at', 'reset at', 'resets at', 'resets ', 'reset time',
+    reset_cues = ('try again at', 'try again in', 'try again later', 'reset at', 'resets at', 'resets ', 'reset time',
                   'available again at', 'available at', 'retry after', 'retry-after', 'retry_after')
     for source in ([] if reset_hint else reset_sources):
         for line in source.splitlines():
