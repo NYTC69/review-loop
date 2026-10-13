@@ -27,20 +27,24 @@ class OperatorRecoveryTests(unittest.TestCase):
     def test_filemode_and_autocrlf_refusal_and_retry(self):
         for key, value, hint in (
                 ('core.fileMode', 'false', 'set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)'),
-                ('core.autocrlf', 'input', 'unset it and accept again')):
+                ('core.autocrlf', 'input', 'unset it (or set it to false in this repository) and accept again')):
             with self.subTest(key=key):
                 self.run_dir = self.root / key
-                self.git('config', key, value)
+                # Use the global autocrlf case: a repository override must also recover it.
+                self.git('config', *(['--global'] if key == 'core.autocrlf' else []), key, value)
                 self.done(*ON, '--auto-commit', 'true')
                 for extra in ((), ('--auto-commit', 'false')):
                     refused = self.run_operator_action('accept', *extra)
                     self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
                     self.assertIn(hint, refused.stdout)
                     self.assertTrue(self.state()['config']['auto_commit'])
-                self.git('config', key, 'true') if key == 'core.fileMode' else self.git('config', '--unset', key)
+                self.git('config', key, 'true' if key == 'core.fileMode' else 'false')
                 accepted = self.run_operator_action('accept')
                 self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
                 self.assertIsNotNone(self.state()['acceptance']['delivery']['commit'])
+                if key == 'core.autocrlf':
+                    self.git('config', '--global', '--unset', key)
+                    self.git('config', '--unset', key)
 
     def test_sparse_refusal_and_new_run_without_commit(self):
         self.git('update-index', '--skip-worktree', 'tracked.txt')
@@ -56,14 +60,49 @@ class OperatorRecoveryTests(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertIsNone(self.state()['acceptance']['delivery']['commit'])
 
-    def test_submodule_run_is_refused_before_accept_even_without_auto_commit(self):
-        self.git('update-index', '--add', '--cacheinfo', '160000,' + self.git('rev-parse', 'HEAD') + ',vendor/lib')
-        self.git('commit', '-qm', 'fake submodule')
+    def test_real_submodule_start_refusal_and_stop_after_gate_recovery(self):
+        source = self.root / 'submodule-source'
+        source.mkdir()
+        for args in (('init', '-q'), ('config', 'user.email', 'fake@example.test'),
+                     ('config', 'user.name', 'Fake')):
+            rc.subprocess.run(['git', *args], cwd=source, check=True)
+        (source / 'lib.txt').write_text('local submodule fixture\n')
+        rc.subprocess.run(['git', 'add', 'lib.txt'], cwd=source, check=True)
+        rc.subprocess.run(['git', 'commit', '-qm', 'submodule base'], cwd=source, check=True)
+        self.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', '--', str(source), 'vendor/lib')
+        self.git('commit', '-qm', 'real submodule')
         for value in ('true', 'false'):
             self.run_dir = self.root / ('submodule-' + value)
             refused = self.run_coordinator(*ON, '--auto-commit', value)
             self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
             self.assertIn('submodules/gitlinks are unsupported by this manifest version', refused.stdout)
+            self.assertIn('use --lifecycle-mode off (stop-after-gate) for this repository', refused.stdout)
+        self.run_dir = self.root / 'submodule-off'
+        self.done(*OFF)
+        self.assertEqual(self.state()['config']['lifecycle_mode'], 'off')
+
+    def test_review_only_default_accept_reports_only_the_skip_reason(self):
+        for key, value, reason in (
+                ('core.autocrlf', 'input', 'auto_commit refuses core.autocrlf'),
+                ('core.fileMode', 'false', 'auto_commit refuses core.fileMode false')):
+            with self.subTest(key=key):
+                self.run_dir = self.root / ('review-default-' + key)
+                self.git('config', key, value)
+                (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+                self.done(*ON, '--review-only')
+                self.assertEqual(self.state()['config']['auto_commit_source'], 'review-only-default')
+                accepted = self.run_operator_action('accept')
+                self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+                self.assertEqual(self.state()['status'], 'ACCEPTED')
+                self.assertEqual(self.state()['acceptance']['delivery']['commit_skipped'], reason)
+                [line] = [line for line in accepted.stdout.splitlines() if line.startswith('UNCOMMITTED:')]
+                self.assertIn('UNCOMMITTED: no commit was made (auto_commit skipped: ' + reason + '); commit these yourself:', line)
+                report = (self.run_dir / 'delivery-report.md').read_text()
+                self.assertIn('auto_commit 已跳过（' + reason + '）', report)
+                for text in (line, report):
+                    for hint in ('accept again', 'unset it', 'set it to true', 'start a new run', 'abort and commit', 'auto_commit is frozen'):
+                        self.assertNotIn(hint, text)
+                self.git('config', key, 'true') if key == 'core.fileMode' else self.git('config', '--unset', key)
 
     def test_allowlist_restore_before_and_after_probe(self):
         original = self.workitem.read_text()
@@ -124,7 +163,7 @@ class OperatorRecoveryTests(unittest.TestCase):
                 path.write_text(json.dumps(state))
                 held = self.run_operator_action('reject', '--text', 'Please handle an edge case.')
                 self.assertIn('post-DONE rejection limit reached', held.stdout)
-                hint = ('note and resume, reject --scope-change, or abort' if mode == ON else 'reject --scope-change or abort')
+                hint = 'note and resume, reject --scope-change, or abort'
                 self.assertIn(hint, held.stdout)
                 refused = self.run_operator_action('accept')
                 self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)

@@ -58,7 +58,7 @@ PSE gets a **Code-quality-loop entry** subsection after "Review-only entry" (abo
 - It is a review-only run (everything in "Review-only entry" applies: the change is the whole non-ignored worktree
   against `HEAD`; the same stage A listing and the same refusals). CQL never took a base, so no `--base` is passed.
 - **CLIs:** the code-quality-loop skill checks nothing before it hands off, so run the direct-invocation CLI check
-  of "Stage A checks" here (every CLI the resolved roles need, `command -v`), as the Review-PR entry does (PSE:145-146).
+  of "Stage A checks" here (both `codex` and `claude` must be on PATH whatever vendors the roles use, `command -v`), as the Review-PR entry does (PSE:145-146).
   A missing CLI is a failed stage A check, so with the key absent the default-entry fallback (§1.1 step 5) applies
   before any coordinator command.
 - **Test command:** as for any review-only run (profile `test_command`, else the verified project command, asked

@@ -4083,7 +4083,7 @@ class Coordinator:
         elif staged := self._git_names(['diff-index', '--cached', '--name-only', '-z', 'HEAD']):
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
         if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
-            raise ValueError('auto_commit refuses core.autocrlf; unset it and accept again')
+            raise ValueError('auto_commit refuses core.autocrlf; unset it (or set it to false in this repository) and accept again')
         if self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
             raise ValueError('auto_commit refuses core.fileMode false; set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
@@ -4139,7 +4139,7 @@ class Coordinator:
             except ValueError as exc:   # FIELD-25 gate: a defaulted auto_commit delivers uncommitted; an explicit one refuses
                 if self.state['config'].get('auto_commit_source') != 'review-only-default':
                     raise
-                return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc)}
+                return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc).split('; ', 1)[0]}
             if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                 raise ValueError('the tree changed during the accept; restore the approved tree or abort')
             title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
