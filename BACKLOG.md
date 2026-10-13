@@ -1,8 +1,14 @@
-**Last updated**: 2026-10-11
+**Last updated**: 2026-10-13
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
+
+- At the EXEC round limit, a re-review that leaves only non-blocking rows open ends as approved-with-advisory instead of HOLD (candidate A; owner approved 2026-10-13). (added 2026-10-13)
+  - Field evidence: four consumer runs held with `EXEC round limit reached` (three on v3.1.3, one on v3.1.4), all with the same shape: the reviewer had no finding of its own, and every row it reported `still_open` was a gate MEDIUM or LOW.
+  - Scope: only at the limit; the reviewer's verdict has no finding of its own; no row in `blocking_open_findings()` is open; the conditions the existing `advisory_exit` requires (configured test passed, reviewer's own run evidence, same snapshot) still apply. Rounds that are still available keep being spent on those rows, as today.
+  - Not in scope: candidate B (a send-back that withdraws findings the operator overrules).
+  - Evidence: supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`, entry "Poker-news-bot round-limit HOLDs on v3.1.3/v3.1.4" and its 2026-10-12 08:40 correction.
 
 ## P2 — normal
 
@@ -34,6 +40,14 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 ~~[new] v2.7.1 polish-tier follow-ups bundled (8 items, all surfaced during the wire-scheduler session ac3fd787, none blocking). (a) Plugin version-consistency lint. (b) Lint-protect the `runtime: "codex"` vs `runtime: "claude_code"` split in the `Parallel Reviewer Fan-Out (N>1)` subsection. (c) Lint-protect the Edit C precedence rule. (d) Lint-protect the Edit D ENOENT-as-success cleanup discipline. (e) Lint-protect the `parsed_verdict` / `parsed_issues` "best-effort metadata only" caveat. (f) Lint-protect the `_load_jobs` 10-field schema list. (g) Lint-protect the `docs/protocol/planning.md` forward-pointer anchor. (h) Root-cause and fix `review-loop.regression.smoke.claude` pre-existing fixture FAIL. (added 2026-05-09)~~ (closed 2026-05-09 via v2.7.2, session `1e6530e5-9b67-4e20-9266-775110854938`. Plan via review-loop:plan 4 rounds (R1 RC 4 CRITICAL, R2 RC 3 CRITICAL on b/c/d needles, R3 RC 1 CRITICAL on c1 line-wrap, R4 APPROVE codex/gpt-5.5). Execute Round 1 first-pass APPROVE; Round 2 RC 1 CRITICAL on item-h plan deviation A→B (plan acceptance-umbrella argument accepted); Round 2 APPROVE. Quality Polish: code-reviewer 0/0/0, silent-failure-hunter 0/0/0, code-simplifier 1 prose fix (replay→APPROVE), pr-test-analyzer 0/0/4 MEDIUM (P3 polish-tier follow-ups, non-blocking). Documentation Consistency: comment-analyzer 0/2 HIGH factual fixes applied directly in smoke/README.md. Security Preflight: 0 sensitive files, .gitignore complete. Delivered as 48 inline `kind: contains` lint records (a=3, b=9, c=12, d=9, e=4, f=10, g=1) + 1 smoke assertion + group member (item h Option A retained as harmless extension) + new `tests/skills/smoke/README.md` documenting `best_effort` flake (item h Option B; root cause is `claude -p` 600s timeout, not heading drift the plan diagnosed). Lint baseline 297 → 345 PASS / 0 FAIL. tests/review_verification_test.py 57/57. Plugin v2.7.1 → v2.7.2.)
 
 ~~Mirror the 10 stop-and-surface lint assertions to the Claude-side `skills/plan/SKILL.md` and `skills/execute/SKILL.md` so Claude-side regressions of lock-release, hallucination guards, and the git-diff failure bullet are statically caught. (added 2026-05-06)~~ (closed 2026-05-07, see 6c0dfd7 — 4 of the 10 mirrored as Claude-side `claude_*` cases (3 `contains` companions + 1 per-site `pattern_requires_adjacent`) implementing the v2.6.22 three-layer defense. The other 6 dispatch-site assertions are deliberately NOT mirrored: Claude SKILLs delegate Executor/Reviewer dispatch to `docs/protocol/planning.md` so the analogous needles are absent on Claude bodies and `pattern_requires_adjacent` would silently vacuous-pass per `tests/run_skill_lint_test.py:176-180`. Plan via review-loop:plan session 8fac7f57 (R1 REQUEST_CHANGES → R2 APPROVE, codex gpt-5.5); execute Round 1 first-pass APPROVE; lint 268→272 case-level PASS / 0 FAIL; unit tests 28/28 OK. Plugin v2.6.22 → v2.6.23.)
+
+- Follow-ups from the v3.1.4 and v3.1.5 gates (non-blocking; batch them when a release is due anyway). (added 2026-10-13)
+  - `paired_session/leak_scan.py` docstring: one overlong line, and it says the scan "reads context/delta.patch" although the coordinator now passes a freshly computed raw patch (v3.1.4 gate).
+  - A file with CR-only line endings is one line for git, so every hit in it is reported at line 1; one README sentence could say so (v3.1.4 gate).
+  - Reset-hint cues of `classify_rate_limit_failure` do not cover "try again in ..." and "Try again later": the HOLD is still typed `rate_limited`, only the hint is missing (v3.1.5 gate; v3.1.4 behavior).
+  - No negative test for another character in the apostrophe slot of the "you've hit ... limit" pattern (v3.1.5 gate).
+  - Accepted, no action planned: `head.splitlines()` in the patch-header parse; stderr matched as free text by the limit classifier; the fake CLI switch `FAKE_RATE_LIMIT_CODEX_USAGE` ignores the vendor.
+  - Evidence: `.worktrees/paired-session-next-batch/.compass/results/lanea/gate-v315-out.txt`; supervisor log `.compass/results/2026-09-24_shadow-supervisor-log.md`, entries "v3.1.4 released" and "V315 reviewed and gated".
 
 ## Done (recent, trimmed quarterly)
 
