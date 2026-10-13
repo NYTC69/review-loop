@@ -6154,6 +6154,14 @@ class Coordinator:
         return {'head': self._head_commit(), 'branch': self._git(['symbolic-ref', '-q', 'HEAD'], ok=(0, 1)).strip(),
                 'index': digest(self._git(['ls-files', '--stage']))}   # tags/other refs are shared across worktrees
 
+    def _recorded_lifecycle_writer(self, request: dict) -> Optional[dict]:
+        life = self.state['lifecycle']
+        base = life.get('writer_git') if life['pending'] == request else None
+        return next((turn for turn in reversed(self.state['turns'])
+                     if turn.get('role') == 'author' and turn.get('phase') == request['stage'] and not turn.get('error')
+                     and not turn.get('discarded') and turn.get('sequence', 0) > base['sequence']
+                     and isinstance(turn.get('answer'), dict)), None) if base else None
+
     def _lifecycle_writer(self, request: dict, label: str, prompt) -> dict:
         """A fresh author session in the live worktree that must leave HEAD, its branch and the index unchanged
         (D8). The git baseline is persisted per attempt; a recorded turn since it is reused, never re-dispatched."""
@@ -6174,10 +6182,7 @@ class Coordinator:
                 raise WriterGitGuard(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort'
                                      + (f' (the turn failed: {cause})' if cause else ''))
         check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
-        recorded = next((turn for turn in reversed(self.state['turns'])
-                         if turn.get('role') == 'author' and turn.get('phase') == phase and not turn.get('error')
-                         and not turn.get('discarded')
-                         and turn.get('sequence', 0) > base['sequence'] and isinstance(turn.get('answer'), dict)), None)
+        recorded = self._recorded_lifecycle_writer(request)
         try:
             result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
                        'role': 'author'} if recorded else
@@ -6222,10 +6227,20 @@ class Coordinator:
         base_file = self.evidence / f"{request['request_id']}-docs-base.json"
         if life['pending'] != request:
             tree, manifest = git_snapshot(workspace)
-            if tree != life['candidate_oid']:
+            previous = next((row for row in reversed(life['receipts'])
+                             if row.get('stage') == 'DOCS' and row.get('epoch') == life['epoch']), None)
+            continued = (previous and previous['status'] == 'HOLD' and tree == previous['output_oid']
+                         and all(path in allow and not worktree_lifecycle.docs_denied(path, dict(manifest).get(path))
+                                 for path in previous['docs_paths']))
+            if tree != life['candidate_oid'] and not continued:
                 raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
-            owned = self._docs_owned()   # DOCS's own entries: the EXEC author may fix docs findings in them,
-            if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews them again
+            if continued:
+                try:
+                    manifest = json.loads((self.evidence / f"{previous['request_id']}-docs-base.json").read_text())
+                except (OSError, ValueError) as exc:
+                    raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
+            owned = {**self._docs_owned(), **(previous['docs_written'] if continued else {})}
+            if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews its own entries again
                 raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
                                    '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
             if bad := sorted(path for path in allow if (workspace / path).is_dir() or   # the config-time invariant again:
@@ -6892,14 +6907,16 @@ class Coordinator:
         while state is None and result is None:
             life = self.state['lifecycle']   # lifecycle_spine.begin replaces the dict: count on the current one
             counts = life.setdefault('writer_counts', {})
-            if (counts.get(writer, 0) + 1 > budget_policy.BUDGET_CAPS[writer][0] or
-                    life.get('polish_calls', 0) + 1 > self._worktree_run_cap('POLISH-Q')):
-                state = 'exhausted'
-                break
-            counts[writer] = counts.get(writer, 0) + 1
-            life['polish_calls'] = life.get('polish_calls', 0) + 1   # §3: the writer cap and POLISH-Q's run cap
-            leg['attempts'] += 1
-            self.save()
+            reserved = self._recorded_lifecycle_writer(request) is None
+            if reserved:
+                if (counts.get(writer, 0) + 1 > budget_policy.BUDGET_CAPS[writer][0] or
+                        life.get('polish_calls', 0) + 1 > self._worktree_run_cap('POLISH-Q')):
+                    state = 'exhausted'
+                    break
+                counts[writer] = counts.get(writer, 0) + 1
+                life['polish_calls'] = life.get('polish_calls', 0) + 1   # §3: count only a new dispatch
+                leg['attempts'] += 1
+                self.save()
             before = self.state['sequence']
             try:
                 result = self._lifecycle_writer(request, f'POLISH-Q {writer}', prompt)
@@ -6912,7 +6929,7 @@ class Coordinator:
                 life = self.state['lifecycle']
                 refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
                                if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
-                if delta := self.state['sequence'] - before - refunded - 1:
+                if delta := self.state['sequence'] - before - refunded - int(reserved):
                     life['writer_counts'][writer] += delta
                     life['polish_calls'] += delta
                     leg['attempts'] += delta
@@ -8707,6 +8724,8 @@ class Coordinator:
         if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
             self.state['active'] = self.state['uncertain_active'] = None
             return self.hold(past_deadline)
+        if add is None and self.at_round_limit_hold() and self.state['exec_rounds'] > self.exec_round_limit():
+            return 'HOLD'   # stage writes already used the next round; an extension must authorize its review
         if add is not None: self._add_rounds(add)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''

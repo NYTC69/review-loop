@@ -330,7 +330,7 @@ def main():
         once = os.environ.get('FAKE_WRITER_NO_TOOLS_ONCE')
         no_tools = chosen('FAKE_WRITER_NO_TOOLS') or (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)
         command_events = [] if no_tools else [{'command': 'git diff --stat', 'exit_code': 0, 'output': ''}]
-        if chosen('FAKE_WRITER_WRITE'):
+        if chosen('FAKE_WRITER_WRITE') and not (no_tools and os.environ.get('FAKE_WRITER_WRITE_WITH_TOOLS_ONLY')):
             key = writer.upper().replace('-', '_')   # D09 F2: FAKE_WRITER_FILE_SIMPLIFIER / _TEST_WRITER per writer
             target = Path.cwd() / os.environ.get('FAKE_WRITER_FILE_' + key, os.environ.get('FAKE_WRITER_FILE', 'sum_ints.py'))
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -361,7 +361,8 @@ def main():
         if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
             Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: EXEC replays
             module.write_text(module.read_text() + '# docs comment fix\n')
-        answer = ({'status': 'HOLD', 'body': 'Fake finisher held.'} if os.environ.get('FAKE_FINISH_HOLD') else
+        answer = ({'status': 'HOLD', 'body': 'Fake docs writer held.'} if 'Phase: DOCS' in prompt and os.environ.get('FAKE_DOCS_HOLD') else
+                  {'status': 'HOLD', 'body': 'Fake finisher held.'} if os.environ.get('FAKE_FINISH_HOLD') else
                   {'status': 'READY', 'body': 'Checked readiness; ' + ('fixed a defect.' if
                    os.environ.get('FAKE_FINISH_WRITE') else 'nothing needed changing.')})
     elif prompt.startswith('You are an adversarial reviewer'):
