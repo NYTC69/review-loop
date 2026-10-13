@@ -302,7 +302,8 @@ Reviews a change and writes a report; it never fixes, commits, pushes or posts o
 none reviews the local change in the current worktree; a PR number or GitHub PR URL (needs `gh`) or a ref is
 reviewed in a temporary clone under the run root (your checkout is never touched; the clone is removed only when
 you agree). For a PR or ref input, Git LFS files are reviewed as their pointer files; the LFS
-content is not fetched or reviewed. No tests run unless you confirm a test command for this review. The EXEC reviewer, the shadow, the gate,
+content is not fetched or reviewed. A repository with submodules cannot be reviewed in report mode yet.
+No tests run unless you confirm a test command for this review. The EXEC reviewer, the shadow, the gate,
 the language reviewers for the changed file types and the security stage run by default (`shadow: off` in the
 operator profile skips the shadow, `skip_quality_polish: true` every specialist, the language reviewers included);
 the aspects only choose the specialists below and never the language reviewers (`all` or none: every one that applies; `comments` runs when the change touches docs or comment

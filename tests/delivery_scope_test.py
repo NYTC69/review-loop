@@ -264,7 +264,13 @@ def test_rejects_nested_repository_and_gitlink(repo):
     # Keep the nested repo, but make it a tracked gitlink to exercise that branch.
     oid = git(repo, "rev-parse", "HEAD").stdout.decode().strip()
     git(repo, "update-index", "--add", "--cacheinfo", f"160000,{oid},nested")
-    assert "gitlinks" in run(repo, "capture", "--scope", ".", expect=3)["error"]
+    error = run(repo, "capture", "--scope", ".", expect=3)["error"]
+    assert "gitlinks" in error
+    assert "a review-pr report run needs lifecycle on and cannot review it" in error
+    git(repo, "commit", "-qm", "gitlink")
+    error = run(repo, "capture", "--scope", ".", "--from-commit", "HEAD", expect=3)["error"]
+    assert "gitlinks" in error
+    assert "a review-pr report run needs lifecycle on and cannot review it" in error
 
 
 def test_artifact_tampering_wrong_repo_and_inconsistent_capture(repo, monkeypatch):

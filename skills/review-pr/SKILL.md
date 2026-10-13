@@ -9,6 +9,8 @@ argument-hint: "[PR number|PR URL|ref] [aspects: code|errors|comments|types|test
 Run a comprehensive code review using multiple specialized agents, each focusing
 on a different aspect of code quality, as a paired-session report mode run (Step 0).
 
+A repository with submodules cannot be reviewed in report mode yet.
+
 **Review Aspects (optional):** "$ARGUMENTS"
 
 ---

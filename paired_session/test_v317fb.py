@@ -31,7 +31,10 @@ class OperatorRecoveryTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.run_dir = self.root / key
                 # Use the global autocrlf case: a repository override must also recover it.
-                self.git('config', *(['--global'] if key == 'core.autocrlf' else []), key, value)
+                if key == 'core.autocrlf':
+                    (self.test_home / '.gitconfig').write_text('[core]\n\tautocrlf = input\n')
+                else:
+                    self.git('config', key, value)
                 self.done(*ON, '--auto-commit', 'true')
                 for extra in ((), ('--auto-commit', 'false')):
                     refused = self.run_operator_action('accept', *extra)
@@ -43,7 +46,7 @@ class OperatorRecoveryTests(unittest.TestCase):
                 self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
                 self.assertIsNotNone(self.state()['acceptance']['delivery']['commit'])
                 if key == 'core.autocrlf':
-                    self.git('config', '--global', '--unset', key)
+                    (self.test_home / '.gitconfig').unlink()
                     self.git('config', '--unset', key)
 
     def test_sparse_refusal_and_new_run_without_commit(self):
@@ -77,9 +80,25 @@ class OperatorRecoveryTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
             self.assertIn('submodules/gitlinks are unsupported by this manifest version', refused.stdout)
             self.assertIn('use --lifecycle-mode off (stop-after-gate) for this repository', refused.stdout)
+            self.assertIn('a review-pr report run needs lifecycle on and cannot review it', refused.stdout)
         self.run_dir = self.root / 'submodule-off'
         self.done(*OFF)
         self.assertEqual(self.state()['config']['lifecycle_mode'], 'off')
+        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+        self.run_dir = self.root / 'submodule-review-only-off'
+        self.done(*OFF, '--review-only')
+        self.run_dir = self.root / 'submodule-report-on'
+        report = ('--review-only', '--review-report', '--auto-commit', 'false')
+        refused = self.run_coordinator(*ON, *report)
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn('worktree lifecycle cannot capture its delivery baseline', refused.stdout)
+        self.assertIn('a review-pr report run needs lifecycle on and cannot review it', refused.stdout)
+        self.run_dir = self.root / 'submodule-report-off'
+        held = self.run_coordinator(*OFF, *report)
+        self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
+        self.assertIn('report POLISH-Q requires --lifecycle-mode on; start a new run', held.stdout)
+        self.assertTrue(self.state()['config']['review_report'])
+        self.assertEqual(self.state()['status'], 'HOLD')
 
     def test_review_only_default_accept_reports_only_the_skip_reason(self):
         for key, value, reason in (

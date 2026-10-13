@@ -5,6 +5,8 @@ description: Review a GitHub pull request ("review PR 123", a PR URL) or a named
 
 # review-pr (Codex)
 
+A repository with submodules cannot be reviewed in report mode yet.
+
 Resolve `entry` in `.review-loop/config.md` (exact values `legacy` and `paired-session`): `legacy` is
 refused with `review-pr: the legacy workflow was removed in v2.13.0; remove "entry: legacy" from .review-loop/config.md (paired-session is the only entry)`; an invalid value prints
 `review-pr: entry "<v>" is not valid (paired-session is the only entry); using paired-session`, a duplicate key or an

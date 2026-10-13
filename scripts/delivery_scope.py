@@ -202,7 +202,7 @@ def read_state(repo: dict) -> dict:
     for path in sorted(set(head_paths) | set(index)):
         entries = ([head_paths[path]] if path in head_paths else []) + index.get(path, [])
         if any(entry["mode"] == "160000" for entry in entries):
-            raise CaptureError(f"submodules/gitlinks are unsupported by this manifest version: {path!r}; use --lifecycle-mode off (stop-after-gate) for this repository")
+            raise CaptureError(f"submodules/gitlinks are unsupported by this manifest version: {path!r}; use --lifecycle-mode off (stop-after-gate) for this repository (a review-pr report run needs lifecycle on and cannot review it)")
     untracked = []
     for raw in git(root, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
         if raw:
@@ -242,7 +242,7 @@ def commit_state(repo: dict, commit: str) -> dict:
             metadata, path = raw.split(b"\t", 1)
             mode, _, oid = metadata.decode("ascii").split()
             if mode == "160000":
-                raise CaptureError(f"submodules/gitlinks are unsupported by this manifest version: {os.fsdecode(path)!r}; use --lifecycle-mode off (stop-after-gate) for this repository")
+                raise CaptureError(f"submodules/gitlinks are unsupported by this manifest version: {os.fsdecode(path)!r}; use --lifecycle-mode off (stop-after-gate) for this repository (a review-pr report run needs lifecycle on and cannot review it)")
             head_paths[path_name(os.fsdecode(path))] = {"mode": mode, "oid": oid}
     worktree, blobs = {}, {}
     with tempfile.TemporaryFile() as ids:   # one cat-file --batch, read as a stream: bounded memory for any repository
