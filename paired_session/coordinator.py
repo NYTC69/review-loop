@@ -5424,7 +5424,7 @@ class Coordinator:
             subagent[key] = {'input': use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0) + use.get('cache_read_input_tokens', 0),
                              'cached': use.get('cache_read_input_tokens', 0),
                              'output': max(use.get('output_tokens', 0), subagent.get(key, {}).get('output', 0)),
-                             'source': 'subagent-message'}
+                             'source': 'subagent-message', 'message_id': message.get('id')}
         requests += list(subagent.values())
         return answer, result.get('session_id'), requests, len(requests), commands, calls
 

@@ -83,6 +83,7 @@ class UsageAccountingTests(unittest.TestCase):
                     self.assertEqual(receipt.get('timed_out', False), mode == 'timed-out')
                     self.assertEqual(receipt['model_requests'], 3)
                     subs = [row for row in receipt['usage_requests'] if row['source'] == 'subagent-message']
+                    self.assertEqual([row['message_id'] for row in subs], ['sub-a', 'sub-b'])
                     self.assertEqual(sum(row['input'] for row in subs), 19692)
                     self.assertEqual(sorted(row['output'] for row in subs), [3, 9])
                     self.assertEqual(sum(row['output'] for row in receipt['usage_requests']), 19)
@@ -171,13 +172,20 @@ class UsageAccountingTests(unittest.TestCase):
                 with self.subTest(lifecycle=lifecycle, vendor=vendor):
                     self.run_dir = self.root / ('archive-' + lifecycle + '-' + vendor)
                     co = self.coordinator('--lifecycle-mode', lifecycle)
+                    start = time.time() - 10
+                    session = 'abandoned-' + lifecycle
                     rows = claude_rows() if vendor == 'claude' else [
-                        {'type': 'turn.completed', 'usage': {'input_tokens': 30, 'output_tokens': 4}},
-                        {'type': 'turn.completed', 'usage': {'input_tokens': 50, 'output_tokens': 6}}]
+                        {'type': 'thread.started', 'thread_id': session},
+                        {'type': 'turn.completed', 'usage': {'input_tokens': 999999, 'output_tokens': 100}}]
+                    if vendor == 'codex':
+                        rollout = rc.codex_sessions_dir() / ('rollout-' + session + '.jsonl')
+                        rollout.parent.mkdir(parents=True, exist_ok=True)
+                        rollout.write_text(''.join(json.dumps(row) + '\n' for row in [
+                            token_row(start - 2, 50000), token_row(start + 1, 30), token_row(start + 2, 50)]))
                     evidence = co.evidence / '008-exec-author.stdout.jsonl'
                     # The final line need not have a newline when the child closes stdout.
                     evidence.write_text('\n'.join(json.dumps(row) for row in rows))
-                    receipt = {'sequence': 8, 'role': 'author', 'phase': 'EXEC', 'vendor': vendor,
+                    receipt = {'sequence': 8, 'role': 'author', 'phase': 'EXEC', 'vendor': vendor, 'start': start,
                                'invocation_budget_counted': True, 'usage_requests': [
                                    {'input': 1, 'cached': 0, 'output': 1, 'source': 'saved-partial'}]}
                     co.archive_abandoned_turn(receipt)
@@ -185,6 +193,10 @@ class UsageAccountingTests(unittest.TestCase):
                     expected = 19727 if vendor == 'claude' else 80
                     self.assertEqual(sum(row['input'] for row in archived['usage_requests']), expected)
                     self.assertEqual(archived['model_requests'], 3 if vendor == 'claude' else 2)
+                    if vendor == 'codex':
+                        self.assertEqual(archived['usage_requests'], [
+                            {'input': 30, 'cached': 0, 'output': 2, 'source': str(rollout) + ':2'},
+                            {'input': 50, 'cached': 0, 'output': 2, 'source': str(rollout) + ':3'}])
                     self.assertEqual(json.loads((co.evidence / '008-abandoned.receipt.json').read_text())['usage_requests'],
                                      archived['usage_requests'])
                     co.archive_abandoned_turn(receipt)
