@@ -44,6 +44,29 @@ class PromptAndPreflightTests(unittest.TestCase):
                 self.assertIn(notice + 'docs/changes.md, docs/guide.md.', prompt)
                 co.assert_fresh_prompt(role, prompt)
 
+    def test_reserved_document_names_are_masked_for_scans_and_visible_to_models(self):
+        paths = ('docs/gate-review.md', 'docs/F100.md')
+        for mode in ('on', 'off'):
+            with self.subTest(mode=mode):
+                self.run_dir = self.root / ('reserved-names-' + mode)
+                co = self.coordinator('--lifecycle-mode', mode, '--docs-allowlist', paths[0],
+                                      '--docs-allowlist', paths[1])
+                for role, prompt, _ in self.prompts(co):
+                    if role not in ('shadow', 'gate'):
+                        continue
+                    for path in paths:
+                        if mode == 'on':
+                            self.assertIn(path, prompt)
+                            self.assertNotIn(path, co._fresh_history_text('prompt', prompt))
+                        else:
+                            self.assertNotIn(path, prompt)
+                    co.assert_fresh_prompt(role, prompt)
+                    receipt = json.loads((co.evidence / f'{co.state["sequence"] + 1:03d}-{role}.independence-inputs.json').read_text())
+                    self.assertEqual(receipt['inputs']['prompt']['content'], prompt)
+                if mode == 'on':
+                    self.assertIn('gate-review', co._introduced_history('context/plan.md', paths[0]))
+                    self.assertIn('F100', co._introduced_history('context/plan.md', paths[1]))
+
     def test_default_docs_file_is_reserved_in_plan_and_reviews(self):
         co = self.coordinator('--lifecycle-mode', 'on')
         for role, prompt, notice in self.prompts(co):
@@ -87,6 +110,8 @@ class PromptAndPreflightTests(unittest.TestCase):
         def capture(request, role, prompt):
             built = prompt()
             self.assertIn(rc.LONG_COMMAND_RULE, built)
+            if role == 'finisher':
+                self.assertLess(built.index(rc.LONG_COMMAND_RULE), built.index('Approved plan:\n'))
             seen.append(role)
             raise Captured()
         with mock.patch.object(co, '_lifecycle_writer', side_effect=capture), \
@@ -208,11 +233,16 @@ class ContentAndLimitTests(unittest.TestCase):
             path.write_text(EXAMPLE + '\n' + REAL)
             self.assertEqual(sp.scan_file(str(path)), [{'rule': 'aws-access-key-id', 'line': 2}])
 
-    def assert_limit_reason(self, error, path, size):
+    def assert_limit_reason(self, error, path, size, left=None, more_than=None):
         reason = str(error)
-        for needle in (path, 'size ' + str(size) + ' bytes', 'file limit ' + str(sp.MAX_FILE_BYTES) + ' bytes',
+        measured = 'size ' + str(size) + ' bytes' if more_than is None else 'more than ' + str(more_than) + ' bytes'
+        for needle in (path, measured, 'file limit ' + str(sp.MAX_FILE_BYTES) + ' bytes',
                        'total limit ' + str(sp.MAX_TOTAL_BYTES) + ' bytes'):
             self.assertIn(needle, reason)
+        if size > sp.MAX_FILE_BYTES:
+            self.assertIn('file limit exceeded', reason)
+        else:
+            self.assertIn('total limit exceeded after ' + str(sp.MAX_TOTAL_BYTES - left) + ' bytes scanned', reason)
 
     def test_worktree_file_and_total_scan_limits_identify_path_size_and_both_limits(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -222,7 +252,22 @@ class ContentAndLimitTests(unittest.TestCase):
                     handle.truncate(size)
                 with self.assertRaises(sp.ScanError) as caught:
                     sp._read_and_scan(scratch, path.name, {}, left)
-                self.assert_limit_reason(caught.exception, path.name, size)
+                self.assert_limit_reason(caught.exception, path.name, size, left)
+
+    def test_total_limit_reports_prior_bytes_for_a_file_below_both_limits(self):
+        with tempfile.TemporaryDirectory() as scratch, \
+                mock.patch.object(sp, 'MAX_FILE_BYTES', 1000), mock.patch.object(sp, 'MAX_TOTAL_BYTES', 700):
+            path = Path(scratch) / 'c_big.bin'
+            path.write_bytes(b'x' * 300)
+            with self.assertRaises(sp.ScanError) as caught:
+                sp._read_and_scan(scratch, path.name, {}, 200)
+            self.assert_limit_reason(caught.exception, path.name, 300, 200)
+            self.assertIn('total limit exceeded after 500 bytes scanned', str(caught.exception))
+            proc = mock.Mock(stdout=io.BytesIO(b'x' * 300), returncode=0)
+            with mock.patch.object(sp.subprocess, 'Popen', return_value=proc):
+                with self.assertRaises(sp.ScanError) as staged:
+                    sp._scan_git_blob('.', path.name, {'oid': 'fake'}, 200)
+            self.assert_limit_reason(staged.exception, path.name, 201, 200, 200)
 
     def test_index_and_published_file_scan_limits_identify_path_and_limits(self):
         for size, left in ((sp.MAX_FILE_BYTES + 1, sp.MAX_TOTAL_BYTES), (6, 5)):
@@ -230,7 +275,8 @@ class ContentAndLimitTests(unittest.TestCase):
             with mock.patch.object(sp.subprocess, 'Popen', return_value=proc):
                 with self.assertRaises(sp.ScanError) as caught:
                     sp._scan_git_blob('.', 'staged.bin', {'oid': 'fake'}, left)
-            self.assert_limit_reason(caught.exception, 'staged.bin', size)
+            self.assert_limit_reason(caught.exception, 'staged.bin', size, left, min(sp.MAX_FILE_BYTES, left))
+            self.assertNotIn('size ', str(caught.exception))
         with tempfile.TemporaryDirectory() as scratch:
             path = Path(scratch) / 'body.md'
             with path.open('wb') as handle:

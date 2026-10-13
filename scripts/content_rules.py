@@ -33,6 +33,7 @@ B64URL = r'[A-Za-z0-9_-]'
 RULES = (
     ('private-key-block', re.compile(r'-----BEGIN (?:(?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY|ENCRYPTED PRIVATE KEY)-----'
                                      r'(?:\\+[rn]|[\r\n \t])*[A-Za-z0-9+/]{40,}'), WHOLE_DELIVERY, False),
+    # AWS IDs ending in EXAMPLE are documented placeholders, not credentials.
     ('aws-access-key-id', re.compile(r'\b(?:AKIA|ASIA)(?![A-Z0-9]{9}EXAMPLE\b)[A-Z0-9]{16}\b', re.A), WHOLE_DELIVERY, False),
     ('github-token', re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})\b', re.A), WHOLE_DELIVERY, False),
     ('slack-token', re.compile(r'\bxox[baprs]-[A-Za-z0-9-]{20,}\b', re.A), WHOLE_DELIVERY, False),

@@ -4555,15 +4555,23 @@ class Coordinator:
         life = self.state['lifecycle']
         return {**dict.fromkeys(life.get('docs_pre_owned', []), 'pre-owned'), **life.get('docs_owned', {})}
 
+    def _docs_reserved_paths(self) -> list[str]:
+        if not worktree_lifecycle.is_worktree(self.state) or self.state['config'].get('review_report'):
+            return []
+        return sorted(set(self._docs_allowlist()) - set(self._docs_owned()))
+
+    def _mask_docs_reserved_paths(self, text: str) -> str:
+        # Operator-configured paths are task data, like FIELD-29's configured commands.
+        for path in sorted(self._docs_reserved_paths(), key=len, reverse=True):
+            text = re.sub(r'(?<![\w./-])' + re.escape(path) + r'(?![\w/-])', '<reserved-doc-path>', text)
+        return text
+
     def _docs_reserved_note(self, audience: str = 'implementer') -> str:
         if not worktree_lifecycle.is_worktree(self.state) or self.state['config'].get('review_report'):
             return ''
         pre = set(self.state['lifecycle'].get('docs_pre_owned', [])) - set(self.state['lifecycle'].get('docs_owned', {}))
         owned = {path for path in self._docs_owned() if path not in pre}
-        paths = set(self._docs_allowlist())
-        if self.state['config'].get('docs_file'):
-            paths.add(Path(self.state['config']['docs_file']).relative_to(self.workspace).as_posix())
-        reserved = sorted(paths - owned - pre)
+        reserved = self._docs_reserved_paths()
         if audience == 'plan':
             return ('Documentation written by the DOCS stage after implementation, not by this plan: ' +
                     ', '.join(reserved) + '. Do not plan edits to these files; say what they should cover, if anything.'
@@ -4842,7 +4850,7 @@ class Coordinator:
         record = (getattr(self, 'state', None) or {}).get('review_only') or {}
         frozen_scope = name == 'context/plan.md' and hashlib.sha256(content.encode()).hexdigest() == record.get('review_scope_sha256')
         if name == 'prompt':
-            content = self._mask_guidance(content)
+            content = self._mask_docs_reserved_paths(self._mask_guidance(content))
         for command in self._configured_command_texts():   # FIELD-29: operator configuration, wherever it is quoted (prompts too);
             # on token boundaries only, so a path that merely contains it (tests/pytest_helpers.py in a patch header) keeps its name
             content = re.sub(r'(?<![\w./-])' + re.escape(command) + r'(?![\w/-])', '<configured-command>', content)
@@ -5389,7 +5397,7 @@ class Coordinator:
             path = self.context / name
             if path.is_file() and LEDGER_ID_RE.search(self._fresh_history_text(f'context/{name}', path.read_text())):
                 raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}')
-        checked = self._mask_guidance(prompt)   # L105: the operator's guidance is not a leak
+        checked = self._mask_docs_reserved_paths(self._mask_guidance(prompt))   # operator guidance and DOCS paths
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', checked)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
                      if row.get('summary') and row['summary'] in checked]
@@ -6281,8 +6289,9 @@ class Coordinator:
         """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
-            (self.context / 'plan.md').read_text(), self.args.test_command, self._docs_reserved_note(),
-            bool(self.state.get('review_only'))) + '\n' + LONG_COMMAND_RULE)
+            (self.context / 'plan.md').read_text(), self.args.test_command,
+            ' '.join(filter(None, [self._docs_reserved_note(), LONG_COMMAND_RULE])),
+            bool(self.state.get('review_only'))))
         self.render(result, 'finisher', 'FINISH')
         answer = result['answer']
         receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',

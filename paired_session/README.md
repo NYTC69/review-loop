@@ -137,7 +137,8 @@ followed by key material: 40+ base64 characters after optional line breaks,
 `\n` escapes (with one backslash or more, as in a JSON document stored as a
 string) and spaces, so a regex or a template that only names the marker is
 not a hit, and a marker line with the key body on the next added line is one hit
-at the marker's line; `AKIA`/`ASIA` key ids, GitHub `gh[pousr]_` and
+at the marker's line; `AKIA`/`ASIA` key ids (not an id that ends in `EXAMPLE`,
+AWS's documented placeholder), GitHub `gh[pousr]_` and
 `github_pat_` tokens, Slack `xox[baprs]-` tokens, Google `AIza` keys, Stripe
 live keys) and the `added-text` rules: JWTs (`eyJ` plus three base64url
 segments, the third of 43+ characters, the shortest standard signature; not a
