@@ -20,6 +20,9 @@ def setup(tmp_path, monkeypatch):
     repo = tmp_path / "operator"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
+    # Keep Git's housekeeping out of the unfiltered operator-repo snapshots.
+    git(repo, "config", "maintenance.auto", "false")
+    git(repo, "config", "gc.auto", "0")
     git(repo, "config", "user.email", "test@example.invalid")
     git(repo, "config", "user.name", "Test")
     (repo / "file").write_text("base\n")

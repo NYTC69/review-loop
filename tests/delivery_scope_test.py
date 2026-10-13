@@ -41,6 +41,9 @@ def repo(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q")
+    # Keep Git's housekeeping out of the unfiltered .git read-only snapshot.
+    git(root, "config", "maintenance.auto", "false")
+    git(root, "config", "gc.auto", "0")
     write(root, "task.txt", "base\n")
     write(root, "unrelated.txt", "unrelated base\n")
     write(root, "delete.txt", "remove me\n")
