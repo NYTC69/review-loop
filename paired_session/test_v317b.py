@@ -11,6 +11,9 @@ from paired_session import test_worktree_lifecycle as twl
 
 rc, DONE = twl.rc, twl.DONE
 REASON = 'Expanded export scope is approved and stays.'
+REREVIEW = 'NEXT: resume re-reviews the same tree'
+ADD_ROUNDS = ('NEXT: the round is already used, so plain resume keeps this HOLD; '
+              'resume --add-rounds N (1-10) continues with the pending review')
 
 
 class WithdrawalTests(unittest.TestCase):
@@ -38,7 +41,7 @@ class WithdrawalTests(unittest.TestCase):
         co.args.expect = co.operator_intent('withdraw-findings', None, None)['digest']
         return co.withdraw_findings()
 
-    def cli_withdraw(self, ids, *flags, reason=REASON):
+    def cli_withdraw(self, ids, *flags, reason=REASON, over_limit=False):
         command = self.command(*flags, '--reason', reason, '--skip-probe')
         command[2] = 'withdraw-findings'
         for finding_id in ids: command.extend(['--finding', finding_id])
@@ -53,10 +56,10 @@ class WithdrawalTests(unittest.TestCase):
         self.assertIn(f"WITHDRAWN {ruling['id']}: {', '.join(ruling['finding_ids'])} (evidence: {ruling['evidence']})", result.stdout)
         status = (DONE if state['status'] == 'DONE' else 'HOLD: ' + state['hold_reason'])
         self.assertEqual(result.stdout.strip().splitlines()[-1], status)
-        if state['status'] == 'HOLD' and (state.get('round_limit_hold') or {}).get('hold_reason') == state['hold_reason']:
-            self.assertIn('NEXT: resume re-reviews the same tree', result.stdout)
-        else:
-            self.assertNotIn('NEXT: resume re-reviews the same tree', result.stdout)
+        # V317-G2: the NEXT names the step that works; over the round limit (a stage write) plain resume keeps the HOLD
+        expected = ([ADD_ROUNDS if over_limit else REREVIEW] if state['status'] == 'HOLD' and
+                    (state.get('round_limit_hold') or {}).get('hold_reason') == state['hold_reason'] else [])
+        self.assertEqual([line for line in result.stdout.splitlines() if line.startswith('NEXT:')], expected)
         return result
 
     def test_done_multiselect_evidence_ledger_report_and_resume_both_routes(self):
@@ -290,6 +293,24 @@ class WithdrawalTests(unittest.TestCase):
                     self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'gate'))
                     self.assertEqual(other['status_history'], other_history)
                     self.assertEqual(withdrawn['status_history'], history)
+
+    def test_withdraw_at_a_round_limit_hold_after_a_finish_write_names_add_rounds(self):
+        # V317-G2 (B): the FINISH write used the next EXEC round (exec_rounds 2 > limit 1); plain resume keeps the HOLD
+        flags = ('--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--max-invocations', '80')
+        env = {'FAKE_FINISH_WRITE': '1', 'FAKE_GATE_MINOR': '1'}
+        held = self.run_coordinator(*flags, env=env)
+        self.assertIn('HOLD: EXEC round limit reached after a FINISH write', held.stdout, held.stdout + held.stderr)
+        state = self.state()
+        self.assertEqual(state['exec_rounds'], 2)
+        ids = [row['id'] for row in state['finding_ledger'] if row['status'] == 'open']
+        self.assertTrue(ids)
+        self.cli_withdraw(ids[:1], *flags, over_limit=True)
+        before = self.state()
+        plain = self.run_operator_action('resume', *flags, env=env)
+        self.assertIn('HOLD: EXEC round limit reached after a FINISH write', plain.stdout, plain.stdout + plain.stderr)
+        self.assertEqual(self.state()['turns'], before['turns'])   # no turn: the step the NEXT no longer names
+        extended = self.run_operator_action('resume', *flags, '--add-rounds', '1', env=env)
+        self.assertIn(DONE, extended.stdout, extended.stdout + extended.stderr)
 
     @mock.patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': ''})  # AUTH names are frozen from the first turn
     def test_field_case_send_back_still_open_withdraw_resume_done_both_routes(self):

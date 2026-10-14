@@ -167,7 +167,7 @@ Status values:
 | `auto_commit` | review-only runs: `.review-loop/config.md` `auto_commit: false` keeps the accepted change uncommitted (default: one hook-free local commit on accept); main pipeline: operator-profile `auto_commit` | covered |
 | `commit_message_prefix` | none: the commit message is fixed | retire (ADR-15) (L102) |
 | `docs_file` | `--docs-file` | covered |
-| `handsfree` | stage A questions fail; `accept` / `reject` are never run | retire (ADR-15) (L104) |
+| `handsfree` | stage A questions fail; `accept`, `reject` and `withdraw-findings` are never run | retire (ADR-15) (L104) |
 | `review_focus`, `review_style`, `quality_focus` | `--review-focus` / `--review-style` / `--quality-focus`, frozen at run start (L105) | port (ADR-15); shipped in v2.12.9 |
 | `skip_quality_polish` | `--skip-quality-polish` | covered |
 | `adversarial_gate_skip_paths` | none: `skip_globs` was removed in 3.0, so nothing skips the gate; the lifecycle refuses `--adversarial-gate off` | retire (ADR-15) (L107) |

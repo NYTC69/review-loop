@@ -26,7 +26,7 @@
                                 # lifecycle off stops after the gate; acceptance returns the uncommitted tree;
                                 # main pipeline: not applied (true prints a warning; the operator profile decides)
 # docs_file: CHANGELOG.md       # --docs-file; "" skips the docs entry
-# handsfree: false              # true: a stage A question fails the entry; accept/reject are never run
+# handsfree: false              # true: a stage A question fails the entry; accept/reject/withdraw-findings are never run
 
 # Project-specific review priorities (--review-focus), frozen at run start, for the reviewer, the shadow and the gate.
 # review_focus: |

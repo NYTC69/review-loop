@@ -183,6 +183,25 @@ class OtherVersionRunTests(unittest.TestCase):
                 refused = self.run_operator_action('resume', *mode)   # an aborted run is not continued here either
                 self.assertIn(PREFIX + AT_HOLD, refused.stdout)
 
+    def test_withdraw_findings_at_a_round_limit_hold_is_refused_before_any_record(self):
+        # V317-G2 (A): resume and resume --add-rounds are refused on such a run, so a ruling there could lead nowhere
+        for mode in (OFF, ON):
+            with self.subTest(mode=mode[1]):
+                self.run_dir = self.root / ('withdraw-' + mode[1])
+                held = self.run_coordinator(*mode, '--max-exec-rounds', '1', env={'FAKE_EXEC_MIXED_REVISE': '1'})
+                self.assertIn('HOLD: EXEC round limit reached', held.stdout, held.stdout + held.stderr)
+                self.from_other_version()
+                before = self.files()
+                [major] = [row['id'] for row in self.state()['finding_ledger']
+                           if row['status'] == 'open' and row['severity'] == 'MAJOR']
+                withdraw = ('--max-exec-rounds', '1', '--finding', major, '--reason', 'Reading the first element is approved.')
+                for step in (('--intent-only',), ('--expect', '0' * 64)):   # the intent step and the expect step
+                    self.assert_refused(self.action('withdraw-findings', *mode, *withdraw, *step), AT_HOLD, before)
+                state = self.state()
+                self.assertNotIn('operator_rulings', state)
+                self.assertEqual(list((self.run_dir / 'evidence').glob('operator-ruling-*')), [])
+                self.assertIn(major, [row['id'] for row in state['finding_ledger'] if row['status'] == 'open'])
+
     def test_a_second_difference_keeps_the_plain_refusal_and_abort_keeps_its_other_checks(self):
         self.held(*OFF)
         before = self.files()

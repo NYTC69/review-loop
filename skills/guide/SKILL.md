@@ -119,7 +119,7 @@ Create `.review-loop/config.md` in your project to customize:
 | `review_style` | "" | Tone and rules for the review roles and the POLISH-Q specialists |
 | `quality_focus` | "" | Quality priorities for the POLISH-Q specialists |
 | `auto_commit` | — | A review-only run (`/review-loop` on existing code, code-quality-loop) with lifecycle on normally makes one local commit at `accept`; `false` here keeps it uncommitted. Lifecycle off returns the uncommitted tree. Not applied on the main pipeline (`true` prints a warning; set it in the operator profile) |
-| `handsfree` | false | Blocks stage A questions (any such question fails) and acceptance |
+| `handsfree` | false | Blocks stage A questions (any such question fails); `accept`, `reject` and `withdraw-findings` are never run |
 
 Unset paired-session caps are plan 3 / exec 4 rounds. `reviewer_model` and `executor_model` only warn
 (models come from the operator profile); the other legacy keys are ignored. See

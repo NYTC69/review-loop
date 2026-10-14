@@ -2423,7 +2423,8 @@ class Coordinator:
                     self.state['config'].get('exec_turn_timeout'),
                     self.state['config'].get('timeout', DEFAULT_EXEC_TURN_TIMEOUT_SECONDS))
                 validate_role_models(self.args)
-                if (self.args.action == 'reject' and not getattr(self.args, 'scope_change', False)
+                if ((self.args.action == 'reject' and not getattr(self.args, 'scope_change', False) or
+                     self.args.action == 'withdraw-findings' and self.state.get('status') != 'DONE')   # V317-G2: resume is refused
                         and self._other_version_gate_prompt()):   # V317-G1: before the intent and any record
                     raise ValueError('resume configuration differs: gate_prompt; ' + self._other_version_exits())
             else:
@@ -7676,6 +7677,12 @@ class Coordinator:
     def at_round_limit_hold(self) -> bool:   # L100: the current HOLD is the one round_limit_hold recorded (writer passes too)
         return self.state.get('status') == 'HOLD' and (self.state.get('round_limit_hold') or {}).get('hold_reason') == self.state.get('hold_reason')
 
+    def round_limit_hold_within_limit(self) -> bool:
+        """V317-G2: the held phase's round count is within its limit, so plain resume re-reviews the same tree."""
+        if self.state['round_limit_hold'].get('phase') == 'PLAN':
+            return self.state['plan_rounds'] <= self.plan_round_limit()
+        return self.state['exec_rounds'] <= self.exec_round_limit()
+
     def plan_round_limit(self) -> int:
         return self.args.max_plan_rounds + self._round_extensions('PLAN')
 
@@ -9670,7 +9677,10 @@ def _execute_locked(args: argparse.Namespace) -> int:
         status = co.withdraw_findings()
         ruling = co.state['operator_rulings'][-1]
         print(f"WITHDRAWN {ruling['id']}: {', '.join(ruling['finding_ids'])} (evidence: {ruling['evidence']})")
-        if co.at_round_limit_hold(): print('NEXT: resume re-reviews the same tree')
+        if co.at_round_limit_hold():   # V317-G2: plain resume keeps a HOLD whose round is already used (a stage write)
+            print('NEXT: resume re-reviews the same tree' if co.round_limit_hold_within_limit() else
+                  'NEXT: the round is already used, so plain resume keeps this HOLD; '
+                  'resume --add-rounds N (1-10) continues with the pending review')
         print(status + (' (acceptance pending)' if status == 'DONE' else ': ' + co.state.get('hold_reason', '')))
         return 0
     if args.action == 'note':
