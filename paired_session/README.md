@@ -346,11 +346,11 @@ shadow, gate, FINISH and the specialists before DOCS, on its own budget of one
 replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`).
 An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`
 at any round, without consuming or resetting the phase's repair attempt;
-other non-approvals roll it back (`rolled-back:review`), only the named writer
+other non-approvals or a failing gate roll it back (`rolled-back:review`), only the named writer
 when files are disjoint (the other is reviewed again). After a whole-group
 rollback, new open blockers outside every writer's files stay open and go to
 EXEC repair with the usual round-limit HOLD, before the normal chain runs again;
-writer-file blockers and advisory rows are withdrawn. A test writer that lowers
+writer-file blockers and advisory rows are withdrawn; operator-withdrawn rows stay withdrawn. A test writer that lowers
 the number of test cases is rolled back (`rolled-back:tests`). Other outcomes:
 `no-op`, `rolled-back:tests`, `rolled-back:boundary`
 (reserved docs or `.review-loop/` config), `rolled-back:hold`, `exhausted`, and

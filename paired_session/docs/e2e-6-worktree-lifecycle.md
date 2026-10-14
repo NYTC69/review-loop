@@ -115,6 +115,11 @@ scope stays relative to the tree before the work item; a parent without a baseli
 changed, refuses the successor. Each SECURITY attempt writes a fresh
 manifest and runs `security_preflight.py` as a subprocess (`sys.executable`); anything but exit 0 with a
 `clean`, coverage-complete report HOLDs, and the HOLD reason names rules and paths, never matched values.
+For lifecycle delivery runs, `--run-changes-only` holds on sensitive paths and content hits only in files the run
+added or changed, including changed staged blobs after deletion or rename. Unchanged committed hits and removed
+base blobs are recorded as notes; their oversized content is skipped and named without consuming the scan budget.
+Added or changed files over 8 MiB, content read over 256 MiB, incomplete coverage, ignore gaps and security reviewer
+findings still HOLD. Report mode scans the whole delivery without this partition.
 The `sensitive_policy` scan covers tracked plus non-ignored untracked paths. A repository without the legacy
 sensitive `.gitignore` patterns gets `review-required` (exit 1) and HOLDs at every SECURITY, as legacy does.
 FIELD-19: the preflight credits a `.gitignore` only when it is tracked and unchanged from HEAD, or when the

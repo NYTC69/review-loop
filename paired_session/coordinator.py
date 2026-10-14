@@ -7332,7 +7332,8 @@ class Coordinator:
 
     def _writer_review_rollback(self, source: str, sequence: int) -> bool:
         """§2 "one chance in review": a replay non-approval other than eligible advisory REVISE, or a failing gate,
-        rolls back the writers, marks each writer that wrote `rolled-back:review`, and reopens rows the replay closed.
+        rolls back the writers, marks each writer that wrote `rolled-back:review`, and reopens rows the replay closed
+        except operator-withdrawn rows, which stay withdrawn.
         New blockers outside writer files stay open and take EXEC repair. Otherwise new open rows are withdrawn and a
         POLISH-Q READY receipt on base_oid cites the previous epoch's receipts on that digest; then DOCS."""
         life = self.state.get('lifecycle') or {}
@@ -7391,7 +7392,7 @@ class Coordinator:
         return True
 
     def _revert_replay_findings(self, replay: dict, sequence: int, note: str, retain: set = frozenset()) -> None:
-        """§2: rows the replay closed go back to their start status, rows it raised that are still open are withdrawn unless retained."""
+        """§2: restore replay-closed rows and withdraw new open rows unless retained; operator withdrawals stay closed."""
         withdrawn = {finding_id for ruling in self.state.get('operator_rulings', []) for finding_id in ruling['finding_ids']}
         for row in self.state['finding_ledger']:
             if row['id'] in retain or row['id'] in withdrawn:

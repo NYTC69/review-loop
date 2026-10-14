@@ -38,6 +38,10 @@ class SecurityRunScopeTests(unittest.TestCase):
         path.write_bytes(content + b'\n# run edit\n')
         touched = self.run_coordinator('--lifecycle-mode', 'on')
         self.assertIn(hold, touched.stdout, touched.stdout + touched.stderr)
+        if receipt_key == 'skipped_preexisting_files':
+            size = len(content) + len(b'\n# run edit\n')
+            self.assertIn(f'size {size} bytes; file limit {sp.MAX_FILE_BYTES} bytes; '
+                          f'total limit {sp.MAX_TOTAL_BYTES} bytes', touched.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'HOLD')
         self.assertEqual(state['lifecycle']['stage'], 'SECURITY')
@@ -55,7 +59,7 @@ class SecurityRunScopeTests(unittest.TestCase):
     def test_oversized_file(self):
         self.check_kind('large.txt', b'ordinary data\n' * (sp.MAX_FILE_BYTES // 14 + 1),
                         'content scan skipped oversized pre-existing files, unchanged or removed by this run:',
-                        'skipped_preexisting_files', 'content scan limit exceeded: large.txt')
+                        'skipped_preexisting_files', "content scan file limit exceeded: 'large.txt'")
 
     def test_stop_after_gate_has_no_security_stage(self):
         (self.workspace / 'deploy.pem').write_text('ordinary file\n')
@@ -91,7 +95,9 @@ class SecurityRunScopeTests(unittest.TestCase):
         with mock.patch.object(sp, 'MAX_TOTAL_BYTES', expected_bytes - 1):
             report = sp.scan(str(self.workspace), manifest=manifest, run_changes_only=True)
         self.assertEqual(report['status'], 'incomplete')
-        self.assertIn('content scan limit exceeded', report['reason'])
+        self.assertIn('content scan total limit exceeded after ', report['reason'])
+        self.assertIn(f"'tracked.txt', size {state['worktree']['tracked.txt']['size']} bytes", report['reason'])
+        self.assertIn(f'file limit {sp.MAX_FILE_BYTES} bytes; total limit {expected_bytes - 1} bytes', report['reason'])
 
     def test_note_is_not_reprinted_when_resuming_an_unrelated_security_hold(self):
         (self.workspace / 'deploy.pem').write_text('ordinary file\n')

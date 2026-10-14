@@ -168,9 +168,12 @@ class PromptAndPreflightTests(unittest.TestCase):
 
     def test_full_lifecycle_security_hold_deduplicates_path_rule_but_keeps_receipt_hits(self):
         (self.workspace / 'tracked.txt').write_text('AWS_ID = "' + REAL + '"\n')
-        # Deliberate fixture in HEAD: the added-text scan leaves it to whole-delivery SECURITY.
+        # Keep the key in HEAD so the added-text scan leaves it to SECURITY.
+        # A run-owned comment edit makes this file blocking under SP.
         subprocess.run(['git', 'add', 'tracked.txt'], cwd=self.workspace, check=True)
         subprocess.run(['git', 'commit', '-qm', 'credential fixture'], cwd=self.workspace, check=True)
+        with (self.workspace / 'tracked.txt').open('a') as stream:
+            stream.write('# run edit\n')
         result = self.run_coordinator('--lifecycle-mode', 'on')
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'HOLD', result.stdout + result.stderr)

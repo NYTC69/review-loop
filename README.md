@@ -436,7 +436,10 @@ reviewers for the changed file types (`go-reviewer`, `rust-reviewer`, `python-re
 writers (a fresh simplifier, then test consolidation) are on by default for review-only runs and
 code-quality-loop, and off on the main pipeline (turn them on with the operator setting `quality_writers` or
 `--quality-writers both`, about +10 invocations); a writer's change is kept only when the tests pass and the reviews
-approve it again, otherwise it is rolled back with the reason. The advisory fix round (`advisory_fix_round`,
+approve it again, including an eligible advisory-only replay REVISE accepted as `APPROVE_WITH_ADVISORY`.
+Other replay non-approvals or a failing gate roll it back with the reason. After a whole-group rollback,
+new blockers outside every writer's changed files stay open for EXEC repair with the usual round-limit HOLD;
+writer-file blockers and advisory rows are withdrawn, and operator-withdrawn rows stay withdrawn. The advisory fix round (`advisory_fix_round`,
 `--advisory-fix-round true`; code-quality-loop turns it on) gives the author one round for the open non-blocking
 findings after the first clean POLISH-Q. Tune with `quality_focus` and `skip_quality_polish` (which skips the
 specialists and the writers).

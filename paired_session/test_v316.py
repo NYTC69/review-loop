@@ -223,7 +223,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         # A sensitive delivery path is a SECURITY blocker, independently of the EXEC gate LOW.
         (self.workspace / 'deploy.pem').write_text('not a real key\n')
         self.git('add', '-f', 'deploy.pem')
-        self.git('commit', '-qm', 'sensitive delivery fixture')
+        # Leave it staged: SP holds only for a path added or changed by this run.
         co, status = self.gate_in_process(*ON, '--max-exec-rounds', '2')
         self.assertEqual(status, 'HOLD')
         self.assertIn('SECURITY sensitive paths: deploy.pem', co.state['hold_reason'])

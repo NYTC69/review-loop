@@ -141,7 +141,8 @@ class WriterReplayAdvisoryTests(unittest.TestCase):
 
     def test_major_replay_finding_rolls_back(self):
         def major(answer):
-            answer['full_review'][0]['severity'] = 'MAJOR'
+            answer['full_review'][0].update(severity='MAJOR', file='writer_note.py')
+            # WR retains blockers outside writer files; this test pins rollback of a writer-file blocker.
         state, base = self.run_replay(change=major)
         self.assert_rollback(state, base)
 

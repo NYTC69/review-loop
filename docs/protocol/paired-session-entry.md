@@ -102,7 +102,9 @@ number of test cases), `rolled-back:boundary` (a reserved docs path or
 `.review-loop/` config), `rolled-back:review` (a non-approval other than an eligible advisory-only replay REVISE,
 or a failing gate; only the named writer is rolled back when files are disjoint, and the other is reviewed again),
 `rolled-back:hold`, or `exhausted` (a failed attempt). Report each writer's
-outcome with the stage receipts.
+outcome with the stage receipts. After a whole-group review rollback, new blockers outside every writer's changed
+files stay open for EXEC repair with the usual round-limit HOLD; writer-file blockers and advisory rows are
+withdrawn, and operator-withdrawn rows stay withdrawn.
 
 ## Work item
 

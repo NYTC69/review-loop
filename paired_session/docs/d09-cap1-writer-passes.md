@@ -74,7 +74,8 @@ names the simplifier and test writer; writer invalidation); [e2e-2b1](e2e-2b1-bu
 - **One chance in review (`rolled-back:review`).** An eligible advisory-only replay REVISE keeps the change as
   `APPROVE_WITH_ADVISORY`; other non-approvals or a failing gate roll it back without a writer fix round: the
   coordinator rolls the tree back to `base_oid` (`base_capture`, verified) and marks each writer that wrote
-  `rolled-back:review`. Rows the replay closed return to their starting status. New still-open rows are withdrawn
+  `rolled-back:review`. Rows the replay closed return to their starting status, except operator-withdrawn rows stay
+  withdrawn. New still-open rows are withdrawn
   with rollback evidence, except rows that `blocking_open_findings()` treats as blocking and whose file is outside
   every writer's changed files: those remain open, are delivered to the author through the existing EXEC repair
   path, and use the usual round-limit HOLD. This route signs no POLISH-Q rollback receipt. After repair the normal

@@ -229,7 +229,8 @@ class WithdrawalTests(unittest.TestCase):
             self.assertIn(f"O001: {row['id']}: {reason}", prompt)
             self.assertIn('No disposition is due', prompt)
             self.assertIn('Open finding ledger (', prompt)
-            self.assertIn(f"- {other['id']}: {other['summary']}", prompt)
+            self.assertIn(f"- {other['id']}: [source=persistent-reviewer; severity=MINOR] {other['summary']}", prompt)
+            self.assertIn(rc.LEDGER_DISPOSITION_GUIDANCE, prompt)
 
     def test_stale_operator_dispositions_are_ignored_in_receipts_including_retry_and_replay(self):
         for route in ('off', 'on'):
