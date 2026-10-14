@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-13
+**Last updated**: 2026-10-14
 
 ## P0 — blocker / must-do-now
 
@@ -21,6 +21,17 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - Progress (2026-09-26, R10-3): added a distinct EXEC author timeout (default 7200 s, maximum 14400 s), resume can raise it within the cap, and each launched receipt records its fixed timeout. Fake-CLI tests cover default/general timeout separation, EXEC use, bounded resume persistence, and cap rejection; offline checks and review evidence are recorded in the Round 10 report. Closure evidence is recorded after the batch commit.
   - Progress (2026-09-26, R11-1b): EXEC default now follows a larger general timeout up to the 14400 s cap; legacy state on resume derives the same bounded fallback. Resume recognizes only explicit CLI values as raises; project-config defaults preserve the saved timeout.
 ## P3 — nice to have / someday
+
+- Follow-ups from the v3.1.7 gates and batches (non-blocking; batch them when a release is due anyway). (added 2026-10-14)
+  - `cli_failure_reason`: ANSI-prefixed error lines are not recognized; `status --brief` cuts the new reasons at 120 characters; provider text reaches the review report Status line.
+  - review-pr report rendering: an aggregated credential row is counted by hits in `## Security (N)`; a gate `line_start: 0` shows as `:0`.
+  - The EXEC author prompt does not carry `LONG_COMMAND_RULE` (an author that passes 600000 from habit is still cut at ten minutes); the DOCS reviewer's "did not observe a successful run" message has no command-tool timeout cause.
+  - A file name with TAB or backslash holds at SECURITY as an unclassifiable path and the HOLD names no way out; other strict-mode waivers still make a two-step reject stale.
+  - Rewrite-only PLAN review: a REVISE only for advisory rows ends in "abort and start a new run".
+  - Test gaps: `test_v317_plan.py:45` now exits through the one-attempt rule (the PLAN limit exit is covered in-process only); no test runs `reject --scope-change` from a rejection-limit HOLD outside `test_v317g1`.
+  - Stop-after-gate route: a plain `resume` after the operator edits the workspace at a rejection-limit HOLD reaches DONE without a gate (same in v3.1.6).
+  - Needs a real-CLI check: a Claude read-only turn may hold once on `.claude/.cc-writes`; `--forward-subagent-text`.
+  - Owner decisions still open: `accept --auto-commit false` as a one-way downgrade; single-CLI installation.
 
 ~~- [new] Paired-session coordinator gap: killed turns lose their usage. (added 2026-09-23)~~ (closed offline 2026-09-26 via `cfe92994d99bbb819122c6bc861daf292f58df07`; fake-Claude and fake-Codex regressions persist two request-usage records before SIGKILL, retain the killed receipt/turn record, and recover a pre-kill active snapshot into one abandoned-turn record without double counting. No real provider run is claimed.)
   - Note: SIGKILL on timeout drops the turn's token usage, and it cannot be reconciled from the cumulative `modelUsage` across `--resume`; run #5 lost a 2-hour author turn and a mid-flight shadow turn. Fix: stream per-request usage to the turn log as it arrives. Accounting only, no behaviour impact.
