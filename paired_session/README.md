@@ -392,7 +392,9 @@ changing them requires a fresh probe. Efficient runs record CLI release updates 
 advance to a newer version under the same `versions` directory; an in-place Codex
 replacement must report a parseable release version (its old version is unavailable).
 Other binary or PATH changes HOLD with instructions to run `permission-probe` to
-re-freeze, then resume. For a Codex author, the coordinator runs external
+re-freeze, then resume; that does not apply to a run started by a review-loop version
+with a different bundled gate prompt, which is finished or aborted with that version.
+For a Codex author, the coordinator runs external
 temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
 as advisory controls. Their argv, return codes and observations appear under
 `advisory_direct_controls`; this separate CLI's policy is not proven equivalent

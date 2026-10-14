@@ -2,6 +2,8 @@
 and the texts of the advisory-only repair attempt, the PLAN advisory approval and the submodule auto_commit refusal."""
 import hashlib
 import json
+import os
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +20,8 @@ AT_HOLD = OTHER_VERSION + ('continue it with that version, or with this one abor
                            '(`note --scope-change`) or start a new run')
 AT_DONE = OTHER_VERSION + ('continue it with that version, or with this one accept it, abort it, record a scope change '
                            '(`reject --scope-change`) or start a new run')
+AT_LIMIT = AT_HOLD.replace('`note ', '`reject ')
+LIMIT = 'rejected-tree; post-DONE rejection limit reached'
 REFREEZE = 'run `permission-probe` to re-freeze, then resume'
 BLOCKING_TASK = 'Fix every delivered blocking finding, rerun relevant checks, and summarize the result in body.'
 ADVISORY_TASK = ('The delivered review left only non-blocking rows open; they do not block approval. Fix the ones worth '
@@ -64,6 +68,20 @@ class OtherVersionRunTests(unittest.TestCase):
         self.assertIn('HOLD: ' + rc.PLAN_STOP_REASON, result.stdout, result.stdout + result.stderr)
         self.from_other_version()
 
+    def snapshot(self, name):
+        shutil.copytree(self.run_dir, self.root / name, symlinks=True)
+        return self.root / name
+
+    def restore(self, copy):
+        shutil.rmtree(self.run_dir)
+        shutil.copytree(copy, self.run_dir, symlinks=True)
+
+    def action(self, action, *extra, env=None):
+        """One operator command exactly as given (no intent step of the harness)."""
+        command = self.command(*extra); command[2] = action
+        return rc.subprocess.run([*command, '--skip-probe'], cwd=self.root, env={**os.environ, **(env or {})}, text=True,
+                                 stdout=rc.subprocess.PIPE, stderr=rc.subprocess.PIPE)
+
     def assert_refused(self, result, exits, before):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn(PREFIX + exits, result.stdout)
@@ -89,6 +107,60 @@ class OtherVersionRunTests(unittest.TestCase):
                 self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
                 self.assertEqual(self.state()['status'], 'ACCEPTED')
 
+    def test_rejection_limit_hint_names_only_working_exits_and_each_of_them_works(self):
+        quiet = {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1', 'FAKE_AUTHOR_WRITE_NEW_TREE': ''}
+        for mode in (OFF, ON):
+            with self.subTest(mode=mode[1]):
+                self.run_dir = run_dir = self.root / ('limit-' + mode[1])
+                (self.workspace / 'sum_ints.py').write_text(   # the same starting code on each route (as test_v317msg)
+                    'def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+                    '        raise TypeError("ints only")\n    return sum(values)\n')
+                done = self.run_coordinator(*mode, env=quiet)
+                self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+                state = self.state()
+                state['max_rejections'] = 0   # the saved cap reaches the rejection-limit HOLD directly (as test_v317fb)
+                (self.run_dir / 'state.json').write_text(json.dumps(state))
+                held = self.run_operator_action('reject', *mode, '--text', 'Recheck integer inputs.', env=quiet)
+                self.assertIn('HOLD: ' + LIMIT + '; note and resume, reject --scope-change, or abort', held.stdout)
+                started = self.snapshot('started-' + mode[1])   # the HOLD as the version that started the run left it
+                self.from_other_version()
+                upgraded = self.snapshot('upgraded-' + mode[1])
+                # the ordinary first acceptance step, and on the stop-after-gate route a direct accept
+                for extra in (('--intent-only',), *([()] if mode is OFF else [])):
+                    refused = self.action('accept', *mode, *extra)
+                    self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                    self.assertEqual([line for line in refused.stdout.splitlines() if line.startswith('REFUSED')],
+                                     ['REFUSED: ' + LIMIT + AT_LIMIT])
+                    self.assertNotIn('note and resume', refused.stdout)
+                    self.assertEqual(self.state()['hold_reason'], LIMIT + AT_LIMIT)
+                    self.assertEqual(self.state().get('operator_notes', []), [])
+                # every step the text names: a scope change, abort, a new run, and the version that started the run
+                changed = self.run_operator_action('reject', *mode, '--scope-change', '--text', 'New scope: include floats.')
+                self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+                self.assertEqual(self.state()['status'], 'ABORTED')
+                self.restore(upgraded)
+                aborted = self.run_operator_action('abort', *mode)
+                self.assertIn('HOLD: aborted by operator', aborted.stdout, aborted.stdout + aborted.stderr)
+                self.run_dir = self.root / ('new-' + mode[1])
+                fresh = self.run_coordinator(*mode, '--stop-after-plan')
+                self.assertIn('HOLD: ' + rc.PLAN_STOP_REASON, fresh.stdout, fresh.stdout + fresh.stderr)
+                self.run_dir = run_dir
+                self.restore(started)
+                noted = self.run_operator_action('note', *mode, '--text', 'Recheck integer inputs.', env=quiet)
+                self.assertEqual(noted.returncode, 0, noted.stdout + noted.stderr)
+                resumed = self.run_operator_action('resume', *mode, env={'FAKE_AUTHOR_NO_REJECTION_CHANGE': '',
+                                                                         'FAKE_AUTHOR_WRITE_NEW_TREE': '1'})
+                self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+
+    def test_rejected_tree_hold_texts_of_such_a_run(self):
+        self.done(*OFF)
+        for kind, text in ((None, 'rejected-tree' + AT_HOLD), ('rejection_limit', LIMIT + AT_LIMIT)):
+            with self.subTest(kind=kind):
+                command = self.command(*OFF); command[2] = 'accept'
+                co = rc.Coordinator(rc.parser().parse_args(command[2:]))
+                co.hold('rejected-tree', terminal_kind=kind)
+                self.assertEqual(co.state['hold_reason'], text)
+
     def test_reject_scope_change_at_done_still_works(self):
         self.done(*OFF)
         changed = self.run_operator_action('reject', *OFF, '--scope-change', '--text', 'New scope: include floats.')
@@ -111,13 +183,20 @@ class OtherVersionRunTests(unittest.TestCase):
                 refused = self.run_operator_action('resume', *mode)   # an aborted run is not continued here either
                 self.assertIn(PREFIX + AT_HOLD, refused.stdout)
 
-    def test_abort_keeps_its_other_checks(self):
+    def test_a_second_difference_keeps_the_plain_refusal_and_abort_keeps_its_other_checks(self):
         self.held(*OFF)
         before = self.files()
-        refused = self.run_operator_action('abort', *OFF, '--max-exec-rounds', '9')
-        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn('REFUSED: resume configuration differs: max_exec_rounds', refused.stdout)
-        self.assertEqual(self.files(), before)
+        # max_exec_rounds is compared before gate_prompt, reviewer_command after it
+        for flag, value, key, first in (('--max-exec-rounds', '9', 'max_exec_rounds', 'max_exec_rounds'),
+                                        ('--reviewer-command', 'python3 --version', 'reviewer_command', 'gate_prompt')):
+            for action, differs in (('resume', first), ('permission-probe', first), ('abort', key)):
+                with self.subTest(key=key, action=action):
+                    refused = self.run_operator_action(action, *OFF, flag, value)
+                    self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                    self.assertEqual([line for line in refused.stdout.splitlines() if line.startswith('REFUSED')],
+                                     ['REFUSED: resume configuration differs: ' + differs])
+                    self.assertNotIn('another review-loop version', refused.stdout)
+                    self.assertEqual(self.files(), before)
 
     def test_note_scope_change_at_a_hold_still_works(self):
         self.held(*OFF)
@@ -179,8 +258,11 @@ class TextTests(unittest.TestCase):
                 self.assertIn(ADVISORY_TASK, prompt)
                 self.assertNotIn('blocking finding', prompt)
 
-    def test_every_other_revise_keeps_its_author_text(self):
-        for name, severity, changes in (('blocking', 'MAJOR', {}), ('attempt-used', None, {'reviewed_snapshot': '0' * 40})):
+    def test_every_other_revise_keeps_its_delivered_review_and_author_prompt(self):
+        blocker = {'id': 'F002', 'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'advisory note',
+                   'failure_scenario': 'small detail', 'source': 'persistent-reviewer'}
+        for name, severity, changes, findings in (('blocking', 'MAJOR', {}, [blocker]),
+                                                  ('attempt-used', None, {'reviewed_snapshot': '0' * 40}, [])):
             with self.subTest(name=name):
                 self.run_dir = self.root / name
                 co = self.exec_run()
@@ -190,12 +272,17 @@ class TextTests(unittest.TestCase):
                 self.record_review(co, 'EXEC', severity, **changes)
                 co.reviewer_turn()
                 self.assertEqual((co.state['next'], co.state['review_verdicts'][-1]['effective_verdict']), ('author', 'REVISE'))
-                delivered = json.loads(co.state['delivered_review'])
-                self.assertEqual(list(delivered), ['source', 'status', 'findings', 'prior_findings'])
-                self.assertEqual([sorted(r) for r in delivered['prior_findings']], [['evidence', 'fixed', 'id']])
-                prompt = co._author_prompt()
-                self.assertIn(BLOCKING_TASK, prompt)
-                self.assertNotIn(ADVISORY_TASK, prompt)
+                delivered = json.dumps({   # the whole text, key for key as before this change
+                    'source': 'persistent-reviewer', 'status': 'REVISE', 'findings': findings,
+                    'prior_findings': [{'id': 'F001', 'fixed': False, 'evidence': 'not addressed'}]}, ensure_ascii=False)
+                self.assertEqual(co.state['delivered_review'], delivered)
+                self.assertEqual(co._author_prompt(), '\n'.join([   # the whole prompt of an off-route EXEC repair turn
+                    'Role: persistent codex implementer. Phase: EXEC.',
+                    f'Workspace: {co.workspace}', f'Work item: {co.context / "workitem.md"}', BLOCKING_TASK,
+                    co.author_control_contract(), 'Delivered review:\n' + delivered, rc.AUTHOR_HISTORY_RULE,
+                    'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
+                    'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
+                    'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.']))
 
     def test_plan_history_text_after_an_advisory_approval_names_the_open_rows(self):
         for verdict, attempts, text in (('REVISE', {'PLAN': 5}, 'The plan was approved with advisory rows left open (F001), but it'),

@@ -2626,10 +2626,13 @@ class Coordinator:
         return (saved.startswith('<bundled-default>:')
                 and saved != '<bundled-default>:' + hashlib.sha256(DEFAULT_GATE_PROMPT.read_bytes()).hexdigest())
 
-    def _other_version_exits(self) -> str:
-        """V317-G1: the steps that work on such a run (the run is never continued with a different gate template)."""
-        done = self.state.get('status') == 'DONE'
-        scope = 'reject' if done or self.state.get('terminal_hold_kind') == 'rejection_limit' else 'note'
+    def _other_version_exits(self, rejected_tree_limit: Optional[bool] = None) -> str:
+        """V317-G1: the steps that work on such a run (the run is never continued with a different gate template).
+        rejected_tree_limit: for the rejected-tree HOLD being written (True at the rejection limit); its tree is not accepted."""
+        done = rejected_tree_limit is None and self.state.get('status') == 'DONE'
+        limit = (self.state.get('terminal_hold_kind') == 'rejection_limit' if rejected_tree_limit is None
+                 else rejected_tree_limit)
+        scope = 'reject' if done or limit else 'note'
         return ('this run was started by another review-loop version (the bundled gate prompt differs): continue it with that '
                 f"version, or with this one {'accept it, ' if done else ''}abort it, record a scope change "
                 f'(`{scope} --scope-change`) or start a new run')
@@ -3270,13 +3273,11 @@ class Coordinator:
             raise ValueError('--wi-deadline is fixed at run start (the run or permission-probe that creates the run directory); '
                              'this run directory was created without one')
         current_config = self._config()
+        raised = {'timeout': getattr(self.args, 'resume_timeout', None) is not None,
+                  'max_invocations': invocation_cap_override, 'exec_turn_timeout': exec_timeout_override}
+        skip = lambda key: self.args.action == 'resume' and raised.get(key, False)   # the three values a resume may raise
         for key, value in self.state['config'].items():
-            if (key == 'timeout' and self.args.action == 'resume' and
-                    getattr(self.args, 'resume_timeout', None) is not None):
-                continue
-            if key == 'max_invocations' and self.args.action == 'resume' and invocation_cap_override:
-                continue
-            if key == 'exec_turn_timeout' and self.args.action == 'resume' and exec_timeout_override:
+            if skip(key):
                 continue
             current = current_config[key]
             if key == 'workitem_reviewer_commands' and current != value:
@@ -3291,12 +3292,14 @@ class Coordinator:
                 self.hold(reason)
                 raise RuntimeError(reason)
             if current != value:
-                other_version = key == 'gate_prompt' and all(str(v).startswith('<bundled-default>:') for v in (value, current))
-                if other_version and self.args.action == 'abort':
+                bundled = key == 'gate_prompt' and all(str(v).startswith('<bundled-default>:') for v in (value, current))
+                if bundled and self.args.action == 'abort':
                     continue   # V317-G1: abort ends the run and dispatches nothing; every other key is still compared
+                only = bundled and not any(current_config[k] != v for k, v in self.state['config'].items()
+                                           if k != key and not skip(k))   # with another difference the plain text stays
                 raise ValueError(('role models are fixed for this run: ' if key in ROLE_DESTS else
                                   'resume configuration differs: ') + key
-                                 + ('; ' + self._other_version_exits() if other_version else ''))
+                                 + ('; ' + self._other_version_exits() if only else ''))
 
     def save(self) -> None:
         with self._save_lock:
@@ -3762,7 +3765,10 @@ class Coordinator:
                 'rationale': str(author.get('answer', {}).get('body', ''))[:2000],
                 'rationale_evidence': {'run_dir': str(self.run_dir), 'turn_sequence': author.get('sequence')}}
             self.state.update(next='author', pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
-            if worktree_lifecycle.is_worktree(self.state):   # W accepts no held tree (no --override-rejection)
+            if self._other_version_gate_prompt():   # V317-G1 R2: resume is refused there, so "note and resume" is no exit
+                limit = terminal_kind == 'rejection_limit'
+                reason += ('; post-DONE rejection limit reached; ' if limit else '; ') + self._other_version_exits(limit)
+            elif worktree_lifecycle.is_worktree(self.state):   # W accepts no held tree (no --override-rejection)
                 reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
                            if terminal_kind == 'rejection_limit' else '; note, change the workspace, or abort')
             else:
