@@ -4329,15 +4329,27 @@ class Coordinator:
         return [f"- {row['id']}: {', '.join(row['finding_ids'])}: {row['reason']}"
                 for row in self.state.get('operator_rulings', [])]
 
-    def operator_rulings_prompt(self, fresh=False) -> str:
+    def operator_rulings_prompt(self, audience: str = 'reviewer') -> str:
+        """The operator rulings for one audience: the persistent reviewer (ids and reasons), a fresh shadow or gate
+        ('fresh': the decision only, no ledger id) or an author-side turn that can change the tree ('author', V317-B3)."""
         rulings = self.state.get('operator_rulings', [])
         if not rulings: return ''
-        if fresh:
+        if audience == 'fresh':
             return ('\n## Operator decisions\n'
                     'The operator owns the work item. Treat these decisions as part of the approved scope; '
                     'do not report the decided point itself as a finding. Review everything else, including '
                     'implementation of the approved behavior, as usual.\n' +
                     '\n'.join('operator decision: ' + row['reason'] for row in rulings) + '\n')
+        if audience == 'author':
+            summaries = {row['id']: row['summary'] for row in self.state['finding_ledger']}
+            lines = [line for row in rulings for line in (f"- {row['id']}: {row['reason']}", *(
+                f"  - {finding_id}: {summaries.get(finding_id, '')}" for finding_id in row['finding_ids']))]
+            return ('\n## Operator withdrawals\n'
+                    'The operator withdrew these findings and decided to keep the behavior they asked to change:\n' +
+                    '\n'.join(lines) + '\n'
+                    'Do not reintroduce the change these findings asked for. When an open finding cannot be fixed without '
+                    'going against one of these decisions, keep the decision, leave that finding as it is, and say so in '
+                    'body. Never write these ids into the workspace.\n')
         return ('\n## Operator withdrawals\n' + '\n'.join(self.operator_ruling_lines()) +
                 '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n')
 
@@ -4667,6 +4679,7 @@ class Coordinator:
                f'{self.context / "plan.md"}. Fix only what the delivered findings ask for.'] if review_only else []),
                 contract,
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
+            *([rulings] if (rulings := self.operator_rulings_prompt('author').strip()) else []),   # V317-B3
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
             AUTHOR_HISTORY_RULE,
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
@@ -4777,7 +4790,7 @@ class Coordinator:
     def _mask_guidance(self, text: str) -> str:
         """L105: the frozen guidance is operator text, not review history: masked in one pass (longest first, so overlapping
         texts stay whole) wherever a fresh role's prompt is checked."""
-        texts = sorted(self._guidance_texts() + ([self.operator_rulings_prompt(fresh=True)]
+        texts = sorted(self._guidance_texts() + ([self.operator_rulings_prompt('fresh')]
                        if self.state.get('operator_rulings') else []), key=len, reverse=True)
         return re.sub('|'.join(map(re.escape, texts)), '<project-guidance>', text) if texts else text
 
@@ -4820,7 +4833,7 @@ class Coordinator:
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
-            ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt(fresh=True) + opv.prompt_block(self, snapshot, atomic_json)
+            ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json)
         fresh_note = 'Use your persistent thread history across PLAN and EXEC.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -4894,7 +4907,7 @@ class Coordinator:
                 '\n' + REVIEW_HISTORY_GUIDANCE +
                 '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
-                self.operator_rulings_prompt(fresh=True) + opv.prompt_block(self, snapshot, atomic_json))
+                self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json))
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -6432,7 +6445,7 @@ class Coordinator:
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
             (self.context / 'plan.md').read_text(), self.args.test_command,
             ' '.join(filter(None, [self._docs_reserved_note(), LONG_COMMAND_RULE])),
-            bool(self.state.get('review_only'))))
+            bool(self.state.get('review_only'))) + self.operator_rulings_prompt('author'))   # V317-B3
         self.render(result, 'finisher', 'FINISH')
         answer = result['answer']
         receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
@@ -6491,7 +6504,7 @@ class Coordinator:
         def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
             self._docs_budget()
             return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
-                                                  self.run_dir.name, self.workitem.read_text())
+                                                  self.run_dir.name, self.workitem.read_text()) + self.operator_rulings_prompt('author')   # V317-B3
         result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
@@ -7190,8 +7203,9 @@ class Coordinator:
         request = worktree_lifecycle.stage_request(life, writer) if life['pending'] is None else life['pending']
         paths = self._changed_paths()
         paths = paths if writer == 'simplifier' else [path for path in paths if worktree_lifecycle.is_test_path(path)]
-        prompt = lambda: worktree_lifecycle.writer_prompt(writer, self._simplifier_body() if writer == 'simplifier' else '',
-                                                          paths, self.args.test_command, self._docs_reserved_note()) + '\n' + LONG_COMMAND_RULE
+        prompt = lambda: (worktree_lifecycle.writer_prompt(writer, self._simplifier_body() if writer == 'simplifier' else '',
+                                                           paths, self.args.test_command, self._docs_reserved_note())
+                          + '\n' + LONG_COMMAND_RULE + self.operator_rulings_prompt('author'))   # V317-B3
         result, state = None, None
         while state is None and result is None:
             life = self.state['lifecycle']   # lifecycle_spine.begin replaces the dict: count on the current one

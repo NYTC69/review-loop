@@ -725,7 +725,9 @@ pending: accept or send back as before. At a round-limit HOLD caused by the
 reviewer verdict, plain `resume` already re-dispatches the reviewer on the same
 tree, even when other rows remain open or the reviewer had findings of its own.
 Withdrawal adds no continuation route; the existing exits apply. A rejected tree
-remains rejected. Rulings survive resume and writer replay rollback. This command does not reopen lifecycle stages at DONE.
+remains rejected. Rulings survive resume and writer replay rollback, and every later author-side turn (the EXEC author,
+FINISH, the POLISH-Q writers and the DOCS writer) is told about them and asked not to reintroduce the change the
+withdrawn findings asked for. This command does not reopen lifecycle stages at DONE.
 
 Before accepting or rejecting, request an operator intent for the exact action.
 It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
