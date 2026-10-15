@@ -19,15 +19,24 @@ class DispatchBudgetTests(unittest.TestCase):
     def setUpClass(cls):
         # Execute the released source in this clone, with its original file location so
         # bundled assets and imports resolve identically. No other repository is read.
-        source = subprocess.check_output(
-            ['git', 'show', '59ce540:paired_session/coordinator.py'], cwd=trc.MODULE_PATH.parent,
-            text=True)
+        cls.released = None
+        try:
+            source = subprocess.check_output(
+                ['git', 'show', '59ce540:paired_session/coordinator.py'], cwd=trc.MODULE_PATH.parent,
+                text=True, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            return   # Only the release-dependent tests need to skip in shallow checkouts.
         cls.released = types.ModuleType('v318cap_released_coordinator')
         cls.released.__file__ = str(trc.MODULE_PATH)
         exec(compile(source, str(trc.MODULE_PATH), 'exec'), cls.released.__dict__)
 
+    def released_coordinator(self):
+        if self.released is None:
+            self.skipTest('59ce540 coordinator source unavailable (e.g. shallow checkout)')
+        return self.released
+
     def prepare(self, *extra, released=False):
-        module = self.released if released else rc
+        module = self.released_coordinator() if released else rc
         with patch.object(trc, 'rc', module):
             co = self.coordinator('--lifecycle-mode', 'off', *extra)
         co.state['phase'] = 'EXEC'
@@ -74,16 +83,17 @@ class DispatchBudgetTests(unittest.TestCase):
         self.assertIn('gets 14400000 for a long command.', actual)
 
     def test_default_review_dispatch_bytes_match_release_and_exec_author_grows(self):
+        released = self.released_coordinator()
         co = self.prepare()
         # Same state/paths: compare the complete prompt builder output against 59ce540.
-        old = object.__new__(self.released.Coordinator)
+        old = object.__new__(released.Coordinator)
         old.__dict__.update(co.__dict__)
         for role in ('reviewer', 'gate'):
             actual, env, _ = self.dispatch(co, role)
             baseline = old._gate_prompt('snapshot') if role == 'gate' else old._review_prompt(role, 'snapshot')
             self.assertEqual(actual, baseline)
             with patch.dict(os.environ, {'BASH_MAX_TIMEOUT_MS': '1'}):
-                baseline_env = self.released.cli_env()
+                baseline_env = released.cli_env()
             if co._role_vendor(role) == 'codex':
                 baseline_env['CODEX_HOME'] = str(co.global_codex_home)
             self.assertEqual(env, baseline_env)

@@ -46,9 +46,9 @@ class RecoveryToctouTests(unittest.TestCase):
                 original = path.read_bytes()
                 co = self.uncertain(vendor, key, path)
                 used, real_env = co.state['invocations_used'], rc.cli_env
-                def env_then_change():   # the last step before invoke() takes the next turn's baseline
+                def env_then_change(*args, **kwargs):   # the last step before invoke() takes the next turn's baseline
                     path.write_bytes(original + b'\n# changed\n')
-                    return real_env()
+                    return real_env(*args, **kwargs)
                 with patch('os.killpg', side_effect=ProcessLookupError), patch.object(rc, 'cli_env', env_then_change):
                     self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
                 self.assertIn(f'global config changed during uncertain-turn recovery ({key})', co.state['hold_reason'])
@@ -114,9 +114,9 @@ class RecoveryToctouTests(unittest.TestCase):
         original = path.read_bytes()
         co = self.uncertain('codex', 'codex_config', path, 'AUTHOR_PERMISSION_PROBE')
         real_env, used = rc.cli_env, co.state['invocations_used']
-        def env_then_change():   # after the probe's outer check, right before invoke()'s own baseline
+        def env_then_change(*args, **kwargs):   # after the probe's outer check, right before invoke()'s own baseline
             path.write_bytes(original + b'\n# changed\n')
-            return real_env()
+            return real_env(*args, **kwargs)
         outer = co._recovery_config_issue
         def outer_check(snapshot, consume=True):
             issue = outer(snapshot, consume)
