@@ -227,10 +227,11 @@ FIELD-20 (long test commands): Codex's `exec_command` returns after about 10 s
 with a session id and no exit code while the command keeps running. Every probe,
 reviewer, gate, docs-reviewer and specialist prompt now tells the role to poll a
 still-running command until it has an exit code, never to start another command
-or end the turn before that, and to give a long Bash call the 3600000 ms timeout.
-A role's single command may run up to 60 minutes within the turn's `--timeout`
-(default 2700 s for reviewer and gate turns); a configured test command that
-needs longer must be split or shortened.
+or end the turn before that, and to give a long Bash call the turn's timeout in
+milliseconds (at least 3600000 ms). A role's single command may run as long as
+the turn's timeout (at least 60 minutes of command-tool allowance), within the
+turn deadline: `--timeout` (default 2700 s) for reviewer and gate turns, or
+`--exec-turn-timeout` (default 7200 s) for EXEC/FINISH/DOCS author turns.
 A command started but never completed (no exit status when the turn ended, or
 `-1`) is reported as `allowed-command-not-completed` by the probe and as "not
 observed to completion" in an EXEC or DOCS approval HOLD, not as an ordinary

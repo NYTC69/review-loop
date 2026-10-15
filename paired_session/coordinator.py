@@ -942,6 +942,11 @@ LONG_COMMAND_RULE = ('Run each command to completion before the next one and nev
                      f'A Bash tool call that takes a timeout parameter gets {LONG_COMMAND_TIMEOUT_MS} for a long command.')   # no vendor names: fresh-role scan
 
 
+def command_timeout_ms(timeout_seconds: int) -> int:
+    """A command may use its whole dispatch budget, with the historical one-hour floor."""
+    return max(LONG_COMMAND_TIMEOUT_MS, timeout_seconds * 1000)
+
+
 def command_not_completed(row: dict) -> bool:
     """FIELD-20: a Codex command with no exit status (still running or killed when the turn ended, or reported as -1). Claude rows
     carry -1 for every error, so they never count here; a Claude tool timeout is FIELD-12."""
@@ -5978,6 +5983,17 @@ class Coordinator:
                           '\nDo not expand the review scope.\n' if self.state.get('review_only') else '\nDo not expand the approved plan.\n')
                        + note_bytes.decode('utf-8'))
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
+        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
+                           else self.args.timeout)
+        # Expand the shared rule only at dispatch, before scanning and recording the actual prompt.
+        command_maximum = command_timeout_ms(timeout_seconds)
+        command_rule = LONG_COMMAND_RULE.replace(
+            f'gets {LONG_COMMAND_TIMEOUT_MS} for a long command.',
+            f'gets {command_maximum} for a long command.')
+        if LONG_COMMAND_RULE in prompt:
+            prompt = prompt.replace(LONG_COMMAND_RULE, command_rule)
+        elif command_maximum > LONG_COMMAND_TIMEOUT_MS:
+            prompt += '\n' + command_rule
         self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
         capability = {}
@@ -5994,8 +6010,6 @@ class Coordinator:
         if self.state['invocations_used'] >= limit:
             raise RuntimeError('invocation limit reached' + (f' (report budget {limit})' if self.state['config'].get('review_report') else ''))
         if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
-        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
-                           else self.args.timeout)
         self.state['sequence'] += 1
         seq = self.state['sequence']
         prefix = self.evidence / f'{seq:03d}-{phase.lower()}-{role}'
@@ -6044,7 +6058,7 @@ class Coordinator:
             receipt['operator_note_sha256'] = operator_note['sha256']
         if env_overrides:
             receipt['environment_overrides'] = dict(env_overrides)
-        env = cli_env()
+        env = cli_env(timeout_seconds)
         if env_overrides:
             env.update(env_overrides)
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
@@ -9244,13 +9258,14 @@ class Coordinator:
         atomic_text(self.run_dir / 'usage.md', '\n'.join(lines) + '\n')
 
 
-def cli_env() -> dict:
+def cli_env(timeout_seconds: int = 0) -> dict:
     env = os.environ.copy()
     # Raise the maximum for explicit long-command timeouts; leave the default untouched.
-    # Preserve a larger operator maximum, though the role rule still requests 3600000 ms.
+    # Preserve a larger operator maximum; the role requests its dispatch budget with a one-hour floor.
+    maximum = command_timeout_ms(timeout_seconds)
     try: value = int(env.get('BASH_MAX_TIMEOUT_MS', ''))
     except ValueError: value = 0
-    if value < LONG_COMMAND_TIMEOUT_MS: env['BASH_MAX_TIMEOUT_MS'] = str(LONG_COMMAND_TIMEOUT_MS)
+    if value < maximum: env['BASH_MAX_TIMEOUT_MS'] = str(maximum)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     # `claude -p` starts Agent subagents in the background by default: the turn then emits an
     # interim result before the subagent finishes and a second one afterwards. Foreground

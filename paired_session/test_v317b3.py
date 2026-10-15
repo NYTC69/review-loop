@@ -123,7 +123,9 @@ class AuthorRulingTests(unittest.TestCase):
         reserved = 'Reserved for the DOCS stage; do not edit: CHANGELOG.md.'
         [finish] = self.prompts(0, 'FINISH')
         plan = (self.run_dir / 'context' / 'plan.md').read_text()
-        self.assertEqual(finish, wl.finish_prompt(plan, 'python3 -m unittest', reserved + ' ' + rc.LONG_COMMAND_RULE, True))
+        # V318-CAP: FINISH/DOCS use the default two-hour author dispatch budget.
+        author_rule = rc.LONG_COMMAND_RULE.replace('gets 3600000', 'gets 7200000')
+        self.assertEqual(finish, wl.finish_prompt(plan, 'python3 -m unittest', reserved + ' ' + author_rule, True))
         quality = self.prompts(0, 'POLISH-Q')
         self.assertTrue(quality)
         body = wl.agent_body((rc.HERE.parent / 'agents' / 'code-simplifier.md').read_bytes())
@@ -137,7 +139,7 @@ class AuthorRulingTests(unittest.TestCase):
         config = state['config']
         allow = sorted(rc.Path(path).relative_to(self.workspace.resolve()).as_posix() for path in config['docs_allowlist'])
         self.assertEqual(docs, wl.docs_prompt(config.get('docs_file'), allow, self.run_dir.name,
-                                              self.workitem.read_text()))
+                                              self.workitem.read_text()) + '\n' + author_rule)
 
 
 if __name__ == '__main__': unittest.main()
