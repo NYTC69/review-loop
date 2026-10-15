@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-14
+**Last updated**: 2026-10-16
 
 ## P0 — blocker / must-do-now
 
@@ -50,6 +50,9 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~A role's single command may run as long as its turn timeout (V318-CAP)~~ (added 2026-10-16) (closed 2026-10-16, see v3.1.8, 6c549ab, 18b9fbe)
+  - Field evidence: poker-news-bot WI-218 (`--timeout 14400`, stop-after-gate route): the Claude gate was killed twice at the v3.1.7 cap of 1h 0m 0s; the configured test command needs more than an hour.
+  - Change: per dispatch N = max(3600000, turn timeout x 1000) in `BASH_MAX_TIMEOUT_MS` and in the long-command rule; nothing frozen changes, so v3.1.7 runs resume on v3.1.8.
 - ~~At the EXEC round limit, a re-review that leaves only non-blocking rows open ends as approved-with-advisory instead of HOLD (candidate A; owner approved 2026-10-13)~~ (added 2026-10-13) (closed 2026-10-13, see v3.1.6, 0f034e1 — as scoped; the advisory fix round is fixed by the same condition)
   - Field evidence: four consumer runs held with `EXEC round limit reached` (three on v3.1.3, one on v3.1.4), all with the same shape: the reviewer had no finding of its own, and every row it reported `still_open` was a gate MEDIUM or LOW.
   - Scope: only at the limit; the reviewer's verdict has no finding of its own; no row in `blocking_open_findings()` is open; the conditions the existing `advisory_exit` requires (configured test passed, reviewer's own run evidence, same snapshot) still apply. Rounds that are still available keep being spent on those rows, as today.
