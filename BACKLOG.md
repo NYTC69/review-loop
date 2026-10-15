@@ -22,6 +22,11 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - Progress (2026-09-26, R11-1b): EXEC default now follows a larger general timeout up to the 14400 s cap; legacy state on resume derives the same bounded fallback. Resume recognizes only explicit CLI values as raises; project-config defaults preserve the saved timeout.
 ## P3 — nice to have / someday
 
+- Follow-ups from the v3.1.8 gate (non-blocking). (added 2026-10-16)
+  - When a turn carries an operator rejection or clarification, the appended long-command rule follows the operator's text and reads like part of it; put it before those paragraphs or separate it.
+  - A command cannot outlive its turn, and N equals the turn deadline, so a command that uses all of N leaves no time to answer; consider N slightly below the turn timeout.
+  - Only 7200000 was probed with the real Claude CLI; confirm 14400000 (probe started 2026-10-16) and whether larger values are clamped.
+  - `test_v318cap` byte comparison does not cover shadow or the real FINISH builder (FINISH is covered by `test_v317b3`).
 - Follow-ups from the v3.1.7 gates and batches (non-blocking; batch them when a release is due anyway). (added 2026-10-14)
   - `cli_failure_reason`: ANSI-prefixed error lines are not recognized; `status --brief` cuts the new reasons at 120 characters; provider text reaches the review report Status line.
   - review-pr report rendering: an aggregated credential row is counted by hits in `## Security (N)`; a gate `line_start: 0` shows as `:0`.
@@ -52,7 +57,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 - ~~A role's single command may run as long as its turn timeout (V318-CAP)~~ (added 2026-10-16) (closed 2026-10-16, see v3.1.8, 6c549ab, 18b9fbe)
   - Field evidence: poker-news-bot WI-218 (`--timeout 14400`, stop-after-gate route): the Claude gate was killed twice at the v3.1.7 cap of 1h 0m 0s; the configured test command needs more than an hour.
-  - Change: per dispatch N = max(3600000, turn timeout x 1000) in `BASH_MAX_TIMEOUT_MS` and in the long-command rule; nothing frozen changes, so v3.1.7 runs resume on v3.1.8.
+  - Change: per dispatch N = max(3600000, turn timeout x 1000) in `BASH_MAX_TIMEOUT_MS` and in the long-command rule; nothing frozen changes. An efficient-mode v3.1.7 run resumes in place (a strict run with a Claude author needs `permission-probe` first); from another coordinator directory the stop-after-gate route needs `permission-probe` before `resume` and the full lifecycle refuses (behavior that predates v3.1.8).
 - ~~At the EXEC round limit, a re-review that leaves only non-blocking rows open ends as approved-with-advisory instead of HOLD (candidate A; owner approved 2026-10-13)~~ (added 2026-10-13) (closed 2026-10-13, see v3.1.6, 0f034e1 — as scoped; the advisory fix round is fixed by the same condition)
   - Field evidence: four consumer runs held with `EXEC round limit reached` (three on v3.1.3, one on v3.1.4), all with the same shape: the reviewer had no finding of its own, and every row it reported `still_open` was a gate MEDIUM or LOW.
   - Scope: only at the limit; the reviewer's verdict has no finding of its own; no row in `blocking_open_findings()` is open; the conditions the existing `advisory_exit` requires (configured test passed, reviewer's own run evidence, same snapshot) still apply. Rounds that are still available keep being spent on those rows, as today.
