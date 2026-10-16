@@ -136,8 +136,9 @@ class RecoveryHintTests(unittest.TestCase):
         self.assertIn('; run permission-probe)', resumed.stdout)
         self.assertNotIn('pass --accept-probe-skip', resumed.stdout)
         self.assertNotIn('--reason TEXT again', resumed.stdout)
-        # The removed flag above names the historical waiver, not a recommendation.
-        hint = resumed.stdout.split('; run permission-probe)', 1)[1]
+        # The removed flag above names the historical waiver, not a recommendation. Take the hint from the
+        # REFUSED line (the last occurrence): the progress line before it now shows the reason's head (V319-REASON).
+        hint = resumed.stdout.rsplit('; run permission-probe)', 1)[1]
         self.assertIn('run permission-probe before continuing', hint)
         self.assert_public_hint(hint, [['permission-probe']])
 
