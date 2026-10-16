@@ -690,6 +690,7 @@ continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
 next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
+A tree the gate blocked is gated again after its repair, on every route, before DONE.
 At a round-limit HOLD produced by a write (FINISH, DOCS, a SECURITY-stage change,
 or a writer rollback), the round is already used; a plain `resume` keeps the HOLD
 and `resume --add-rounds N` continues with the pending review.
@@ -776,7 +777,8 @@ records that tree's digest. An unchanged author answer enters `HOLD rejected-tre
 before review. Status includes the author's rationale, truncated to 2,000 characters,
 and a pointer to that author receipt. The operator may add `note` guidance, change
 the workspace and resume a new author ingest, or start a scope-change successor.
-After the rejection limit, such an author ingest is reviewed and gated again before DONE, on every route.
+After the rejection limit, such an author ingest is reviewed and gated again before DONE, on every route, also for a
+rejection-limit HOLD that an earlier version saved.
 Ordinary accept/reject require `--expect`; acceptance requires DONE.
 Retry-uncertain with no receipt follows plain resume; a fresh author ingest is required for rejected trees.
 

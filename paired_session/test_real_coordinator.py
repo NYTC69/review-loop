@@ -4447,7 +4447,8 @@ sys.exit(result.returncode)
         self.assertIn('omitted open finding dispositions after retry', state['hold_reason'])
 
     def test_ledger_comparison_and_per_turn_usage_are_terminal_artifacts(self):
-        result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_BLOCK': '1'})
+        # V319-HOLD R2: the repaired tree is gated again, so the gate blocks once (an always-blocking gate holds at the limit)
+        result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-blocked')})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         ledger = json.loads((self.run_dir / 'findings-ledger.json').read_text())
         self.assertGreaterEqual(len(ledger), 3)

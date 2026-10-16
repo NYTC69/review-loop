@@ -4300,7 +4300,8 @@ class Coordinator:
         return (git_snapshot(self.workspace)[0] if digest is None else digest) in self.state['rejected_digests']
     def refuse_rejected_tree(self, stale_done: bool = False, allow_author: bool = False) -> None:
         digest, manifest = git_snapshot(self.workspace)
-        if allow_author and not self.rejected_tree(digest): self.state.pop('terminal_hold_kind', None)
+        if allow_author and not self.rejected_tree(digest) and self.state.pop('terminal_hold_kind', None) == 'rejection_limit':
+            self.state.update(gate_ran=False, force_gate_after_reject=True)   # V319-HOLD R2: a HOLD an older version saved too
         if not allow_author and self.rejected_tree(digest):
             self.hold('rejected-tree', terminal_kind=self.state.get('terminal_hold_kind'))
             raise ValueError(self.state['hold_reason'])
@@ -8148,9 +8149,8 @@ class Coordinator:
         if valid and self._writer_review_rollback('gate', result['sequence']):   # D09 §2: a writer replay's gate failed
             return
         structural = self._structural_block_hold('gate', result['sequence'], valid)
-        if valid:
-            if self.state['config'].get('lifecycle_mode') == 'on':
-                self.state['gate_ran'] = False
+        if valid:   # V319-HOLD R2: on every route the repaired tree needs its own gate before DONE (an extension included)
+            self.state.update(gate_ran=False, force_gate_after_reject=True)
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after adversarial gate')
