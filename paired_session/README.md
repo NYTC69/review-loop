@@ -231,7 +231,8 @@ still-running command until it has an exit code, never to start another command
 or end the turn before that, and to give a long Bash call the turn's command
 maximum in milliseconds (at least 3600000 ms). A role's single command may run
 for the turn's timeout less an answer margin of 10 % of it (at most 10 minutes),
-so a command that uses its whole maximum still leaves the role time to answer;
+so above the floor a command that uses its whole maximum still leaves the role
+time to answer (a shorter turn keeps the floor and its own deadline still applies);
 the floor is 60 minutes of command-tool allowance, so turns of 4000 s or less
 keep 3600000 ms. The turn timeout is `--timeout` (default 2700 s) for reviewer
 and gate turns, or `--exec-turn-timeout` (default max(7200, `--timeout`), capped

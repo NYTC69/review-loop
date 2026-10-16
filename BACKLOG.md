@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-16
+**Last updated**: 2026-10-17
 
 ## P0 — blocker / must-do-now
 
@@ -22,19 +22,15 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - Progress (2026-09-26, R11-1b): EXEC default now follows a larger general timeout up to the 14400 s cap; legacy state on resume derives the same bounded fallback. Resume recognizes only explicit CLI values as raises; project-config defaults preserve the saved timeout.
 ## P3 — nice to have / someday
 
+- Follow-ups from the v3.1.9 gate (non-blocking). (added 2026-10-17)
+  - Stop-after-gate route: a v3.1.8 run that held mid-repair after a gate block (rate limit, invocation cap; not a round-limit HOLD) and is resumed on v3.1.9 still reaches DONE without a second gate (same as v3.1.8); a read-time check "last gate blocked and no gate since" would close it.
+  - The Claude sandbox `credentials.envVars` deny list is built from the current environment's variable names and frozen into the role manifest; resuming from a shell with one more or one fewer such variable holds at "frozen role dispatch changed; abort or start a new run", whose hint does not mention restoring the environment.
+  - SECURITY treats a backslash as a path separator, so a name like `id_rsa\backup` may no longer be classified as sensitive (constructed case).
+  - `review_report._status_reason` docstring says at most STATUS_REASON_LIMIT characters, but the truncation suffix comes after that budget.
 - Follow-ups from the v3.1.8 gate (non-blocking). (added 2026-10-16)
-  - When a turn carries an operator rejection or clarification, the appended long-command rule follows the operator's text and reads like part of it; put it before those paragraphs or separate it.
-  - A command cannot outlive its turn, and N equals the turn deadline, so a command that uses all of N leaves no time to answer; consider N slightly below the turn timeout.
-  - Only 7200000 was probed with the real Claude CLI; confirm 14400000 (probe started 2026-10-16) and whether larger values are clamped.
-  - `test_v318cap` byte comparison does not cover shadow or the real FINISH builder (FINISH is covered by `test_v317b3`).
+  - Whether values above 14400000 are clamped by the Claude CLI is untested (a 7502 s command completed with 14400000 on 2026-10-16).
 - Follow-ups from the v3.1.7 gates and batches (non-blocking; batch them when a release is due anyway). (added 2026-10-14)
-  - `cli_failure_reason`: ANSI-prefixed error lines are not recognized; `status --brief` cuts the new reasons at 120 characters; provider text reaches the review report Status line.
-  - review-pr report rendering: an aggregated credential row is counted by hits in `## Security (N)`; a gate `line_start: 0` shows as `:0`.
-  - The EXEC author prompt does not carry `LONG_COMMAND_RULE` (an author that passes 600000 from habit is still cut at ten minutes); the DOCS reviewer's "did not observe a successful run" message has no command-tool timeout cause.
-  - A file name with TAB or backslash holds at SECURITY as an unclassifiable path and the HOLD names no way out; other strict-mode waivers still make a two-step reject stale.
-  - Rewrite-only PLAN review: a REVISE only for advisory rows ends in "abort and start a new run".
-  - Test gaps: `test_v317_plan.py:45` now exits through the one-attempt rule (the PLAN limit exit is covered in-process only); no test runs `reject --scope-change` from a rejection-limit HOLD outside `test_v317g1`.
-  - Stop-after-gate route: a plain `resume` after the operator edits the workspace at a rejection-limit HOLD reaches DONE without a gate (same in v3.1.6).
+  - Other strict-mode waivers still make a two-step reject stale.
   - Needs a real-CLI check: a Claude read-only turn may hold once on `.claude/.cc-writes`; `--forward-subagent-text`.
   - Owner decisions still open: `accept --auto-commit false` as a one-way downgrade; single-CLI installation.
 
@@ -55,6 +51,9 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~v3.1.7 / v3.1.8 gate follow-ups: ungated DONE paths, HOLD exits, long-command margin and heading, failure reasons and report rendering (V319-RULE, V319-REASON, V319-HOLD)~~ (added 2026-10-17) (closed 2026-10-17, see v3.1.9, 589415f, 7d3f5e7, ad5c2fd, f8d89c1, 25efe0d)
+  - Closed from P3: rule placement after operator text; N equal to the turn deadline; 14400000 probe (7502 s command completed); test_v318cap shadow/FINISH coverage; ANSI in failure reasons; `status --brief` cut; report Status line; Security heading count and `:0`; DOCS timeout cause; TAB/backslash SECURITY HOLD; rewrite-only PLAN advisory REVISE; PLAN limit and scope-change test gaps; stop-after-gate edit at the rejection limit reaching DONE ungated.
+  - Also fixed: stop-after-gate `resume --add-rounds` after a gate block reached DONE without a new gate (found in review).
 - ~~A role's single command may run as long as its turn timeout (V318-CAP)~~ (added 2026-10-16) (closed 2026-10-16, see v3.1.8, 6c549ab, 18b9fbe)
   - Field evidence: poker-news-bot WI-218 (`--timeout 14400`, stop-after-gate route): the Claude gate was killed twice at the v3.1.7 cap of 1h 0m 0s; the configured test command needs more than an hour.
   - Change: per dispatch N = max(3600000, turn timeout x 1000) in `BASH_MAX_TIMEOUT_MS` and in the long-command rule; nothing frozen changes. An efficient-mode v3.1.7 run resumes in place (a strict run with a Claude author needs `permission-probe` first); from another coordinator directory the stop-after-gate route needs `permission-probe` before `resume` and the full lifecycle refuses (behavior that predates v3.1.8).
