@@ -227,20 +227,27 @@ FIELD-20 (long test commands): Codex's `exec_command` returns after about 10 s
 with a session id and no exit code while the command keeps running. Every probe,
 reviewer, gate, docs-reviewer and specialist prompt now tells the role to poll a
 still-running command until it has an exit code, never to start another command
-or end the turn before that, and to give a long Bash call the turn's timeout in
-milliseconds (at least 3600000 ms). A role's single command may run as long as
-the turn's timeout (at least 60 minutes of command-tool allowance), within the
-turn deadline: `--timeout` (default 2700 s) for reviewer and gate turns, or
-`--exec-turn-timeout` (default max(7200, `--timeout`), capped at 14400 s) for
-EXEC/FINISH/DOCS author turns. Those author turns now get the same long-command
-rule with their own timeout value.
+or end the turn before that, and to give a long Bash call the turn's command
+maximum in milliseconds (at least 3600000 ms). A role's single command may run
+for the turn's timeout less an answer margin of 10 % of it (at most 10 minutes),
+so a command that uses its whole maximum still leaves the role time to answer;
+the floor is 60 minutes of command-tool allowance, so turns of 4000 s or less
+keep 3600000 ms. The turn timeout is `--timeout` (default 2700 s) for reviewer
+and gate turns, or `--exec-turn-timeout` (default max(7200, `--timeout`), capped
+at 14400 s) for EXEC/FINISH/DOCS author turns: the default two-hour author turn
+gets 6600000 ms, a four-hour turn 13800000 ms. Those author turns now get the
+same long-command rule with their own value; where the coordinator appends the
+rule to a prompt that lacks it, the rule comes under its own heading
+(`## Coordinator rule for long commands`), so it never reads as part of an
+operator rejection or clarification above it.
 A command started but never completed (no exit status when the turn ended, or
 `-1`) is reported as `allowed-command-not-completed` by the probe and as "not
 observed to completion" in an EXEC or DOCS approval HOLD, not as an ordinary
 failure. One observed completed exit-0 run of the exact configured command is
 still required. The remaining limits are the per-dispatch timeout (`--timeout`)
 and the command tool's timeout (reported as `allowed-command-timeout` by the
-probe, and as a command-tool timeout cause in the EXEC approval HOLD reason);
+probe, and as a command-tool timeout cause in the EXEC approval HOLD reason and
+the DOCS reviewer's HOLD);
 a test command longer than either cannot be observed to completion.
 Write launcher logs (for example `permission-probe ... > probe.log`) outside the
 run dir's parent: the Claude author probe watches the entries beside the run dir,

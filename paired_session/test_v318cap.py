@@ -43,11 +43,24 @@ class DispatchBudgetTests(unittest.TestCase):
         (co.context / 'plan.md').write_text('# Plan\nImplement the feature.\n')
         return co
 
-    def dispatch(self, co, role, phase='EXEC', maximum=None):
+    def finish_prompt(self, co):
+        """The prompt the real FINISH builder (worktree_finish_turn) hands to its writer, captured before dispatch."""
+        class Captured(Exception):
+            pass
+        built = []
+
+        def capture(request, role, prompt):
+            built.append(prompt())
+            raise Captured()
+        with patch.object(co, '_lifecycle_writer', side_effect=capture), self.assertRaises(Captured):
+            co.worktree_finish_turn()
+        return built[0]
+
+    def dispatch(self, co, role, phase='EXEC', maximum=None, prompt=None):
         co.state['phase'] = phase
         if role == 'author':
-            prompt = (co._author_prompt() if phase in ('PLAN', 'EXEC') else
-                      f'Role: persistent implementer. Phase: {phase}.\n' + rc.LONG_COMMAND_RULE)
+            prompt = prompt or (co._author_prompt() if phase in ('PLAN', 'EXEC') else
+                                f'Role: persistent implementer. Phase: {phase}.\n' + rc.LONG_COMMAND_RULE)
             schema = rc.author_schema()
         else:
             prompt = co._gate_prompt('snapshot') if role == 'gate' else co._review_prompt(role, 'snapshot')
@@ -74,13 +87,13 @@ class DispatchBudgetTests(unittest.TestCase):
         co = self.prepare('--timeout', '14400')
         for role in ('reviewer', 'gate', 'shadow'):
             actual, env, original = self.dispatch(co, role)
-            self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '14400000')
+            self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '13800000')   # V319-RULE: 14400 s less a 600 s answer margin
             self.assertEqual(actual, original.replace('gets 3600000 for a long command.',
-                                                      'gets 14400000 for a long command.'))
+                                                      'gets 13800000 for a long command.'))
             co.assert_fresh_prompt(role, actual)
         actual, env, _ = self.dispatch(co, 'gate', maximum='20000000')
         self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '20000000')
-        self.assertIn('gets 14400000 for a long command.', actual)
+        self.assertIn('gets 13800000 for a long command.', actual)
 
     def test_default_review_dispatch_bytes_match_release_and_exec_author_grows(self):
         released = self.released_coordinator()
@@ -88,7 +101,7 @@ class DispatchBudgetTests(unittest.TestCase):
         # Same state/paths: compare the complete prompt builder output against 59ce540.
         old = object.__new__(released.Coordinator)
         old.__dict__.update(co.__dict__)
-        for role in ('reviewer', 'gate'):
+        for role in ('reviewer', 'gate', 'shadow'):
             actual, env, _ = self.dispatch(co, role)
             baseline = old._gate_prompt('snapshot') if role == 'gate' else old._review_prompt(role, 'snapshot')
             self.assertEqual(actual, baseline)
@@ -97,16 +110,35 @@ class DispatchBudgetTests(unittest.TestCase):
             if co._role_vendor(role) == 'codex':
                 baseline_env['CODEX_HOME'] = str(co.global_codex_home)
             self.assertEqual(env, baseline_env)
-        actual, env, _ = self.dispatch(co, 'author')
+        actual, env, original = self.dispatch(co, 'author')
         self.assertEqual(co.args.exec_turn_timeout, 7200)
-        self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '7200000')
-        self.assertIn('gets 7200000 for a long command.', actual)
+        self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '6600000')   # V319-RULE: 7200 s less a 600 s answer margin
+        self.assertEqual(actual, original + rc.LONG_COMMAND_RULE_HEADING +
+                         rc.LONG_COMMAND_RULE.replace('gets 3600000', 'gets 6600000'))
+
+    def test_real_finish_builder_keeps_default_bytes_and_grows_with_a_long_turn(self):
+        released = self.released_coordinator()
+        for turn, expected in ((3600, '3600000'), (7200, '6600000')):
+            with self.subTest(turn=turn):
+                self.run_dir = self.root / f'finish-{turn}'
+                co = self.prepare('--lifecycle-mode', 'on', '--timeout', '3600', '--exec-turn-timeout', str(turn))
+                built = self.finish_prompt(co)
+                old = object.__new__(released.Coordinator)
+                old.__dict__.update(co.__dict__)
+                baseline = self.finish_prompt(old)   # the 59ce540 FINISH call site, same state and paths
+                self.assertEqual(built, baseline)
+                self.assertIn(rc.LONG_COMMAND_RULE, built)
+                actual, env, _ = self.dispatch(co, 'author', 'FINISH', prompt=built)
+                self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], expected)
+                self.assertEqual(actual, baseline.replace('gets 3600000 for a long command.',
+                                                          f'gets {expected} for a long command.'))
+                self.assertNotIn(rc.LONG_COMMAND_RULE_HEADING, actual)   # replaced in place, not appended
 
     def test_author_exec_finish_docs_use_author_timeout_other_phases_use_general(self):
         co = self.prepare('--timeout', '3600', '--exec-turn-timeout', '10800')
         for phase in ('EXEC', 'FINISH', 'DOCS', 'PLAN'):
             actual, env, original = self.dispatch(co, 'author', phase)
-            expected = '3600000' if phase == 'PLAN' else '10800000'
+            expected = '3600000' if phase == 'PLAN' else '10200000'   # V319-RULE: 10800 s less a 600 s answer margin
             self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], expected)
             if phase == 'PLAN':
                 self.assertEqual(actual, original)
@@ -133,8 +165,8 @@ class DispatchBudgetTests(unittest.TestCase):
         self.assertEqual({key: resumed.state[key] for key in frozen}, frozen)
         self.assertEqual(resumed._role_dispatch_manifest(), frozen['role_dispatch_manifest'])
         actual, env, _ = self.dispatch(resumed, 'gate')
-        self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '14400000')
-        self.assertIn('gets 14400000 for a long command.', actual)
+        self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '13800000')
+        self.assertIn('gets 13800000 for a long command.', actual)
         self.assertEqual({key: resumed.state[key] for key in frozen}, frozen)
 
     def test_resume_timeout_raises_review_and_gate_command_budgets(self):
@@ -146,8 +178,8 @@ class DispatchBudgetTests(unittest.TestCase):
         resumed = rc.Coordinator(args)
         for role in ('reviewer', 'gate'):
             actual, env, _ = self.dispatch(resumed, role)
-            self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '14400000')
-            self.assertIn('gets 14400000 for a long command.', actual)
+            self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '13800000')
+            self.assertIn('gets 13800000 for a long command.', actual)
 
 
 if __name__ == '__main__':

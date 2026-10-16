@@ -942,9 +942,15 @@ LONG_COMMAND_RULE = ('Run each command to completion before the next one and nev
                      f'A Bash tool call that takes a timeout parameter gets {LONG_COMMAND_TIMEOUT_MS} for a long command.')   # no vendor names: fresh-role scan
 
 
+LONG_COMMAND_RULE_HEADING = '\n\n## Coordinator rule for long commands\n'   # heads the rule where dispatch appends it
+COMMAND_ANSWER_MARGIN_SECONDS = 600   # V319-RULE: a command that uses its whole maximum still leaves the role time to answer
+
+
 def command_timeout_ms(timeout_seconds: int) -> int:
-    """A command may use its whole dispatch budget, with the historical one-hour floor."""
-    return max(LONG_COMMAND_TIMEOUT_MS, timeout_seconds * 1000)
+    """A command may use its dispatch budget less an answer margin (10 % of it, at most ten minutes), with the historical
+    one-hour floor: a turn of 4000 s or less keeps 3600000."""
+    margin = min(COMMAND_ANSWER_MARGIN_SECONDS, timeout_seconds // 10)
+    return max(LONG_COMMAND_TIMEOUT_MS, (timeout_seconds - margin) * 1000)
 
 
 def command_not_completed(row: dict) -> bool:
@@ -952,6 +958,16 @@ def command_not_completed(row: dict) -> bool:
     carry -1 for every error, so they never count here; a Claude tool timeout is FIELD-12."""
     code = row.get('exit_code')
     return row.get('source') != 'Bash tool_use/tool_result' and (code is None or (type(code) is int and code < 0))
+
+
+def configured_test_shortfall(rows: list, configured: str) -> tuple[str, bool]:
+    """Why no observed run of the configured test succeeded, for an EXEC approval or DOCS review HOLD: the command-tool
+    timeout cause (V317-CT; '' when none) and whether a run was never completed (FIELD-20)."""
+    runs = [row for row in rows if command_invokes_test(row.get('command', ''), configured)]
+    timeout = next((match.group(1).strip() for row in runs
+                    if (match := TOOL_TIMEOUT_RE.match(str(row.get('output') or '')))), None)
+    return (f" (the command timed out after {timeout} in the role's command tool)" if timeout else '',
+            any(command_not_completed(row) for row in runs))
 
 
 def codex_readonly_profile_args() -> list[str]:
@@ -5992,8 +6008,8 @@ class Coordinator:
             f'gets {command_maximum} for a long command.')
         if LONG_COMMAND_RULE in prompt:
             prompt = prompt.replace(LONG_COMMAND_RULE, command_rule)
-        elif command_maximum > LONG_COMMAND_TIMEOUT_MS:
-            prompt += '\n' + command_rule
+        elif command_maximum > LONG_COMMAND_TIMEOUT_MS:   # V319-RULE: its own heading, so it never reads as operator text above it
+            prompt += LONG_COMMAND_RULE_HEADING + command_rule
         self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
         capability = {}
@@ -6312,15 +6328,10 @@ class Coordinator:
                 receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
             elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
                                            for row in observed_commands):
-                unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
-                                 for row in observed_commands)   # FIELD-20
-                timeout = next((match.group(1).strip() for row in observed_commands
-                                if command_invokes_test(row.get('command', ''), self.args.test_command)
-                                and (match := TOOL_TIMEOUT_RE.match(str(row.get('output') or '')))), None)
+                cause, unfinished = configured_test_shortfall(observed_commands, self.args.test_command)
                 raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
-                                 + (f' (the command timed out after {timeout} in the role\'s command tool)' if timeout else
-                                    '; the configured test was not observed to completion (no exit status when the turn ended)'
-                                    if unfinished else ''))
+                                 + (cause or ('; the configured test was not observed to completion (no exit status when '
+                                                'the turn ended)' if unfinished else '')))
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
@@ -6586,11 +6597,10 @@ class Coordinator:
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
             raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
         if not (observed := self._observed_test(answer)):
-            unfinished = any(command_invokes_test(row.get('command', ''), self.args.test_command) and command_not_completed(row)
-                             for row in answer.get('observed_commands', []))   # FIELD-20
+            cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
             raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
-                               + (' (the configured test was not observed to completion: no exit status when the turn ended)'
-                                  if unfinished else '') + '; resume reviews again')
+                               + (cause or (' (the configured test was not observed to completion: no exit status when the '
+                                              'turn ended)' if unfinished else '')) + '; resume reviews again')
         self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer disposes them
         self.render(result, 'docs-reviewer', 'DOCS')
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
