@@ -4312,6 +4312,18 @@ class Coordinator:
             tracked = set(subprocess.check_output(['git', 'ls-files', '-z'], cwd=self.workspace).decode().split('\0'))
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
+    def _regate_saved_gate_block(self) -> None:
+        """V3110-GATE: an earlier version kept gate_ran after a gate blocker on the stop-after-gate route, so a repair it held
+        for another reason (a rate limit, the invocation cap) reached DONE ungated; the last gate turn's own blockers say so."""
+        life = self.state.get('lifecycle') or {}
+        if (self.state.get('force_gate_after_reject') or self.state['config'].get('review_report')
+                or (worktree_lifecycle.is_worktree(self.state) and life.get('stage') != 'EXEC')):
+            return
+        gate = next((turn for turn in reversed(self.state.get('turns', [])) if turn.get('role') == 'gate'
+                     and isinstance(turn.get('answer'), dict) and not turn.get('error')), None)
+        if gate and any(row.get('severity') in ('critical', 'high') and not missing_rubric(str(row.get('body', '')))
+                        for row in gate['answer'].get('findings', [])):   # the blockers gate_turn counts as valid
+            self.state.update(gate_ran=False, force_gate_after_reject=True)
     def _withdrawal_rows(self) -> list[dict]:
         allowed = ((self.state['status'] == 'DONE' and self.state.get('acceptance_state') == 'PENDING') or
                    (self.state['status'] == 'HOLD' and
@@ -9098,6 +9110,7 @@ class Coordinator:
                 return self.hold('DONE state rejected with open blocking findings: ' +
                                  ', '.join(row['id'] for row in blocking))
             return 'DONE'
+        self._regate_saved_gate_block()   # V3110-GATE: a gate-blocked repair an earlier version held is gated before DONE
         if not (self.state.get('active') or self.state.get('uncertain_active')):
             self._refuse_past_deadline('resume')   # F2b: before any state change, so the HOLD (and RLO) survives
         past_deadline = self._wi_deadline_issue(record=False)   # with an uncertain turn: settle it below, then HOLD instead of a dispatch
