@@ -4430,6 +4430,8 @@ class Coordinator:
             life = self.state['lifecycle']
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         if len(rejections) >= maximum:
+            # V319-HOLD: a tree that leaves this HOLD (an operator edit and resume, or a note) is reviewed and gated again
+            self.state.update(gate_ran=False, force_gate_after_reject=True)
             return self.hold('rejected-tree', terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
         record = {'id': rejection_id, 'author': 'operator',
@@ -6754,7 +6756,10 @@ class Coordinator:
                 print('NOTE: ' + note)
                 printed.append(note)
         self.save()
-        reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive)]
+        reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive) +
+                      ('; rename or remove the unclassifiable path and resume (EXEC review and gate replay, then '
+                       'FINISH..SECURITY, within the EXEC round limit), or abort'   # V319-HOLD: a working exit
+                       if any(row['category'] == 'unclassifiable path' for row in sensitive) else '')]
                      if sensitive else []), *([preflight['reason']] if preflight['reason'] else [])]
         review = None
         if not reasons and git_snapshot(self.workspace)[0] == tree:   # the reviewer sees only the scanned tree
@@ -6985,8 +6990,8 @@ class Coordinator:
         """sensitive_policy over the tracked and non-ignored untracked paths (the rule set frozen in testdata/legacy-sensitive-3.7.1-v2.8.4.md)."""
         hits = []
         for name in sorted(set(filter(None, self._git(['ls-files', '-z', '-co', '--exclude-standard']).split('\0')))):
-            try:
-                category = sensitive_policy.sensitive_path_category(name)
+            try:   # V319-HOLD: a TAB or a backslash in a literal -z name is classified (a backslash read as a separator)
+                category = sensitive_policy.sensitive_path_category(name.replace('\t', ' ').replace('\\', '/'))
             except ValueError:
                 category = 'unclassifiable path'
             if category:
@@ -7923,8 +7928,10 @@ class Coordinator:
             self.hold('EXEC APPROVE rejected: empty self_run_evidence')
             return
         rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
-        if rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status']):
-            # FIELD-11b: the reviewer's own REVISE counts, even if advisory_exit or out-of-phase findings turned it into APPROVE
+        if (rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status'])
+                and not (advisory_exit and only_still_open)):
+            # FIELD-11b: the reviewer's own REVISE counts, even if advisory_exit or out-of-phase findings turned it into APPROVE;
+            # V319-HOLD: a REVISE with no finding of its own that only leaves non-blocking rows open takes the advisory exit
             reason = ('the rewrite-only PLAN turn was not approved by the PLAN reviewer (the plan changed in substance or has '
                       'findings); abort and start a new run')
             rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history='PLAN reviewer REVISE', hold_reason=reason)

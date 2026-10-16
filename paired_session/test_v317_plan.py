@@ -1,4 +1,4 @@
-"""V317: PLAN prior-only advisory REVISE takes the final-round exit, preserving rewrite-only failure."""
+"""V317: PLAN prior-only advisory REVISE takes the final-round exit; V319-HOLD: on the rewrite-only re-review too."""
 import json
 import unittest
 from unittest.mock import patch
@@ -73,16 +73,24 @@ class PlanStillOpenTests(unittest.TestCase):
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
         self.assertFalse(state['finding_ledger'][0].get('advisory'))
 
-    def test_rewrite_only_raw_revise_still_fails_after_advisory_conversion(self):
+    def test_rewrite_only_revise_that_only_leaves_advisory_rows_open_moves_to_exec(self):   # V319-HOLD
         state = self.review(rewrite=True)
-        self.assertEqual((state['status'], state['phase']), ('HOLD', 'PLAN'))
+        self.assertEqual((state['status'], state['phase'], state['next']), ('ACTIVE', 'EXEC', 'author'))
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+        self.assertEqual(state['plan_history_rewrite']['status'], 'passed')
+        self.assertNotIn('hold_reason', state['plan_history_rewrite'])
+        self.assertTrue(state['finding_ledger'][0]['advisory'])
+        self.assertIn('"status": "ADVISORY"', state['delivered_review'])
+
+    def test_rewrite_only_revise_with_a_blocking_row_still_fails(self):
+        state = self.review(severity='MAJOR', rewrite=True)
+        self.assertEqual((state['status'], state['phase']), ('HOLD', 'PLAN'))
         self.assertEqual(state['plan_history_rewrite']['status'], 'failed')
         self.assertEqual(state['plan_history_rewrite']['failed_history'], 'PLAN reviewer REVISE')
         self.assertIn('rewrite-only PLAN turn was not approved', state['hold_reason'])
-        self.assertTrue(state['finding_ledger'][0]['advisory'])
+        self.assertFalse(state['finding_ledger'][0].get('advisory'))
 
-    def test_history_refusal_requests_rewrite_then_approve_or_raw_revise(self):
+    def test_history_refusal_requests_rewrite_then_approve_or_an_advisory_only_revise(self):
         for status in ('APPROVE', 'REVISE'):
             with self.subTest(rewrite_verdict=status):
                 self.run_dir = self.root / ('history-' + status.lower())
@@ -126,16 +134,12 @@ class PlanStillOpenTests(unittest.TestCase):
                 self.assertIn('Rows already recorded as advisory may stay still_open without that alone being a reason for REVISE; '
                               'approve when the rewritten plan is the same in substance.', prompt)
                 self.assertEqual((row['status'], row['advisory']), ('open', True))
-                if status == 'APPROVE':
-                    self.assertEqual((co.state['status'], co.state['phase'], co.state['next']), ('ACTIVE', 'EXEC', 'author'))
-                    self.assertEqual(co.state['plan_history_rewrite']['status'], 'passed')
-                    self.assertIn('"status": "ADVISORY"', co.state['delivered_review'])
-                else:
-                    self.assertEqual((co.state['status'], co.state['phase']), ('HOLD', 'PLAN'))
-                    self.assertEqual(co.state['plan_history_rewrite']['status'], 'failed')
-                    self.assertEqual(co.state['plan_history_rewrite']['failed_history'], 'PLAN reviewer REVISE')
-                    self.assertIn('rewrite-only PLAN turn was not approved', co.state['hold_reason'])
-                    self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+                # V319-HOLD: a REVISE that only leaves the advisory row open takes the advisory exit like the approval
+                self.assertEqual((co.state['status'], co.state['phase'], co.state['next']), ('ACTIVE', 'EXEC', 'author'))
+                self.assertEqual(co.state['plan_history_rewrite']['status'], 'passed')
+                self.assertIn('"status": "ADVISORY"', co.state['delivered_review'])
+                self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'],
+                                 'APPROVE' if status == 'APPROVE' else 'APPROVE_WITH_ADVISORY')
 
     def test_no_prior_row_still_open_keeps_the_limit_hold(self):
         state = self.review(rows=False)

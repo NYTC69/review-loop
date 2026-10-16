@@ -135,7 +135,8 @@ wording is sent back to the author for a restatement without them, so the gate
 does not refuse it after EXEC. With no PLAN round left, the author gets one extra
 rewrite-only turn that does not count as a PLAN round; the PLAN reviewer then
 reviews the rewrite against the plan it approved, and the run holds at PLAN if
-the history is still there or the plan changed in substance. Vendor names and other gate-scan triggers in the plan are still found
+the history is still there or the plan changed in substance. A REVISE on the rewrite with no finding of its own that only
+leaves non-blocking rows open takes the advisory exit of any PLAN review at the limit instead. Vendor names and other gate-scan triggers in the plan are still found
 only at the shadow or gate. The work item is never rewritten: a work item with
 `F001`-style identifiers or review narratives holds at PLAN, so keep them out.
 
@@ -305,7 +306,9 @@ SECURITY stops the run for sensitive-looking paths or content hits in files the 
 additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
 256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
 committed and left unchanged are printed once as a NOTE and recorded in the SECURITY receipt; a path the run removed
-and that is still in the index is also named in a NOTE. Such a file over 8 MiB is not content-scanned and is named in the NOTE.
+and that is still in the index is also named in a NOTE. A file name with a TAB or a backslash is classified (a backslash
+counts as a path separator); a name the path scan still cannot classify, such as one with a line break, stops the run
+with its exits: rename or remove the file and resume, or abort. Such a file over 8 MiB is not content-scanned and is named in the NOTE.
 A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
 DOCS records supported changes and observed results. Final review, security and commit facts belong to the delivery report.
 The DOCS reviewer assigns at least MAJOR to false or unsupported DOCS-stage statements.
@@ -773,6 +776,7 @@ records that tree's digest. An unchanged author answer enters `HOLD rejected-tre
 before review. Status includes the author's rationale, truncated to 2,000 characters,
 and a pointer to that author receipt. The operator may add `note` guidance, change
 the workspace and resume a new author ingest, or start a scope-change successor.
+After the rejection limit, such an author ingest is reviewed and gated again before DONE, on every route.
 Ordinary accept/reject require `--expect`; acceptance requires DONE.
 Retry-uncertain with no receipt follows plain resume; a fresh author ingest is required for rejected trees.
 
