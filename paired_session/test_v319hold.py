@@ -4,6 +4,8 @@
    stop-after-gate route and on the full lifecycle; `reject --scope-change` from that HOLD starts a working successor.
 2. SECURITY classifies a file name with a TAB or a backslash; a name it still cannot classify HOLDs with an exit that works.
 3. The PLAN round-limit advisory exit, reached by a driven run (not through the one-attempt rule).
+4. V3110-GATE: a gate-blocked repair that the release before held at the invocation cap is gated on resume; a run whose
+   last gate approved is not gated again.
 The rewrite-only PLAN review with only advisory rows left open is in test_v317_plan."""
 import json
 import subprocess
@@ -195,6 +197,50 @@ class HoldExitTests(unittest.TestCase):
                            and row['severity'].upper() in ('HIGH', 'CRITICAL')]
                 self.assertEqual([row['status'] for row in blocker], ['fixed'])
                 self.clean_workspace()
+
+    def test_a_gate_blocked_repair_the_release_before_held_is_gated_on_resume(self):
+        # V3110-GATE: the release before held the repair at the invocation cap (not a round limit) without forcing the gate
+        launcher = self.released_launcher()
+        for mode, cap in ((OFF, '5'), (ON, '6')):   # the cap: the gate's own turn, so the repair's author turn holds
+            with self.subTest(mode=mode[1]):
+                self.run_dir, self.released = self.root / ('upgrade-cap-' + mode[1]), launcher
+                env = {'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'}
+                held = self.run_coordinator(*mode, '--max-invocations', cap, env=env)
+                self.assertIn('HOLD: invocation limit reached', held.stdout, held.stdout + held.stderr)
+                saved = self.state()
+                self.assertEqual((saved['next'], saved['turns'][-1]['role']), ('author', 'gate'))
+                self.assertEqual((saved['gate_ran'], saved.get('force_gate_after_reject')),
+                                 (True, False) if mode is OFF else (False, False))
+                held_at, self.released = saved['sequence'], None
+                resumed = self.run_operator_action('resume', *mode, '--max-invocations', '80', env=env)
+                self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+                state = self.state()
+                after = [turn for turn in state['turns'] if turn['sequence'] > held_at]
+                self.assertEqual([(turn['role'], turn['phase']) for turn in after[:2]], [('author', 'EXEC'), ('reviewer', 'EXEC')])
+                gates = [turn for turn in state['turns'] if turn['role'] == 'gate']
+                self.assertEqual(len(gates), 2)   # one new gate, on the repaired tree
+                self.assertNotEqual(gates[0]['snapshot_before'], gates[-1]['snapshot_before'])
+                if mode is OFF:
+                    self.assertEqual(gates[-1]['snapshot_before'], state['approved_snapshot'])
+                else:
+                    self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], gates[-1]['sequence'])
+                self.clean_workspace()
+
+    def test_a_run_whose_last_gate_approved_is_not_gated_again_on_resume(self):
+        # the full lifecycle, saved by the release before after the repaired tree's gate approved: FINISH held at the cap
+        self.run_dir, self.released = self.root / 'upgrade-approved', self.released_launcher()
+        env = {'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'}
+        held = self.run_coordinator(*ON, '--max-invocations', '10', env=env)
+        self.assertIn('HOLD: invocation limit reached', held.stdout, held.stdout + held.stderr)
+        saved = self.state()
+        self.assertEqual([turn['role'] for turn in saved['turns'] if turn['role'] == 'gate'], ['gate', 'gate'])
+        self.assertEqual(saved['turns'][-1]['answer']['verdict'], 'approve')
+        held_at, self.released = saved['sequence'], None
+        resumed = self.run_operator_action('resume', *ON, env=env)
+        self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+        state = self.state()
+        self.assertEqual([turn for turn in state['turns'] if turn['sequence'] > held_at and turn['role'] == 'gate'], [])
+        self.assertFalse(state.get('force_gate_after_reject'))
 
     def test_a_tree_the_gate_rejected_is_gated_again_after_its_repair(self):
         for mode in (OFF, ON):

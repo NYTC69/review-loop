@@ -218,7 +218,8 @@ STATUS_REASON_LIMIT = 1000
 
 def _status_reason(text) -> str:
     """A HOLD reason (it can carry provider text) as one Status line: whitespace collapsed, credentials redacted, `|`
-    escaped and at most STATUS_REASON_LIMIT characters."""
+    escaped; a longer reason keeps its first STATUS_REASON_LIMIT characters (trailing backslashes dropped) and then
+    ` ... (truncated)`, so it can exceed the limit by that suffix."""
     text = ' '.join(leak_scan.redact(str(text)).split()).replace('|', '\\|')
     return text if len(text) <= STATUS_REASON_LIMIT else text[:STATUS_REASON_LIMIT].rstrip('\\') + ' ... (truncated)'
 
