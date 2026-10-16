@@ -108,6 +108,13 @@ def hits(text: str, scope: str):
                     yield rule, bisect.bisect_left(breaks, hit.start()) + 1
 
 
+def generic_credential(hit: re.Match) -> bool:
+    """A GENERIC match whose value is a credential: not publishable, not under a public name, not JWT-shaped."""
+    value = hit['value']
+    not_secret = value.startswith(PUBLISHABLE) or PUBLIC_NAME.search(hit['name']) or JWT_SHAPED.fullmatch(value)
+    return not not_secret and credential(GENERIC_RULE, value)
+
+
 def scan_text(text: str, scope: str) -> list:
     """(rule, line) for every credential in a text under the rules that apply in `scope` (WHOLE_DELIVERY or ADDED_TEXT),
     one per rule and line, in line order; never the value."""
@@ -116,9 +123,8 @@ def scan_text(text: str, scope: str) -> list:
         breaks = [match.start() for match in re.finditer('\n', text)]
         specific = {line for _, line in found}
         for hit in GENERIC.finditer(text):
-            line, value = bisect.bisect_left(breaks, hit.start()) + 1, hit['value']
-            not_secret = value.startswith(PUBLISHABLE) or PUBLIC_NAME.search(hit['name']) or JWT_SHAPED.fullmatch(value)
-            if line not in specific and not not_secret and credential(GENERIC_RULE, value):
+            line = bisect.bisect_left(breaks, hit.start()) + 1
+            if line not in specific and generic_credential(hit):
                 found.add((GENERIC_RULE, line))
     order = {rule: index for index, rule in enumerate((*(row[0] for row in RULES), GENERIC_RULE))}
     return sorted(found, key=lambda item: (item[1], order[item[0]]))

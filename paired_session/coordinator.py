@@ -748,9 +748,14 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
         return source.read(max_bytes).decode('utf-8', 'replace')
 
 
+ANSI_CSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+
 def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
-    """Keep one bounded diagnostic from the CLI output, without terminal controls."""
+    """Keep one bounded diagnostic from the CLI output, without terminal controls. Color codes are removed before the
+    stderr lines are matched, so a colored `error:` line is still the one kept."""
     message = ''
+    stderr = ANSI_CSI_RE.sub('', stderr)
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -768,7 +773,7 @@ def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
         lines = [line for line in stderr.splitlines() if line.strip()]
         message = next((line for line in reversed(lines) if re.match(r'\s*error\b', line, re.I)),
                        lines[-1] if lines else '')
-    message = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', message)
+    message = ANSI_CSI_RE.sub('', message)
     message = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in message).split())[:200]
     return prefix + (': ' + message if message else '')
 
@@ -2313,6 +2318,16 @@ def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
     return '\n'.join(lines)
 
 
+def brief_reason(text: str, limit: int = 160) -> str:
+    """A failure reason for a progress line: whole when short, else its start and its end around ' ... ', because a CLI
+    error often names its cause last, behind a long prefix (state.json keeps the whole reason)."""
+    text = ' '.join(text.split())
+    if len(text) <= limit:
+        return text
+    head = (limit - 5) * 2 // 5
+    return text[:head] + ' ... ' + text[len(text) - (limit - 5 - head):]
+
+
 def progress_line(row: dict) -> str:
     """PL: the one human-readable rendering of a progress.jsonl row, shared by the live stdout line and status --brief."""
     f = {k: v for k, v in row.items() if k not in ('ts', 'seq')}
@@ -3624,7 +3639,7 @@ class Coordinator:
     def _progress_terminal(self, status: str, reason: str = '') -> None:
         reason = ' '.join(reason.split())
         if reason.startswith('implementer: '): reason = reason.split(':')[0] + ': (author text withheld)'
-        self.progress('terminal', status=status, reason=reason[:120], invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
+        self.progress('terminal', status=status, reason=brief_reason(reason), invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
 
     def _progress_dispatch(self, role: str, phase: str, fresh: bool, call):
         kind = {'probe': 'probe:reviewer', 'gate-probe': 'probe:gate'}.get(role) or ('probe:author-escape' if phase == 'AUTHOR_PERMISSION_PROBE' else 'dispatch')
@@ -7251,7 +7266,7 @@ class Coordinator:
             except (RateLimitedTurn, WriterGitGuard):   # a rate limit and the HEAD/ref/index guard still HOLD
                 raise
             except RuntimeError as exc:   # any other failure is a failed attempt
-                self.progress('quality-writer', writer=writer, state='failed attempt', detail=str(exc)[:120])
+                self.progress('quality-writer', writer=writer, state='failed attempt', detail=brief_reason(str(exc)))
                 state = 'exhausted'
             finally:   # reconcile as _specialist_turn: a refunded (rate-limited) or reused launch gives its count back
                 life = self.state['lifecycle']

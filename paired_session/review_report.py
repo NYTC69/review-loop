@@ -6,10 +6,18 @@ the roles that ran with their tool-use counts and the stages that did not comple
 Recommended Actions list. "Strengths" is not invented: the ledger has none. REPORT-DEDUPE: similar reports from several
 roles (same file, severity and security flag, near-duplicate summary) share one row with every id and role, labelled as
 similar reports (not claimed to be one issue); every other report's summary stays listed below it. The two deterministic
-credential scanners share one line for an identical path, line and rule, even across severity sections.
+credential scanners share one line for an identical path, line and rule, even across severity sections. A section heading
+counts the ledger findings listed in it: each id once (an aggregate secret-scan finding shown as one line per hit too), and
+a credential both scanners report once. The HOLD reason on the Status line is provider text: one line, credentials
+redacted, table pipes escaped, bounded.
 """
 import re
 from collections import Counter
+
+try:
+    from paired_session import leak_scan
+except ModuleNotFoundError:
+    import leak_scan
 
 SECTIONS = (('CRITICAL', 'Critical'), ('SECURITY', 'Security'), ('MAJOR', 'Important'), ('MINOR', 'Suggestions'))
 # FIELD-26: as WL normalizes specialist severities (HIGH/MEDIUM -> MAJOR, LOW -> MINOR); the EXEC reviewer and the gate keep
@@ -50,9 +58,10 @@ def _merged(rows: list) -> list:
 
 
 def _location(row: dict) -> str:
+    """path:start[-end]; a finding without a line, or with line 0 (a gate's whole-file finding), shows the path alone."""
     path = row.get('file') or '-'
     start, end = row.get('line_start'), row.get('line_end')
-    return f'{path}:{start}' + (f'-{end}' if end is not None and end != start else '') if start is not None else path
+    return f'{path}:{start}' + (f'-{end}' if end is not None and end != start else '') if start else path
 
 
 def _explanation(row: dict, indent: str) -> list:
@@ -139,7 +148,7 @@ def _line(group: list, section: str) -> str:
     lines += _explanation(first, '  ')
     for row in group[1:]:
         if not credential:
-            location = f" `{_location(row)}`:" if row.get('line_start') is not None else ''
+            location = f" `{_location(row)}`:" if row.get('line_start') else ''
             lines.append(f"  - {row['id']} [{_role(row)}, {row.get('phase')}]:{location} {row.get('summary', '')}")
         lines += _explanation(row, '    ' if not credential else '  ')
     return '\n'.join(lines)
@@ -204,13 +213,24 @@ def delivery_section(state: dict) -> str:
     return '\n'.join(lines) + '\n'
 
 
+STATUS_REASON_LIMIT = 1000
+
+
+def _status_reason(text) -> str:
+    """A HOLD reason (it can carry provider text) as one Status line: whitespace collapsed, credentials redacted, `|`
+    escaped and at most STATUS_REASON_LIMIT characters."""
+    text = ' '.join(leak_scan.redact(str(text)).split()).replace('|', '\\|')
+    return text if len(text) <= STATUS_REASON_LIMIT else text[:STATUS_REASON_LIMIT].rstrip('\\') + ' ... (truncated)'
+
+
 def render(state: dict) -> str:
     report = state.get('report') or {}
     complete = bool(report.get('complete'))
     record, config = state.get('review_only') or {}, state.get('config') or {}
     lines = ['# Review report', '',
              'Status: ' + ('REPORTED (complete)' if complete else
-                           f"incomplete, the run is on HOLD: {report.get('hold_reason') or state.get('hold_reason') or 'unknown'}")]
+                           'incomplete, the run is on HOLD: '
+                           + _status_reason(report.get('hold_reason') or state.get('hold_reason') or 'unknown'))]
     if not complete and report.get('not_completed'):
         lines.append('Not completed: ' + ', '.join(report['not_completed']))
     pinned = [('Review base', config.get('review_base')), ('Head at start', record.get('head_at_start')),
@@ -255,7 +275,7 @@ def render(state: dict) -> str:
         found = [group for section, group in groups if section == severity]
         if severity == 'OTHER' and not found:
             continue
-        count = sum(1 if _same_credential(group) else len(group) for group in found)
+        count = len({row['id'] for group in found for row in (group[:1] if _same_credential(group) else group)})
         lines += ['', f'## {title} ({count})']
         lines += [_line(group, severity) for group in found] or ['- none']
     lines += ['', '## Recommended Actions', *(f'{index}. {text}' for index, text in enumerate(RECOMMENDED, 1)), '']

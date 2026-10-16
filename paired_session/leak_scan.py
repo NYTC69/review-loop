@@ -79,3 +79,18 @@ def exempt(path: str, patterns: list[str]) -> bool:
 
 def where(hit: dict) -> str:
     return f"{hit['path']}:{hit['line']} ({hit['kind']})"
+
+
+def redact(text: str) -> str:
+    """The text with every credential an ADDED_TEXT scan would report replaced by `[redacted <rule>]`, for provider
+    text that is shown again (the review report's Status line)."""
+    spans = [(hit.start(), hit.end(), rule) for rule, pattern, _scope, filtered in content_rules.RULES
+             for hit in pattern.finditer(text) if not filtered or content_rules.credential(rule, hit.group(0))]
+    spans += [(hit.start('value'), hit.end('value'), content_rules.GENERIC_RULE)
+              for hit in content_rules.GENERIC.finditer(text) if content_rules.generic_credential(hit)]
+    out, end = [], 0
+    for start, stop, rule in sorted(spans):
+        if start >= end:
+            out += [text[end:start], f'[redacted {rule}]']
+        end = max(end, stop)   # an overlapping match extends the redacted span it starts in
+    return ''.join(out) + text[end:]
