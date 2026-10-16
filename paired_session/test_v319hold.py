@@ -165,6 +165,37 @@ class HoldExitTests(unittest.TestCase):
                     self.assertEqual(after[-1], ('reviewer', 'SECURITY'))
                 self.clean_workspace()
 
+    def test_a_gate_round_limit_hold_saved_by_the_release_before_gates_the_repair(self):
+        launcher = self.released_launcher()
+        for mode in (OFF, ON):
+            with self.subTest(mode=mode[1]):
+                self.run_dir, self.released = self.root / ('upgrade-gate-' + mode[1]), launcher
+                env = {'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'}
+                held = self.run_coordinator(*mode, '--max-exec-rounds', '1', env=env)
+                self.assertIn('HOLD: EXEC round limit reached after adversarial gate', held.stdout, held.stdout + held.stderr)
+                saved = self.state()
+                # what the release before saved: the off route kept the blocking gate as run, the full lifecycle did not
+                self.assertEqual((saved['gate_ran'], saved.get('force_gate_after_reject')),
+                                 (True, False) if mode is OFF else (False, False))
+                held_at, self.released = saved['sequence'], None
+                resumed = self.run_operator_action('resume', *mode, '--max-exec-rounds', '1', '--add-rounds', '1', env=env)
+                self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+                state = self.state()
+                after = [turn for turn in state['turns'] if turn['sequence'] > held_at]
+                self.assertEqual([(turn['role'], turn['phase']) for turn in after[:2]], [('author', 'EXEC'), ('reviewer', 'EXEC')])
+                gates = [turn for turn in state['turns'] if turn['role'] == 'gate']
+                self.assertEqual(len(gates), 2)
+                self.assertGreater(gates[-1]['sequence'], held_at)
+                self.assertNotEqual(gates[0]['snapshot_before'], gates[-1]['snapshot_before'])
+                if mode is OFF:
+                    self.assertEqual(gates[-1]['snapshot_before'], state['approved_snapshot'])
+                else:
+                    self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], gates[-1]['sequence'])
+                blocker = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate'
+                           and row['severity'].upper() in ('HIGH', 'CRITICAL')]
+                self.assertEqual([row['status'] for row in blocker], ['fixed'])
+                self.clean_workspace()
+
     def test_a_tree_the_gate_rejected_is_gated_again_after_its_repair(self):
         for mode in (OFF, ON):
             for limit in (False, True):   # a round still left, or the round limit and resume --add-rounds 1

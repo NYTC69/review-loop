@@ -690,7 +690,8 @@ continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
 next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
-A tree the gate blocked is gated again after its repair, on every route, before DONE.
+A tree the gate blocked is gated again after its repair, on every route, before DONE, also when an earlier version
+saved the gate's round-limit HOLD.
 At a round-limit HOLD produced by a write (FINISH, DOCS, a SECURITY-stage change,
 or a writer rollback), the round is already used; a plain `resume` keeps the HOLD
 and `resume --add-rounds N` continues with the pending review.

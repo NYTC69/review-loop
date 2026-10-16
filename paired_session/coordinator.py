@@ -7751,6 +7751,8 @@ class Coordinator:
                 for writer in worktree_lifecycle.QUALITY_WRITERS['both'])
             self.state.update(next='author', delivered_review=(self._writer_repair_review(rows, 'round-limit-extension')
                               if rolled_back else worktree_lifecycle.delivered_findings('round-limit-extension', rows)))
+            if held['hold_reason'] == ROUND_LIMIT_REASONS[2]:   # V319-HOLD R3: the repair of a gate-blocked tree is gated,
+                self.state.update(gate_ran=False, force_gate_after_reject=True)   # also for a HOLD an earlier version saved
 
     def _close_writer_replay_rounds(self) -> None:
         if (rounds := self.state.get('writer_replay_rounds')) and rounds.get('used') is None:
