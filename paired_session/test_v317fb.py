@@ -1,5 +1,6 @@
 """V317-FB operator recoveries, driven through fake provider CLIs."""
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -166,6 +167,42 @@ class OperatorRecoveryTests(unittest.TestCase):
                 self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
                 self.assertIn('configured claude_bin is missing or inside an author-writable root', held.stdout)
                 self.assertEqual(self.state()['turns'], [])
+
+    def test_credential_env_names_hint_and_restore(self):
+        added, removed = 'V3110_ADDED_TOKEN', 'V3110_REMOVED_TOKEN'
+        value = 'v3110-private-value-never-print'
+        with patch.dict(os.environ, {removed: value}):
+            os.environ.pop(added, None)
+            started = self.run_coordinator(*ON, '--stop-after-plan')
+            self.assertIn('HOLD', started.stdout, started.stdout + started.stderr)
+            frozen = self.state()['role_dispatch_manifest']
+            del os.environ[removed]
+            os.environ[added] = value
+            held = self.run_operator_action('resume', *ON)
+            self.assertEqual(self.state()['status'], 'HOLD')
+            reason = self.state()['hold_reason']
+            self.assertIn('names added: ' + added + '; removed: ' + removed, reason)
+            self.assertIn('restore the environment (unset ' + added + '; export ' + removed + ')', reason)
+            self.assertIn('run resume again to continue the run', reason)
+            self.assertEqual(len(reason.splitlines()), 1)
+            self.assertIn(reason, held.stdout)
+            status = self.run_operator_action('status')
+            self.assertEqual(json.loads(status.stdout)['hold_reason'], reason)
+            brief = self.run_operator_action('status', '--brief')
+            self.assertIn(rc.brief_reason(reason), brief.stdout)
+            self.assertIn('run resume again to continue the run', brief.stdout)
+            self.assertIn('Hold reason: ' + reason, (self.run_dir / 'review-comparison.md').read_text())
+            self.assertEqual(self.state()['role_dispatch_manifest'], frozen)
+            self.assertNotIn(value, (self.run_dir / 'state.json').read_text())
+            del os.environ[added]
+            os.environ[removed] = value
+            resumed = self.run_operator_action('resume', *ON)
+            self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+            for output in (started.stdout, held.stdout, status.stdout, brief.stdout, resumed.stdout):
+                self.assertNotIn(value, output)
+            for path in self.run_dir.rglob('*'):
+                if path.is_file() and path.suffix in ('.json', '.jsonl', '.md'):
+                    self.assertNotIn(value, path.read_text(), str(path))
 
     def test_off_allowlist_hint_stays(self):
         self.done(*OFF)

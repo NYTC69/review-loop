@@ -2779,6 +2779,24 @@ class Coordinator:
         if (current != self.state.get('role_dispatch_manifest') or
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
+            saved = self.state.get('role_dispatch_manifest') or {}
+            names = set()
+            for flags in saved.get('role_flags', {}).values():
+                settings = flags.get('sandbox') if flags.get('vendor') == 'claude' else flags.get('claude_bash_sandbox')
+                if settings:
+                    names.update(entry['name'] for entry in settings['sandbox']['credentials']['envVars'])
+            restored = self._under_env_names(names, self._role_dispatch_manifest) if names else None
+            restored_digest = hashlib.sha256(json.dumps(restored, sort_keys=True,
+                                                        separators=(',', ':')).encode()).hexdigest()
+            if (restored == saved and restored_digest == self.state.get('role_dispatch_manifest_sha256')
+                    and self.state.get('role_dispatch_manifest_version') == 1):
+                now = set(self._env_names_now())
+                added, removed = sorted(now - names), sorted(names - now)
+                if added or removed:
+                    steps = (['unset ' + ', '.join(added)] if added else []) + (['export ' + ', '.join(removed)] if removed else [])
+                    raise RuntimeError('frozen role dispatch changed; credential env-var names added: '
+                                       + (', '.join(added) or 'none') + '; removed: ' + (', '.join(removed) or 'none')
+                                       + '; restore the environment (' + '; '.join(steps) + ') and run resume again to continue the run')
             raise RuntimeError('frozen role dispatch changed; abort or start a new run')
         if (not current['role_flags']['author']['tmp_isolated'] and
                 not worktree_lifecycle.is_worktree(self.state)):   # W accepts the real-EXEC author TMP (ADR-11)
@@ -9551,6 +9569,10 @@ def git_work_tree_root(path: Path) -> Optional[Path]:
 
 def replace_override(state: dict, key: str, record: dict) -> None:
     """STRICT-NITS (P0-2 b): a new operator override record keeps the one it replaces (voided or not) in <key>_history."""
+    previous = state.get(key) or {}
+    if ({k: v for k, v in previous.items() if k != 'time'} ==
+            {k: v for k, v in record.items() if k != 'time'}):
+        return   # Repeating a current waiver must not stale the printed two-step reject intent.
     if state.get(key):
         state.setdefault(key + '_history', []).append(state[key])
     state[key] = record
