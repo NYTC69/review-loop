@@ -1,5 +1,19 @@
 # Changelog
 
+### v3.1.10：旧版本存下的 gate 打回后修复中的 run 也要再过 gate；环境变量变化的 HOLD 写明怎么恢复；两步 reject 不再因重复豁免失效
+
+**升级须知**
+- 这一版没有改 run 启动时固定下来的任何值，换版本继续 run 的规则和 v3.1.8 一样（见 v3.1.8 的升级须知）。
+- v3.1.8 在 gate 后停路线上已经跑到 DONE、正在等验收的 run：如果最后一次 gate 打回过，修好的代码其实没再过 gate（v3.1.9 修掉的那个问题），新版本不会把它拉回去。验收前看一下 `review-comparison.md` 里最后一次 gate 的结论；打回过的话，先 `reject` 让它重新评审、过 gate，再验收。
+
+**修复**
+- gate 后停路线（`--lifecycle-mode off`）上，v3.1.8 及更早版本存下的 run：gate 打回后作者修复中途因限流、调用次数上限等原因停下（不是轮数用完），在 v3.1.9 上 `resume` 仍会不过 gate 就到 DONE。现在 `resume` 时发现"最后一次 gate 打回、之后没再跑 gate"，会让修复后的代码重新过 gate。已到 DONE 的 run 不受影响。
+- 换了 shell 继续 run，凭据类环境变量多了或少了一个时，HOLD 以前只说"frozen role dispatch changed; abort or start a new run"。现在如果差别只在这些变量名上，HOLD 会写明多了、少了哪些变量名，并给出恢复命令（`unset A B; export C=<value>`），恢复后再 `resume` 即可继续。只写变量名，不写值。其他变化仍是原来的提示。
+- 用 strict 豁免（`--accept-unverified-claude-author`、`--accept-probe-skip`）启动的 run，照着 `reject --intent-only` 打印的下一条命令做两步 reject 时，重复同样的豁免以前会改写状态，第二步报"intent is stale"被拒。现在内容完全相同的豁免不再重复记录，两步 reject 可以照常完成。
+- `review_report._status_reason` 的文档字符串改为与代码一致（截断后缀在上限之外）。
+
+**审查**：两个批次交叉审查。V3110-GATE 由 Opus 执行、Codex 审查（通过；用旧版代码确认测试能抓到这个 bug）；V3110-HINT 由 Codex 执行、Opus 审查（通过，按低优先级意见改正了恢复命令的写法）。
+
 ### v3.1.9：没过 gate 的代码不会再交出去；长命令留出作答时间；失败原因更好读
 
 **升级须知**

@@ -22,15 +22,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - Progress (2026-09-26, R11-1b): EXEC default now follows a larger general timeout up to the 14400 s cap; legacy state on resume derives the same bounded fallback. Resume recognizes only explicit CLI values as raises; project-config defaults preserve the saved timeout.
 ## P3 — nice to have / someday
 
-- Follow-ups from the v3.1.9 gate (non-blocking). (added 2026-10-17)
-  - Stop-after-gate route: a v3.1.8 run that held mid-repair after a gate block (rate limit, invocation cap; not a round-limit HOLD) and is resumed on v3.1.9 still reaches DONE without a second gate (same as v3.1.8); a read-time check "last gate blocked and no gate since" would close it.
-  - The Claude sandbox `credentials.envVars` deny list is built from the current environment's variable names and frozen into the role manifest; resuming from a shell with one more or one fewer such variable holds at "frozen role dispatch changed; abort or start a new run", whose hint does not mention restoring the environment.
-  - SECURITY treats a backslash as a path separator, so a name like `id_rsa\backup` may no longer be classified as sensitive (constructed case).
-  - `review_report._status_reason` docstring says at most STATUS_REASON_LIMIT characters, but the truncation suffix comes after that budget.
-- Follow-ups from the v3.1.8 gate (non-blocking). (added 2026-10-16)
-  - Whether values above 14400000 are clamped by the Claude CLI is untested (a 7502 s command completed with 14400000 on 2026-10-16).
 - Follow-ups from the v3.1.7 gates and batches (non-blocking; batch them when a release is due anyway). (added 2026-10-14)
-  - Other strict-mode waivers still make a two-step reject stale.
   - Needs a real-CLI check: a Claude read-only turn may hold once on `.claude/.cc-writes`; `--forward-subagent-text`.
   - Owner decisions still open: `accept --auto-commit false` as a one-way downgrade; single-CLI installation.
 
@@ -51,6 +43,10 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~v3.1.7 / v3.1.8 / v3.1.9 gate follow-ups: re-gating a repair an earlier version held, environment-only dispatch drift hint, repeated strict-mode waivers staling a two-step reject (V3110-GATE, V3110-HINT)~~ (added 2026-10-17) (closed 2026-10-17, see v3.1.10)
+  - Closed from P3: stop-after-gate mid-repair HOLD saved by v3.1.8 reaching DONE ungated; `credentials.envVars` drift hint; `_status_reason` docstring; other strict-mode waivers making a two-step reject stale.
+  - Won't fix: SECURITY treating a backslash as a path separator (`id_rsa\backup`), a constructed case under the owner threat model.
+  - Moot: values above 14400000 clamped by the Claude CLI; the coordinator's maximum is at most 13800000 since v3.1.9.
 - ~~v3.1.7 / v3.1.8 gate follow-ups: ungated DONE paths, HOLD exits, long-command margin and heading, failure reasons and report rendering (V319-RULE, V319-REASON, V319-HOLD)~~ (added 2026-10-17) (closed 2026-10-17, see v3.1.9, 589415f, 7d3f5e7, ad5c2fd, f8d89c1, 25efe0d)
   - Closed from P3: rule placement after operator text; N equal to the turn deadline; 14400000 probe (7502 s command completed); test_v318cap shadow/FINISH coverage; ANSI in failure reasons; `status --brief` cut; report Status line; Security heading count and `:0`; DOCS timeout cause; TAB/backslash SECURITY HOLD; rewrite-only PLAN advisory REVISE; PLAN limit and scope-change test gaps; stop-after-gate edit at the rejection limit reaching DONE ungated.
   - Also fixed: stop-after-gate `resume --add-rounds` after a gate block reached DONE without a new gate (found in review).
