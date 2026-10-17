@@ -92,11 +92,14 @@ def state(workspace: Path, keep: Path) -> dict:
 IGNORED_LIMIT, IGNORED_SECONDS = 2000, 2.0   # eff-e: past either bound the ignored entries are not checked (noted in the receipt)
 
 
+def _meta(path: Path, info: os.stat_result) -> list:
+    """Type, size, mtime_ns, mode and symlink target of one entry from its lstat result (readlink may raise OSError)."""
+    return [stat.S_IFMT(info.st_mode), info.st_size, info.st_mtime_ns, info.st_mode, os.readlink(path) if stat.S_ISLNK(info.st_mode) else '']
+
+
 def _lstat(path: Path):
-    """Type, size, mtime_ns, mode and symlink target of one entry, or None when it is gone."""
-    try:
-        info = os.lstat(path)
-        return [stat.S_IFMT(info.st_mode), info.st_size, info.st_mtime_ns, info.st_mode, os.readlink(path) if stat.S_ISLNK(info.st_mode) else '']
+    """_meta of one entry, or None when it is gone."""
+    try: return _meta(path, os.lstat(path))
     except OSError: return None
 
 
@@ -108,7 +111,7 @@ def _claude_listing(workspace: Path):
         if stat.S_ISDIR(claude.lstat().st_mode): paths.extend(claude.iterdir())
         for path in paths:
             info = path.lstat()
-            listing[str(path)] = [*_lstat(path), info.st_dev, info.st_ino, info.st_uid]
+            listing[str(path)] = [*_meta(path, info), info.st_dev, info.st_ino, info.st_uid]   # one lstat: a child gone since is no TypeError
     except OSError: return None
     return listing
 

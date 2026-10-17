@@ -174,6 +174,27 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         self.assertEqual(rg._lstat(claude), recorded['ignored_meta']['.claude'])
         self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
 
+    def test_a_claude_child_vanishing_mid_listing_is_no_exception(self):   # V320-RACE
+        claude = self.ws / '.claude'
+        claude.mkdir()
+        temp = claude / 'settings.json.tmp'   # the operator's own atomic settings rewrite renames it away
+        temp.write_text('{}\n')
+        expected, lstat = rg._lstat(temp), Path.lstat
+        def vanish(path, *args, **kwargs):
+            info = lstat(path, *args, **kwargs)
+            if path == temp: path.unlink()   # gone right after its lstat
+            return info
+        with patch.object(Path, 'lstat', vanish):
+            listing = rg._claude_listing(self.ws)
+        self.assertFalse(temp.exists())
+        self.assertEqual(set(listing), {str(claude), str(temp)})
+        self.assertEqual(listing[str(temp)][:5], expected)   # the format _lstat produces, from the one lstat
+        self.assertEqual(expected[:2], [stat.S_IFREG, 3])
+        link = claude / 'link'
+        link.symlink_to(self.root)
+        with patch.object(rg.os, 'readlink', side_effect=FileNotFoundError):   # a link gone before readlink: strict fallback
+            self.assertIsNone(rg._claude_listing(self.ws))
+
     def test_collapsed_claude_rejects_other_child_types_contents_and_replacement(self):
         with (self.ws / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')
         claude = self.ws / '.claude'
