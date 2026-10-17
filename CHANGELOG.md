@@ -1,5 +1,20 @@
 # Changelog
 
+### v3.2.0：稳定版——已有被忽略的 `.claude/` 目录时，Claude 只读回合不再误报 HOLD
+
+这是一个稳定点：v3.1.2 到 v3.1.10 修掉了真实 run 里暴露的凭据扫描误报、未过 gate 就到 DONE、长命令被掐断、提示命令走不通等问题，这一版补上最后一个已知的误报。之后一到两周只修实际使用中发现的问题，不加新功能。
+
+**升级须知**
+- 这一版没有改 run 启动时固定下来的任何值，换版本继续 run 的规则和 v3.1.8 一样（见 v3.1.8 的升级须知）。
+
+**修复**
+- 仓库里本来就有一个整体被 gitignore 的 `.claude/` 目录（比如放着 `settings.local.json`）、但还没有 `.claude/.cc-writes` 时，第一次由 Claude 担任的 reviewer、gate 或 shadow 回合会 HOLD："reviewer changed ignored files in the workspace ... the verdict is void"，这一轮的结论作废、白白用掉一次调用。原因是 Claude CLI 自己会在里面建一个空的 `.cc-writes` 目录，改变了 `.claude` 的大小和修改时间。现在只要变化仅仅是多了这个空目录（真目录、属于当前用户、里面没有东西，`.claude` 本身没被替换，其他条目都没变），就不算改动。检查深度和以前一样：`.claude` 里新增、删除或替换文件，`.cc-writes` 不是空目录，或者整个 `.claude` 被换掉，照样 HOLD。
+- 上面这项检查列目录时，如果某个条目恰好在两次读取之间消失，协调器以前会抛异常、这一轮变成 uncertain；现在按原来的严格比较处理。
+
+**暂缓到试用期之后（owner 2026-10-17）**：`accept --auto-commit false` 单向降级；只装一个 CLI 也能用；Claude 作者使用子 agent 时 usage.json 少算子 agent 的用量（要改冻结的调用参数）。
+
+**审查**：Codex 执行，Opus 审查（第一轮打回：检查范围被扩大，会带来新的误报；第二轮通过）。fresh Opus 终审 APPROVE：做了变异检查（去掉豁免后两个新测试都失败），并核对了 `.claude` 是链接、是文件、不可读、只忽略 `settings.local.json`、旧格式记录等情况；它提的列目录竞态已修正（Codex 审查通过）。
+
 ### v3.1.10：旧版本存下的 gate 打回后修复中的 run 也要再过 gate；环境变量变化的 HOLD 写明怎么恢复；两步 reject 不再因重复豁免失效
 
 **升级须知**
