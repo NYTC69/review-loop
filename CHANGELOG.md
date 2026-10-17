@@ -12,7 +12,7 @@
 - 用 strict 豁免（`--accept-unverified-claude-author`、`--accept-probe-skip`）启动的 run，照着 `reject --intent-only` 打印的下一条命令做两步 reject 时，重复同样的豁免以前会改写状态，第二步报"intent is stale"被拒。现在内容完全相同的豁免不再重复记录，两步 reject 可以照常完成。
 - `review_report._status_reason` 的文档字符串改为与代码一致（截断后缀在上限之外）。
 
-**审查**：两个批次交叉审查。V3110-GATE 由 Opus 执行、Codex 审查（通过；用旧版代码确认测试能抓到这个 bug）；V3110-HINT 由 Codex 执行、Opus 审查（通过，按低优先级意见改正了恢复命令的写法）。
+**审查**：两个批次交叉审查。V3110-GATE 由 Opus 执行、Codex 审查（通过；用旧版代码确认测试能抓到这个 bug）；V3110-HINT 由 Codex 执行、Opus 审查（通过，按低优先级意见改正了恢复命令的写法）。fresh Opus 终审 APPROVE：用 v3.1.8、v3.1.9 和本版分别起跑，在各个调用上限处截停后用本版继续，两条路线上 gate 打回后修复中的 run 都补跑一次 gate 才到 DONE，最后一次 gate 已通过的不多跑；它提的文档过时一条已修正（Codex 审查通过）。CI 全部通过；默认完整路线的真实 run 验收通过。
 
 ### v3.1.9：没过 gate 的代码不会再交出去；长命令留出作答时间；失败原因更好读
 
