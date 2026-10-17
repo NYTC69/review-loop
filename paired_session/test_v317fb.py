@@ -182,7 +182,7 @@ class OperatorRecoveryTests(unittest.TestCase):
             self.assertEqual(self.state()['status'], 'HOLD')
             reason = self.state()['hold_reason']
             self.assertIn('names added: ' + added + '; removed: ' + removed, reason)
-            self.assertIn('restore the environment (unset ' + added + '; export ' + removed + ')', reason)
+            self.assertIn('restore the environment (unset ' + added + '; export ' + removed + '=<value>)', reason)
             self.assertIn('run resume again to continue the run', reason)
             self.assertEqual(len(reason.splitlines()), 1)
             self.assertIn(reason, held.stdout)

@@ -2793,7 +2793,7 @@ class Coordinator:
                 now = set(self._env_names_now())
                 added, removed = sorted(now - names), sorted(names - now)
                 if added or removed:
-                    steps = (['unset ' + ', '.join(added)] if added else []) + (['export ' + ', '.join(removed)] if removed else [])
+                    steps = (['unset ' + ' '.join(added)] if added else []) + (['export ' + ' '.join(name + '=<value>' for name in removed)] if removed else [])
                     raise RuntimeError('frozen role dispatch changed; credential env-var names added: '
                                        + (', '.join(added) or 'none') + '; removed: ' + (', '.join(removed) or 'none')
                                        + '; restore the environment (' + '; '.join(steps) + ') and run resume again to continue the run')
@@ -9568,7 +9568,8 @@ def git_work_tree_root(path: Path) -> Optional[Path]:
 
 
 def replace_override(state: dict, key: str, record: dict) -> None:
-    """STRICT-NITS (P0-2 b): a new operator override record keeps the one it replaces (voided or not) in <key>_history."""
+    """STRICT-NITS (P0-2 b): a new operator override record keeps the one it replaces (voided or not) in <key>_history.
+    An identical repeat (apart from time) is a no-op."""
     previous = state.get(key) or {}
     if ({k: v for k, v in previous.items() if k != 'time'} ==
             {k: v for k, v in record.items() if k != 'time'}):
