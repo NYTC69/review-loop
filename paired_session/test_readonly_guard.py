@@ -140,12 +140,39 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         writes = claude / '.cc-writes'
         writes.mkdir()
         self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
-        # A serialised pre-turn record behaves the same way on resume.
+        # The pre-turn record also serializes without changing the comparison.
         self.assertEqual(rg.ignored_changes(self.ws, json.loads(json.dumps(recorded))), [])
         with patch.object(rg.claude_author_probe.os, 'getuid', return_value=-1):
             self.assertEqual(rg.ignored_changes(self.ws, recorded), ['.claude'])
+        recorded = rg.capture(self.ws, self.keep)   # next turn: .cc-writes already exists
         settings.write_text('{"changed": true}\n')
-        self.assertEqual(rg.ignored_changes(self.ws, recorded), ['.claude'])
+        self.assertEqual(rg._lstat(claude), recorded['ignored_meta']['.claude'])
+        self.assertEqual(rg.ignored_changes(self.ws, recorded), [])   # preserve v3.1.10's collapsed-entry detection depth
+
+    def test_nested_claude_writes_preserve_the_original_detection_depth(self):
+        with (self.ws / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')
+        claude = self.ws / '.claude'
+        memory = claude / 'memory'
+        memory.mkdir(parents=True)
+        for index in range(10): (memory / str(index)).write_text('memory\n')
+        # The many nested entries do not consume the collapsed-entry listing budget.
+        with patch.object(rg, 'IGNORED_LIMIT', 4):
+            recorded = rg.capture(self.ws, self.keep)
+            self.assertEqual(len(recorded['ignored_claude']), 2)   # .claude and memory, no descent
+            (memory / 'MEMORY.md').write_text('operator update\n')
+            self.assertEqual(rg._lstat(claude), recorded['ignored_meta']['.claude'])
+            self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
+            recorded = rg.capture(self.ws, self.keep)
+            (claude / '.cc-writes').mkdir()
+            self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
+            recorded = rg.capture(self.ws, self.keep)   # baseline for a second read-only turn
+        writes = claude / '.cc-writes'
+        scratch = writes / 'temp'
+        scratch.write_text('temporary\n')
+        scratch.unlink()
+        self.assertNotEqual(rg._lstat(writes), recorded['ignored_claude'][str(writes)][:5])
+        self.assertEqual(rg._lstat(claude), recorded['ignored_meta']['.claude'])
+        self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
 
     def test_collapsed_claude_rejects_other_child_types_contents_and_replacement(self):
         with (self.ws / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')

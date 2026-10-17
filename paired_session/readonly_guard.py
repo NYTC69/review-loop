@@ -3,8 +3,9 @@
 capture() runs before the turn and records HEAD, the branch, the index (a `git ls-files -s` digest and a byte copy of the index file)
 and the worktree as a tree object (the index copied to a temporary file, `git add -A`, `git write-tree`). After a turn that changed the
 workspace, evidence() writes the diff from that tree to the worktree's tree now, and restore() puts back only what capture() recorded
-and then verifies that HEAD, the branch, the index and the worktree tree all equal the recorded values. Ignored files, submodule
-contents and refs other than HEAD and its branch are not recorded. The detection is the coordinator's snapshot (content and, since
+and then verifies that HEAD, the branch, the index and the worktree tree all equal the recorded values. Ignored entry metadata is
+recorded within bounds, plus top-level .claude metadata for the CLI scratch exception; ignored file contents, submodule contents
+and refs other than HEAD and its branch are not recorded. The detection is the coordinator's snapshot (content and, since
 rel210-fixA, the executable bit) plus HEAD, the branch, the index and (roperm) the full permission bits of every tracked and
 non-ignored untracked regular file; the recorded tree carries git file modes and the undo chmods the recorded bits back, so a
 mode change of any bit is undone and verified. The undo touches only the paths whose content or mode differs between
@@ -99,16 +100,15 @@ def _lstat(path: Path):
     except OSError: return None
 
 
-def _claude_listing(workspace: Path, deadline: float):
-    """Bounded metadata below a collapsed .claude, without following links; None means no exception is safe."""
-    listing, pending = {}, [workspace / '.claude']
+def _claude_listing(workspace: Path):
+    """Metadata of .claude and its immediate children only, without following links; None means no exception is safe."""
+    claude, listing = workspace / '.claude', {}
     try:
-        while pending:
-            if len(listing) >= IGNORED_LIMIT or time.monotonic() > deadline: return None
-            path = pending.pop()
+        paths = [claude]
+        if stat.S_ISDIR(claude.lstat().st_mode): paths.extend(claude.iterdir())
+        for path in paths:
             info = path.lstat()
             listing[str(path)] = [*_lstat(path), info.st_dev, info.st_ino, info.st_uid]
-            if stat.S_ISDIR(info.st_mode): pending.extend(path.iterdir())
     except OSError: return None
     return listing
 
@@ -117,6 +117,9 @@ def _only_cli_created_dir(workspace: Path, before: dict, after: dict) -> bool:
     claude, writes = str(workspace / '.claude'), str(workspace / '.claude' / '.cc-writes')
     if writes in before or set(after) != set(before) | {writes}: return False
     if not {claude, writes} <= claude_author_probe.cli_created_dirs(workspace, after): return False
+    try:
+        if next((workspace / '.claude' / '.cc-writes').iterdir(), None) is not None: return False
+    except OSError: return False
     # Creating the child changes only the parent's size/mtime. Keep its mode, uid and identity, and every other entry.
     return all((meta[:1] + meta[3:] == after[path][:1] + after[path][3:] if path == claude else meta == after[path])
                for path, meta in before.items())
@@ -125,10 +128,9 @@ def _only_cli_created_dir(workspace: Path, before: dict, after: dict) -> bool:
 def ignored_changes(workspace: Path, recorded: dict) -> list:
     """The recorded ignored entries (as git lists them; a collapsed directory is one entry) that changed or are gone."""
     changed = {name for name, meta in (recorded.get('ignored_meta') or {}).items() if _lstat(workspace / name) != meta}
-    if before := recorded.get('ignored_claude'):
-        after = _claude_listing(workspace, time.monotonic() + IGNORED_SECONDS)
-        if after == before or (after is not None and _only_cli_created_dir(workspace, before, after)): changed.discard('.claude')
-        else: changed.add('.claude')
+    if '.claude' in changed and (before := recorded.get('ignored_claude')):
+        after = _claude_listing(workspace)
+        if after is not None and _only_cli_created_dir(workspace, before, after): changed.discard('.claude')
     return sorted(changed)
 
 
@@ -142,7 +144,7 @@ def capture(workspace: Path, keep: Path) -> dict:
         if time.monotonic() > deadline: break
         meta[name] = _lstat(workspace / name)
     bounded = len(meta) == len(ignored)
-    claude = _claude_listing(workspace, deadline) if bounded and '.claude' in meta else None
+    claude = _claude_listing(workspace) if bounded and '.claude' in meta else None
     return {**state(workspace, keep), 'perms': perms(workspace), 'ignored': ignored, 'ignored_meta': meta if bounded else None,
             **({'ignored_claude': claude} if claude is not None else {}),
             **({} if bounded else {'ignored_note': f'ignored set too large: not checked ({len(ignored)} entries)'})}
