@@ -130,6 +130,49 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         self.assertFalse(rg.moved(self.ws, recorded))
         self.assertEqual(rg.state(self.ws, self.keep)['tree'], recorded['tree'])
 
+    def test_collapsed_claude_allows_only_the_empty_cli_directory(self):
+        with (self.ws / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')
+        claude = self.ws / '.claude'
+        claude.mkdir()
+        settings = claude / 'settings.local.json'
+        settings.write_text('{}\n')
+        recorded = rg.capture(self.ws, self.keep)
+        writes = claude / '.cc-writes'
+        writes.mkdir()
+        self.assertEqual(rg.ignored_changes(self.ws, recorded), [])
+        # A serialised pre-turn record behaves the same way on resume.
+        self.assertEqual(rg.ignored_changes(self.ws, json.loads(json.dumps(recorded))), [])
+        with patch.object(rg.claude_author_probe.os, 'getuid', return_value=-1):
+            self.assertEqual(rg.ignored_changes(self.ws, recorded), ['.claude'])
+        settings.write_text('{"changed": true}\n')
+        self.assertEqual(rg.ignored_changes(self.ws, recorded), ['.claude'])
+
+    def test_collapsed_claude_rejects_other_child_types_contents_and_replacement(self):
+        with (self.ws / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')
+        claude = self.ws / '.claude'
+        claude.mkdir()
+        (claude / 'settings.local.json').write_text('{}\n')
+        recorded = rg.capture(self.ws, self.keep)
+        writes = claude / '.cc-writes'
+        for kind in ('file', 'link', 'nonempty', 'extra', 'replacement'):
+            with self.subTest(kind=kind):
+                if kind == 'file': writes.write_text('')
+                elif kind == 'link': writes.symlink_to(self.root, target_is_directory=True)
+                else:
+                    writes.mkdir()
+                    if kind == 'nonempty': (writes / 'x').write_text('x')
+                    if kind == 'extra': (claude / 'extra').write_text('x')
+                    if kind == 'replacement':
+                        claude.rename(self.ws / 'old-claude')
+                        claude.mkdir()
+                        (claude / 'settings.local.json').write_text('{}\n')
+                        writes.mkdir()
+                self.assertEqual(rg.ignored_changes(self.ws, recorded), ['.claude'])
+                if kind == 'nonempty': (writes / 'x').unlink()
+                if kind == 'extra': (claude / 'extra').unlink()
+                if writes.is_symlink() or writes.is_file(): writes.unlink()
+                else: writes.rmdir()
+
     def test_a_permission_bit_change_is_detected_undone_and_verified(self):   # roperm: 0644 -> 0600, invisible to git
         for name in ('a.txt', 'new.py'):
             (self.ws / name).chmod(0o644)
@@ -391,6 +434,36 @@ class ReadOnlyTurnTests(unittest.TestCase):
                 self.assertEqual(turn['voided']['ignored_changed'], ['.env'])
                 self.assertNotIn('answer', turn)                                          # the verdict is void
                 self.assertEqual((self.h.workspace / '.env').read_text(), 'SECRET=1\nreviewer edit\n')   # untouched by the coordinator
+
+    def ignored_claude(self):
+        with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')
+        claude = self.h.workspace / '.claude'
+        claude.mkdir()
+        (claude / 'settings.local.json').write_text('{}\n')
+        return claude
+
+    def test_claude_reviewer_creating_empty_cc_writes_reaches_done(self):
+        claude = self.ignored_claude()
+        result = self.launch({'FAKE_PLAN_REVIEWER_CC_WRITES': '1'}, strict=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state()['status'], 'DONE')
+        self.assertEqual(list((claude / '.cc-writes').iterdir()), [])
+        self.assertEqual(self.voided(), [])
+
+    def test_claude_reviewer_cc_writes_with_other_writes_still_holds(self):
+        self.ignored_claude()
+        for name in ('settings.local.json', 'new-file', '.cc-writes/extra'):
+            with self.subTest(name=name):
+                writes = self.h.workspace / '.claude' / '.cc-writes'
+                if writes.exists(): writes.rmdir()
+                self.h.run_dir = self.h.root / ('run-cc-' + name.replace('/', '-'))
+                co, message = self.plan_review({'FAKE_PLAN_REVIEWER_CC_WRITES': '1',
+                                               'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.claude/' + name},
+                                              '--reviewer-vendor', 'claude')
+                self.assertIn('reviewer changed ignored files in the workspace', message)
+                [turn] = [t for t in co.state['turns'] if t.get('role') == 'reviewer']
+                self.assertEqual(turn['voided']['ignored_changed'], ['.claude'])
+                self.assertNotIn('answer', turn)
 
     def test_a_review_that_breaks_the_index_is_unverifiable_and_blocks_resume(self):   # eff-e
         co, message = self.plan_review({'FAKE_PLAN_REVIEWER_CORRUPT_INDEX': '1'})

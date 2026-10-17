@@ -699,6 +699,8 @@ def main():
                 return 1
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_COMMIT'):   # D-EFF eff-c: HEAD moves, files stay the same
             subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'plan review commit'], check=True)   # the module import: a local one would shadow it in all of main()
+        if vendor == 'claude' and 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_CC_WRITES'):
+            (Path.cwd() / '.claude' / '.cc-writes').mkdir(exist_ok=True)
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_TOUCH_IGNORED'):   # eff-e: edit an existing ignored file
             with (Path.cwd() / os.environ['FAKE_PLAN_REVIEWER_TOUCH_IGNORED']).open('a') as handle:
                 handle.write('reviewer edit\n')

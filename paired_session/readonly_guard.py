@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from paired_session import candidate_tree
+    from paired_session import candidate_tree, claude_author_probe
 except ImportError:   # run as a script from the package directory
     import candidate_tree
+    import claude_author_probe
 
 
 def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None, raw: bool = False) -> str:
@@ -98,9 +99,37 @@ def _lstat(path: Path):
     except OSError: return None
 
 
+def _claude_listing(workspace: Path, deadline: float):
+    """Bounded metadata below a collapsed .claude, without following links; None means no exception is safe."""
+    listing, pending = {}, [workspace / '.claude']
+    try:
+        while pending:
+            if len(listing) >= IGNORED_LIMIT or time.monotonic() > deadline: return None
+            path = pending.pop()
+            info = path.lstat()
+            listing[str(path)] = [*_lstat(path), info.st_dev, info.st_ino, info.st_uid]
+            if stat.S_ISDIR(info.st_mode): pending.extend(path.iterdir())
+    except OSError: return None
+    return listing
+
+
+def _only_cli_created_dir(workspace: Path, before: dict, after: dict) -> bool:
+    claude, writes = str(workspace / '.claude'), str(workspace / '.claude' / '.cc-writes')
+    if writes in before or set(after) != set(before) | {writes}: return False
+    if not {claude, writes} <= claude_author_probe.cli_created_dirs(workspace, after): return False
+    # Creating the child changes only the parent's size/mtime. Keep its mode, uid and identity, and every other entry.
+    return all((meta[:1] + meta[3:] == after[path][:1] + after[path][3:] if path == claude else meta == after[path])
+               for path, meta in before.items())
+
+
 def ignored_changes(workspace: Path, recorded: dict) -> list:
     """The recorded ignored entries (as git lists them; a collapsed directory is one entry) that changed or are gone."""
-    return sorted(name for name, meta in (recorded.get('ignored_meta') or {}).items() if _lstat(workspace / name) != meta)
+    changed = {name for name, meta in (recorded.get('ignored_meta') or {}).items() if _lstat(workspace / name) != meta}
+    if before := recorded.get('ignored_claude'):
+        after = _claude_listing(workspace, time.monotonic() + IGNORED_SECONDS)
+        if after == before or (after is not None and _only_cli_created_dir(workspace, before, after)): changed.discard('.claude')
+        else: changed.add('.claude')
+    return sorted(changed)
 
 
 def capture(workspace: Path, keep: Path) -> dict:
@@ -113,7 +142,9 @@ def capture(workspace: Path, keep: Path) -> dict:
         if time.monotonic() > deadline: break
         meta[name] = _lstat(workspace / name)
     bounded = len(meta) == len(ignored)
+    claude = _claude_listing(workspace, deadline) if bounded and '.claude' in meta else None
     return {**state(workspace, keep), 'perms': perms(workspace), 'ignored': ignored, 'ignored_meta': meta if bounded else None,
+            **({'ignored_claude': claude} if claude is not None else {}),
             **({} if bounded else {'ignored_note': f'ignored set too large: not checked ({len(ignored)} entries)'})}
 
 
