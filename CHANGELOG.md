@@ -13,7 +13,7 @@
 
 **暂缓到试用期之后（owner 2026-10-17）**：`accept --auto-commit false` 单向降级；只装一个 CLI 也能用；Claude 作者使用子 agent 时 usage.json 少算子 agent 的用量（要改冻结的调用参数）。
 
-**审查**：Codex 执行，Opus 审查（第一轮打回：检查范围被扩大，会带来新的误报；第二轮通过）。fresh Opus 终审 APPROVE：做了变异检查（去掉豁免后两个新测试都失败），并核对了 `.claude` 是链接、是文件、不可读、只忽略 `settings.local.json`、旧格式记录等情况；它提的列目录竞态已修正（Codex 审查通过）。
+**审查**：Codex 执行，Opus 审查（第一轮打回：检查范围被扩大，会带来新的误报；第二轮通过）。fresh Opus 终审 APPROVE：做了变异检查（去掉豁免后两个新测试都失败），并核对了 `.claude` 是链接、是文件、不可读、只忽略 `settings.local.json`、旧格式记录等情况；它提的列目录竞态已修正（Codex 审查通过）。CI 全部通过。两个真实 run 都验收通过：gate 后停路线一个，Claude 作者走完整路线一个；两个仓库都预先放了被忽略的 `.claude/`，Claude CLI 在第一次只读回合建了 `.cc-writes`，都没有 HOLD。
 
 ### v3.1.10：旧版本存下的 gate 打回后修复中的 run 也要再过 gate；环境变量变化的 HOLD 写明怎么恢复；两步 reject 不再因重复豁免失效
 
