@@ -247,6 +247,28 @@ class RejectWaiverTests(unittest.TestCase):
     def test_reject_with_same_waiver_on_full_lifecycle(self):
         self.reject_with_waiver('on')
 
+    def test_printed_reject_with_claude_and_probe_waivers_preserves_intent(self):
+        flags = ('--lifecycle-mode', 'off', '--max-invocations', '60', '--author-vendor', 'claude',
+                 '--accept-unverified-claude-author', '--accept-probe-skip', '--reason', 'checked by hand')
+        done = self.cli('run', 'codex-cli 0.160.0', *flags)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn(twl.DONE, done.stdout)
+        path = self.h.run_dir / 'state.json'
+        before = json.loads(path.read_text())
+        issued = self.cli('reject', 'codex-cli 0.160.0', *flags, '--text', 'Also reject floats.', '--intent-only')
+        self.assertEqual(issued.returncode, 0, issued.stdout)
+        argv = shlex.split(json.loads(issued.stdout)['next_command'])
+        out = io.StringIO()
+        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), contextlib.redirect_stdout(out):
+            code = rc.main(argv[1:])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn(twl.DONE, out.getvalue())
+        after = json.loads(path.read_text())
+        for key in ('claude_author_override', 'probe_skip_override'):
+            self.assertEqual(after[key], before[key])
+            self.assertEqual(after.get(key + '_history', []), before.get(key + '_history', []))
+        self.assertEqual(len(after['rejections']), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
