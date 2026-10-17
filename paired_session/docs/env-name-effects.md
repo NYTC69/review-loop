@@ -19,7 +19,7 @@ is re-run once with the report's own names. A PATH change still needs a new prob
 | 2 | `_probe_skip_accepted` | The `--accept-probe-skip` acceptance is voided for good when any of the three digests changes. Nothing reports the void: `probe_gate` prints only the probe and cache reasons. | Binding is intended, as for #1. **Accidental:** the void is silent. | Same record as #1. `probe_gate` reports a voided acceptance, its cause and the recovery (pass `--accept-probe-skip --reason` again, or run permission-probe). |
 | 3 | `_probe_cache_key` | The key holds the three digests, so a names-only change misses the cache and needs a new probe. | Availability only. Whether a cached PASS may be reused under another name set is a policy question. `_probe_cache_reuse` already runs `probe_passed`, so FIELD-10's check would apply after the lookup. | Not changed: **owner decision D-ENV-2.** |
 | 4 | `_probe_negative_status` | A non-PASS report stops being "current" when names change. It returns `''`, and `--accept-probe-skip` is then accepted over a FAIL report. That breaks P0-4b H1: "an acceptance never overrides current negative evidence". | **Accidental, and fail-open.** | Compare the digests as FIELD-10 does: if they differ, compare again with the report's own names. The negative status stays current, and the acceptance is refused. |
-| 5 | `_verify_frozen_role_dispatch` (lifecycle on) | The frozen manifest holds the role flags with the names, so a names-only change raises `frozen role dispatch changed; abort or start a new run`. | Most likely **accidental**: the names do not change the deny policy, yet the run can only be aborted. It is lane A's W area, so lane A and the owner decide. | **Not touched.** Noted for lane A: use a names-neutral manifest digest. |
+| 5 | `_verify_frozen_role_dispatch` (lifecycle on) | The frozen manifest holds the role flags with the names, so a names-only change still fails the check. Since V3110-HINT the HOLD names the change when the manifest recomputed under the saved names equals the frozen one (digest and version too): `frozen role dispatch changed; credential env-var names added: …; removed: …; restore the environment (unset …; export NAME=<value>) and run resume again to continue the run`. Names only, never values. Restoring the environment and resuming continues the run. Any other drift still says `frozen role dispatch changed; abort or start a new run`. | Was **accidental**: the names do not change the deny policy, yet the run could only be aborted. | Not changed here. V3110-HINT added the diagnosis; the manifest itself still holds the names. |
 
 ## 3. Owner decisions
 
@@ -28,7 +28,7 @@ is re-run once with the report's own names. A PATH change still needs a new prob
   - With the record from this batch, the names-only case is already detected, so the change would be one condition.
 - **D-ENV-2.** Should the probe cache key leave out the names (#3)?
   - Recommendation: yes. Key on a names-neutral digest, and keep `probe_passed`'s FIELD-10 check on reuse.
-- **Lane A (#5).** The lifecycle manifest digest has the same question. Recommendation: names-neutral, like D-ENV-2.
+- **Lane A (#5).** The lifecycle manifest digest has the same question. Recommendation: names-neutral, like D-ENV-2. Until then, V3110-HINT tells the operator which names to restore (§2, #5).
 
 ## 4. Tests (`../test_env_name_effects.py`)
 
