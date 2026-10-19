@@ -9,7 +9,7 @@ v3.2.0 试用期内的小版本，修复 v3.2.1 引入的一个回归，并根�
 - 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
 
 **修复**
-- v3.2.1 回归：Claude Code 2.1.303 在工具调用被拒时会输出一条 `system` / `permission_denied` 行，它的 `message` 是一段字符串。v3.2.1 读工具调用时会去读每一行的 `message`，遇到这种行就报 `'str' object has no attribute 'get'`，这一轮 Claude 回合失败（permission-probe 记为 FAIL，普通回合变成状态不确定的 HOLD）。现在只读 assistant 和 user 行，和 v3.2.0 一样。用现场 run 的两份 Claude 输出回放，解析结果与 v3.2.0 完全相同。
+- v3.2.1 回归：Claude Code 2.1.303 在工具调用被拒时会输出一条 `system` / `permission_denied` 行，它的 `message` 是一段字符串。v3.2.1 读工具调用时会去读每一行的 `message`，遇到这种行就报 `'str' object has no attribute 'get'`，这一轮 Claude 回合失败（permission-probe 记为 FAIL；普通回合里协调器带着报错直接退出，下次 `resume` 时这一轮被当作状态不确定而 HOLD）。现在只读 assistant 和 user 行，和 v3.2.0 一样。用现场 run 的两份 Claude 输出回放，解析结果与 v3.2.0 完全相同。
 - gate 或 shadow 因为工作项或计划里写了 finding 编号（例如 `F008`）而 HOLD 时，提示现在会列出是哪些编号，并说明怎么继续：工作项在 run 里是冻结的，要先改原工作项文件、用文字描述而不是引用编号，再用 `note --scope-change` 开一个从 PLAN 重新开始的后继 run；计划里的编号同样走 `note --scope-change`，或者放弃这个 run 重新开始。
 - `note` 因为送不到作者而被拒时，提示现在会说明原因和下一步：轮数用完时先 `resume --add-rounds N`（或 `note --scope-change`）；调用次数用完时用 `resume --max-invocations N` 提高上限；有回合还在跑或状态不确定时，等它结束或按提示用 `--retry-uncertain` 恢复；不在 PLAN/EXEC 阶段时，说明 note 只送到 PLAN/EXEC 的作者回合。
 - 文档：作者的沙箱写不了 `.git`，所以作者跑不了 `git merge`。合并冲突类的工作项由操作员在开始前执行 `git merge --no-commit`，作者只改文件；run 启动时不要开 auto-commit（普通 run 默认就是关的，auto-commit 在启动时就固定），验收后由操作员自己完成合并（自动提交只有一个父提交，会丢掉合并的另一个父提交）。`--review-only` 默认会自动提交，审合并结果时要在启动时显式传 `--auto-commit false`。
