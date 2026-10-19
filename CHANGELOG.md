@@ -10,7 +10,7 @@ v3.2.0 试用期内的小版本，只修一个统计问题。
 - 需要 Claude Code 支持 `--forward-subagent-text`（2.1.303 已验证）。
 
 **修复**
-- Claude 作者开着子 agent（默认 `--author-subagents on`）时，子 agent 中只输出文字、不调用工具的请求（比如它最后交回的报告），Claude CLI 默认不输出到流里，所以 usage.json 里少算了这些请求。现在协调器给 Claude 作者加上 `--forward-subagent-text`，这些请求会按消息 id 各算一次。只读角色不能开子 agent，命令不变。子 agent 的文字不会被当成作者的回答，也不会算进作者自己的工具调用。
+- Claude 作者开着子 agent（默认 `--author-subagents on`）时，子 agent 中只输出文字、不调用工具的请求（比如它最后交回的报告），Claude CLI 默认不输出到流里，所以 usage.json 里少算了这些请求。现在协调器给 Claude 作者加上 `--forward-subagent-text`，这些请求会按消息 id 各算一次。转发过来的子 agent 消息带的是请求开始时的用量快照，输出 token 偏少：子 agent 最后一个请求的输出现在取自 Agent 工具结果里的用量；中间的子 agent 请求没有别的来源，输出仍然只是开始时的快照。只读角色不能开子 agent，命令不变。子 agent 的文字不会被当成作者的回答，也不会算进作者自己的工具调用。
 - 转发过来的子 agent 消息里，`content` 有时是一整段字符串，协调器以前读到这种消息会报错，导致这一轮失败。现在能正常处理。
 
 **审查**：Opus 执行，Codex 审查通过（提到一条 low：旧版 Claude CLI 没有这个参数，见升级须知）。

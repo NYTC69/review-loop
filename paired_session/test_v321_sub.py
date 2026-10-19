@@ -56,6 +56,43 @@ def claude_rows(session='claude-session'):
     ]
 
 
+def evidence_rows(session='claude-session'):
+    """Shaped as the real 2.1.303 run 52ec6045 (EXEC author, one Explore subagent): forwarded rows carry the usage snapshot of
+    their request's start (16 and 2 output tokens); the Agent tool_result's tool_use_result.usage is the last request's final
+    usage (2 + 534 + 8439 input, 750 output; totalTokens 9725)."""
+    snapshot = lambda creation, read, output: {'input_tokens': 2, 'cache_creation_input_tokens': creation,
+                                               'cache_read_input_tokens': read, 'output_tokens': output}
+    def sub(message_id, blocks, use):
+        return {'type': 'assistant', 'parent_tool_use_id': 'toolu_agent',
+                'message': {'id': message_id, 'model': SUB_MODEL, 'content': blocks, 'usage': use}}
+    read = lambda tool_id: {'type': 'tool_use', 'id': tool_id, 'name': 'Read', 'input': {'file_path': '/w/a.py'}}
+    done = lambda tool_id: user([{'type': 'tool_result', 'tool_use_id': tool_id, 'content': 'x'}], 'toolu_agent')
+    agent = {'type': 'tool_use', 'id': 'toolu_agent', 'name': 'Agent', 'input': {'subagent_type': 'Explore', 'prompt': 'map'}}
+    return [
+        {'type': 'system', 'subtype': 'init', 'model': MAIN_MODEL, 'session_id': session},
+        {'type': 'stream_event', 'parent_tool_use_id': None, 'event': {'type': 'message_start', 'message': {
+            'model': MAIN_MODEL, 'usage': snapshot(2210, 14164, 8)}}},
+        assistant('msg_main_1', [agent], 8),
+        user([{'type': 'text', 'text': 'map'}], 'toolu_agent'),
+        sub('msg_7ag', [read('toolu_r1')], snapshot(8439, 0, 16)), done('toolu_r1'),
+        sub('msg_7ag', [read('toolu_r2')], snapshot(8439, 0, 16)), done('toolu_r2'),
+        sub('msg_zvB', [{'type': 'thinking', 'thinking': 'summarize'}], snapshot(534, 8439, 2)),
+        sub('msg_zvB', [{'type': 'text', 'text': 'r' * 1876}], snapshot(534, 8439, 2)),
+        {'type': 'user', 'parent_tool_use_id': None,
+         'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'toolu_agent', 'content': 'report'}]},
+         'tool_use_result': {'status': 'completed', 'agentType': 'Explore', 'totalTokens': 9725,
+                             'usage': {**snapshot(534, 8439, 750), 'iterations': [{**snapshot(534, 8439, 750), 'type': 'message'}]}}},
+        {'type': 'stream_event', 'parent_tool_use_id': None, 'event': {'type': 'message_delta', 'usage': {'output_tokens': 40}}},
+        {'type': 'result', 'is_error': False, 'session_id': session,
+         'structured_output': {'status': 'READY', 'body': 'done'}, 'result': '',
+         'subagent_stats': {'spawned': 1, 'started_in_background': 0, 'completed': 1}},
+    ]
+
+
+def subagent_outputs(requests):
+    return [(row['message_id'], row['input'], row['output']) for row in requests if row['source'] == 'subagent-message']
+
+
 class ForwardSubagentTextTests(unittest.TestCase):
     # Use the existing offline CLI fixture; do not inherit its hundreds of test methods.
     locals().update({name: getattr(harness.RealCoordinatorTests, name) for name in (
@@ -103,6 +140,55 @@ class ForwardSubagentTextTests(unittest.TestCase):
         self.assertEqual(receipt['model_requests'], 4)
         self.assertEqual([(row['source'], row['output']) for row in receipt['usage_requests']],
                          [('stream_event', 7), ('subagent-message', 11), ('subagent-message', 8), ('stream_event', 3)])
+
+    def test_the_last_subagent_request_takes_its_output_from_the_agent_result(self):
+        final = [('msg_7ag', 8441, 16), ('msg_zvB', 8975, 750)]   # the intermediate request keeps its start snapshot
+        path = self.root / 'evidence.jsonl'
+        rows = evidence_rows()
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        co = self.all_claude()
+        for _ in range(2):   # a pure re-read
+            answer, _, requests, count, _, calls = co._collect('claude', path)
+            self.assertEqual((answer, count, subagent_outputs(requests)), ({'status': 'READY', 'body': 'done'}, 3, final))
+        self.assertEqual([call['tool'] for call in calls], ['Read', 'Read', 'Agent'])
+
+        # Streaming: the Agent result arrives in a later chunk; feeding it again changes nothing.
+        incremental, receipt = self.root / 'incremental-evidence.jsonl', {'vendor': 'claude', 'usage_requests': []}
+        split = next(i for i, row in enumerate(rows) if 'tool_use_result' in row)
+        incremental.write_text(''.join(json.dumps(row) + '\n' for row in rows[:split]))
+        offset, buffered, active, _ = rc.Coordinator._drain_usage_stream(incremental, 0, b'', None, receipt)
+        self.assertEqual(subagent_outputs(receipt['usage_requests']), [('msg_7ag', 8441, 16), ('msg_zvB', 8975, 2)])
+        with incremental.open('a') as stream:
+            stream.write(''.join(json.dumps(row) + '\n' for row in rows[split:]))
+        offset, buffered, active, changed = rc.Coordinator._drain_usage_stream(incremental, offset, buffered, active, receipt)
+        self.assertTrue(changed)
+        self.assertEqual((receipt['model_requests'], subagent_outputs(receipt['usage_requests'])), (3, final))
+        drained = json.loads(json.dumps(receipt))
+        with incremental.open('a') as stream:
+            stream.write(json.dumps(rows[split]) + '\n')
+        _, _, _, changed = rc.Coordinator._drain_usage_stream(incremental, offset, buffered, active, receipt, final=True)
+        self.assertFalse(changed)
+        self.assertEqual(receipt, drained)
+        fresh = {'vendor': 'claude', 'usage_requests': []}   # the recovery drain: one pass from the start
+        rc.Coordinator._drain_usage_stream(incremental, 0, b'', None, fresh, final=True)
+        self.assertEqual(subagent_outputs(fresh['usage_requests']), final)
+
+    def test_an_agent_result_without_its_forwarded_request_changes_nothing(self):
+        rows = evidence_rows()
+        result = next(row for row in rows if 'tool_use_result' in row)
+        cases = {'no forwarded request': [row for row in rows if row.get('parent_tool_use_id') != 'toolu_agent'],
+                 'another input': [dict(row, tool_use_result={**result['tool_use_result'], 'usage': {
+                     **result['tool_use_result']['usage'], 'cache_read_input_tokens': 1}}) if row is result else row
+                     for row in rows]}
+        for name, case in cases.items():
+            with self.subTest(case=name):
+                path = self.root / 'case.jsonl'
+                path.write_text(''.join(json.dumps(row) + '\n' for row in case))
+                expected = [] if name == 'no forwarded request' else [('msg_7ag', 8441, 16), ('msg_zvB', 8975, 2)]
+                self.assertEqual(subagent_outputs(self.all_claude()._collect('claude', path)[2]), expected)
+                receipt = {'vendor': 'claude', 'usage_requests': []}
+                rc.Coordinator._drain_usage_stream(path, 0, b'', None, receipt, final=True)
+                self.assertEqual(subagent_outputs(receipt['usage_requests']), expected)
 
     def test_author_turn_writes_the_text_only_request_to_usage_json(self):
         co = self.all_claude('--reviewer-vendor', 'codex', '--gate-vendor', 'codex')

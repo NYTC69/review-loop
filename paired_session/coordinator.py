@@ -1759,6 +1759,29 @@ def read_json_lines(path: Path) -> list[dict]:
     return rows
 
 
+def raise_subagent_final_output(requests: list[dict], row: dict) -> bool:
+    """V321-SUB r2: forwarded subagent rows carry the usage snapshot of their request's start, so the output of the subagent's
+    last request is too low. The Agent tool_result row's tool_use_result.usage is that last request's final usage: raise the
+    last subagent request under the same Agent tool_use id (and with the same input) to its output. Never adds a request;
+    re-reading the row changes nothing. Returns whether a value changed."""
+    content = (row.get('message') or {}).get('content') if row.get('type') == 'user' else None
+    ids = ([block.get('tool_use_id') for block in content if isinstance(block, dict) and block.get('type') == 'tool_result']
+           if isinstance(content, list) else [])
+    result = row.get('tool_use_result')
+    use = result.get('usage') if isinstance(result, dict) else None
+    if len(ids) != 1 or not ids[0] or not isinstance(use, dict) or type(use.get('output_tokens')) is not int:
+        return False
+    under = [request for request in requests
+             if request.get('source') == 'subagent-message' and request.get('parent_tool_use_id') == ids[0]]
+    if not under or under[-1]['input'] != (use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0)
+                                           + use.get('cache_read_input_tokens', 0)):
+        return False
+    if use['output_tokens'] <= under[-1]['output']:
+        return False
+    under[-1]['output'] = use['output_tokens']
+    return True
+
+
 def reported_provider_model(vendor: str, path: Path) -> tuple[Optional[str], Optional[str]]:
     """Read only the top-level provider model identity from a valid CLI stream."""
     try:
@@ -5692,6 +5715,8 @@ class Coordinator:
         # modelUsage is cumulative across a resumed session, so it cannot supply a per-turn total.
         subagent = {}
         for index, row in enumerate(rows):
+            if row.get('type') == 'user':
+                raise_subagent_final_output(list(subagent.values()), row)   # V321-SUB r2: the Agent result's final output
             if row.get('type') != 'assistant' or not row.get('parent_tool_use_id'):
                 continue
             message = row.get('message', {})
@@ -5700,7 +5725,8 @@ class Coordinator:
             subagent[key] = {'input': use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0) + use.get('cache_read_input_tokens', 0),
                              'cached': use.get('cache_read_input_tokens', 0),
                              'output': max(use.get('output_tokens', 0), subagent.get(key, {}).get('output', 0)),
-                             'source': 'subagent-message', 'message_id': message.get('id')}
+                             'source': 'subagent-message', 'message_id': message.get('id'),
+                             'parent_tool_use_id': row['parent_tool_use_id']}
         requests += list(subagent.values())
         return answer, result.get('session_id'), requests, len(requests), commands, calls
 
@@ -5753,13 +5779,16 @@ class Coordinator:
                 request = {'input': (use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0)
                                      + use.get('cache_read_input_tokens', 0)),
                            'cached': use.get('cache_read_input_tokens', 0), 'output': output,
-                           'source': 'subagent-message', 'message_id': message_id}
+                           'source': 'subagent-message', 'message_id': message_id,
+                           'parent_tool_use_id': row['parent_tool_use_id']}
                 if previous is None:
                     requests.append(request)
                     changed = True
                 elif previous != request:
                     previous.update(request)
                     changed = True
+            elif receipt['vendor'] == 'claude' and row.get('type') == 'user':   # V321-SUB r2: the Agent result's final output
+                changed = raise_subagent_final_output(receipt.setdefault('usage_requests', []), row) or changed
             elif receipt['vendor'] == 'codex' and row.get('type') == 'thread.started':
                 receipt['provider_session_id'] = row.get('thread_id')
                 changed = True

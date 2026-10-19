@@ -339,7 +339,12 @@ supplies tone and rules to all review roles. These values are fixed at run start
 `--author-subagents on|off` (default on) controls a Claude author's Agent tool;
 read-only roles cannot spawn subagents. With it on, the author also runs with
 `--forward-subagent-text`, so `usage.json` counts every subagent model request,
-text-only ones included (once per message id).
+text-only ones included (once per message id). Forwarded rows carry the usage of
+their request's start: the subagent's last request takes its output from the
+Agent result's usage, and an earlier subagent request keeps its start-snapshot
+output (no other source exists). This needs a Claude Code that supports
+`--forward-subagent-text` (verified on 2.1.303); an older CLI fails that author
+turn with an unknown-option error.
 `run --stop-after-plan` HOLDs once after PLAN approval, with `RUN_DIR/plan.md`;
 a later `resume` enters EXEC. `--review-only` refuses `--stop-after-plan`.
 
