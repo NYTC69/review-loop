@@ -141,6 +141,26 @@ class ForwardSubagentTextTests(unittest.TestCase):
         self.assertEqual([(row['source'], row['output']) for row in receipt['usage_requests']],
                          [('stream_event', 7), ('subagent-message', 11), ('subagent-message', 8), ('stream_event', 3)])
 
+    def test_a_permission_denied_row_is_skipped(self):
+        """V322-DENY: Claude Code 2.1.303 emits a system permission_denied row whose message is a string (field run WI-252b);
+        v3.2.1 failed every Claude turn that had one with "'str' object has no attribute 'get'"."""
+        denied = {'type': 'tool_use', 'id': 'toolu_denied', 'name': 'Bash', 'input': {'command': 'echo x > forbidden-probe'}}
+        rows = claude_rows()
+        rows[1:1] = [
+            assistant('msg_main_0', [denied], 1),
+            {'type': 'system', 'subtype': 'permission_denied', 'tool_name': 'Bash', 'tool_use_id': 'toolu_denied',
+             'decision_reason_type': 'mode', 'message': 'Permission to use Bash has been denied.', 'session_id': 'claude-session'},
+            user([{'type': 'tool_result', 'tool_use_id': 'toolu_denied', 'content': 'Permission denied', 'is_error': True}]),
+        ]
+        path = self.root / 'stream.jsonl'
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        answer, _, requests, count, commands, calls = self.all_claude()._collect('claude', path)
+        self.assertEqual(answer, {'status': 'READY', 'body': 'plan'})
+        self.assertEqual(count, 4)
+        self.assertEqual([(call['tool'], call['error']) for call in calls], [('Bash', True), ('Bash', False), ('Agent', False)])
+        self.assertEqual([(row['command'], row['exit_code']) for row in commands],
+                         [('echo x > forbidden-probe', -1), ('git status', 0)])
+
     def test_the_last_subagent_request_takes_its_output_from_the_agent_result(self):
         final = [('msg_7ag', 8441, 16), ('msg_zvB', 8975, 750)]   # the intermediate request keeps its start snapshot
         path = self.root / 'evidence.jsonl'

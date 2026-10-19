@@ -1888,7 +1888,11 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
     pending = {}
     for row in rows:
         # V321-SUB: a forwarded subagent message may carry its content as one string; only content blocks are read.
-        content = row.get('message', {}).get('content')
+        # V322-DENY: only assistant and user rows are read; a system permission_denied row's message is a string.
+        if row.get('type') not in ('assistant', 'user'):
+            continue
+        message = row.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
         blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
         if row.get('type') == 'assistant':
             for block in blocks:
