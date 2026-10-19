@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-17
+**Last updated**: 2026-10-19
 
 ## P0 — blocker / must-do-now
 
@@ -13,11 +13,12 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 - Deferred by the owner until after the v3.2.0 trial (decided 2026-10-17). (added 2026-10-14)
   - `accept --auto-commit false` as a one-way downgrade.
-  - Single-CLI installation (only Claude or only Codex installed).
   - Subagent usage undercount: a Claude author with subagents does not pass `--forward-subagent-text`, so usage.json misses text-only subagent requests; the fix changes the frozen dispatch flags, so it waits for a release that may break resume.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Single-CLI installation (only Claude or only Codex installed)~~ (added 2026-10-14) (closed 2026-10-19, see owner decision)
+  - Dropped by the owner on 2026-10-19: paired-session is cross-vendor multi-agent by design, so requiring both the Claude and the Codex CLI is reasonable; not planned.
 - ~~Real-CLI check: a Claude read-only turn holds once on `.claude/.cc-writes` in a workspace with an ignored `.claude/`~~ (added 2026-10-14) (closed 2026-10-17, see v3.2.0, V3111-CCW)
   - Confirmed in the code (the collapsed ignored `.claude` entry changes size/mtime when the CLI creates its scratch directory); the read-only guard now discards exactly that change.
 ~~- [new] Fresh-role vendor scan falsely rejects coordinator-owned run paths containing vendor names. (added 2026-09-26)~~ (closed offline by R12-0; closure SHA will be recorded in the next batch commit)
