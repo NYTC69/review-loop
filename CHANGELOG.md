@@ -15,7 +15,7 @@ v3.2.0 试用期内的小版本，修复 v3.2.1 引入的一个回归，并根�
 - `note` 因为送不到作者而被拒时，提示现在会说明原因和下一步：轮数用完时先 `resume --add-rounds N`（或 `note --scope-change`）；调用次数用完时用 `resume --max-invocations N` 提高上限；有回合还在跑或状态不确定时，等它结束或按提示用 `--retry-uncertain` 恢复；不在 PLAN/EXEC 阶段时，说明 note 只送到 PLAN/EXEC 的作者回合。
 - 文档：作者的沙箱写不了 `.git`，所以作者跑不了 `git merge`。合并冲突类的工作项由操作员在开始前执行 `git merge --no-commit`，作者只改文件；run 启动时不要开 auto-commit（普通 run 默认就是关的，auto-commit 在启动时就固定），验收后由操作员自己完成合并（自动提交只有一个父提交，会丢掉合并的另一个父提交）。`--review-only` 默认会自动提交，审合并结果时要在启动时显式传 `--auto-commit false`。
 
-**审查**：Codex 执行，Opus 审查（第一轮 REVISE：README 那段让 `--review-only` 直接审合并结果，它默认自动提交、只有一个父提交；第二轮 APPROVE）。fresh Opus 终审 APPROVE（CHANGELOG 两处措辞按它的建议改过，经 Codex 复核）；CI 39209339788 全量通过；真实 run 77b9d07b（默认完整路线）ACCEPTED。
+**审查**：Codex 执行，Opus 审查（第一轮 REVISE：README 那段让 `--review-only` 直接审合并结果，它默认自动提交、只有一个父提交；第二轮 APPROVE）。fresh Opus 终审 APPROVE（CHANGELOG 两处措辞按它的建议改过，经 Codex 复核）；CI 39209339788 全量通过；真实 run 77b9d07b（默认完整路线）ACCEPTED。v3.2.1 回归（V322-DENY）：Opus 执行，Codex 审查（第一轮 REVISE：CHANGELOG 一句不准确；第二轮 APPROVE）。author probe 的老问题（V322-PROBE）：在 rc2 真实 run 里发现，Codex 执行，fresh Opus 审查 APPROVE。CI 39279622147 全量通过；rc3 真实 run da30eeb5（Claude 作者 + Claude gate，lifecycle on，先跑显式 permission-probe，两个 Claude probe 回合共 17 行 permission_denied）probe PASS，run ACCEPTED。
 
 ### v3.2.1：Claude 作者使用子 agent 时，usage.json 不再少算
 
