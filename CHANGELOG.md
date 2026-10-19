@@ -1,5 +1,20 @@
 # Changelog
 
+### v3.2.1：Claude 作者使用子 agent 时，usage.json 不再少算
+
+v3.2.0 试用期内的小版本，只修一个统计问题。
+
+**升级须知**
+- run 启动时固定下来、续跑前比对的内容（模型、effort、沙箱、子 agent 开关、agent 正文）没有变化，在 v3.2.0 上开始的 run 换到这一版后可以继续。
+- Claude 作者的完整命令行多了一个参数，所以严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次。这和每次升级版本时一样，因为这项检查本来就绑定插件版本号。
+- 需要 Claude Code 支持 `--forward-subagent-text`（2.1.303 已验证）。
+
+**修复**
+- Claude 作者开着子 agent（默认 `--author-subagents on`）时，子 agent 中只输出文字、不调用工具的请求（比如它最后交回的报告），Claude CLI 默认不输出到流里，所以 usage.json 里少算了这些请求。现在协调器给 Claude 作者加上 `--forward-subagent-text`，这些请求会按消息 id 各算一次。只读角色不能开子 agent，命令不变。子 agent 的文字不会被当成作者的回答，也不会算进作者自己的工具调用。
+- 转发过来的子 agent 消息里，`content` 有时是一整段字符串，协调器以前读到这种消息会报错，导致这一轮失败。现在能正常处理。
+
+**审查**：Opus 执行，Codex 审查通过（提到一条 low：旧版 Claude CLI 没有这个参数，见升级须知）。
+
 ### v3.2.0：稳定版——已有被忽略的 `.claude/` 目录时，Claude 只读回合不再误报 HOLD
 
 这是一个稳定点：v3.1.2 到 v3.1.10 修掉了真实 run 里暴露的凭据扫描误报、未过 gate 就到 DONE、长命令被掐断、提示命令走不通等问题，这一版补上最后一个已知的误报。之后一到两周只修实际使用中发现的问题，不加新功能。
