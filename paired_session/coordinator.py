@@ -6084,7 +6084,8 @@ class Coordinator:
                      env_overrides: Optional[dict] = None) -> dict:
         issue = self._program_state(hold=True)[1]
         if issue: raise RuntimeError(issue)
-        if self.state.get('config', {}).get('lifecycle_mode') == 'on':
+        if (self.state.get('config', {}).get('lifecycle_mode') == 'on' and
+                not (role == 'author' and phase == 'AUTHOR_PERMISSION_PROBE' and self.args.author_vendor == 'claude')):
             self._verify_frozen_role_dispatch()
         rejection = None
         operator_note = next((row for row in self.state.get('operator_notes', [])
@@ -8380,6 +8381,9 @@ class Coordinator:
                'claude_version': 'UNAVAILABLE', 'model_escape_failed_targets': [], 'process_group': None}
         real_context, base, tmp, dirs, gone = self.context, None, None, [], lambda p: not (p.exists() or p.is_symlink())
         try:
+            # V322-PROBE: verify against the real context before swapping it; _invoke_once skips this Claude probe only.
+            if self.state.get('config', {}).get('lifecycle_mode') == 'on':
+                self._verify_frozen_role_dispatch()
             # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
             base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.run_dir.parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
