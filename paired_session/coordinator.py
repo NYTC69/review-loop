@@ -4026,11 +4026,25 @@ class Coordinator:
         if self.state.get('pending_author_result_sequence') is not None:
             raise ValueError('author READY receipt pending; resume first')
         phase = self.state['phase']
-        if (phase not in ('PLAN', 'EXEC') or self.state.get('active') or
-                self.state.get('uncertain_active') or self.state['invocations_used'] >= self.args.max_invocations or
-                (phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
-                (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit())):
-            raise ValueError('next author turn is unavailable; note remains undelivered')
+        unavailable = ''
+        if phase not in ('PLAN', 'EXEC'):
+            unavailable = (f'notes reach only PLAN or EXEC author turns; this run is in {phase} '
+                           '(at DONE use reject; at an eligible idle HOLD use note --scope-change)')
+        elif self.state.get('active') or self.state.get('uncertain_active'):
+            turn = self.state.get('active') or self.state.get('uncertain_active')
+            recovery = 'permission-probe' if turn.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') else 'resume'
+            unavailable = ('an active or uncertain_active turn is recorded; wait for it to finish, or inspect the evidence '
+                           f'and confirm its process group has stopped before {recovery} --retry-uncertain; '
+                           'add the note at the next eligible PLAN/EXEC HOLD')
+        elif self.state['invocations_used'] >= self.args.max_invocations:
+            unavailable = ('invocation budget exhausted; use resume --max-invocations N with a higher cap, '
+                           'then add the note at the next eligible PLAN/EXEC HOLD')
+        elif ((phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
+              (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit())):
+            unavailable = (f'{phase} round limit reached; at the round-limit HOLD use resume --add-rounds N (1-10), '
+                           'then add the note at the next eligible PLAN/EXEC HOLD, or note --scope-change')
+        if unavailable:
+            raise ValueError('next author turn is unavailable; note remains undelivered; ' + unavailable)
         if bool(text) == bool(file):
             raise ValueError('note requires exactly one of --text or --file')
         if file:
@@ -5643,8 +5657,20 @@ class Coordinator:
         # Do not rewrite past evidence or silently strip meaningful plan content.
         for name in ('workitem.md', 'plan.md'):
             path = self.context / name
-            if path.is_file() and LEDGER_ID_RE.search(self._fresh_history_text(f'context/{name}', path.read_text())):
-                raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}')
+            if path.is_file():
+                ids = sorted(set(LEDGER_ID_RE.findall(self._fresh_history_text(f'context/{name}', path.read_text()))))
+                if ids:
+                    shown = ', '.join(ids[:5]) + (', …' if len(ids) > 5 else '')
+                    if name == 'workitem.md':
+                        recovery = (f"this run's frozen work item cannot change. Edit the work-item file {self.workitem} "
+                                    'to describe the point in words (no finding ids), then use note --scope-change --text "..." '
+                                    'and run the printed Probe: and Start: commands (a successor with a fresh PLAN), '
+                                    'or abort and start a new run')
+                    else:
+                        recovery = ('resume does not rewrite the approved plan. Use note --scope-change --text "..." '
+                                    '(no finding ids) and run the printed Probe: and Start: commands for a successor '
+                                    'with a fresh PLAN, or abort and start a new run')
+                    raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}: {shown}; ' + recovery)
         checked = self._mask_docs_reserved_paths(self._mask_guidance(prompt))   # operator guidance and DOCS paths
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', checked)))
         summaries = [row['summary'] for row in self.state['finding_ledger']

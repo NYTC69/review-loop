@@ -919,9 +919,24 @@ permission probe is the effective check against the installed Codex CLI.
 ### Codex author sandbox: what a work item cannot do
 
 A Codex author runs under the `workspace-write` sandbox (writes confined to the
-workspace and the run-owned temp dir; `network_access` is off). Real runs on
-this machine (poker-tools, 2026-10-01) showed three things a work item cannot do
-there:
+workspace and the run-owned temp dir; `network_access` is off).
+
+The Codex author's sandbox cannot write `.git` (for example `.git/ORIG_HEAD.lock`),
+so the author cannot run `git merge`, `git rebase`, `git commit` or similar commands.
+For a merge-resolution work item, the operator starts `git merge --no-commit <branch>`
+before the run, leaving conflicts in the worktree; the author only edits files.
+Ordinary runs with lifecycle on or off do not refuse `MERGE_HEAD` and can accept
+the resulting tree with `--auto-commit false`; acceptance leaves the index and
+merge state for the operator to stage and complete the merge afterwards.
+In an ordinary lifecycle-on run (lifecycle off never commits), an explicit `--auto-commit true` refuses an index that differs
+from HEAD; every auto-commit is a single-parent commit and would drop the merge
+parent, so keep auto-commit off for this route. `--review-only` refuses unmerged
+index entries: resolve and stage them outside the run first and pass
+`--auto-commit false`, because a review-only run defaults to `--auto-commit true`
+and would commit the staged merge with a single parent.
+
+Real runs on this machine (poker-tools, 2026-10-01) showed three things a work item
+cannot do there:
 
 - Postgres `initdb` fails (`shmget` returns EPERM), so a test database cannot be
   created inside the sandbox.
