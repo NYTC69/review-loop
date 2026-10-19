@@ -1864,13 +1864,16 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
         return commands, calls
     pending = {}
     for row in rows:
+        # V321-SUB: a forwarded subagent message may carry its content as one string; only content blocks are read.
+        content = row.get('message', {}).get('content')
+        blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
         if row.get('type') == 'assistant':
-            for block in row.get('message', {}).get('content', []):
+            for block in blocks:
                 if block.get('type') == 'tool_use':
                     pending[block.get('id')] = {'tool': block.get('name', ''),
                                                 'input': block.get('input', {}), 'error': None}
         elif row.get('type') == 'user':
-            for block in row.get('message', {}).get('content', []):
+            for block in blocks:
                 if block.get('type') != 'tool_result' or block.get('tool_use_id') not in pending:
                     continue
                 call = pending.pop(block['tool_use_id'])
@@ -4663,6 +4666,8 @@ class Coordinator:
                     '--disallowedTools', 'NotebookEdit' if subagents else 'NotebookEdit,Agent']
             for rule in deny:  # separate arguments, as for the reviewer's Bash rules; the first --disallowedTools is unchanged
                 cmd += ['--disallowedTools', rule]
+            if subagents:   # V321-SUB: a text-only subagent request emits no row without it, so usage.json missed it
+                cmd.append('--forward-subagent-text')
         else:
             exact_commands = self.reviewer_commands()
             if role in ('probe', 'gate-probe') and self._probe_sandbox_commands:
@@ -5682,7 +5687,8 @@ class Coordinator:
             requests = [{'input': use.get('input_tokens', 0) + use.get('cache_creation_input_tokens', 0) + use.get('cache_read_input_tokens', 0),
                          'cached': use.get('cache_read_input_tokens', 0), 'output': use.get('output_tokens', 0), 'source': 'result-fallback'}]
         # Subagent model requests emit no stream_event rows; they surface only as assistant rows
-        # carrying parent_tool_use_id (one row per content block, same message id). The result's
+        # carrying parent_tool_use_id (one row per content block, same message id; a text-only request
+        # only under the author's --forward-subagent-text, V321-SUB). The result's
         # modelUsage is cumulative across a resumed session, so it cannot supply a per-turn total.
         subagent = {}
         for index, row in enumerate(rows):

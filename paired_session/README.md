@@ -337,7 +337,9 @@ Lifecycle POLISH-Q remains available.
 `--quality-focus TEXT` supplies POLISH-Q priorities; `--review-style TEXT`
 supplies tone and rules to all review roles. These values are fixed at run start.
 `--author-subagents on|off` (default on) controls a Claude author's Agent tool;
-read-only roles cannot spawn subagents.
+read-only roles cannot spawn subagents. With it on, the author also runs with
+`--forward-subagent-text`, so `usage.json` counts every subagent model request,
+text-only ones included (once per message id).
 `run --stop-after-plan` HOLDs once after PLAN approval, with `RUN_DIR/plan.md`;
 a later `resume` enters EXEC. `--review-only` refuses `--stop-after-plan`.
 

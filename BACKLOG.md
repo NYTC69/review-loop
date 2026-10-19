@@ -13,10 +13,11 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 - Deferred by the owner until after the v3.2.0 trial (decided 2026-10-17). (added 2026-10-14)
   - `accept --auto-commit false` as a one-way downgrade.
-  - Subagent usage undercount: a Claude author with subagents does not pass `--forward-subagent-text`, so usage.json misses text-only subagent requests; the fix changes the frozen dispatch flags, so it waits for a release that may break resume.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Subagent usage undercount: a Claude author with subagents did not pass `--forward-subagent-text`, so usage.json missed text-only subagent requests~~ (added 2026-10-14) (closed 2026-10-19, see V321-SUB)
+  - The Claude author with `--author-subagents on` now passes the flag; the frozen role manifest holds no argv, so in-flight runs still resume; the argv is bound only into the author permission-probe digest, which the release's plugin_version change voids anyway.
 - ~~Single-CLI installation (only Claude or only Codex installed)~~ (added 2026-10-14) (closed 2026-10-19, see owner decision)
   - Dropped by the owner on 2026-10-19: paired-session is cross-vendor multi-agent by design, so requiring both the Claude and the Codex CLI is reasonable; not planned.
 - ~~Real-CLI check: a Claude read-only turn holds once on `.claude/.cc-writes` in a workspace with an ignored `.claude/`~~ (added 2026-10-14) (closed 2026-10-17, see v3.2.0, V3111-CCW)
