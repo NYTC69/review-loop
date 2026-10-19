@@ -6,13 +6,14 @@ v3.2.0 试用期内的小版本，根据实际使用中报上来的问题修改�
 
 **升级须知**
 - 没有改 run 启动时固定下来的任何值，在 v3.2.0 / v3.2.1 上开始的 run 换到这一版后可以继续。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
 
 **修复**
 - gate 或 shadow 因为工作项或计划里写了 finding 编号（例如 `F008`）而 HOLD 时，提示现在会列出是哪些编号，并说明怎么继续：工作项在 run 里是冻结的，要先改原工作项文件、用文字描述而不是引用编号，再用 `note --scope-change` 开一个从 PLAN 重新开始的后继 run；计划里的编号同样走 `note --scope-change`，或者放弃这个 run 重新开始。
 - `note` 因为送不到作者而被拒时，提示现在会说明原因和下一步：轮数用完时先 `resume --add-rounds N`（或 `note --scope-change`）；调用次数用完时用 `resume --max-invocations N` 提高上限；有回合还在跑或状态不确定时，等它结束或按提示用 `--retry-uncertain` 恢复；不在 PLAN/EXEC 阶段时，说明 note 只送到 PLAN/EXEC 的作者回合。
-- 文档：作者的沙箱写不了 `.git`，所以作者跑不了 `git merge`。合并冲突类的工作项由操作员在开始前执行 `git merge --no-commit`，作者只改文件，验收时保持 `--auto-commit false`，合并由操作员自己完成（自动提交只有一个父提交，会丢掉合并的另一个父提交）。`--review-only` 默认会自动提交，审合并结果时要显式传 `--auto-commit false`。
+- 文档：作者的沙箱写不了 `.git`，所以作者跑不了 `git merge`。合并冲突类的工作项由操作员在开始前执行 `git merge --no-commit`，作者只改文件；run 启动时不要开 auto-commit（普通 run 默认就是关的，auto-commit 在启动时就固定），验收后由操作员自己完成合并（自动提交只有一个父提交，会丢掉合并的另一个父提交）。`--review-only` 默认会自动提交，审合并结果时要在启动时显式传 `--auto-commit false`。
 
-**审查**：Codex 执行，Opus 审查（第一轮 REVISE：README 那段让 `--review-only` 直接审合并结果，它默认自动提交、只有一个父提交；第二轮 APPROVE）。
+**审查**：Codex 执行，Opus 审查（第一轮 REVISE：README 那段让 `--review-only` 直接审合并结果，它默认自动提交、只有一个父提交；第二轮 APPROVE）。fresh Opus 终审 APPROVE（CHANGELOG 两处措辞按它的建议改过，经 Codex 复核）；CI 39209339788 全量通过；真实 run 77b9d07b（默认完整路线）ACCEPTED。
 
 ### v3.2.1：Claude 作者使用子 agent 时，usage.json 不再少算
 
