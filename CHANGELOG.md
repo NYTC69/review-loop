@@ -1,5 +1,19 @@
 # Changelog
 
+### v3.2.2：试用期现场反馈——提示写清是哪里拦住了、下一步怎么做；合并类工作项的做法写进文档
+
+v3.2.0 试用期内的小版本，根据实际使用中报上来的问题修改提示和文档，所有检查本身不变。
+
+**升级须知**
+- 没有改 run 启动时固定下来的任何值，在 v3.2.0 / v3.2.1 上开始的 run 换到这一版后可以继续。
+
+**修复**
+- gate 或 shadow 因为工作项或计划里写了 finding 编号（例如 `F008`）而 HOLD 时，提示现在会列出是哪些编号，并说明怎么继续：工作项在 run 里是冻结的，要先改原工作项文件、用文字描述而不是引用编号，再用 `note --scope-change` 开一个从 PLAN 重新开始的后继 run；计划里的编号同样走 `note --scope-change`，或者放弃这个 run 重新开始。
+- `note` 因为送不到作者而被拒时，提示现在会说明原因和下一步：轮数用完时先 `resume --add-rounds N`（或 `note --scope-change`）；调用次数用完时用 `resume --max-invocations N` 提高上限；有回合还在跑或状态不确定时，等它结束或按提示用 `--retry-uncertain` 恢复；不在 PLAN/EXEC 阶段时，说明 note 只送到 PLAN/EXEC 的作者回合。
+- 文档：作者的沙箱写不了 `.git`，所以作者跑不了 `git merge`。合并冲突类的工作项由操作员在开始前执行 `git merge --no-commit`，作者只改文件，验收时保持 `--auto-commit false`，合并由操作员自己完成（自动提交只有一个父提交，会丢掉合并的另一个父提交）。`--review-only` 默认会自动提交，审合并结果时要显式传 `--auto-commit false`。
+
+**审查**：Codex 执行，Opus 审查（第一轮 REVISE：README 那段让 `--review-only` 直接审合并结果，它默认自动提交、只有一个父提交；第二轮 APPROVE）。
+
 ### v3.2.1：Claude 作者使用子 agent 时，usage.json 不再少算
 
 v3.2.0 试用期内的小版本，只修一个统计问题。
