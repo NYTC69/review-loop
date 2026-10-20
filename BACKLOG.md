@@ -14,6 +14,10 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 - Deferred by the owner until after the v3.2.0 trial (decided 2026-10-17). (added 2026-10-14)
   - `accept --auto-commit false` as a one-way downgrade.
   - A formal known-inherited-failures declaration, so a reviewer approval can count a run whose test command fails on exactly the failures the base branch already has (gg-pipeline field report, 2026-10-19; owner 2026-10-20: not during the trial). Workaround until then: `--deselect <nodeid>` in the test command.
+  - gg-pipeline feature requests (2026-10-20; triaged as features, not fixes):
+    - An option for an open MEDIUM+ finding to block DONE, or a dedicated route to fix open findings on a DONE run. Existing route: `reject --text "..."` on the DONE run reopens EXEC on the same run.
+    - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Workaround: the default efficient mode does not require the explicit permission-probe.
+    - When the base moved under a parked run, have the author re-run the configured command and refresh the recorded verification before the gate.
 
 ## Done (recent, trimmed quarterly)
 
