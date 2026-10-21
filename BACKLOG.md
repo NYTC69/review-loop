@@ -16,6 +16,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - A formal known-inherited-failures declaration, so a reviewer approval can count a run whose test command fails on exactly the failures the base branch already has (gg-pipeline field report, 2026-10-19; owner 2026-10-20: not during the trial). Workaround until then: `--deselect <nodeid>` in the test command.
   - gg-pipeline feature requests (2026-10-20; triaged as features, not fixes):
     - An operator route to send a held EXEC run back to the author with a note (`resume --to-author`, or `reject` on a HOLD), and dispatch the author first after `note` + `resume` (gg-pipeline WI-266b, 2026-10-21; deferred).
+    - A requirement change after plan approval that reaches the EXEC reviewer without a full scope-change successor (a superseding operator note shown to the reviewer, or a short re-plan inside the run). Today: `note --scope-change` (gg-pipeline WI-266e, 2026-10-22; deferred).
     - An option for an open MEDIUM+ finding to block DONE, or a dedicated route to fix open findings on a DONE run. Existing route: `reject --text "..."` on the DONE run reopens EXEC on the same run.
     - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Workaround: the default efficient mode does not require the explicit permission-probe.
     - When the base moved under a parked run, have the author re-run the configured command and refresh the recorded verification before the gate.
