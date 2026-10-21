@@ -18,6 +18,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
     - An option for an open MEDIUM+ finding to block DONE, or a dedicated route to fix open findings on a DONE run. Existing route: `reject --text "..."` on the DONE run reopens EXEC on the same run.
     - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Workaround: the default efficient mode does not require the explicit permission-probe.
     - When the base moved under a parked run, have the author re-run the configured command and refresh the recorded verification before the gate.
+    - Warn at `note` time when the operator text contains a phrase the independence check rejects later (the author may quote the note into the change); and at the last EXEC round, give the author one reword turn instead of the gate HOLD (gg-pipeline WI-263m, 2026-10-21; v3.2.3 only adds the path:line places to the HOLD).
 
 ## Done (recent, trimmed quarterly)
 
