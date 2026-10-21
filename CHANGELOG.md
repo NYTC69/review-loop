@@ -10,9 +10,9 @@ v3.2.0 试用期内的小版本，只修复 EXEC 测试失败后无法回到作�
 
 **修复**
 - 持续会话 reviewer 在 EXEC 回合回答 APPROVE，但它自己运行配置的测试命令、完成后得到非零退出状态时，以前这轮作废并 HOLD，`resume` 只能再派 reviewer。现在记录一条 MAJOR 的 `test-failure` 程序 finding，包含退出状态及有界的输出末尾，把有效结论改为 REVISE，让作者在正常 EXEC 下一轮修复。reviewer 后来观察到配置命令成功运行时，程序关闭这条 finding；轮数用完仍走原有的 round-limit HOLD 和恢复提示。
-- 没跑配置命令、命令超时或未完成、shadow 或 gate 的批准、review-report 的静态批准及 DOCS 审查仍按原有检查处理。
+- 没跑配置命令、命令超时或未完成、shadow 或 gate 的批准、review-report 模式下 reviewer 的批准及 DOCS 审查仍按原有检查处理。
 
-**审查**：Codex 执行，Opus 审查。
+**审查**：Codex 执行，fresh Opus 审查 APPROVE（措辞建议已采纳）。有意改变的旧断言：`test_v317ct` 里钉"持续 reviewer 测试失败就 HOLD"的用例改为断言新行为。CI 39568094580 全量通过；真实 run aa807b66（默认完整路线；中途一次 Codex 模型容量不足，resume 后继续）ACCEPTED。
 
 ### v3.2.3：gate 因 delta.patch 里的审查历史措辞 HOLD 时，提示写明在哪个文件哪一行
 
