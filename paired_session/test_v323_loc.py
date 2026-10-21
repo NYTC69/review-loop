@@ -32,7 +32,9 @@ class DeltaHistoryLocationTests(unittest.TestCase):
             self.assertIn("'gate review' at docs/amendment.md:3", message)
             self.assertIn("'F042' at notes.py:2", message)
             self.assertTrue(message.endswith('; the change adds it: reword those lines in the workspace '
-                                             '(no finding ids or review narrative), then resume'), message)
+                                             '(no finding ids or review narrative), then resume. The edit changes the '
+                                             "reviewed tree, so the run may stop once more at 'stale EXEC approval'; "
+                                             'resume again and the reviewer and the gate review the edited tree'), message)
 
     def test_more_than_five_places_are_counted(self):
         self.write('notes.md', ''.join(f'line {n}: gate review\n' for n in range(1, 8)))

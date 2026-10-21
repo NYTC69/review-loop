@@ -5707,7 +5707,8 @@ class Coordinator:
                     where = (' (' + ', '.join(f'{marker!r} at {spot}' for spot, marker in hits[:5])
                              + (f', +{len(hits) - 5} more' if len(hits) > 5 else '')
                              + '); the change adds it: reword those lines in the workspace (no finding ids or review '
-                               'narrative), then resume')
+                               'narrative), then resume. The edit changes the reviewed tree, so the run may stop once more '
+                               "at 'stale EXEC approval'; resume again and the reviewer and the gate review the edited tree")
                 raise RuntimeError(f'{role} independence check rejected history in {name}: {matches[0]}{where}')
             checked[name] = {'sha256': hashlib.sha256(content.encode()).hexdigest(),
                              'content': content}
