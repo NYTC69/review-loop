@@ -11,7 +11,7 @@ v3.2.0 试用期内的小版本，只改一条提示，检查本身不变。
 **修复**
 - 这个 run 的改动本身加进了审查历史类的措辞（例如作者把操作员 note 里的 "the final gate reviews it" 原样写进新文档），而且已经到了 EXEC 最后一轮时，shadow 或 gate 会 HOLD，提示是 "independence check rejected history in context/delta.patch: <短语>"。以前只给短语，不给位置，操作员要在很大的 patch 里自己找。现在提示会列出改动新增的每一处（`'<短语>' at <文件>:<行>`，最多 5 处，多出的给出数量），并说明下一步：在工作区里把这些行换个说法（不写 finding 编号或审查经过），然后 `resume`。改动后工作区和 reviewer 批准时的不一样了，所以 run 可能还会在 "stale EXEC approval" 停一次，再 `resume` 一次，reviewer 和 gate 就会重新审改过的内容。其他输入（工作项、计划、上下文文件）的提示不变；不是最后一轮时，这类措辞照旧作为作者要修的 finding 处理（FIELD-31）。
 
-**审查**：Opus 执行，Codex 审查（第一轮 REVISE：按提示改完 `resume` 后还会再停一次 stale EXEC approval，提示没写；已补上）。
+**审查**：Opus 执行，Codex 审查（第一轮 REVISE：按提示改完 `resume` 后还会再停一次 stale EXEC approval，提示没写；已补上；第二轮 APPROVE）。CI 39530699542 全量通过；真实 run 90b3b5b9（默认完整路线）ACCEPTED。
 
 ### v3.2.2：Claude 回合遇到权限拒绝不再失败（v3.2.1 回归）；提示写清是哪里拦住了、下一步怎么做；合并类工作项的做法写进文档
 
