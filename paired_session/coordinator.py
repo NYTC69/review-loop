@@ -5322,18 +5322,10 @@ class Coordinator:
             matches = [(shown, whole) for shown, whole in matches if not self._plan_tool_name(whole, text)]
         return [shown for shown, _ in matches]
 
-    def _author_delta_history(self, phase: str, sequence: int, replaying: bool) -> list[dict]:
-        """FIELD-31: review history the run's own change adds to the code (a finding id in a test title or a comment) is a
-        blocking finding for the author, at the cost of a normal EXEC round, instead of the fresh shadow/gate HOLD. Only added
-        lines of context/delta.patch count; every other input, report mode and the last EXEC round keep that HOLD."""
-        fresh = 'on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject') or replaying
-        if (phase != 'EXEC' or not fresh or self.state['config'].get('review_report')
-                or self.state['exec_rounds'] >= self.exec_round_limit() or self._recorded_shadow_result(phase, sequence)):
-            return []
-        self.materialize_review_context()
-        path = self.context / 'delta.patch'
-        hits = []   # FIELD-31b: every hit of every file in ONE finding, so one round can fix them all
-        for section in re.split(r'(?m)^(?=diff --git )', path.read_text() if path.is_file() else ''):
+    def _delta_history_hits(self, patch: str) -> list[tuple[str, str]]:
+        """FIELD-31b: (path:line, marker) for every review-history match on an added line of the patch, every file."""
+        hits = []
+        for section in re.split(r'(?m)^(?=diff --git )', patch):
             if not (markers := list(dict.fromkeys(self._introduced_history('context/delta.patch', section)))):
                 continue
             # git ends the header of a path that contains a space with a tab: a separator, not the name (as leak_scan)
@@ -5352,6 +5344,19 @@ class Coordinator:
                             hits.append((f'{name}:{number}', marker))
                             found.add(marker)
             hits += [(name, marker) for marker in markers if marker not in found]   # a match that spans lines
+        return hits
+
+    def _author_delta_history(self, phase: str, sequence: int, replaying: bool) -> list[dict]:
+        """FIELD-31: review history the run's own change adds to the code (a finding id in a test title or a comment) is a
+        blocking finding for the author, at the cost of a normal EXEC round, instead of the fresh shadow/gate HOLD. Only added
+        lines of context/delta.patch count; every other input, report mode and the last EXEC round keep that HOLD."""
+        fresh = 'on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject') or replaying
+        if (phase != 'EXEC' or not fresh or self.state['config'].get('review_report')
+                or self.state['exec_rounds'] >= self.exec_round_limit() or self._recorded_shadow_result(phase, sequence)):
+            return []
+        self.materialize_review_context()
+        path = self.context / 'delta.patch'
+        hits = self._delta_history_hits(path.read_text() if path.is_file() else '')
         if not hits:
             return []
         shown = ', '.join(f'{marker!r} at {where}' for where, marker in hits[:10])
@@ -5696,7 +5701,14 @@ class Coordinator:
         for name, content in sources.items():
             matches = self._introduced_history(name, content)   # FIELD-23: repository text is not review history
             if matches:
-                raise RuntimeError(f'{role} independence check rejected history in {name}: {matches[0]}')
+                where = ''
+                if name == 'context/delta.patch' and (hits := self._delta_history_hits(content)):
+                    # V323-LOC: the change itself adds it (here at the last EXEC round, which FIELD-31 leaves to this HOLD)
+                    where = (' (' + ', '.join(f'{marker!r} at {spot}' for spot, marker in hits[:5])
+                             + (f', +{len(hits) - 5} more' if len(hits) > 5 else '')
+                             + '); the change adds it: reword those lines in the workspace (no finding ids or review '
+                               'narrative), then resume')
+                raise RuntimeError(f'{role} independence check rejected history in {name}: {matches[0]}{where}')
             checked[name] = {'sha256': hashlib.sha256(content.encode()).hexdigest(),
                              'content': content}
         atomic_json(self.evidence / f'{self.state["sequence"] + 1:03d}-{role}.independence-inputs.json',
