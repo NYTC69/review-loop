@@ -137,8 +137,21 @@ class ApprovalEvidenceTests(unittest.TestCase):
     def test_persistent_reviewer_tool_timeout_holds_with_cause(self):
         self.check_approval('reviewer', True)
 
-    def test_persistent_reviewer_failed_test_keeps_existing_reason(self):
-        self.check_approval('reviewer', False)
+    def test_persistent_reviewer_failed_test_goes_to_the_author(self):
+        # V324-TEST (field run WI-266b): a completed failing run no longer voids the persistent reviewer's turn; reviewer_turn
+        # turns it into a blocking test-failure finding for the author (paired_session/test_v324_test.py).
+        co = self.coordinator('--lifecycle-mode', 'off', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude',
+                              '--test-command', 'python3 -m unittest')
+        co.state['phase'] = 'EXEC'
+        (co.context / 'plan.md').write_text('# Plan\nImplement the feature.\n')
+        snapshot = rc.git_snapshot(self.workspace)[0]
+        with patch.dict(os.environ, {'FAKE_REVIEW_TEST_FAILURE': '1'}):
+            co.invoke('reviewer', 'EXEC', co._review_prompt('reviewer', snapshot), rc.review_schema())
+        receipt = co.state['turns'][-1]
+        self.assertFalse(receipt.get('error'))
+        row = next(row for row in receipt['observed_commands'] if row['command'] == co.args.test_command)
+        self.assertEqual((row['exit_code'], row['error']), (-1, True))
+        self.assertIsNotNone(rc.completed_test_failure(receipt['observed_commands'], co.args.test_command))
 
 
 if __name__ == '__main__':

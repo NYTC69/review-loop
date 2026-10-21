@@ -975,6 +975,16 @@ def configured_test_shortfall(rows: list, configured: str) -> tuple[str, bool]:
             any(command_not_completed(row) for row in runs))
 
 
+def completed_test_failure(rows: list, configured: str) -> Optional[dict]:
+    """A real configured-command failure, rather than missing, timed-out or unfinished evidence."""
+    cause, unfinished = configured_test_shortfall(rows, configured)
+    if cause or unfinished or any(observed_test_succeeded(row, configured) for row in rows):
+        return None
+    return next((row for row in rows if command_invokes_test(row.get('command', ''), configured)
+                 and not command_not_completed(row) and type(row.get('exit_code')) is int
+                 and row['exit_code'] != 0), None)
+
+
 def codex_readonly_profile_args() -> list[str]:
     """b295-f1: replaces sandbox_mode="read-only" (Codex refuses both together): root and workspace read, only $TMPDIR (the dispatch's
     scratch root) writable, network off. Only a real permission-probe shows that `codex exec` honours it.
@@ -5369,6 +5379,33 @@ class Coordinator:
                                  'reviewer names unless the frozen work item is about those bare names; review '
                                  'attributions and other history markers remain forbidden')}])
 
+    def _test_failure_findings(self, answer: dict, sequence: int) -> list[dict]:
+        rows = answer.get('observed_commands', [])
+        opened = [row for row in self.open_findings() if row['source'] == 'test-failure']
+        if any(observed_test_succeeded(row, self.args.test_command) for row in rows):
+            for row in opened:
+                row['status'] = 'fixed'
+                row['status_history'].append({'round': sequence, 'status': 'fixed',
+                                              'evidence': 'configured test command: observed successful run'})
+                self._progress_finding(row)
+            if opened:
+                self.write_ledger()
+            return []
+        failed = completed_test_failure(rows, self.args.test_command)
+        if answer['status'] != 'APPROVE' or failed is None:
+            return []
+        if opened:
+            return opened
+        tail = '\n'.join(str(failed.get('output') or '')[-2000:].splitlines()[-10:])
+        finding = {'severity': 'MAJOR', 'source': 'test-failure', 'file': '',
+                   'summary': ("the configured test command fails in the reviewer's own run "
+                               f"(exit status {failed['exit_code']})"),
+                   'failure_scenario': ('the configured tests do not pass; repair the failure and rerun the configured command'
+                                        + (':\n' + tail if tail else ''))}
+        index = sum(row['source'] == 'test-failure' and row['origin_round'] == sequence
+                    for row in self.state['finding_ledger'])
+        return self.record_findings('test-failure', 'EXEC', sequence, [finding], [index])
+
     def _secret_scan_findings(self, phase: str, sequence: int) -> list[dict]:
         """V312-S (owner 2026-10-10): a hardcoded credential on a line the run's change adds is a blocking program finding
         on every route, whatever the reviewers saw: the author repairs it in a normal EXEC round, a report run lists it.
@@ -6456,9 +6493,12 @@ class Coordinator:
             elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
                                            for row in observed_commands):
                 cause, unfinished = configured_test_shortfall(observed_commands, self.args.test_command)
-                raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
-                                 + (cause or ('; the configured test was not observed to completion (no exit status when '
-                                                'the turn ended)' if unfinished else '')))
+                # V324-TEST: a persistent reviewer's completed test failure goes to the author as a normal blocking review.
+                if not (role == 'reviewer' and not fresh and not self.state['config'].get('review_report')
+                        and completed_test_failure(observed_commands, self.args.test_command) is not None):
+                    raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
+                                     + (cause or ('; the configured test was not observed to completion (no exit status when '
+                                                    'the turn ended)' if unfinished else '')))
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
@@ -7926,6 +7966,11 @@ class Coordinator:
         shadow = None
         writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: a writer replay always has one
         replaying = bool(writer_replay) and writer_replay['epoch'] == (self.state.get('lifecycle') or {}).get('epoch')
+        failures = (self._test_failure_findings(answer, result['sequence'])
+                    if phase == 'EXEC' and not self.state['config'].get('review_report') else [])
+        if failures:
+            answer['full_review'].extend(failures)
+            answer['status'] = 'REVISE'
         if leak := self._author_delta_history(phase, result['sequence'], replaying):   # FIELD-31: before the fresh roles see it
             answer['full_review'].extend(leak)
             if answer['status'] == 'APPROVE':
@@ -7934,7 +7979,7 @@ class Coordinator:
             answer['full_review'].extend(secrets)
             if answer['status'] == 'APPROVE':
                 answer['status'] = 'REVISE'
-        if not leak and phase == 'EXEC' and (self.args.shadow == 'on' or replaying):
+        if not leak and not failures and phase == 'EXEC' and (self.args.shadow == 'on' or replaying):
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
