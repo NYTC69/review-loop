@@ -565,6 +565,8 @@ def trust_entry_only_since_hash(path: Path, before_sha256: str, workspace: Path,
 
 
 PLUGIN_UPDATE_HINT = ' (likely a plugin auto-update outside the run; `resume` re-runs the turn on a fresh baseline)'
+GLOBAL_CONFIG_HINT = (' (the change may come from another process on this machine, such as an interactive session or another run, '
+                      'rather than this turn; `resume` re-runs the turn)')   # V325-CFG
 
 
 STATE_VERSION = 2   # V3-B6 (ADR-17 V2): a run saved by review-loop 2.13.x or earlier (version 1) is refused, never migrated
@@ -6409,16 +6411,25 @@ class Coordinator:
                     if update := ([row['file'] for row in changes['findings']] == ['claude_plugins'] and
                                   normal_plugin_update(vendor_config_before['claude_plugins'], config_after['claude_plugins'])):
                         changes['plugin_update'] = update   # field21: recorded in both modes
-                    if not update or self.strict or voided is not None or touched:
-                        raise ValueError(message + (PLUGIN_UPDATE_HINT if update else ''))
-                    # FIELD-24 (efficient): the running CLI loaded its plugins at start and the old versioned cache stays on
-                    # disk, so the turn's work stands; the next turn starts on the new registry. Recorded, never voided.
-                    versions = ', '.join(f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update)
-                    changes['findings'] = [row for row in changes['findings'] if row['file'] != 'claude_plugins']
-                    changes['status'] = 'PASS'
-                    changes['next_turn_registry'] = 'the next turn starts on the updated plugin registry: ' + versions
-                    print(f'NOTE: a normal plugin update outside the run during the {role} turn ({versions}); the turn '
-                          'is kept and the next turn starts on the updated registry')
+                    settings_only = [(row['file'], row['reason']) for row in changes['findings']] == [('claude_settings', 'unexpected-content-change')]
+                    if settings_only and role in ('reviewer', 'shadow', 'gate') and not self.strict and voided is None and not touched:
+                        # V325-CFG (efficient): a read-only Claude turn cannot write ~/.claude/settings.json, so the change came from
+                        # another process (e.g. the owner's interactive session); the turn stands, the next turn snapshots afresh.
+                        changes['concurrent_settings_change'] = {key: changes[key]['claude_settings']['sha256'] for key in ('before', 'after')}
+                        changes['findings'], changes['status'] = [], 'PASS'
+                        print(f'NOTE: ~/.claude/settings.json changed during the {role} turn; the read-only turn cannot write it, so '
+                              'the turn is kept and the next turn starts from the new settings')
+                    elif not update or self.strict or voided is not None or touched:
+                        raise ValueError(message + (PLUGIN_UPDATE_HINT if update else GLOBAL_CONFIG_HINT))
+                    else:
+                        # FIELD-24 (efficient): the running CLI loaded its plugins at start and the old versioned cache stays on
+                        # disk, so the turn's work stands; the next turn starts on the new registry. Recorded, never voided.
+                        versions = ', '.join(f"{row['plugin']} {row['version'][0]} -> {row['version'][1]}" for row in update)
+                        changes['findings'] = [row for row in changes['findings'] if row['file'] != 'claude_plugins']
+                        changes['status'] = 'PASS'
+                        changes['next_turn_registry'] = 'the next turn starts on the updated plugin registry: ' + versions
+                        print(f'NOTE: a normal plugin update outside the run during the {role} turn ({versions}); the turn '
+                              'is kept and the next turn starts on the updated registry')
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning

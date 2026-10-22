@@ -206,6 +206,10 @@ def main():
     if foreign and marker in prompt and not Path(foreign + '.done').exists():   # once, during that turn
         (Path(os.environ['HOME']) / '.codex' / 'config.toml').write_text(Path(foreign).read_text())
         Path(foreign + '.done').write_text('done')
+    settings = os.environ.get('FAKE_CLAUDE_SETTINGS_WRITE')   # V325-CFG: another session edits ~/.claude/settings.json, once
+    if settings and os.environ.get('FAKE_CLAUDE_SETTINGS_MATCH', 'You are an adversarial reviewer') in prompt and not Path(settings + '.done').exists():
+        (Path(os.environ['HOME']) / '.claude' / 'settings.json').write_text(Path(settings).read_text())
+        Path(settings + '.done').write_text('done')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'claude'
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)

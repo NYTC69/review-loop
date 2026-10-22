@@ -150,7 +150,7 @@ class Field22Tests(unittest.TestCase):
                 env = {'FAKE_CONCURRENT_TRUST_APPEND': str(target), 'FAKE_CONCURRENT_TRUST_ONCE': str(once)}
                 result, state, authors = self.launch(env=env)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertEqual(state['hold_reason'], 'codex turn changed global config: codex_config')
+                self.assertEqual(state['hold_reason'], 'codex turn changed global config: codex_config' + rc.GLOBAL_CONFIG_HINT)
                 command = self.h.command('--shadow', 'off', '--adversarial-gate', 'off') + ['--skip-probe']
                 command[2] = 'resume'
                 again = subprocess.run(command, cwd=self.h.root, env={**os.environ, **env}, text=True,

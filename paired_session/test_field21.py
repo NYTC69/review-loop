@@ -166,7 +166,7 @@ class Field21Tests(unittest.TestCase):
                 (self.plugins / 'installed_plugins.json').write_text(json.dumps(self.base, indent=2))
                 result, state, authors = self.launch(doc)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertEqual(state['hold_reason'], 'claude turn changed global config: claude_plugins')   # no hint, no re-run
+                self.assertEqual(state['hold_reason'], 'claude turn changed global config: claude_plugins' + rc.GLOBAL_CONFIG_HINT)   # no plugin-update hint, no re-run
                 self.assertEqual(len(authors), 1)
                 self.assertNotIn('plugin_update', authors[0]['global_config_changes'])
 
