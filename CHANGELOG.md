@@ -12,7 +12,7 @@ v3.2.0 试用期内的小版本，只修复只读回合被同机其他会话改�
 - 效率模式下，Claude 的 reviewer、shadow 或 gate 回合（只读，写不了 `~/.claude/settings.json`）期间，这个文件被别的进程改动（例如机主的交互式会话加了一条设置），且这是这一回合唯一的全局配置发现、回合也没有被作废时，以前整轮作废并 HOLD，`resume` 只能从头重跑。现在保留这一回合的结果，在回执的 `global_config_changes.concurrent_settings_change` 里记下改动前后的 sha256，打印一行 NOTE；下一回合照常重新取自己的基线。
 - 作者及其他写工作区的回合、probe、严格模式、Codex 回合、settings 改动同时还有别的发现、被作废的回合，仍按原样 HOLD。全局配置 HOLD 的消息前缀不变，末尾新增一句提示：改动可能来自本机其他进程（交互式会话或另一个 run）而不是这一回合，`resume` 会重跑这一回合（插件正常更新的情形仍用原来的提示）。
 
-**审查**：Opus 执行，Codex 审查。
+**审查**：Opus 执行，Codex 审查 APPROVE。有意改变的旧断言：`test_field21`、`test_field22` 里整句比对全局配置 HOLD 消息的两处，改为断言原前缀加新提示。CI 39806705823 全量通过（一个 macOS job 因 GitHub 上传日志超时重跑一次，测试本身两次都通过）；真实 run 8564d75d（默认完整路线）ACCEPTED。
 
 ### v3.2.4：reviewer 自己跑测试失败却 APPROVE 时，把失败送回作者修复
 
