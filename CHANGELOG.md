@@ -13,7 +13,7 @@ v3.2.0 试用期内的小版本，修复只读回合被同机其他会话改动�
 - 作者及其他写工作区的回合、probe、严格模式、Codex 回合、settings 改动同时还有别的发现、被作废的回合，仍按原样 HOLD。全局配置 HOLD 的消息前缀不变，末尾新增一句提示：改动可能来自本机其他进程（交互式会话或另一个 run）而不是这一回合，`resume` 会重跑这一回合（插件正常更新的情形仍用原来的提示）。
 - `note`/`reject --scope-change` 以前把两种原因合成一句拒绝（"scope chain limit or note arguments invalid"）。现在分成两条：这个 run 本身已是 scope-change 的后继时，说明不能再开后继，要 abort 后重新开 run；说明文字没给或 `--text`、`--file` 同时给了时，说明需要二者恰好给一个；只给了 `--note`（attach-verification 的参数）时，再提示改用 `--text`。`--note` 不会被当作说明文字。`--text`、`--file`、`--scope-change` 的帮助文字也写明说明文字来自 `--text` 或 `--file`，适用于 note 和 reject（含 `--scope-change`）。
 
-**审查**：Opus 执行，Codex 审查 APPROVE。有意改变的旧断言：`test_field21`、`test_field22` 里整句比对全局配置 HOLD 消息的两处，改为断言原前缀加新提示。CI 39806705823 全量通过（一个 macOS job 因 GitHub 上传日志超时重跑一次，测试本身两次都通过）；真实 run 8564d75d（默认完整路线）ACCEPTED。
+**审查**：两项修复都是 Opus 执行、Codex 审查 APPROVE。有意改变的旧断言：`test_field21`、`test_field22` 里整句比对全局配置 HOLD 消息的两处，改为断言原前缀加新提示。rc1：CI 39806705823 全量通过（一个 macOS job 因 GitHub 上传日志超时重跑一次，测试本身两次都通过），真实 run 8564d75d ACCEPTED；rc2（加上 scope-change 拒绝消息）：CI 39827454398 全量通过，真实 run dd643dcd（默认完整路线）ACCEPTED。
 
 ### v3.2.4：reviewer 自己跑测试失败却 APPROVE 时，把失败送回作者修复
 
