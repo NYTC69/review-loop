@@ -3966,7 +3966,11 @@ class Coordinator:
                         self.state.get('terminal_hold_kind') == 'rejection_limit')))
             if not allowed or self.state.get('active') or self.state.get('uncertain_active'):
                 raise ValueError('scope change requires an idle non-terminal run or pending acceptance')
-            if self.state.get('scope_chain_depth', 0) >= 1 or bool(text) == bool(file): raise ValueError('scope chain limit or note arguments invalid')
+            if self.state.get('scope_chain_depth', 0) >= 1:   # V325-NOTE: one refusal per cause
+                raise ValueError('this run is already a scope-change successor, so it cannot start another; abort and start a new run')
+            if bool(text) == bool(file):   # V325-NOTE: --note belongs to attach-verification, never an alias here
+                raise ValueError('the scope-change note needs exactly one of --text "<note>" or --file <path>'
+                                 + ('; --note is for attach-verification, so use --text' if getattr(self.args, 'note', None) is not None and not (text or file) else ''))
             note = Path(file).expanduser().read_bytes().decode('utf-8') if file else text or ''
             if not note.strip() or '```reviewer-commands' in note: raise ValueError('empty or command-bearing scope note')
             raw = json.loads(self.state_path.read_text())
@@ -9591,8 +9595,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--accept-unverified-claude-author', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--accept-probe-skip', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--reason', help='operator reason for acceptance, withdraw-findings or the unverified codex-cli version')
-    p.add_argument('--text', help='operator rejection note (reject action)')
-    p.add_argument('--file', help='read operator rejection note from this file (reject action)')
+    p.add_argument('--text', help='operator note text for note or reject, including --scope-change')   # V325-NOTE
+    p.add_argument('--file', help='read the operator note for note or reject, including --scope-change, from this file')   # V325-NOTE
     p.add_argument('--override-rejection', action='store_true', help=argparse.SUPPRESS)
     av = p.add_argument_group('attach-verification', 'operator evidence for the current tree (ACTIVE, HOLD or DONE before accept)')   # HELP-GROUP
     av.add_argument('--command', help='the command the operator ran outside the author sandbox')
@@ -9604,7 +9608,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--finding', action='append', help='withdraw-findings: open finding ID; repeat to withdraw several at DONE (acceptance pending), PLAN/EXEC round-limit HOLD or rejected-tree HOLD; requires --reason and intent/--expect')
     p.add_argument('--expect', help='operator intent digest required by accept/reject/withdraw-findings')
     p.add_argument('--intent-only', action='store_true', help='print an operator intent for confirmation')
-    p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command')
+    p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command; the note text comes from --text or --file')   # V325-NOTE
     p.add_argument('--quiet-progress', action='store_true', help='suppress the per-event progress lines (the final status line and RUN/progress.jsonl stay)')
     p.add_argument('--brief', nargs='?', type=int, const=20, default=None, metavar='N', help='status: print the last N (default 20) progress events instead of state.json')
     p.set_defaults(allowed_models=None)
