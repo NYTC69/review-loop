@@ -61,7 +61,9 @@ class ReviewOnlyCreationTextTests(unittest.TestCase):
     def test_an_ordinary_run_is_unchanged(self):
         use_lifecycle_on(self, self)
         co = self.coordinator()
-        self.write(PLUGIN, PLUGIN_TEXT)
+        # V326-DATA: bare vendor names in a data file (this plugin.json) are product data now, so the ordinary-run
+        # check uses the source file the review-only case above exempts
+        self.write('sum_ints.py', 'def sum_ints(values):\n    # works with Codex and Claude roles\n    return sum(values)\n')
         with self.assertRaisesRegex(RuntimeError, 'shadow independence check rejected history in context/delta.patch'):
             self.scan(co, 'shadow')
 

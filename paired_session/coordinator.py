@@ -5212,9 +5212,12 @@ class Coordinator:
                 blobs = [self._base_blob(base, rel) for rel in dict.fromkeys(paths) if rel] if old and not (
                     'GIT binary patch' in section or 'Binary files ' in section) else []
                 repository = '\n'.join([*(blob for blob in blobs if blob is not None), self._review_start_text(new)])
+                # V326-DATA: saved run data may name readers/providers; only bare names are exempt.
+                data_file = new and Path(new).suffix.lower() in ('.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.csv', '.tsv')
                 for line in section[len(header):].splitlines():
                     if line.startswith('+'):
-                        result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository))))
+                        result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository)
+                                           or (data_file and BARE_MODEL_NAME_RE.fullmatch(whole)))))
             return '\n'.join(result)
 
         # V303-A: apply the same bare-name exception to stat/status and workitem prose.

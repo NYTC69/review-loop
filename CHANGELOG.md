@@ -1,14 +1,15 @@
 # Changelog
 
-### v3.2.6：scope-change 不再把工作项约束中的 CLI 名称误判为审查历史
+### v3.2.6：scope-change 工作项约束中的 CLI 名称、数据文件中的裸模型名称不再误判为审查历史
 
-v3.2.0 试用期内的小版本，修复工作项约束提到 CLI 名称时，干净的 scope-change 说明仍被 fresh-role 输入扫描拒绝的问题。
+v3.2.0 试用期内的小版本，修复工作项约束提到 CLI 名称时干净的 scope-change 说明仍被拒绝，以及数据文件新增行中的裸厂商或模型名称被误判为审查历史的问题。
 
 **升级须知**
 - 没有改 run 启动时固定下来的任何值，在 v3.2.x 上开始的 run 换到这一版后可以继续。
 - 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
 
 **修复**
+- V326-DATA：补丁新增行的目标文件扩展名为 `.json`、`.jsonl`、`.ndjson`、`.yaml`、`.yml`、`.csv` 或 `.tsv` 时，审查历史扫描豁免整段匹配仅为裸厂商或模型名称的内容（例如 `"reader": "codex"`、`"provider": "claude"`）。作者 finding 与 shadow、gate 的两种 delta 补丁扫描共用这一规则；审查归因、含厂商名的目录路径、finding id、结论词及同一行的其他标记仍可见，源码和文档沿用原规则。
 - scope-change 试扫把合并后的工作项保存为 `workitem.md`，与后继 run 的 `context/workitem.md` 使用同一个扫描来源名。工作项约束中的裸 CLI 名称（例如「no `claude`/`codex` reader invocations」）因此沿用后继 run 的工作项豁免，不再因临时文件叫 `task.md` 而被误拒绝；scope 说明中的真实审查历史和 ledger id 仍按后继 run 的检查拒绝。scope 说明含 finding id 时，拒绝信息现在提示操作者改写说明、去掉 id 后重新运行 note --scope-change，而不再指向试扫的临时文件。
 
 **审查**：Codex 执行，Opus 审查 APPROVE（提出 scope 说明含 finding id 时提示会指向临时文件；Opus 修复这一条，Codex 复审 APPROVE）。CI 39900525190 全量通过；真实 run 31534eaf（rc1，默认完整路线）ACCEPTED，第二轮只改了这条拒绝提示，正常 run 不经过它。
