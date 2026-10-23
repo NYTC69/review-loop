@@ -1,5 +1,18 @@
 # Changelog
 
+### v3.2.6：scope-change 不再把工作项约束中的 CLI 名称误判为审查历史
+
+v3.2.0 试用期内的小版本，修复工作项约束提到 CLI 名称时，干净的 scope-change 说明仍被 fresh-role 输入扫描拒绝的问题。
+
+**升级须知**
+- 没有改 run 启动时固定下来的任何值，在 v3.2.x 上开始的 run 换到这一版后可以继续。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
+
+**修复**
+- scope-change 试扫把合并后的工作项保存为 `workitem.md`，与后继 run 的 `context/workitem.md` 使用同一个扫描来源名。工作项约束中的裸 CLI 名称（例如「no `claude`/`codex` reader invocations」）因此沿用后继 run 的工作项豁免，不再因临时文件叫 `task.md` 而被误拒绝；scope 说明中的真实审查历史和 ledger id 仍按后继 run 的检查拒绝。
+
+**审查**：Codex 执行，Opus 审查。
+
 ### v3.2.5：只读 Claude 回合期间 ~/.claude/settings.json 被别的进程改动时，效率模式保留这一回合；`note --scope-change` 的拒绝消息说清原因
 
 v3.2.0 试用期内的小版本，修复只读回合被同机其他会话改动全局设置拖进 HOLD 的问题，并让 scope-change 的拒绝消息说清原因和该用的参数。
