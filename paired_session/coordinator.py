@@ -3979,7 +3979,7 @@ class Coordinator:
             if target.exists():
                 raise ValueError('successor run dir already exists')
             with tempfile.TemporaryDirectory() as tmp:
-                trial = copy.copy(self); trial.workitem = Path(tmp) / 'task.md'; trial.workitem.write_text(task)
+                trial = copy.copy(self); trial.workitem = Path(tmp) / 'workitem.md'; trial.workitem.write_text(task)   # V326-SCOPE: match successor scan source
                 trial.context = Path(tmp); trial.evidence = Path(tmp); trial.run_dir = target
                 trial.author_temp_dir = target / 'author-tmp'; trial.state = {'sequence': 0, 'finding_ledger': []}
                 try: trial.assert_fresh_prompt('shadow', 'Clean prompt')
