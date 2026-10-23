@@ -3983,7 +3983,11 @@ class Coordinator:
                 trial.context = Path(tmp); trial.evidence = Path(tmp); trial.run_dir = target
                 trial.author_temp_dir = target / 'author-tmp'; trial.state = {'sequence': 0, 'finding_ledger': []}
                 try: trial.assert_fresh_prompt('shadow', 'Clean prompt')
-                except RuntimeError as exc: raise ValueError('fresh-role input scan: ' + str(exc)) from exc
+                except RuntimeError as exc:   # V326-SCOPE: the real-run recovery names the temp file
+                    ids = re.match(r'shadow independence check rejected ledger ids in context/workitem\.md: (.*?); ', str(exc))
+                    raise ValueError('fresh-role input scan: ' + (
+                        f'the scope note contains finding ids: {ids.group(1)}; describe the point in words in the scope note '
+                        '(no finding ids) and run note --scope-change again' if ids else str(exc))) from exc
             intent = {'text': note, 'sha256': hashlib.sha256(note.encode()).hexdigest(),
                       'task_sha256': hashlib.sha256(task.encode()).hexdigest(),
                       'action': self.args.action, 'source': str(Path(file).expanduser().resolve()) if file else 'cli',

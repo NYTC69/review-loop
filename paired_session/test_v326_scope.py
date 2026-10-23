@@ -59,6 +59,11 @@ class ScopeChangeWorkitemScanTests(unittest.TestCase):
                 self.assertEqual(self.state()['status'], 'ACTIVE')
                 self.assertNotIn('scope_change_intent', self.state())
                 self.assertFalse((self.h.run_dir / 'evidence' / 'successor-spec.json').exists())
+                if marker == 'F001':   # the hint names the scope note, not the trial's temp file
+                    self.assertIn('the scope note contains finding ids: F001', output)
+                    self.assertIn('run note --scope-change again', output)
+                    self.assertNotIn('Edit the work-item file', output)
+                    self.assertNotIn('/workitem.md', output)   # neither the temp path nor context/workitem.md
 
 
 if __name__ == '__main__':
