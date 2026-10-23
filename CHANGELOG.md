@@ -11,7 +11,7 @@ v3.2.0 试用期内的小版本，修复工作项约束提到 CLI 名称时，�
 **修复**
 - scope-change 试扫把合并后的工作项保存为 `workitem.md`，与后继 run 的 `context/workitem.md` 使用同一个扫描来源名。工作项约束中的裸 CLI 名称（例如「no `claude`/`codex` reader invocations」）因此沿用后继 run 的工作项豁免，不再因临时文件叫 `task.md` 而被误拒绝；scope 说明中的真实审查历史和 ledger id 仍按后继 run 的检查拒绝。scope 说明含 finding id 时，拒绝信息现在提示操作者改写说明、去掉 id 后重新运行 note --scope-change，而不再指向试扫的临时文件。
 
-**审查**：Codex 执行，Opus 审查。
+**审查**：Codex 执行，Opus 审查 APPROVE（提出 scope 说明含 finding id 时提示会指向临时文件；Opus 修复这一条，Codex 复审 APPROVE）。CI 39900525190 全量通过；真实 run 31534eaf（rc1，默认完整路线）ACCEPTED，第二轮只改了这条拒绝提示，正常 run 不经过它。
 
 ### v3.2.5：只读 Claude 回合期间 ~/.claude/settings.json 被别的进程改动时，效率模式保留这一回合；`note --scope-change` 的拒绝消息说清原因
 
