@@ -790,19 +790,23 @@ def classify_transient_failure(returncode: int, stderr: str, stdout: str = '') -
     return any(TRANSIENT_PROVIDER_RE.search(text) for text in texts)
 
 
-def failed_turn_did_work(vendor: str, stdout: str) -> bool:
-    """V327-RETRY: a failed turn's stream shows a tool call or command (Codex: any item other than reasoning or a message)."""
-    rows = []
-    for line in stdout.splitlines():
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return bool(observed_events(vendor, rows)[1]) or (vendor == 'codex' and any(
-        str(row.get('type', '')).startswith('item.') and isinstance(row.get('item'), dict)
-        and row['item'].get('type') not in ('reasoning', 'agent_message', 'error') for row in rows))
+def failed_turn_did_work(vendor: str, stdout_path: Path) -> bool:
+    """V327-RETRY: a failed turn's stream shows a tool call or command (Codex: any item other than reasoning or a message).
+    r2: the complete stream is read, not the error-message tail; a line that is not a JSON object counts as work, so a huge
+    or truncated tool result never reads as none."""
+    with stdout_path.open('rb') as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                return True
+            if not isinstance(row, dict) or observed_events(vendor, [row])[1] or (vendor == 'codex' and (
+                    str(row.get('type', '')).startswith('item.') and isinstance(row.get('item'), dict)
+                    and row['item'].get('type') not in ('reasoning', 'agent_message', 'error'))):
+                return True
+    return False
 
 
 def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
@@ -6526,7 +6530,7 @@ class Coordinator:
                     raise ValueError(message + f"; the Codex login in {env['CODEX_HOME']} is missing or stale: refresh that home's "
                                      'auth.json (copy a current login or log in there), then resume')
                 if process.returncode > 0 and classify_transient_failure(process.returncode, error_text, output_text):   # V327-RETRY
-                    retryable = voided is None and after == before and not failed_turn_did_work(receipt['vendor'], output_text)
+                    retryable = voided is None and after == before and not failed_turn_did_work(receipt['vendor'], stdout_path)
                     if retryable:   # the provider failed before any work: refunded like a rate limit, retried once by invoke()
                         self.state['invocations_used'] -= 1
                         receipt['invocation_budget_counted'] = False

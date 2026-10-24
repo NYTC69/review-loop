@@ -268,6 +268,11 @@ def main():
                        if vendor == 'codex' else
                        [{'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': 't0', 'name': 'Bash', 'input': {'command': 'ls'}}]}},
                         {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 't0', 'content': ''}]}}])
+        if pad := int(os.environ.get('FAKE_PROVIDER_FAIL_PAD', '0')):   # V327-RETRY r2: this many bytes of message text follow
+            events.append({'type': 'item.completed', 'item': {'id': 'item_1', 'type': 'agent_message', 'text': 'x' * pad}}
+                          if vendor == 'codex' else {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * pad}]}})
+        if name := os.environ.get('FAKE_PROVIDER_FAIL_WRITE'):   # V327-RETRY r2: the turn changed the workspace before failing
+            (Path.cwd() / name).write_text('partial\n')
         events += ([{'type': 'error', 'message': fail}, {'type': 'turn.failed', 'error': {'message': fail}}] if vendor == 'codex'
                    else [{'type': 'result', 'is_error': True, 'result': fail}])
         sys.stdout.buffer.write(''.join(json.dumps(event) + '\n' for event in events).encode())

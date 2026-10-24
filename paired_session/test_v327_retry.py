@@ -8,7 +8,9 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from paired_session import test_real_coordinator as trc
@@ -104,6 +106,25 @@ class TransientRetryTests(unittest.TestCase):
         self.assertNotIn('error_kind', failed)
         self.assert_budget(state)
 
+    def assert_held_after_work(self, **env):
+        code, out, state = self.drive(CAPACITY, **env)
+        self.assertEqual((code, state['status']), (2, 'HOLD'), out)
+        self.assertNotIn('NOTE: transient provider error', out)
+        self.assertEqual(state['hold_reason'], f'CLI exit 1: {CAPACITY}' + rc.TRANSIENT_HOLD_HINT)
+        [failed] = self.failed(state)
+        self.assertTrue(failed['invocation_budget_counted'])
+        self.assertNotIn('error_kind', failed)
+        self.assert_budget(state)
+        return failed
+
+    def test_a_tool_call_before_more_output_than_the_tail_still_holds(self):
+        # V327-RETRY r2: the tool event lies outside the 64 KiB tail read for the error message; the full stream is read
+        self.assert_held_after_work(FAKE_PROVIDER_FAIL_AFTER_TOOL='1', FAKE_PROVIDER_FAIL_PAD='70000')
+
+    def test_a_capacity_error_after_a_workspace_change_holds(self):
+        failed = self.assert_held_after_work(FAKE_PROVIDER_FAIL_WRITE='partial.txt')
+        self.assertNotEqual(failed['snapshot_after'], failed['snapshot_before'])   # no tool event: only the tree change counts
+
 
 class TransientClassifierTests(unittest.TestCase):
     def test_only_the_explicit_capacity_and_overload_texts_are_transient(self):
@@ -122,6 +143,17 @@ class TransientClassifierTests(unittest.TestCase):
                 self.assertFalse(rc.classify_transient_failure(1, stderr, stdout))
         self.assertFalse(rc.classify_transient_failure(0, CAPACITY, ''))
         self.assertFalse(rc.classify_transient_failure(-9, CAPACITY, ''))
+
+    def test_work_is_read_from_the_whole_stream_and_a_broken_line_counts(self):
+        failed = json.dumps({'type': 'turn.failed', 'error': {'message': CAPACITY}}) + '\n'
+        message = json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'thinking'}}) + '\n'
+        with tempfile.TemporaryDirectory() as root:
+            stdout = Path(root) / 'stdout.jsonl'
+            for text, worked in ((message + failed + '\n', False), ('{"type": "item.completed", "item": {"ty\n' + failed, True),
+                                 ('not json\n' + failed, True)):
+                with self.subTest(text=text[:40]):
+                    stdout.write_text(text)
+                    self.assertIs(rc.failed_turn_did_work('codex', stdout), worked)
 
 
 if __name__ == '__main__':
