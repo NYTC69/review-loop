@@ -257,6 +257,21 @@ def main():
             return 1
         print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
+    fail = os.environ.get('FAKE_PROVIDER_FAIL')   # V327-RETRY: a failing CLI with this error text; _MATCH and _ONCE as above
+    fail_match, fail_once = os.environ.get('FAKE_PROVIDER_FAIL_MATCH'), os.environ.get('FAKE_PROVIDER_FAIL_ONCE')
+    if fail and (not fail_match or fail_match in prompt) and not (fail_once and Path(fail_once).exists()):
+        if fail_once: Path(fail_once).write_text('failed\n')
+        events = []
+        if os.environ.get('FAKE_PROVIDER_FAIL_AFTER_TOOL'):   # a command ran before the provider failed
+            events += ([{'type': 'item.completed', 'item': {'id': 'item_0', 'type': 'command_execution', 'command': 'ls',
+                                                             'exit_code': 0, 'aggregated_output': '', 'status': 'completed'}}]
+                       if vendor == 'codex' else
+                       [{'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': 't0', 'name': 'Bash', 'input': {'command': 'ls'}}]}},
+                        {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 't0', 'content': ''}]}}])
+        events += ([{'type': 'error', 'message': fail}, {'type': 'turn.failed', 'error': {'message': fail}}] if vendor == 'codex'
+                   else [{'type': 'result', 'is_error': True, 'result': fail}])
+        sys.stdout.buffer.write(''.join(json.dumps(event) + '\n' for event in events).encode())
+        return 1
     session = 'fake-codex-thread'
     if vendor == 'codex' and os.environ.get('FAKE_UNIQUE_CODEX_THREAD') and 'resume' not in args:
         session = str(uuid.uuid4())

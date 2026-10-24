@@ -21,6 +21,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
     - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Workaround: the default efficient mode does not require the explicit permission-probe.
     - When the base moved under a parked run, have the author re-run the configured command and refresh the recorded verification before the gate.
     - Warn at `note` time when the operator text contains a phrase the independence check rejects later (the author may quote the note into the change); and at the last EXEC round, give the author one reword turn instead of the gate HOLD (gg-pipeline WI-263m, 2026-10-21; v3.2.3 only adds the path:line places to the HOLD).
+    - A run/resume pre-flight check that each vendor CLI is logged in under the run's CODEX_HOME / Claude config, refusing early with a refresh hint instead of a mid-run HOLD (gg-pipeline WI-282a, 2026-10-24; deferred).
 
 ## Done (recent, trimmed quarterly)
 

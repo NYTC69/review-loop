@@ -47,6 +47,10 @@ reviewer approves.
 Explicit subscription/rate-limit rejections are held with any reported reset
 hint and do not consume the invocation budget; their failed attempts remain in
 the turn receipt.
+A turn that fails at once with a transient provider error ("Selected model is
+at capacity", Anthropic's overloaded error) before any tool call is retried
+once after 60 seconds without consuming the budget; a second such failure holds
+and `resume` retries the turn.
 
 ## MINOR-only review revisions
 

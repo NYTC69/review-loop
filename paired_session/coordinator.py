@@ -297,6 +297,20 @@ class RateLimitError(ValueError):
     pass
 
 
+class TransientProviderError(ValueError):
+    """V327-RETRY: a provider capacity/overload failure; `retryable` when the turn did no work, so invoke() re-dispatches it once."""
+    def __init__(self, message: str, detail: str, retryable: bool):
+        super().__init__(message)
+        self.detail, self.retryable = detail, retryable
+
+
+TRANSIENT_RETRY_SECONDS = 60   # V327-RETRY: the backoff before the one re-dispatch (tests patch it to 0)
+TRANSIENT_HOLD_HINT = '; a transient provider error: resume retries the turn'   # V327-RETRY
+TRANSIENT_PROVIDER_RE = re.compile(r'(?i)\bselected model is at capacity\b|\boverloaded_error\b|\b529\b.{0,80}?\boverloaded\b|'
+                                   r'^\s*overloaded\.?\s*$')   # V327-RETRY: Codex capacity; Anthropic overloaded_error / HTTP 529
+CODEX_UNAUTHORIZED_RE = re.compile(r'(?i)\bunauthorized \(401\)')   # V327-RETRY: a stale or missing login in the turn's CODEX_HOME
+
+
 class WriterGitGuard(RuntimeError):
     """A lifecycle writer changed HEAD, refs or the index (D8): the run HOLDs; a writer leg never treats it as a failed attempt."""
 
@@ -751,6 +765,44 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
 
 
 ANSI_CSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+
+def classify_transient_failure(returncode: int, stderr: str, stdout: str = '') -> bool:
+    """V327-RETRY: only the provider's explicit capacity or overload answer, in stderr or an error event on stdout. A 401, a login
+    error or any other CLI failure is not transient; a rate limit keeps its own typed path (checked first)."""
+    if returncode <= 0:
+        return False
+    texts = ANSI_CSI_RE.sub('', stderr).splitlines()
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or not (event.get('type') in ('error', 'turn.failed') or event.get('is_error') is True
+                                               or event.get('is_api_error_message') is True):
+            continue
+        error, message = event.get('error'), event.get('message')
+        parts = [message, event.get('result'), *([error.get('message'), error.get('type'), error.get('code')]
+                                                 if isinstance(error, dict) else [error])]
+        if isinstance(message, dict):   # Claude's synthetic assistant message that carries the API error text
+            parts += [block.get('text') for block in message.get('content') or [] if isinstance(block, dict)]
+        texts += [part for part in parts if isinstance(part, str)]
+    return any(TRANSIENT_PROVIDER_RE.search(text) for text in texts)
+
+
+def failed_turn_did_work(vendor: str, stdout: str) -> bool:
+    """V327-RETRY: a failed turn's stream shows a tool call or command (Codex: any item other than reasoning or a message)."""
+    rows = []
+    for line in stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return bool(observed_events(vendor, rows)[1]) or (vendor == 'codex' and any(
+        str(row.get('type', '')).startswith('item.') and isinstance(row.get('item'), dict)
+        and row['item'].get('type') not in ('reasoning', 'agent_message', 'error') for row in rows))
 
 
 def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
@@ -3715,7 +3767,7 @@ class Coordinator:
         except BaseException:
             last = (self.state['turns'] or [{}])[-1]
             if last.get('sequence') == self.state.get('sequence'):
-                outcome = 'timeout' if last.get('timed_out') else 'rate-limited' if last.get('error_kind') else 'error'
+                outcome = 'timeout' if last.get('timed_out') else 'rate-limited' if last.get('error_kind') == 'rate_limited' else 'error'   # V327-RETRY
             if self.state.get('active'): outcome = 'uncertain'
             raise
         finally:
@@ -6077,6 +6129,7 @@ class Coordinator:
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
+        transient_retried = False                                        # V327-RETRY: one transient-provider retry per invoke
         for attempt in range(2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
@@ -6095,6 +6148,13 @@ class Coordinator:
                                 self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
                                 self._drop_scratch(scratch)
                             except RuntimeError: pass
+                        transient = exc.__cause__ if isinstance(exc, RuntimeError) else None
+                        if isinstance(transient, TransientProviderError) and transient.retryable and not transient_retried:
+                            transient_retried = True   # V327-RETRY: the failed attempt is refunded; its receipt stays
+                            print(f'NOTE: transient provider error ({transient.detail}); retrying the {role} turn once in '
+                                  f'{TRANSIENT_RETRY_SECONDS:g} s')
+                            time.sleep(TRANSIENT_RETRY_SECONDS)
+                            continue
                         if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
                                 and exc.__cause__.restored): raise
                         if redispatched: raise RuntimeError(f'{role} mutated workspace again after one re-dispatch; both changes were '
@@ -6461,7 +6521,18 @@ class Coordinator:
                 failure_prefix = f'CLI exit {process.returncode}'
                 if receipt.get('timed_out'):
                     raise ValueError(failure_prefix + f' (timed out after {timeout_seconds:g} s)')
-                raise ValueError(cli_failure_reason(failure_prefix, output_text, error_text))
+                message = cli_failure_reason(failure_prefix, output_text, error_text)
+                if receipt['vendor'] == 'codex' and CODEX_UNAUTHORIZED_RE.search(message + '\n' + error_text):   # V327-RETRY: no retry
+                    raise ValueError(message + f"; the Codex login in {env['CODEX_HOME']} is missing or stale: refresh that home's "
+                                     'auth.json (copy a current login or log in there), then resume')
+                if process.returncode > 0 and classify_transient_failure(process.returncode, error_text, output_text):   # V327-RETRY
+                    retryable = voided is None and after == before and not failed_turn_did_work(receipt['vendor'], output_text)
+                    if retryable:   # the provider failed before any work: refunded like a rate limit, retried once by invoke()
+                        self.state['invocations_used'] -= 1
+                        receipt['invocation_budget_counted'] = False
+                        receipt['error_kind'] = 'transient'
+                    raise TransientProviderError(message + TRANSIENT_HOLD_HINT, message.partition(': ')[2], retryable)
+                raise ValueError(message)
             answer, session, usage, requests, observed_commands, tool_calls = self._collect(receipt['vendor'], stdout_path, stderr_path)
             reported_model, model_source = reported_provider_model(receipt['vendor'], stdout_path)
             receipt['reported_model'] = reported_model
@@ -6810,8 +6881,9 @@ class Coordinator:
 
     def _stage_calls(self, phase: str) -> int:
         """DOCS/SECURITY calls against the stage cap: every row of the phase except a provider rate-limit rejection, which is
-        refunded like the invocation budget (ratelimit), so a limited call never uses up the stage."""
-        return sum(row.get('phase') == phase and row.get('error_kind') != 'rate_limited'
+        refunded like the invocation budget (ratelimit), so a limited call never uses up the stage; a refunded transient provider
+        failure likewise (V327-RETRY)."""
+        return sum(row.get('phase') == phase and row.get('error_kind') not in ('rate_limited', 'transient')
                    for row in [*self.state['turns'], *self.state.get('spawn_failures', [])])
 
     def _docs_budget(self) -> None:
