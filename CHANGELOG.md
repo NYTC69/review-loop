@@ -1,5 +1,20 @@
 # Changelog
 
+### v3.2.7：回合一开始就遇到 provider 容量不足或过载时自动重试一次；Codex 401 的 HOLD 指出要刷新哪个 CODEX_HOME 的登录
+
+v3.2.0 试用期内的小版本，修复角色回合因 provider 暂时容量不足而立刻失败、整个 run 进入 HOLD（`resume` 即可继续）的问题，并让 Codex 登录失效引起的 HOLD 说清怎么修。
+
+**升级须知**
+- 没有改 run 启动时固定下来的任何值，在 v3.2.x 上开始的 run 换到这一版后可以继续。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
+
+**修复**
+- V327-RETRY：角色回合的 CLI 以非零码退出，stderr 或 stdout 的错误事件里明确写着 provider 暂时不可用（Codex 的 "Selected model is at capacity"，Anthropic 的 `overloaded_error` / "Overloaded" / HTTP 529），且失败的回合输出里没有任何工具调用或命令执行、工作区也没有变化时，coordinator 打印一行 NOTE（"transient provider error (...); retrying the <role> turn once in 60 s"），等 60 秒后把同一回合重新派发一次，任何角色都适用。失败的那次不占调用预算，也不占 DOCS/SECURITY 的阶段预算（与限流相同），回执记 `error_kind: transient`。
+- 重试仍以同样方式失败，或失败前已有工具调用时，照旧 HOLD；HOLD 原因保留 "CLI exit N: ..." 前缀，末尾加一句 "; a transient provider error: resume retries the turn"。只有上述明确文字算暂时性错误；401、登录错误和其他 CLI 错误照旧 HOLD 不重试，限流仍走原来的类型化路径。
+- Codex 回合以 "unauthorized (401)"（例如 "workspace routing discovery unauthorized (401)"）失败时不重试，HOLD 原因在原前缀后加上这一回合所用 CODEX_HOME 的登录提示：该目录的 auth.json 缺失或过期，刷新后（复制一份当前登录或在那里登录）再 `resume`。
+
+**审查**：Opus 执行，Codex 审查。
+
 ### v3.2.6：scope-change 工作项约束中的 CLI 名称、数据文件中的裸模型名称不再误判为审查历史
 
 v3.2.0 试用期内的小版本，修复工作项约束提到 CLI 名称时干净的 scope-change 说明仍被拒绝，以及数据文件新增行中的裸厂商或模型名称被误判为审查历史的问题。
