@@ -13,7 +13,7 @@ v3.2.0 试用期内的小版本，修复角色回合因 provider 暂时容量不
 - 重试仍以同样方式失败，或失败前已有工具调用时，照旧 HOLD；HOLD 原因保留 "CLI exit N: ..." 前缀，末尾加一句 "; a transient provider error: resume retries the turn"。只有上述明确文字算暂时性错误；401、登录错误和其他 CLI 错误照旧 HOLD 不重试，限流仍走原来的类型化路径。
 - Codex 回合以 "unauthorized (401)"（例如 "workspace routing discovery unauthorized (401)"）失败时不重试，HOLD 原因在原前缀后加上这一回合所用 CODEX_HOME 的登录提示：该目录的 auth.json 缺失或过期，刷新后（复制一份当前登录或在那里登录）再 `resume`。
 
-**审查**：Opus 执行，Codex 审查。
+**审查**：Opus 执行，Codex 审查 REVISE（判断"未开始工作"只看了输出末尾 64 KiB，前面调过工具、后面输出很长时会被误判并重试；第二轮改为读取完整输出，Codex 复审 APPROVE）。CI 40074378416 全量通过（一个 macOS job 因 GitHub 上传日志超时重跑一次，测试本身两次都通过）；真实 run bb297289（rc1，默认完整路线）ACCEPTED，第二轮只改了重试判定，正常 run 不经过它。
 
 ### v3.2.6：scope-change 工作项约束中的 CLI 名称、数据文件中的裸模型名称不再误判为审查历史
 
