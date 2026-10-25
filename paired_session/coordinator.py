@@ -5228,7 +5228,10 @@ class Coordinator:
             kept = [whole.lower() for whole, exempt in wholes.items() if not exempt]
             for whole, exempt in wholes.items():
                 if exempt and not any(whole.lower() in other for other in kept):
-                    text = repo_word(whole).sub('<repo-text>', text)
+                    # V328-MASK: mask every occurrence the bare-name scan can find, including hyphen compounds.
+                    pattern = (re.compile(r'\b' + re.escape(whole) + r'\b', re.I)
+                               if BARE_MODEL_NAME_RE.fullmatch(whole) else repo_word(whole))
+                    text = pattern.sub('<repo-text>', text)
             return text
 
         if name.endswith('.patch'):
