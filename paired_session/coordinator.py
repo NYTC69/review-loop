@@ -4361,12 +4361,13 @@ class Coordinator:
             # Use the same attributes/autocrlf as git add, but never run configured filter drivers.
             # Acceptance and replay still bind raw working bytes: read-tree below only updates the index,
             # leaving the reviewed CRLF checkout untouched. Modes come from the accepted snapshot.
-            oids = {path: candidate_tree.run_bounded(
+            # One git process for the whole manifest (W5 r2 review note 1): --stdin-paths without --no-filters reads each
+            # file from the worktree and applies its path's text/eol cleaning, as `git add` does.
+            oids = dict(zip(regular, candidate_tree.run_bounded(
                 ['git', *candidate_tree.GIT_NO_EXEC, *candidate_tree._filter_overrides(self.workspace),
-                 'hash-object', '-w', '--path=' + path, '--stdin'], cwd=self.workspace,
-                input=(self.workspace / path).read_bytes(), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, check=True, timeout=600).stdout.decode('ascii').strip()
-                for path in regular}
+                 'hash-object', '-w', '--stdin-paths'], cwd=self.workspace,
+                input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', check=True, timeout=600).stdout.split()))
         else:
             oids = dict(zip(regular, candidate_tree.run_bounded(
                 candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
