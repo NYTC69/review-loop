@@ -4,3 +4,4 @@ test_winjob
 test_wincli
 test_winroles
 test_winscratch
+test_winevidence

@@ -249,6 +249,168 @@ def claude_rule_path(path) -> str:
     return windows.as_posix().lstrip('/')   # a UNC path: //server/share/... -> server/share/...
 
 
+_POWERSHELL = ('powershell', 'powershell.exe', 'pwsh', 'pwsh.exe')
+_GIT_BASH = ('bash', 'bash.exe', 'sh', 'sh.exe')
+_PS_SWITCHES = ('-noprofile', '-nologo', '-noninteractive')
+_PS_ESCAPES = {'n': '\n', 't': '\t', 'r': '\r', '0': '\0'}
+
+
+def windows_split(text) -> list:
+    """W4c: split a Windows command line as CommandLineToArgvW does: whitespace separates words outside double quotes,
+    backslashes are literal except before a double quote (2n backslashes + quote: n backslashes and the quote toggles; 2n+1:
+    n backslashes and a literal quote), and "" inside quotes is a literal quote."""
+    if not isinstance(text, str):
+        return []
+    words, word, quoted, started, i = [], [], False, False, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\':
+            end = i
+            while end < len(text) and text[end] == '\\':
+                end += 1
+            count = end - i
+            if end < len(text) and text[end] == '"':
+                word.append('\\' * (count // 2))
+                if count % 2:
+                    word.append('"')
+                    end += 1
+            else:
+                word.append('\\' * count)
+            i, started = end, True
+        elif ch == '"':
+            if quoted and text[i + 1:i + 2] == '"':
+                word.append('"')
+                i += 2
+            else:
+                quoted, started, i = not quoted, True, i + 1
+        elif ch in ' \t' and not quoted:
+            if started:
+                words.append(''.join(word))
+                word, started = [], False
+            i += 1
+        else:
+            word.append(ch)
+            started, i = True, i + 1
+    if started:
+        words.append(''.join(word))
+    return words
+
+
+def powershell_words(text) -> Optional[list]:
+    """W4c: the words of a plain PowerShell command line: whitespace-separated; '...' literal ('' is a quote); "..." with
+    backtick escapes and "" as a quote; a backtick outside quotes escapes the next character; a leading lone `&` (the call
+    operator) is a word of its own. None for anything else: an unclosed quote, a $ in double quotes or a bare word
+    (expansion), or an operator or newline outside quotes. Only a nested Git Bash call is read from these words."""
+    if not isinstance(text, str):
+        return None
+    words, word, quote, started, i = [], [], None, False, 0
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'" and text[i + 1:i + 2] == "'":
+                word.append("'")
+                i += 1
+            elif ch == "'":
+                quote = None
+            else:
+                word.append(ch)
+        elif quote == '"':
+            if ch == '`':
+                if i + 1 >= len(text):
+                    return None
+                word.append(_PS_ESCAPES.get(text[i + 1], text[i + 1]))
+                i += 1
+            elif ch == '"' and text[i + 1:i + 2] == '"':
+                word.append('"')
+                i += 1
+            elif ch == '"':
+                quote = None
+            elif ch == '$':
+                return None
+            else:
+                word.append(ch)
+        elif ch in ' \t':
+            if started:
+                words.append(''.join(word))
+                word, started = [], False
+        elif ch in '\'"':
+            quote, started = ch, True
+        elif ch == '`':
+            if i + 1 >= len(text):
+                return None
+            word.append(text[i + 1])
+            started, i = True, i + 1
+        elif ch == '&' and not words and not started and text[i + 1:i + 2] in (' ', '\t'):
+            words.append('&')
+        elif ch in '$;|&(){}<>,\r\n':
+            return None
+        else:
+            word.append(ch)
+            started = True
+        i += 1
+    if quote:
+        return None
+    if started:
+        words.append(''.join(word))
+    return words
+
+
+def _program_name(word: str) -> str:
+    return re.split(r'[\\/]', word)[-1].lower()
+
+
+def _git_bash_inner(argv: list) -> Optional[str]:
+    if len(argv) == 3 and _program_name(argv[0]) in _GIT_BASH and argv[1] in ('-c', '-lc'):
+        return argv[2]
+    return None
+
+
+def windows_wrapped_command(argv) -> Optional[str]:
+    """W4c: the command inside a wrapper Codex uses on Windows; None when argv is none of these (the caller keeps the raw
+    command, so an unrecognized wrapper is never read as the configured test).
+    - Git Bash: `<any path>\\bash[.exe]|sh[.exe] -c|-lc <cmd>`.
+    - PowerShell: `<any path>\\powershell[.exe]|pwsh[.exe]`, then any of -NoProfile, -NoLogo, -NonInteractive and
+      -ExecutionPolicy <value> (case-insensitive), then -Command|-c and exactly one more element: the command. When that
+      command is itself a Git Bash call (`bash -lc '<cmd>'`, `& 'C:\\...\\bash.exe' -c "<cmd>"`, PowerShell quoting), its
+      inner command. -EncodedCommand, -File, cmd.exe and anything else stay unrecognized."""
+    if not isinstance(argv, list) or not argv or not all(isinstance(word, str) for word in argv):
+        return None
+    inner = _git_bash_inner(argv)
+    if inner is not None or _program_name(argv[0]) not in _POWERSHELL:
+        return inner
+    rest = argv[1:]
+    while rest and (rest[0].lower() in _PS_SWITCHES or (rest[0].lower() == '-executionpolicy' and len(rest) > 1)):
+        rest = rest[2:] if rest[0].lower() == '-executionpolicy' else rest[1:]
+    if len(rest) != 2 or rest[0].lower() not in ('-command', '-c'):
+        return None
+    words = powershell_words(rest[1]) or []
+    nested = _git_bash_inner(words[1:] if words[:1] == ['&'] else words)
+    return rest[1] if nested is None else nested
+
+
+def windows_abs_path(value) -> Optional[str]:
+    """W4c: an absolute Windows path from provider evidence (a Codex cwd): C:\\x, C:/x, /c/x (the Git Bash form),
+    file:///C:/x or file://localhost/C:/x, or a UNC path; normalized with ntpath.normpath and normcase, so the drive and
+    path compare case-insensitively. None for anything else (relative, drive-relative C:x, other URI schemes or hosts)."""
+    import ntpath
+    from urllib.parse import unquote, urlparse
+    if not isinstance(value, str) or not value:
+        return None
+    text = value
+    if text[:5].lower() == 'file:':
+        url = urlparse(text)
+        if url.netloc.lower() not in ('', 'localhost'):
+            return None
+        text = unquote(url.path)
+        if re.match(r'/[A-Za-z]:', text):
+            text = text[1:]
+    elif git_bash := re.fullmatch(r'/([A-Za-z])(?:/(.*))?', text, re.S):
+        text = git_bash.group(1) + ':/' + (git_bash.group(2) or '')
+    if not ntpath.splitdrive(text)[0] or not ntpath.isabs(text):
+        return None
+    return ntpath.normcase(ntpath.normpath(text))
+
+
 def read_regular_file_nofollow(path) -> bytes:
     """Read a regular file without following a link; ValueError when it cannot be opened that way, is not a regular file or
     changed while reading. POSIX: an O_NOFOLLOW open checked with fstat. Windows (no O_NOFOLLOW): lstat refuses a symlink,

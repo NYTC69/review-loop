@@ -1923,6 +1923,28 @@ def unwrap_json(value: str) -> dict:
     return result
 
 
+def shell_wrapped(argv: list) -> Optional[str]:
+    """The command inside a `sh|bash|zsh -c|-lc <cmd>` wrapper argv; None when argv is no such wrapper. WI-WIN W4c: on Windows
+    first the PowerShell and Git Bash wrappers Codex uses there (winplat.windows_wrapped_command)."""
+    if winplat.IS_WINDOWS and (inner := winplat.windows_wrapped_command(argv)) is not None:
+        return inner
+    if len(argv) == 3 and argv[0].endswith(('sh', 'bash', 'zsh')) and argv[1] in ('-c', '-lc'):
+        return argv[2]
+    return None
+
+
+def unwrap_command(raw_command: str) -> str:
+    """A Codex command event's command without its shell wrapper; the raw command when it has none or cannot be split.
+    W4c: on Windows a line POSIX quoting does not split into a known wrapper is split as a Windows command line too."""
+    try:
+        inner = shell_wrapped(shlex.split(raw_command))
+    except ValueError:
+        inner = None
+    if inner is None and winplat.IS_WINDOWS:
+        inner = winplat.windows_wrapped_command(winplat.windows_split(raw_command))
+    return raw_command if inner is None else inner
+
+
 def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """Return actual commands and all observed tool calls from a CLI event stream."""
     commands, calls = [], []
@@ -1939,13 +1961,7 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
             if item.get('type') == 'command_execution':
                 raw_command = item.get('command', '')
                 exit_code = item.get('exit_code')
-                command = raw_command
-                try:
-                    outer = shlex.split(raw_command)
-                    if len(outer) == 3 and outer[0].endswith(('sh', 'bash', 'zsh')) and outer[1] in ('-c', '-lc'):
-                        command = outer[2]
-                except ValueError:
-                    pass
+                command = unwrap_command(raw_command)
                 workdir = next((item[k] for k in ('workdir', 'cwd') if isinstance(item.get(k), str)), None)   # v297-eg-wire: kept, not dropped
                 call = {'tool': 'command_execution', 'input': {'command': command, **({'workdir': workdir} if workdir else {})},
                         'error': type(exit_code) is int and exit_code != 0}
@@ -1958,13 +1974,7 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
                               'error': item.get('status') != 'completed'})
         for item in started.values():
             raw_command = item.get('command', '')
-            command = raw_command
-            try:
-                outer = shlex.split(raw_command)
-                if len(outer) == 3 and outer[0].endswith(('sh', 'bash', 'zsh')) and outer[1] in ('-c', '-lc'):
-                    command = outer[2]
-            except ValueError:
-                pass
+            command = unwrap_command(raw_command)
             calls.append({'tool': 'command_execution', 'input': {'command': command}, 'error': None})
             commands.append({'command': command, 'raw_command': raw_command, 'exit_code': None, 'error': False,
                              'output': item.get('aggregated_output', ''), 'source': 'command_execution',
@@ -2324,6 +2334,8 @@ def codex_rollout_cwds(session: Optional[str], start: float, end: float, writabl
     None when the rollout cannot be read, when the window holds no or several turns, or when a role could write the sessions dir."""
     from urllib.parse import unquote, urlparse
     def path_of(value) -> Optional[str]:
+        if winplat.IS_WINDOWS:   # W4c: C:\x, C:/x, /c/x (Git Bash) and file:///C:/x, case-insensitive
+            return winplat.windows_abs_path(value)
         url = urlparse(value) if isinstance(value, str) else None
         path = unquote(url.path) if url and url.scheme == 'file' and url.netloc in ('', 'localhost') else value if url and not url.scheme else None
         return path if isinstance(path, str) and os.path.isabs(path) else None
@@ -2366,7 +2378,7 @@ def codex_guard_calls(calls: list[dict], proof: Optional[dict]) -> tuple[list[di
     records: dict = {}
     for argv, cwd in proof['commands']:
         if isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv):   # unwrapped as observed_events does
-            text = argv[2] if len(argv) == 3 and argv[0].endswith(('sh', 'bash', 'zsh')) and argv[1] in ('-c', '-lc') else shlex.join(argv)
+            text = shlex.join(argv) if (inner := shell_wrapped(argv)) is None else inner
             records.setdefault(text, []).append(cwd)
     events = [c['input'].get('command') for c in calls if c.get('tool') == 'command_execution' and isinstance(c.get('input'), dict)]
     changes = [c['input'].get('changes') if isinstance(c.get('input'), dict) else None for c in calls if c.get('tool') == 'file_change']
