@@ -89,10 +89,10 @@ class WindowsPipeTests(unittest.TestCase):
                     if line.startswith('`python -X utf8 -c '))
         snippet = line.split('-c "', 1)[1].rsplit('"`', 1)[0]
         with tempfile.TemporaryDirectory() as tmp:
-            profile = Path(tmp) / '张三'
+            profile = Path(os.path.realpath(tmp)) / '张三'   # the snippet realpaths gettempdir (8.3 names expand)
             profile.mkdir()
             env = clean_env()
-            env.update(TEMP=str(profile), TMP=str(profile))
+            env.update(TMPDIR=str(profile), TEMP=str(profile), TMP=str(profile))
             output, _ = self.run_pipe(['-X', 'utf8', '-c', snippet], env)
             self.assertIn('张三', output)
             self.assertTrue(output.strip().startswith(profile.as_posix() + '/review-loop-protocol-'))
