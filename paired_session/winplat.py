@@ -36,6 +36,44 @@ def _reparse_or_link(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_file_attributes', 0) & _REPARSE)
 
 
+def real_dir(info: os.stat_result) -> bool:
+    """A no-follow stat of a real directory: not a symlink, junction or other reparse point."""
+    return stat.S_ISDIR(info.st_mode) and not _reparse_or_link(info)
+
+
+def _retry_busy(call, path) -> None:
+    """W4b, Windows: unlink/rmdir right after a process tree ended may meet a handle still closing (a sharing violation, or a
+    directory whose entries are still delete-pending); retry a few times before raising."""
+    import errno
+    for attempt in range(10):
+        try:
+            call(path)
+            return
+        except OSError as exc:
+            if attempt == 9 or not (isinstance(exc, PermissionError) or exc.errno == errno.ENOTEMPTY):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def remove_tree(path) -> None:
+    """W4b, Windows only (the POSIX scratch cleanup is coordinator.remove_tree_nofollow): remove `path` with ordinary path
+    calls, never descending a link. Each entry is lstat'ed: a symlink, junction or other reparse point is removed as itself
+    (rmdir when it carries the directory attribute, unlink otherwise) and never entered; a read-only file or directory has
+    its read-only attribute cleared (os.chmod S_IWRITE) before it is removed."""
+    info = os.lstat(path)
+    attributes = getattr(info, 'st_file_attributes', 0)
+    if not _reparse_or_link(info) and attributes & getattr(stat, 'FILE_ATTRIBUTE_READONLY', 0x1):
+        os.chmod(path, stat.S_IWRITE)
+    if real_dir(info):
+        for name in os.listdir(path):
+            remove_tree(os.path.join(path, name))
+        _retry_busy(os.rmdir, path)
+    elif stat.S_ISDIR(info.st_mode) or attributes & getattr(stat, 'FILE_ATTRIBUTE_DIRECTORY', 0x10):
+        _retry_busy(os.rmdir, path)   # a junction or directory symlink: RemoveDirectoryW drops the link, not its target
+    else:
+        _retry_busy(os.unlink, path)
+
+
 def _under_user_roots(path: Path) -> bool:
     target = Path(path).resolve()
     for root in (Path.home(), Path(tempfile.gettempdir())):
@@ -177,6 +215,14 @@ def holder_text(path, limit: int) -> str:
     with open(path, 'rb') as stream:
         stream.seek(1)
         return stream.read(limit).decode('utf-8', 'replace')
+
+
+def temp_env(path) -> dict:
+    """W4b: the temp-dir variables for a role whose temp root is `path`: TMPDIR on POSIX (as before); on Windows TMP and
+    TEMP too, which Windows tools read."""
+    if not IS_WINDOWS:
+        return {'TMPDIR': str(path)}
+    return {key: str(path) for key in ('TMPDIR', 'TMP', 'TEMP')}
 
 
 def temp_root() -> Path:

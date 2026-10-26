@@ -1058,7 +1058,10 @@ def codex_readonly_profile_args() -> list[str]:
 def scratch_listing(root: Path) -> tuple[list, list]:
     """Names under a scratch root (links not followed, at most 200) and the regular files there with more than one link."""
     names, linked = [], []
-    if stat.S_IMODE(os.lstat(root).st_mode) != 0o700:   # R1 LOW-2: a role that chmods its own scratch could fake an EACCES "denial"
+    if winplat.IS_WINDOWS:   # WI-WIN W4b: NTFS has no mode bits; the root must still be a real directory (no link, no reparse point)
+        if not winplat.real_dir(os.lstat(root)):
+            raise ValueError('the scratch temp root changed during the turn (not a real directory): ' + str(root))
+    elif stat.S_IMODE(os.lstat(root).st_mode) != 0o700:   # R1 LOW-2: a role that chmods its own scratch could fake an EACCES "denial"
         raise ValueError('the scratch temp root mode changed during the turn: ' + str(root))
     def unreadable(error):   # R1 l1: a directory the role made unreadable could hide a link; fail the turn instead
         raise ValueError('unreadable entry in the scratch temp root: ' + str(error.filename))
@@ -1070,6 +1073,8 @@ def scratch_listing(root: Path) -> tuple[list, list]:
             except OSError as exc: raise ValueError('uninspectable entry in the scratch temp root: ' + str(path)) from exc   # R2 LOW-1
             if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
                 linked.append(names[-1])
+        if winplat.IS_WINDOWS:   # WI-WIN W4b: os.walk enters a junction (islink is False for it); never descend a reparse point
+            dirs[:] = [name for name in dirs if winplat.real_dir(os.lstat(Path(parent) / name))]
     return sorted(names)[:200], linked
 
 
@@ -1186,7 +1191,8 @@ def run_dir_inodes(run_dir: Path, skip: set, own: Path) -> dict:
                 continue
             info = path.lstat()
             if stat.S_ISREG(info.st_mode):
-                found[str(path)] = (info.st_ino, info.st_ctime_ns)
+                found[str(path)] = ((info.st_ino, info.st_ctime_ns) if not winplat.IS_WINDOWS else
+                                    (info.st_ino, info.st_mtime_ns, info.st_nlink))   # WI-WIN W4b: st_ctime is the creation time there
     return found
 
 
@@ -3054,7 +3060,7 @@ class Coordinator:
         return args
 
     def _author_environment(self) -> dict:
-        return {**os.environ, 'TMPDIR': str(self.author_temp_dir)}
+        return {**os.environ, **winplat.temp_env(self.author_temp_dir)}
 
     def codex_contract_verified(self) -> tuple[bool, str]:
         """Verified set, or this run's full probe_passed() record / operator override for the installed version."""
@@ -3197,6 +3203,10 @@ class Coordinator:
             '~/.docker/config.json', '~/.git-credentials', '~/.netrc', '~/.npmrc', '~/.pypirc',
             '~/.kube/config', '~/.azure',
         )
+        credential_dirs = ('~/.aws', '~/.ssh', '~/.config/gcloud', '~/.config/gh', '~/.azure')
+        # WI-WIN W4b: with the Bash sandbox off nothing hides these files, so on Windows the Read tool is denied them (Bash can still
+        # read them: an accepted residual under D1).
+        read_denies = [f'Read({path}/**)' if path in credential_dirs else f'Read({path})' for path in credential_paths] if winplat.IS_WINDOWS else []
         return {
             'disableAllHooks': True,
             'sandbox': {
@@ -3217,7 +3227,7 @@ class Coordinator:
                 },
             },
             'permissions': {
-                'deny': [f'Edit(//{winplat.claude_rule_path(self.run_dir)}/**)'],
+                'deny': [f'Edit(//{winplat.claude_rule_path(self.run_dir)}/**)', *read_denies],
             },
         }
 
@@ -6045,8 +6055,8 @@ class Coordinator:
         try: os.mkdir(base, 0o700)
         except FileExistsError: pass
         name = f"{self.state['sequence'] + 1:03d}-{role}"   # the sequence _invoke_once assigns
-        with self._role_tmp_fd() as base_fd:
-            for stale in os.listdir(base_fd):   # b296-f1c: a leftover is swept only once its turn's process group is confirmed gone
+        with self._role_tmp_fd() as base_fd:   # WI-WIN W4b: no dir_fd on Windows (base_fd is None); ordinary path calls there
+            for stale in (os.listdir(base) if winplat.IS_WINDOWS else os.listdir(base_fd)):   # b296-f1c: a leftover is swept only once its turn's process group is confirmed gone
                 try:
                     if not (match := re.fullmatch(r'(\d+)-[a-z-]+', stale)):
                         raise RuntimeError('its name carries no turn sequence')
@@ -6056,6 +6066,11 @@ class Coordinator:
                     self.hold(reason)
                     raise RuntimeError(reason) from exc
                 self._drop_scratch(base / stale)
+            if winplat.IS_WINDOWS:
+                os.mkdir(base / name)
+                if not winplat.real_dir(os.lstat(base / name)):
+                    raise RuntimeError('the new read-only role scratch is not a directory we own: ' + str(base / name))
+                return base / name
             os.mkdir(name, 0o700, dir_fd=base_fd)
             info = os.stat(name, dir_fd=base_fd, follow_symlinks=False)
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
@@ -6101,6 +6116,14 @@ class Coordinator:
     def _role_tmp_fd(self):
         """b296-f1b: an O_NOFOLLOW handle on run_dir/role-tmp, refused unless it is a real directory owned by us with mode 0700."""
         base = self.run_dir / 'role-tmp'
+        if winplat.IS_WINDOWS:   # WI-WIN W4b: no O_DIRECTORY / O_NOFOLLOW / dir_fd; a real directory (no link, no reparse point)
+            # instead of 0700 + uid, wherever the run dir lives (a run dir on another drive works); yields None, not an fd
+            try: real = winplat.real_dir(os.lstat(base))
+            except OSError as exc: raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {exc}') from exc
+            if not real:
+                raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {base}')
+            yield None
+            return
         try: fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
         except OSError as exc: raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {exc}') from exc
         try:
@@ -6120,6 +6143,13 @@ class Coordinator:
             return   # R1 LOW-1: no role-tmp, nothing to remove (a link or another type there is still refused below)
         try:
             with self._role_tmp_fd() as base_fd:
+                if winplat.IS_WINDOWS:   # WI-WIN W4b: path-based; a link or reparse point inside is removed as itself, never entered
+                    try: info = os.lstat(root)
+                    except FileNotFoundError: return
+                    if not winplat.real_dir(info):
+                        raise RuntimeError(f'unexpected entry in run_dir/role-tmp, refused (never followed): {root.name}; inspect and remove it by hand')
+                    winplat.remove_tree(root)
+                    return
                 try: info = os.stat(root.name, dir_fd=base_fd, follow_symlinks=False)
                 except FileNotFoundError: return
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
@@ -6279,7 +6309,7 @@ class Coordinator:
                 raise RuntimeError('; '.join(capability['issues']))
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
-            env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
+            env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
         limit = self.args.max_invocations - self.state.get('q_reserved', 0)
         if self.state['config'].get('review_report'):
             limit = min(limit, self._report_budget())

@@ -15,6 +15,10 @@ from unittest.mock import patch
 from paired_session import coordinator as rc, readonly_guard as rg, winplat
 
 ROOT = Path('/nonexistent-wiwin-fixture')
+# W4b: on Windows every Claude role's Read tool is denied the credential paths the Bash sandbox used to hide.
+CREDENTIAL_READ_DENIES = ['Read(~/.aws/**)', 'Read(~/.ssh/**)', 'Read(~/.config/gcloud/**)', 'Read(~/.config/gh/**)',
+                          'Read(~/.docker/config.json)', 'Read(~/.git-credentials)', 'Read(~/.netrc)', 'Read(~/.npmrc)',
+                          'Read(~/.pypirc)', 'Read(~/.kube/config)', 'Read(~/.azure/**)']
 
 
 def fixture_coordinator(workspace: Path = ROOT / 'work space' / 'repo', run_dir: Path = ROOT / 'runs' / 'run-1'):
@@ -63,7 +67,8 @@ class SettingsTests(unittest.TestCase):
             self.assertFalse(windows['sandbox']['enabled'])
             self.assertFalse(windows['sandbox']['failIfUnavailable'])
             with patch.object(winplat, 'IS_WINDOWS', True):
-                self.assertEqual(windows['permissions'], {'deny': [f'Edit(//{winplat.claude_rule_path(co.run_dir)}/**)']})
+                self.assertEqual(windows['permissions'], {'deny': [f'Edit(//{winplat.claude_rule_path(co.run_dir)}/**)',
+                                                                   *CREDENTIAL_READ_DENIES]})   # W4b: + the credential Read denies
             posix['sandbox'].update(enabled=False, failIfUnavailable=False)
             posix['permissions'] = windows['permissions']   # the same on POSIX; on native Windows the drive form differs
             self.assertEqual(windows, posix)   # credentials (env vars read by helpers), filesystem and permissions kept
@@ -114,7 +119,7 @@ class WindowsRuleTests(unittest.TestCase):
         self.assertEqual(allow, ['Edit(//c/Users/Some User/work/repo/**)'])
         self.assertEqual(deny[:2], ['Edit(//c/Users/Some User/runs/run-1/context/**)',
                                     'Edit(//c/Users/Some User/.cache/review-loop/probe-pass/**)'])
-        self.assertEqual(settings['permissions']['deny'], ['Edit(//c/Users/Some User/runs/run-1/**)'])
+        self.assertEqual(settings['permissions']['deny'], ['Edit(//c/Users/Some User/runs/run-1/**)', *CREDENTIAL_READ_DENIES])
         self.assertFalse(settings['sandbox']['enabled'])
 
 

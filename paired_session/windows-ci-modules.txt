@@ -3,3 +3,4 @@ test_winplat_locks
 test_winjob
 test_wincli
 test_winroles
+test_winscratch
