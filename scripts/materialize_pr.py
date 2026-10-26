@@ -366,6 +366,11 @@ def resolve_and_materialize(repo: str | Path, value: str, base: str | None, repo
 
 
 def main() -> int:
+    # WI-WIN W9: standalone entry; same policy as winplat.configure_stdio (POSIX untouched).
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            if callable(getattr(stream, 'reconfigure', None)):
+                stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?")
     parser.add_argument("--repo", default=".")

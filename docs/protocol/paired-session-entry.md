@@ -44,6 +44,8 @@ and both `codex` and `claude` must be on PATH (`command -v`; PowerShell:
 `Get-Command`), whatever vendors the
 resolved roles use: the coordinator binds both binaries at run start (the
 review-loop entry has already checked both on a handoff).
+On Windows, invoke Python snippets and scripts with `python -X utf8` (or `py -3 -X utf8`) so piped paths and content use UTF-8.
+
 On Windows only the default efficient mode runs: the coordinator refuses
 `--strict` (or `"safety_mode": "strict"` in the profile), `permission-probe` and
 `--detach`, so never choose them there, and report such a refusal verbatim. Git

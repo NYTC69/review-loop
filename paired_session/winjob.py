@@ -149,6 +149,11 @@ def run(name: str, argv: list, kernel) -> int:
 
 
 def main(argv: list) -> int:
+    # WI-WIN W9: standalone entry; same policy as winplat.configure_stdio (POSIX untouched).
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            if callable(getattr(stream, 'reconfigure', None)):
+                stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     if len(argv) < 3 or argv[1] != '--' or not NAME_RE.fullmatch(argv[0]):
         print('usage: winjob.py Local\\review-loop-<tag> -- <argv...>', file=sys.stderr)
         return EXIT_USAGE

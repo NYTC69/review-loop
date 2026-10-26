@@ -22,7 +22,7 @@ interactive session (a headless session needs `--detach`, macOS only); one absol
 tested entry (the Codex skills' PowerShell commands are best effort). Prerequisites: Git for Windows (the coordinator
 runs the local test command with its Git Bash; set `CLAUDE_CODE_GIT_BASH_PATH` if it is not found), Python 3 as
 `python` or `py -3`, and Node.js when `claude` or `codex` is installed through npm. The skills run the coordinator as
-`python <plugin>/bin/paired-session`. Refused on Windows: `--strict` (and `"safety_mode": "strict"` in the operator
+`python -X utf8 <plugin>/bin/paired-session`. Refused on Windows: `--strict` (and `"safety_mode": "strict"` in the operator
 profile), `permission-probe` and `--detach`. Claude Code has no Bash sandbox on native Windows, so the Claude roles
 run without it: read-only roles keep their exact command allowlist, Edit/Write denies and the post-turn workspace
 check, and Read deny rules cover the usual credential files (their Bash can still read them). Keep run directories

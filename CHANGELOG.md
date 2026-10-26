@@ -11,7 +11,7 @@
 - Linux（包括 WSL）仍不支持。各入口的拒绝文字改为 `paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`。
 
 **新功能：原生 Windows**
-- 平台：入口接受 macOS 和原生 Windows（Git Bash 下 `uname -s` 以 `MINGW64_NT-` 或 `MSYS_NT-` 开头；PowerShell 下 `$env:OS` 为 `Windows_NT`）。新模块 `paired_session/winplat.py` 集中处理平台差异：用户标识（Windows 用用户名代替 uid）、私有目录检查（Windows：真实目录、不是 reparse point、位于用户目录或临时目录之下）、进程存活检查（OpenProcess，不用 `os.kill(pid, 0)`）、遇到共享冲突时重试的文件替换、临时目录和 devnull。coordinator 写的文本产物以 UTF-8、LF 写出；协议加载器 `scripts/read_protocol.py` 在 Windows 上同样可用。
+- 平台：入口接受 macOS 和原生 Windows（Git Bash 下 `uname -s` 以 `MINGW64_NT-` 或 `MSYS_NT-` 开头；PowerShell 下 `$env:OS` 为 `Windows_NT`）。新模块 `paired_session/winplat.py` 集中处理平台差异：用户标识（Windows 用用户名代替 uid）、私有目录检查（Windows：真实目录、不是 reparse point、位于用户目录或临时目录之下）、进程存活检查（OpenProcess，不用 `os.kill(pid, 0)`）、遇到共享冲突时重试的文件替换、临时目录和 devnull。coordinator 写的文本产物以 UTF-8、LF 写出；协议加载器 `scripts/read_protocol.py` 在 Windows 上同样可用；Windows 标准输出和错误输出使用 UTF-8。
 - 进程树：Windows 上每个角色回合和 coordinator 自己跑的测试都经由独立启动器 `paired_session/winjob.py` 启动，进入一个按回合命名的 Job Object（`Local\review-loop-<tag>-<hex>`）；名字记在回合回执里，超时、中断和重启后的恢复都按名字探测或结束整棵进程树。目标进程退出后，启动器结束它留下的子进程。
 - 锁：run 锁和 worktree 锁在 Windows 上用 `msvcrt.locking` 锁住持久锁文件的第 0 字节（持有时从不删除锁文件），持有者信息从第 1 字节写起；争用时的提示与 macOS 相同。
 - CLI：在 PATH 中按 PATHEXT 解析 `claude` 和 `codex`；npm 安装的 shim 映射为 `node.exe` 加包里的脚本（按 package.json 的 `bin`），原生安装的 `claude.exe` 直接使用；两者都绑定路径和 sha256。命令行超过 CreateProcess 的 32767 字符上限时拒绝并给出实际长度。不经过 cmd.exe。

@@ -19,9 +19,9 @@ python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-pa
 
 On native Windows Codex runs commands in PowerShell, Python is `python` (or `py -3`) and `os.getuid` does not exist:
 print the bundle directory with
-`python -c "import getpass, os, re, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), 'review-loop-protocol-' + (re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('USERNAME') or getpass.getuser()) or 'user'), uuid.uuid4().hex[:12]).replace(os.sep, '/'))"`
+`python -X utf8 -c "import getpass, os, re, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), 'review-loop-protocol-' + (re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('USERNAME') or getpass.getuser()) or 'user'), uuid.uuid4().hex[:12]).replace(os.sep, '/'))"`
 (the loader names the directory after the Windows user name), then run
-`python '<support-root>\scripts\read_protocol.py' --runtime codex --stage entry-paired-session --output '<bundle-dir>/protocol-codex-entry-paired-session.md'`.
+`python -X utf8 '<support-root>\scripts\read_protocol.py' --runtime codex --stage entry-paired-session --output '<bundle-dir>/protocol-codex-entry-paired-session.md'`.
 The Windows commands in this skill are best effort; the Claude Code entry is the tested Windows path.
 
 Resolve `<support-root>` to this plugin, not the task workspace. After exit 0,
@@ -156,7 +156,7 @@ $WorkItemText = @'
 try { [IO.File]::WriteAllText($WorkItem, $WorkItemText.Replace("`r`n", "`n") + "`n", (New-Object Text.UTF8Encoding $false)) } catch { Stage-A 'cannot write the work item' }
 Write-Output "RUN_DIR=$RunDir"
 $TestCommand = '[verified project command, or the exact value from the profile]'
-python $Launcher run --workspace $Workspace --workitem $WorkItem --run-dir $RunDir --test-command $TestCommand --lifecycle-mode on
+python -X utf8 $Launcher run --workspace $Workspace --workitem $WorkItem --run-dir $RunDir --test-command $TestCommand --lifecycle-mode on
 exit $LASTEXITCODE
 ```
 

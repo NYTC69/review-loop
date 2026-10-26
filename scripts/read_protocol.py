@@ -167,6 +167,11 @@ def write_bundle(path, content):
 
 
 def main(argv=None):
+    # WI-WIN W9: standalone entry; same policy as winplat.configure_stdio (POSIX untouched).
+    if IS_WINDOWS:
+        for stream in (sys.stdout, sys.stderr):
+            if callable(getattr(stream, 'reconfigure', None)):
+                stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT, help="support repository, not task workspace")
     parser.add_argument("--runtime", choices=("claude", "codex"), required=True)

@@ -14,6 +14,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from paired_session import winplat
+except ModuleNotFoundError:
+    import winplat
+
 HERE = Path(__file__).resolve().parent
 PIN_URL, PIN_HEAD, PIN_REPO = 'PR URL', 'Head', 'Target repository'   # state['review_pr'] labels (LG2-d writes them)
 
@@ -76,6 +81,7 @@ def post(run_dir, confirm: str, runner=subprocess.run) -> str:
 
 
 def main(argv=None) -> int:
+    winplat.configure_stdio()
     p = argparse.ArgumentParser(description='Post a report run\'s review-report.md as a PR comment (two steps).')
     p.add_argument('--run-dir', required=True)
     p.add_argument('--confirm', help='the digest the first step printed with the full body')

@@ -12,12 +12,21 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import tempfile
 import time
 from typing import Optional
 
 IS_WINDOWS = os.name == 'nt'
 _REPARSE = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+
+
+def configure_stdio() -> None:
+    """Windows pipes use UTF-8; preserve Unicode and escape lone surrogates in diagnostics. POSIX is untouched."""
+    if IS_WINDOWS:
+        for stream in (sys.stdout, sys.stderr):
+            if callable(getattr(stream, 'reconfigure', None)):
+                stream.reconfigure(encoding='utf-8', errors='backslashreplace')
 
 
 @functools.lru_cache(maxsize=1)

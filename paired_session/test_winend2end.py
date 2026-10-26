@@ -80,6 +80,8 @@ def windows_fake():
     """Called by the npm Python entry; no installed CLI or shell shim is run."""
     if not IS_WINDOWS:
         raise RuntimeError('the W7 provider adapter requires native Windows')
+    # Model the real provider's UTF-8 transport locally, without changing the coordinator environment.
+    sys.stdin.reconfigure(encoding='utf-8')
     prompt = sys.stdin.read()
     sys.stdin = io.StringIO(prompt)
     if 'implementer. Phase: EXEC.' in prompt:
@@ -236,7 +238,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.telemetry.mkdir()
         self.workspace = self.root / 'workspace'
         self.workspace.mkdir()
-        self.run_dir = self.root / 'run'
+        self.run_dir = self.root / '运行-run'
         self.log = None   # the coordinator's output file while a test runs it in the background (diagnostics)
         home = self.root / 'home'
         (home / '.codex').mkdir(parents=True)
@@ -245,9 +247,11 @@ class WindowsEndToEndTests(unittest.TestCase):
         (home / '.claude/settings.json').write_text('{}\n', encoding='utf-8')
         (home / '.claude/plugins/installed_plugins.json').write_text('{"plugins": []}\n', encoding='utf-8')
         self.env = without_bash_context(os.environ)
+        self.env.pop('PYTHONIOENCODING', None)
+        self.env.pop('PYTHONUTF8', None)
         self.env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / '.codex'),
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
-                        PYTHONIOENCODING='utf-8', PYTHONDONTWRITEBYTECODE='1',
+                        PYTHONDONTWRITEBYTECODE='1',
                         W7_TELEMETRY=str(self.telemetry), FAKE_UNIQUE_CODEX_THREAD='1',
                         FAKE_LIFECYCLE_DOCS_FILE='CHANGELOG.md')
         # Copy the interpreter and its adjacent DLLs, and name it node.exe.
@@ -308,7 +312,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.assertEqual(self.git('status', '--porcelain'), '')
         self.base = self.git('rev-parse', 'HEAD')
         self.workitem = self.root / 'WORKITEM.md'
-        self.workitem.write_text('# Toy\nImplement sum_ints; verify the sum and document it.\n', encoding='utf-8')
+        self.workitem.write_text('# Toy\n实现 sum_ints；验证求和并记录结果。\n', encoding='utf-8')
         self.processes = []
         self.addCleanup(self.stop_children)
 

@@ -10202,6 +10202,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
 
 
 def main(argv=None) -> int:
+    winplat.configure_stdio()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     cli_parser = parser()
     if '-h' in raw_argv or '--help' in raw_argv:
