@@ -84,6 +84,8 @@ def _report(**fields) -> dict:
 
 def _open_regular(root: str, relative: str) -> int:
     """Open a manifest path without following any directory or leaf symlink."""
+    if ds.IS_WINDOWS:
+        return _open_regular_windows(root, relative)
     parts = relative.split("/")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     dir_flags = flags | getattr(os, "O_DIRECTORY", 0)
@@ -101,6 +103,19 @@ def _open_regular(root: str, relative: str) -> int:
         os.close(fd)
         raise ScanError("manifest path is no longer a regular file")
     return fd
+
+
+def _open_regular_windows(root: str, relative: str) -> int:
+    """WI-WIN: Windows has no O_NOFOLLOW, O_DIRECTORY or dir_fd. Every directory component and the leaf are lstat'ed
+    (no symlink, junction or other reparse point; a regular leaf), then the leaf is opened in binary mode. The caller
+    compares size, mtime and sha256 with the manifest after reading."""
+    leaf = ds.windows_leaf(root, relative)
+    if leaf is None:
+        raise ScanError("manifest path traverses a link or a missing directory")
+    info = os.lstat(leaf)
+    if ds.windows_link(info) or not stat.S_ISREG(info.st_mode):
+        raise ScanError("manifest path is no longer a regular file")
+    return os.open(leaf, os.O_RDONLY | getattr(os, "O_BINARY", 0))
 
 
 def _path_findings(path: str) -> list:

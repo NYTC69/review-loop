@@ -31,6 +31,9 @@ GIT_ENV_OVERRIDES = (
     "GIT_PREFIX", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS",
     "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
 )
+# WI-WIN: Windows has no O_DIRECTORY, O_NOFOLLOW or dir_fd; the windows_* helpers below walk by path instead. This script
+# runs standalone, so they copy the checks of paired_session/winplat.py rather than import it.
+IS_WINDOWS = os.name == "nt"
 
 
 class UsageError(Exception):
@@ -183,6 +186,77 @@ def disk_entry(repo: str, path: str, algorithm: str) -> Optional[dict]:
         os.close(directory)
 
 
+def windows_link(info: os.stat_result) -> bool:
+    """WI-WIN: an lstat result that is a symlink, junction or other reparse point."""
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def windows_leaf(repo: str, path: str) -> Optional[str]:
+    """WI-WIN: the absolute leaf path when every directory component of `path` is a real directory (lstat, no link or
+    reparse point); None when one is missing, not a directory or a link, as the POSIX no-follow walk treats them."""
+    cursor = repo
+    for component in path.split("/")[:-1]:
+        cursor = os.path.join(cursor, component)
+        try:
+            info = os.lstat(cursor)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if not stat.S_ISDIR(info.st_mode) or windows_link(info):
+            return None
+    return os.path.join(cursor, path.split("/")[-1])
+
+
+def windows_disk_entry(repo: str, path: str, algorithm: str, index_entries: Optional[list] = None) -> Optional[dict]:
+    """WI-WIN: disk_entry by path. A linked or missing parent makes the leaf absent; a symlink leaf hashes its readlink
+    text (backslashes as slashes, as Git for Windows stores a link); a junction or other reparse point leaf is refused;
+    a regular file is read with its size and mtime compared before, during and after. Windows has no executable bit,
+    so a regular file takes its index entry's mode (Git with core.fileMode=false; 120000 for a link checked out as a
+    plain file with core.symlinks=false), else 100644."""
+    path_name(path)
+    leaf = windows_leaf(repo, path)
+    if leaf is None:
+        return None
+    try:
+        before = os.lstat(leaf)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(before.st_mode):
+        payload = os.fsencode(os.readlink(leaf).replace("\\", "/"))
+        mode, size = "120000", len(payload)
+        blob = hashlib.new(algorithm, f"blob {size}\0".encode("ascii") + payload)
+        raw = hashlib.sha256(payload)
+    elif windows_link(before):
+        raise CaptureError(f"unsupported reparse point entry: {path!r}")
+    elif stat.S_ISDIR(before.st_mode):
+        return None  # Git does not version empty directories.
+    elif stat.S_ISREG(before.st_mode):
+        modes = [entry["mode"] for entry in index_entries or [] if entry["mode"] in {"100644", "100755", "120000"}]
+        mode, size = (modes or ["100644"])[0], before.st_size
+        blob = hashlib.new(algorithm, f"blob {size}\0".encode("ascii"))
+        raw = hashlib.sha256()
+        read = 0
+        with open(leaf, "rb") as source:
+            def unchanged() -> bool:
+                info = os.fstat(source.fileno())
+                return (info.st_size, info.st_mtime_ns) == (size, before.st_mtime_ns)
+
+            if not unchanged():
+                raise CaptureError(f"file changed during capture: {path!r}")
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                blob.update(block)
+                raw.update(block)
+                read += len(block)
+            if not unchanged() or read != size:
+                raise CaptureError(f"file changed during capture: {path!r}")
+    else:
+        raise CaptureError(f"unsupported non-file entry: {path!r}")
+    after = os.lstat(leaf)
+    if (after.st_mode, after.st_size, after.st_mtime_ns, windows_link(after)) != (
+            before.st_mode, before.st_size, before.st_mtime_ns, windows_link(before)):
+        raise CaptureError(f"file changed during capture: {path!r}")
+    return {"mode": mode, "oid": blob.hexdigest(), "sha256": raw.hexdigest(), "size": size}
+
+
 def read_state(repo: dict) -> dict:
     root = repo["worktree"]
     head = git_line(root, "rev-parse", "--verify", "-q", "HEAD", codes=(0, 1)) or None
@@ -214,7 +288,8 @@ def read_state(repo: dict) -> dict:
             untracked.append(path_name(path))
     worktree = {}
     for path in sorted(set(head_paths) | set(index) | set(untracked)):
-        entry = disk_entry(root, path, repo["object_format"])
+        entry = (windows_disk_entry(root, path, repo["object_format"], index.get(path)) if IS_WINDOWS
+                 else disk_entry(root, path, repo["object_format"]))
         if entry is not None:
             worktree[path] = entry
     index_path = git_line(root, "rev-parse", "--git-path", "index")
@@ -466,8 +541,9 @@ def validate_output(repo: dict, path: Optional[str]) -> None:
 def emit(document: dict, output: Optional[str]) -> None:
     rendered = json.dumps(document, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
     if output:
-        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as target:
+        # WI-WIN: O_BINARY and newline="\n" keep the artifact LF on Windows (both are no-ops on POSIX).
+        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n" if IS_WINDOWS else None) as target:
             target.write(rendered)
     else:
         sys.stdout.write(rendered)

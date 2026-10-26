@@ -21,12 +21,27 @@ import uuid
 
 IS_WINDOWS = os.name == 'nt'
 REPO = Path(__file__).resolve().parents[1]
-# unittest writes its progress to stderr. Capture it inside Python so Windows
-# PowerShell 5.1 cannot turn redirected native stderr into NativeCommandError.
-TEST_COMMAND = ('python -c "import subprocess, sys; '
-                "result = subprocess.run([sys.executable, '-m', 'unittest', '-q'], "
-                'stdout=subprocess.PIPE, stderr=subprocess.STDOUT); '
-                'sys.stdout.buffer.write(result.stdout); sys.exit(result.returncode)"')
+# unittest writes its progress to stderr. The committed fixture script folds it
+# into stdout inside Python, so Windows PowerShell 5.1 cannot turn redirected
+# native stderr into NativeCommandError, and the configured test command stays
+# one plain allowlisted call (W8: no `;`).
+TEST_COMMAND = 'python run_w7_tests.py'
+FIXTURE_RUNNER = '''import subprocess
+import sys
+
+result = subprocess.run([sys.executable, '-m', 'unittest', '-q'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+sys.stdout.buffer.write(result.stdout)
+sys.exit(result.returncode)
+'''
+
+
+def text_of(value):
+    """subprocess output that may be None, bytes or str (a TimeoutExpired carries what was read so far)."""
+    return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
+
+
+def tail(text, limit=6000):
+    return text if len(text) <= limit else '...' + text[-limit:]
 
 
 def without_bash_context(environment):
@@ -222,6 +237,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.workspace = self.root / 'workspace'
         self.workspace.mkdir()
         self.run_dir = self.root / 'run'
+        self.log = None   # the coordinator's output file while a test runs it in the background (diagnostics)
         home = self.root / 'home'
         (home / '.codex').mkdir(parents=True)
         (home / '.claude/plugins').mkdir(parents=True)
@@ -281,6 +297,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         (self.workspace / 'tracked.txt').write_bytes(b'base\n')
         (self.workspace / 'sum_ints.py').write_bytes(b'def sum_ints(values):\n    return sum(values)\n')
         (self.workspace / 'test_tiny.py').write_bytes(FIXTURE_TEST.encode())
+        (self.workspace / 'run_w7_tests.py').write_bytes(FIXTURE_RUNNER.encode())
         self.git('add', '-A')
         self.git('commit', '-qm', 'base')
         self.base = self.git('rev-parse', 'HEAD')
@@ -295,10 +312,30 @@ class WindowsEndToEndTests(unittest.TestCase):
         return min(cap, remaining)
 
     def run_process(self, argv, expected=0, cap=180):
-        result = subprocess.run(argv, cwd=self.outside, env=self.env, capture_output=True,
-                                text=True, encoding='utf-8', errors='replace', timeout=self.remaining(cap))
-        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        try:
+            result = subprocess.run(argv, cwd=self.outside, env=self.env, capture_output=True,
+                                    text=True, encoding='utf-8', errors='replace', timeout=self.remaining(cap))
+        except subprocess.TimeoutExpired as exc:
+            self.fail(f'timed out after {exc.timeout:.0f} s: {argv[1:3]}\n' + self.diagnostics(
+                text_of(exc.stdout) + text_of(exc.stderr)))
+        if result.returncode != expected:
+            self.fail(f'exit {result.returncode}, expected {expected}: {argv[1:3]}\n' + self.diagnostics(
+                result.stdout + result.stderr))
         return result
+
+    def diagnostics(self, output=None):
+        """W8: what a CI log needs to explain a failed Windows end-to-end step: the coordinator's output so far, state.json,
+        the provider telemetry listing and the turn stderr files."""
+        if output is None and self.log is not None and self.log.exists():
+            output = self.log.read_text(encoding='utf-8', errors='replace')
+        parts = ['--- coordinator output ---', tail(output or '(none)')]
+        state = self.run_dir / 'state.json'
+        parts += ['--- state.json ---', tail(state.read_text(encoding='utf-8', errors='replace')) if state.exists()
+                  else '(none)']
+        parts += ['--- telemetry ---', *sorted(path.name for path in self.telemetry.iterdir())]
+        for path in sorted((self.run_dir / 'evidence').glob('*.stderr*')):
+            parts += ['--- ' + path.name + ' ---', tail(path.read_text(encoding='utf-8', errors='replace'))]
+        return '\n'.join(parts)
 
     def git(self, *args):
         result = subprocess.run(['git', '-C', str(self.workspace), *args], env=self.env,
@@ -319,14 +356,18 @@ class WindowsEndToEndTests(unittest.TestCase):
     def state(self):
         return json.loads((self.run_dir / 'state.json').read_text(encoding='utf-8'))
 
-    def wait_for(self, predicate, description, cap=120):
+    def wait_for(self, predicate, description, cap=120, process=None):
+        """Poll `predicate`; with `process` (the coordinator, which must stay alive meanwhile), fail at once when it exits."""
         deadline = time.monotonic() + self.remaining(cap)
         while time.monotonic() < deadline:
             result = predicate()
             if result:
                 return result
+            if process is not None and process.poll() is not None:
+                self.fail(f'coordinator exited {process.returncode} while waiting for {description}\n' +
+                          self.diagnostics())
             time.sleep(0.2)
-        self.fail('timed out waiting for ' + description)
+        self.fail('timed out waiting for ' + description + '\n' + self.diagnostics())
 
     def stop_children(self):
         (self.telemetry / 'local-release').touch()
@@ -414,23 +455,22 @@ class WindowsEndToEndTests(unittest.TestCase):
         flags = ('--auto-commit', 'true', '--quality-writers', 'both')
         # File output lets kill/wait finish without waiting for inherited pipe
         # handles still held by the intentionally surviving local test job.
-        with (self.root / 'interrupted.log').open('wb') as output:
+        self.log = self.root / 'interrupted.log'
+        with self.log.open('wb') as output:
             process = subprocess.Popen(self.command('run', *flags), cwd=self.outside, env=self.env,
                                        stdout=output, stderr=subprocess.STDOUT)
             self.processes.append(process)
-            self.wait_for(lambda: (self.telemetry / 'provider-ready').exists(), 'first provider launch', cap=35)
+            # W8: the loader, program binding and first dispatch can be slow on a Windows runner.
+            self.wait_for(lambda: (self.telemetry / 'provider-ready').exists(), 'first provider launch', cap=120,
+                          process=process)
             from paired_session import winplat
             active = self.wait_for(lambda: (self.state().get('active') or {}).get('job')
-                                   and self.state()['active'], 'persisted live Job Object', cap=5)
+                                   and self.state()['active'], 'persisted live Job Object', cap=5, process=process)
             winplat.probe_job(active['job'])
             self.assertTrue(winplat.pid_alive(active['pid']))
             (self.telemetry / 'provider-release').touch()
             ready = self.telemetry / 'local-ready.json'
-            def barrier():
-                if process.poll() is not None:
-                    self.fail((self.root / 'interrupted.log').read_text(encoding='utf-8'))
-                return ready.exists()
-            self.wait_for(barrier, 'local test between model turns', cap=300)
+            self.wait_for(ready.exists, 'local test between model turns', cap=300, process=process)
             interrupted = self.state()
             self.assertIsNone(interrupted.get('active'))
             self.assertIsNone(interrupted.get('uncertain_active'))
