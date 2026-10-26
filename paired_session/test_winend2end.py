@@ -181,7 +181,7 @@ class TinyTest(unittest.TestCase):
         self.assertTrue(inside.value)
         provider = os.environ.get('W7_FAKE_PROVIDER') == '1'
         row = {'pid': os.getpid(), 'in_job': bool(inside.value), 'provider': provider,
-               'shlvl': os.environ.get('SHLVL'), 'cwd': str(pathlib.Path.cwd())}
+               'shlvl': os.environ.get('SHLVL'), 'msystem': os.environ.get('MSYSTEM'), 'cwd': str(pathlib.Path.cwd())}
         root = pathlib.Path(os.environ['W7_TELEMETRY'])
         (root / (str(os.getpid()) + '.test.json')).write_text(json.dumps(row), encoding='utf-8')
         print('W7_REAL_UNITTEST_OK', flush=True)
@@ -482,7 +482,9 @@ class WindowsEndToEndTests(unittest.TestCase):
             self.assertIn('another coordinator currently owns this workspace', other.stdout + other.stderr)
             row = json.loads(ready.read_text(encoding='utf-8'))
             self.assertTrue(row['in_job'])
-            self.assertGreater(int(row['shlvl']), 0, 'local command must have entered Git Bash')
+            # bash -c execs a lone simple command and lowers SHLVL first, so a child may see SHLVL=0; Git for Windows'
+            # bash.exe also exports MSYSTEM (the harness strips it from the coordinator's own environment).
+            self.assertTrue(row['msystem'] or int(row['shlvl'] or 0) > 0, 'local command must have entered Git Bash: ' + json.dumps(row))
             process.kill()
             process.wait(timeout=10)
         from paired_session import winplat
