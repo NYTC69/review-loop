@@ -7,6 +7,7 @@ profile or temp directory. Users and models are assumed to act in good faith; th
 """
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
 import re
@@ -17,6 +18,43 @@ from typing import Optional
 
 IS_WINDOWS = os.name == 'nt'
 _REPARSE = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+
+
+@functools.lru_cache(maxsize=1)
+def git_bash() -> Optional[str]:
+    """Windows test shell, discovered once per process; never a WSL/WindowsApps bash alias."""
+    if not IS_WINDOWS:
+        return None
+    import ntpath
+    import shutil
+    import subprocess
+
+    def usable(value):
+        if not value:
+            return None
+        normalized = ntpath.normpath(str(value)).lower()
+        if ('windowsapps' in normalized.split('\\') or
+                normalized.endswith('\\system32\\bash.exe')):
+            return None
+        path = Path(value)
+        return str(path) if path.is_file() else None
+
+    if override := usable(os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')):
+        return override
+    try:
+        result = subprocess.run(['git', '--exec-path'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, encoding='utf-8', timeout=10)
+        if result.returncode == 0:
+            core = Path(result.stdout.strip())
+            if len(core.parents) >= 3:
+                if found := usable(core.parents[2] / 'bin' / 'bash.exe'):
+                    return found
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if git := shutil.which('git'):
+        if found := usable(Path(git).parent.parent / 'bin' / 'bash.exe'):
+            return found
+    return usable(Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Git' / 'bin' / 'bash.exe')
 
 
 def user_token() -> str:

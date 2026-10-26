@@ -1,0 +1,11 @@
+# Keep executable and byte-parsed sources stable in core.autocrlf checkouts.
+bin/paired-session text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+scripts/run-skill-lint text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+# Frozen role manifests and protocol loader input must retain their release bytes.
+*.md text eol=lf
+scripts/adversarial_gate_fallback_prompt.txt text eol=lf
+paired_session/windows-ci-modules.txt text eol=lf

@@ -5,3 +5,4 @@ test_wincli
 test_winroles
 test_winscratch
 test_winevidence
+test_wintest

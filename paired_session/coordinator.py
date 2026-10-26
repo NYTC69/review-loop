@@ -1204,7 +1204,8 @@ def dontask_command_hint(commands) -> str:
     shaped = [command for command in commands if DONTASK_SHELL_SYNTAX.search(command)]
     return ('WARNING: a Claude reviewer or gate runs each test/reviewer command as one exact allowlisted Bash call in dontAsk mode; '
             'command substitution, pipes, `;`, `&&`, redirection or loops in ' + '; '.join(repr(command) for command in shaped) +
-            ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.') if shaped else ''
+            ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.' +
+            (' On Windows, use `bash ./script.sh`.' if winplat.IS_WINDOWS else '')) if shaped else ''
 
 
 def resolve_test_executable(workspace: Path, command: str) -> str:
@@ -1216,11 +1217,16 @@ def resolve_test_executable(workspace: Path, command: str) -> str:
         raise ValueError('configured test command is empty')
 
     def resolve_binary(executable: str) -> Optional[str]:
+        if winplat.IS_WINDOWS and executable in ('bash', 'bash.exe', '/bin/bash'):
+            return winplat.git_bash()
         if os.path.isabs(executable) or os.sep in executable or (os.altsep and os.altsep in executable):
             path = Path(executable)
             if not path.is_absolute():
                 path = workspace / path
             path = path.resolve()
+            if winplat.IS_WINDOWS:
+                extensions = os.environ.get('PATHEXT', '.COM;.EXE;.BAT;.CMD').lower().split(';')
+                return str(path) if path.is_file() and (path.suffix.lower() == '.sh' or path.suffix.lower() in extensions) else None
             return str(path) if path.is_file() and os.access(path, os.X_OK) else None
         return shutil.which(executable)
 
@@ -1752,13 +1758,16 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
         raise RuntimeError('git ls-files failed: ' + proc.stderr.decode(errors='replace').strip())
     manifest: list[list[str]] = []
     names = sorted(x for x in proc.stdout.decode(errors='surrogateescape').split('\0') if x)
+    modes = candidate_tree.windows_git_modes(workspace) if winplat.IS_WINDOWS else {}
     for name in names:
         path = workspace / name
         if path.is_symlink():
             value = 'link:' + os.readlink(path)
+        elif winplat.IS_WINDOWS and modes.get(name) == '120000' and path.is_file():
+            value = 'link:' + path.read_bytes().decode('utf-8', 'surrogateescape')
         elif path.is_file():
             value = hashlib.sha256(path.read_bytes()).hexdigest()
-            if path.stat().st_mode & stat.S_IXUSR: value = 'exec:' + value
+            if (modes.get(name, '100644') == '100755' if winplat.IS_WINDOWS else path.stat().st_mode & stat.S_IXUSR): value = 'exec:' + value
         else:
             value = 'missing'
         manifest.append([name, value])
@@ -7697,14 +7706,21 @@ class Coordinator:
         return False
 
     def _test_run(self, label: str) -> dict:
-        """§2 local test executor (no model call, no invocation): the explicitly configured test command under /bin/sh -c
+        """§2 local test executor (no model call, no invocation): the explicitly configured test command under /bin/sh -c (Git Bash -c on Windows)
         in the workspace, bounded by the run's --timeout, its output in evidence; only the exit code counts, and a run
         that changes the live tree (tracked or untracked non-ignored files) fails."""
         log = self.evidence / f"{self.state['sequence']:03d}-polish-q-{label}-test.log"
         before, code, reason = git_snapshot(self.workspace)[0], None, ''
         try:
             with open(log, 'wb') as out:
-                proc, job = winplat.spawn_group(['/bin/sh', '-c', self.args.test_command], f'{self.run_dir.name}-test-{label}',
+                shell = '/bin/sh'
+                if winplat.IS_WINDOWS:
+                    shell = winplat.git_bash()
+                    if not shell:
+                        raise FileNotFoundError('Git for Windows is required for local tests; install it or set '
+                                                'CLAUDE_CODE_GIT_BASH_PATH to its bash.exe')
+                # Non-login -c matches the Bash tool: do not source login profiles or replace the inherited PATH.
+                proc, job = winplat.spawn_group([shell, '-c', self.args.test_command], f'{self.run_dir.name}-test-{label}',
                                                 cwd=self.workspace, stdout=out, stderr=subprocess.STDOUT,
                                                 stdin=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
                 try:
