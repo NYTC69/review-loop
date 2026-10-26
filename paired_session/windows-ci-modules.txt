@@ -6,3 +6,4 @@ test_winroles
 test_winscratch
 test_winevidence
 test_wintest
+test_winend2end
