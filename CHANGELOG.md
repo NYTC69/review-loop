@@ -30,7 +30,7 @@
 - run 目录和工作区不要放在 OneDrive 同步的文件夹里。
 
 **审查与验收**
-- 每个批次（W1–W9 及修复轮）都由另一家模型审查并通过（Opus 执行的由 Codex 审，Codex 执行的由 Opus 审）；整个 WI 的 Codex 终审第一轮指出 Windows 管道输出不是 UTF-8（W9 修复），第二轮 APPROVE。
+- W1–W8（含修复轮）及此前的文档提交由 Opus 执行、Codex 审查通过。整个 WI 的 Codex 终审第一轮指出 Windows 管道输出不是 UTF-8；W9 由 Codex 修复，Opus 审查为 REVISE（仅测试问题），随后 Opus 完成 W9 r2 测试修复（f85f329），Codex 整体终审第二轮 APPROVE。
 - CI：windows-latest 上 159 个 Windows 测试通过，其中两条用假 CLI 的端到端 run（完整流程到 ACCEPTED，review-pr 到 REPORTED）使用真实的 CRLF 检出、中文任务和中文 run 目录；同一次 CI（run 40379703851，f85f329）全部 308 个 job 通过，包括 macOS/Linux 全量测试。
 - macOS 真实 run（固定副本 v3.3.0-rc1 = f85f329，产品默认：Codex 作者、Claude 审查、Codex gate）：DONE 后 ACCEPTED，14 次调用，约 23 分钟。
 - Yuan 的 Windows 实机验收：待补。
