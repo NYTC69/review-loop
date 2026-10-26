@@ -4326,40 +4326,52 @@ class Coordinator:
 
     def _commit_refusals(self, paths: list[str]) -> None:
         """W04 parity before an auto_commit: no work staged before the run, no content-transforming attribute or
-        filter, no core.autocrlf, so the commit holds exactly the accepted bytes and checks out as them."""
+        filter. POSIX keeps raw bytes; Windows permits ordinary Git text/EOL cleaning."""
         if record := self.state.get('review_only'):   # LG1-c: the index may hold the reviewed change, fully staged at start
             if hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest() != record['index_at_start']:
                 raise ValueError('auto_commit refuses an index changed since the review-only run started; restore it or abort')
         elif staged := self._git_names(['diff-index', '--cached', '--name-only', '-z', 'HEAD']):
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
-        if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
+        if not winplat.IS_WINDOWS and self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
             raise ValueError('auto_commit refuses core.autocrlf; unset it (or set it to false in this repository) and accept again')
-        if self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
+        if not winplat.IS_WINDOWS and self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
             raise ValueError('auto_commit refuses core.fileMode false; set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
             raise ValueError('auto_commit refuses a repository with submodules; abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
             raise ValueError('auto_commit refuses skip-worktree (sparse) entries; abort and commit the tree yourself, or start a new run with auto_commit false (the value is frozen at run start)')
         proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
-                                           'text', 'eol', 'working-tree-encoding'], cwd=self.workspace,
+                                           'text', 'eol', 'working-tree-encoding', *(['ident', 'crlf'] if winplat.IS_WINDOWS else [])], cwd=self.workspace,
                                           input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         fields = proc.stdout.split('\0')
         transforming = [f'{path}: {attr}={value}' for path, attr, value in zip(fields[0::3], fields[1::3], fields[2::3])
-                        if value not in ('unspecified', 'unset')]
+                        if value not in ('unspecified', 'unset') and not (winplat.IS_WINDOWS and
+                            ((attr == 'text' and value in ('set', 'auto')) or (attr == 'eol' and value in ('lf', 'crlf'))))]
         if proc.returncode or transforming:
             raise ValueError('auto_commit refuses content-transforming attributes: ' +
                              ', '.join(transforming[:10] or [proc.stderr.strip()[-200:]]))
 
     def _manifest_tree(self, snapshot: list) -> str:
-        """The git tree of exactly the accepted manifest, written through a private index (raw bytes, no filters)."""
+        """Accepted modes via a private index; raw POSIX blobs, ordinary Git text cleaning on Windows."""
         files = [(path, value) for path, value in snapshot if value != 'missing']
         if any('\n' in path or path.startswith('"') or path.endswith('\r') for path, _ in files):
             raise ValueError('auto_commit refuses a path that --stdin-paths would rewrite (newline, leading quote, trailing CR)')
         regular = [path for path, value in files if not value.startswith('link:')]
-        oids = dict(zip(regular, candidate_tree.run_bounded(
-            candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
-            cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True, timeout=600).stdout.split()))
+        if winplat.IS_WINDOWS:
+            # Use the same attributes/autocrlf as git add, but never run configured filter drivers.
+            # Acceptance and replay still bind raw working bytes: read-tree below only updates the index,
+            # leaving the reviewed CRLF checkout untouched. Modes come from the accepted snapshot.
+            oids = {path: candidate_tree.run_bounded(
+                ['git', *candidate_tree.GIT_NO_EXEC, *candidate_tree._filter_overrides(self.workspace),
+                 'hash-object', '-w', '--path=' + path, '--stdin'], cwd=self.workspace,
+                input=(self.workspace / path).read_bytes(), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True, timeout=600).stdout.decode('ascii').strip()
+                for path in regular}
+        else:
+            oids = dict(zip(regular, candidate_tree.run_bounded(
+                candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
+                cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True, timeout=600).stdout.split()))
         for path, value in files:   # --stdin-paths follows symlinks: a link blob is its target text
             if value.startswith('link:'):
                 oids[path] = candidate_tree.run_bounded(

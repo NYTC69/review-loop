@@ -1,5 +1,7 @@
 """W5: Git Bash tests, Git modes and unchanged POSIX execution (stdlib, Python 3.9)."""
+import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -222,6 +224,136 @@ class PosixPinTests(unittest.TestCase):
             self.assertFalse(dict(rc.git_snapshot(co.workspace)[1])['run.sh'].startswith('exec:'))
             script.chmod(0o755)
             self.assertTrue(dict(rc.git_snapshot(co.workspace)[1])['run.sh'].startswith('exec:'))
+
+
+
+class RepositoryAttributesTests(unittest.TestCase):
+    def test_all_tracked_paths_allow_auto_commit_attributes(self):
+        probe = subprocess.run(['git', '-C', str(REPO), 'rev-parse', '--is-inside-work-tree'], capture_output=True)
+        if probe.returncode or probe.stdout.strip() != b'true':
+            self.skipTest('not in a Git checkout')
+        names = git(REPO, 'ls-files', '-z')
+        result = subprocess.run(['git', 'check-attr', '-z', '--stdin', 'filter', 'text', 'eol',
+                                 'working-tree-encoding'], cwd=REPO, input=names, capture_output=True, check=True)
+        fields = result.stdout.rstrip(b'\0').split(b'\0')
+        self.assertEqual(len(fields), len(names.rstrip(b'\0').split(b'\0')) * 4 * 3)
+        for path, attr, value in zip(fields[0::3], fields[1::3], fields[2::3]):
+            self.assertIn(value, (b'unspecified', b'unset'), (path, attr, value))
+
+
+def delivery_fixture(root):
+    co = executor(root, 'true')
+    co.internal = co.run_dir / 'internal'
+    co.internal.mkdir()
+    co.workitem = co.run_dir / 'work-item.md'
+    co.workitem.write_bytes(b'# W5 delivery\n')
+    for key, value in (('user.name', 'W5'), ('user.email', 'w5@example.test'),
+                       ('commit.gpgsign', 'false'), ('core.autocrlf', 'false'), ('core.fileMode', 'false')):
+        git(co.workspace, 'config', key, value)
+    (co.workspace / 'run.txt').write_bytes(b'base\n')
+    git(co.workspace, 'add', 'run.txt')
+    git(co.workspace, 'update-index', '--chmod=+x', 'run.txt')
+    git(co.workspace, 'commit', '-qm', 'base')
+    co.state.update(config={'auto_commit': True}, item_uuid='w5-test',
+                    lifecycle={'parent': git(co.workspace, 'rev-parse', 'HEAD').decode().strip(),
+                               'stage': 'DONE', 'receipts': []}, status='DONE')
+    return co
+
+
+def check_windows_delivery(case, autocrlf):
+    with tempfile.TemporaryDirectory() as temp:
+        co = delivery_fixture(Path(temp))
+        root = co.workspace
+        git(root, 'config', 'core.autocrlf', autocrlf)
+        (root / 'run.txt').write_bytes(b'changed\r\n')
+        (root / 'new.txt').write_bytes(b'new\r\n')
+        (root / 'raw.dat').write_bytes(b'raw\r\n')
+        (root / 'forced.dat').write_bytes(b'forced\r\n')
+        (root / 'binary.dat').write_bytes(b'\0binary\r\n')
+        (root / '.gitattributes').write_bytes(b'raw.dat -text\nforced.dat text eol=lf\n')
+        # Compare against a real git add using a disposable copy of the pre-delivery index.
+        add_index = co.internal / 'ordinary-add-index'
+        shutil.copyfile(root / '.git/index', add_index)
+        add_env = {**ct.git_env(), 'GIT_INDEX_FILE': str(add_index)}
+        subprocess.run(['git', 'add', '-A'], cwd=root, env=add_env, check=True, capture_output=True)
+        ordinary_tree = subprocess.check_output(['git', 'write-tree'], cwd=root, env=add_env).strip()
+        digest, snapshot = rc.git_snapshot(root)
+        intent = {'digest': 'test-intent', 'tree_sha256': digest, 'tree_snapshot': snapshot,
+                  'head_ref': co._head_ref()}
+        co.args.expect, co.args.override_rejection, co.args.reason = None, False, 'tested'
+        co.operator_intent = lambda *args: intent
+        co.save = co.write_comparison = lambda: None
+        co._progress_terminal = lambda *args: None
+        # Exercise the real accept, commit, journal, index sync and delivery record; stub presentation only.
+        with patch.object(rc.worktree_lifecycle, 'delivery_report', return_value='delivery'), \
+                patch.object(rc.review_report, 'delivery_section', return_value=''), \
+                patch.object(rc.opv, 'current_for_acceptance', return_value=None):
+            case.assertEqual(co._worktree_accept(), 'ACCEPTED')
+        commit = co.state['acceptance']['delivery']['commit']
+        case.assertTrue(commit)
+        case.assertEqual(git(root, 'rev-parse', 'HEAD^{tree}').strip(), ordinary_tree)
+        for name, data in (('run.txt', b'changed\n'), ('new.txt', b'new\n'),
+                           ('raw.dat', b'raw\r\n'), ('forced.dat', b'forced\n'),
+                           ('binary.dat', b'\0binary\r\n')):
+            case.assertEqual(git(root, 'show', 'HEAD:' + name), data)
+            # Ordinary git add would produce exactly the delivery blob, with the same path attributes.
+            case.assertEqual(git(root, 'hash-object', '--path=' + name, name).strip(),
+                             git(root, 'rev-parse', 'HEAD:' + name).strip())
+        modes = ct.windows_git_modes(root)
+        case.assertEqual(modes['run.txt'], '100755')
+        case.assertEqual(modes['new.txt'], '100644')
+        case.assertEqual(git(root, 'status', '--porcelain'), b'')
+        case.assertEqual(rc.git_snapshot(root), (digest, snapshot))
+        case.assertEqual((root / 'run.txt').read_bytes(), b'changed\r\n')
+        journal = json.loads((co.evidence / 'delivery-commit.json').read_text(encoding='utf-8'))
+        case.assertEqual(co._worktree_commit(intent, journal)['commit'], commit)
+
+
+class WindowsDeliverySeamTests(unittest.TestCase):
+    def test_autocrlf_delivery_and_replay(self):
+        for value in ('true', 'input'):
+            with self.subTest(autocrlf=value), patch.object(winplat, 'IS_WINDOWS', True):
+                check_windows_delivery(self, value)
+
+    def test_windows_refuses_non_eol_transformations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            co = delivery_fixture(Path(temp))
+            for attribute in ('filter=lfs', 'working-tree-encoding=UTF-16', 'ident'):
+                with self.subTest(attribute=attribute), patch.object(winplat, 'IS_WINDOWS', True):
+                    (co.workspace / '.gitattributes').write_bytes(('run.txt ' + attribute + '\n').encode())
+                    with self.assertRaisesRegex(ValueError, 'auto_commit refuses content-transforming attributes: run.txt:'):
+                        co._commit_refusals(['run.txt'])
+
+
+@unittest.skipUnless(winplat.IS_WINDOWS, 'native Windows')
+class NativeWindowsDeliveryTests(unittest.TestCase):
+    def test_auto_commit_accept_with_installer_defaults(self):
+        check_windows_delivery(self, 'true')
+
+
+@unittest.skipIf(winplat.IS_WINDOWS, 'POSIX contract')
+class PosixDeliveryPinTests(unittest.TestCase):
+    def test_exact_refusal_messages_and_raw_hashing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            co = delivery_fixture(Path(temp))
+            for value in ('true', 'input'):
+                git(co.workspace, 'config', 'core.autocrlf', value)
+                with self.assertRaises(ValueError) as caught:
+                    co._commit_refusals(['run.txt'])
+                self.assertEqual(str(caught.exception), 'auto_commit refuses core.autocrlf; unset it (or set it to false in this repository) and accept again')
+            git(co.workspace, 'config', 'core.autocrlf', 'false')
+            with self.assertRaises(ValueError) as caught:
+                co._commit_refusals(['run.txt'])
+            self.assertEqual(str(caught.exception), 'auto_commit refuses core.fileMode false; set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)')
+            git(co.workspace, 'config', 'core.fileMode', 'true')
+            for attrs in ('text', 'text eol=lf'):
+                (co.workspace / '.gitattributes').write_bytes(('run.txt ' + attrs + '\n').encode())
+                with self.assertRaisesRegex(ValueError, 'auto_commit refuses content-transforming attributes:'):
+                    co._commit_refusals(['run.txt'])
+            (co.workspace / '.gitattributes').unlink()
+            (co.workspace / 'run.txt').write_bytes(b'raw\r\n')
+            tree = co._manifest_tree(rc.git_snapshot(co.workspace)[1])
+            self.assertEqual(git(co.workspace, 'show', tree + ':run.txt'), b'raw\r\n')
 
 
 if __name__ == '__main__':
