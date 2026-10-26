@@ -138,7 +138,12 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
         before, after = old.get(key, {}), new.get(key, {})
         old_path, new_path = Path(before.get('path', '')), Path(after.get('path', ''))
         old_version = None
-        if key == 'claude_bin':
+        same_path_claude = (winplat.IS_WINDOWS and key == 'claude_bin' and old_path == new_path
+                            and new_path.name.lower() == 'claude.exe' and not before.get('node') and not after.get('node'))
+        if same_path_claude:
+            # A native installer may replace a plain copy/hardlink in .local/bin.
+            old_version = cli_release_version(before.get('version', ''))
+        elif key == 'claude_bin':
             # Native Claude releases are siblings under one versions directory.
             if old_path.parent.name != 'versions' or old_path.parent != new_path.parent: return None
             old_version = cli_release_version(old_path.stem if winplat.IS_WINDOWS and old_path.suffix.lower() == '.exe' else old_path.name)
@@ -148,7 +153,8 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
             return None
         if winplat.IS_WINDOWS and before.get('node') != after.get('node'): return None
         new_version = cli_release_version(claude_cli_version(after if winplat.IS_WINDOWS else str(new_path)))
-        if new_version is None or (old_version is not None and (new_version <= old_version or new_version != path_version)):
+        if new_version is None or (old_version is not None and (new_version <= old_version or
+                (not same_path_claude and new_version != path_version))):
             return None
         # Codex's in-place updater removes the old executable; its old version
         # cannot be recovered from the frozen path/hash alone.

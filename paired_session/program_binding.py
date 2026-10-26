@@ -36,6 +36,9 @@ def launch_vector(value, workspace=None, path_env=None):
     if not winplat.IS_WINDOWS: return [str(value)]
     workspace = Path(workspace or Path.cwd())
     path_env = os.environ.get('PATH', '') if path_env is None else path_env
+    raw = Path(value).expanduser()
+    if not raw.is_absolute() and '/' not in str(value) and '\\' not in str(value) and not _windows_which(str(value), path_env):
+        raise ValueError(f'{value} not found on PATH')
     binary = resolve_binary(str(value), workspace, path_env)
     suffix = binary.suffix.lower()
     if suffix == '.exe' or (binary.parent.name == 'versions' and re.fullmatch(r'\d+\.\d+\.\d+', binary.name)):
@@ -48,7 +51,13 @@ def launch_vector(value, workspace=None, path_env=None):
         if native.is_file(): return [str(native.resolve())]
         package, entry = (('@anthropic-ai/claude-code', 'cli.js') if name == 'claude' else
                           ('@openai/codex', 'bin/codex.js'))
-        script = binary.parent / 'node_modules' / package / entry
+        package_root = binary.parent / 'node_modules' / package
+        manifest = package_root / 'package.json'
+        if manifest.is_file():
+            declared = json.loads(manifest.read_text(encoding='utf-8')).get('bin')
+            declared = declared.get(name) if isinstance(declared, dict) else declared
+            if isinstance(declared, str) and declared: entry = declared
+        script = package_root / entry
     else:
         raise ValueError(f'unsupported Windows CLI entry: {binary}; configure a native .exe or known npm shim')
     node = binary.parent / 'node.exe'

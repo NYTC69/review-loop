@@ -1,5 +1,7 @@
 """W3: shell-free Windows CLI binding; POSIX record and argument contracts."""
 import hashlib
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -65,6 +67,33 @@ class WindowsResolutionTests(unittest.TestCase):
             self.assertEqual(pb.launch_vector(str(release)), [str(release)])
         arbitrary = self.put(self.root / 'custom.exe', b'custom')
         self.assertEqual(pb.launch_vector(str(arbitrary)), [str(arbitrary)])
+
+    def test_npm_manifest_bin_entries_and_fallbacks(self):
+        for name in self.shims:
+            package = self.bin / 'node_modules' / ('@anthropic-ai/claude-code' if name == 'claude' else '@openai/codex')
+            manifest = package / 'package.json'
+            custom = self.put(package / 'dist/custom entry.js', b'// custom\n')
+            for declared in ({name: 'dist/custom entry.js'}, 'dist/custom entry.js'):
+                manifest.write_text(json.dumps({'bin': declared}), encoding='utf-8')
+                records, issue = self.snapshot()
+                self.assertIsNone(issue)
+                self.assertEqual(records[name + '_bin']['path'], str(custom))
+                self.assertEqual(pb.program_argv(records[name + '_bin']), [str(self.node), str(custom)])
+            for metadata in ({}, {'bin': {'other': 'unused.js'}}):
+                manifest.write_text(json.dumps(metadata), encoding='utf-8')
+                self.assertEqual(pb.launch_vector(str(self.shims[name])), [str(self.node), str(self.scripts[name])])
+            manifest.write_text(json.dumps({'bin': {name: 'missing.js'}}), encoding='utf-8')
+            self.assertIn('missing.js', self.snapshot()[1])
+            manifest.unlink()
+
+    def test_missing_cli_binding_reports_path_search(self):
+        for name in self.shims:
+            self.shims[name].unlink()
+            # A workspace file must not turn a failed PATH search into an npm layout error.
+            self.put(self.workspace / name, b'workspace shim')
+            kwargs = {name: name}
+            self.assertEqual(self.snapshot(**kwargs)[1], name + ' not found on PATH')
+            self.put(self.shims[name], b'shim')
 
     def test_node_from_path_and_missing_node_or_script(self):
         self.node.unlink()
@@ -169,13 +198,62 @@ class WindowsResolutionTests(unittest.TestCase):
                 winplat.spawn_group(argv + ['x' * 32767], 'too-large')
             spawn.assert_not_called()
 
+    def test_native_claude_same_path_update(self):
+        path = str(self.root / '.local/bin/claude.exe')
+        old = {'claude_bin': {'path': path, 'sha256': 'old'}}
+        new = {'claude_bin': {'path': path, 'sha256': 'new'}}
+        with patch.object(rc, 'claude_cli_version', return_value='2.1.293 (Claude Code)') as version:
+            update = rc.normal_cli_updates(old, new)
+            self.assertEqual(update[0]['new_version'], '2.1.293')
+            self.assertIsNone(update[0]['old_version'])
+            self.assertEqual(version.call_args.args[0], new['claude_bin'])
+            old['claude_bin']['version'] = '2.1.281 (Claude Code)'
+            self.assertEqual(rc.normal_cli_updates(old, new)[0]['old_version'], '2.1.281')
+            for frozen in ('2.1.293', '2.1.294'):
+                old['claude_bin']['version'] = frozen
+                self.assertIsNone(rc.normal_cli_updates(old, new))
+            del old['claude_bin']['version']
+            with patch.object(winplat, 'IS_WINDOWS', False):
+                self.assertIsNone(rc.normal_cli_updates(old, new))
+            new['claude_bin']['path'] = str(self.root / 'other/claude.exe')
+            self.assertIsNone(rc.normal_cli_updates(old, new))
+            new['claude_bin']['path'] = path
+        for output in ('unknown', '2.1.294-beta', '2.1.294-rc.1'):
+            with patch.object(rc, 'claude_cli_version', return_value=output):
+                self.assertIsNone(rc.normal_cli_updates(old, new))
+        new['claude_bin']['node'] = {'path': str(self.node), 'sha256': 'node'}
+        self.assertIsNone(rc.normal_cli_updates(old, new))
+
+    def test_oversize_command_is_refused_with_measured_size(self):
+        records, issue = self.snapshot()
+        self.assertIsNone(issue)
+        co = rc.Coordinator.__new__(rc.Coordinator)
+        co.state = {'operator_programs': records}
+        co._role_vendor = Mock(return_value='claude')
+        co._claude_command = Mock(side_effect=lambda *args: ['claude', '--settings', 'x' * 32767])
+        argv = pb.program_argv(records['claude_bin']) + ['--settings', 'x' * 32767]
+        size = len(subprocess.list2cmdline(argv).encode('utf-16-le')) // 2 + 1
+        out = io.StringIO()
+        # Exercise the real main() error boundary without dispatching a child or taking platform locks.
+        lock = SimpleNamespace(after_mkdir=lambda: None, whole=False)
+        with patch.object(rc, 'ProbeParentLock', return_value=contextlib.nullcontext(lock)), \
+                patch.object(rc, 'run_lease', return_value=contextlib.nullcontext()), \
+                patch.object(rc, '_execute_locked', side_effect=lambda args: co.command('reviewer', self.gate, True)), \
+                patch.object(rc.subprocess, 'Popen') as spawn, contextlib.redirect_stdout(out):
+            code = rc.main(['status', '--workspace', str(self.workspace), '--run-dir', str(self.root / 'run'),
+                            '--workitem', str(self.gate), '--gate-prompt', str(self.gate)])
+        self.assertEqual(code, 2)
+        self.assertIn(f'REFUSED: Windows CLI command line is {size} UTF-16 units (CreateProcess limit 32767)', out.getvalue())
+        spawn.assert_not_called()
+
     def test_cli_env_preserves_windows_requirements(self):
         names = ('SystemRoot PATHEXT USERPROFILE APPDATA LOCALAPPDATA ComSpec TEMP TMP HOMEDRIVE HOMEPATH '
                  'CLAUDE_CODE_GIT_BASH_PATH').split()
         values = {name: 'value ' + name for name in names}
         with patch.dict(os.environ, values):
             env = rc.cli_env()
-        self.assertEqual({name: env[name] for name in names}, values)
+        upper = {key.upper(): value for key, value in env.items()}
+        self.assertEqual({name: upper[name.upper()] for name in names}, values)
 
 
 @unittest.skipIf(winplat.IS_WINDOWS, 'POSIX contract')
