@@ -189,6 +189,20 @@ def devnull_path() -> str:
     return os.devnull if IS_WINDOWS else '/dev/null'
 
 
+def claude_rule_path(path) -> str:
+    """The absolute path inside a Claude Code `Edit(//...)` rule, without the leading `//`. POSIX: the path without its leading
+    slash, as the call sites built it. Windows: Claude Code's documented form, drive letter lower-case without the colon and
+    forward slashes (C:\\Users\\Some User -> c/Users/Some User); spaces stay literal."""
+    if not IS_WINDOWS:
+        return Path(path).as_posix().lstrip('/')
+    from pathlib import PureWindowsPath
+    windows = PureWindowsPath(str(path))
+    rest = windows.as_posix()[len(windows.drive):].lstrip('/')
+    if len(windows.drive) == 2 and windows.drive[1] == ':':
+        return windows.drive[0].lower() + '/' + rest
+    return windows.as_posix().lstrip('/')   # a UNC path: //server/share/... -> server/share/...
+
+
 def read_regular_file_nofollow(path) -> bytes:
     """Read a regular file without following a link; ValueError when it cannot be opened that way, is not a regular file or
     changed while reading. POSIX: an O_NOFOLLOW open checked with fstat. Windows (no O_NOFOLLOW): lstat refuses a symlink,

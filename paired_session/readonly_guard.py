@@ -21,10 +21,11 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from paired_session import candidate_tree, claude_author_probe
+    from paired_session import candidate_tree, claude_author_probe, winplat
 except ImportError:   # run as a script from the package directory
     import candidate_tree
     import claude_author_probe
+    import winplat
 
 
 def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None, raw: bool = False) -> str:
@@ -57,7 +58,11 @@ def marks(workspace: Path) -> dict:
 
 def perms(workspace: Path) -> dict:
     """roperm: the permission bits (st_mode & 0o7777) of every tracked and non-ignored untracked regular file. Git records only
-    the executable bit, so a chmod 0644 -> 0600 is invisible to the tree; one lstat per file, no content read."""
+    the executable bit, so a chmod 0644 -> 0600 is invisible to the tree; one lstat per file, no content read.
+    WI-WIN: NTFS has no such bits, so on Windows nothing is recorded (and restore() never chmods); content and existence are the
+    tree's check, size and mtime of ignored entries the ignored-entry check's."""
+    if winplat.IS_WINDOWS:
+        return {}
     result = {}
     for name in filter(None, _git(workspace, 'ls-files', '-co', '--exclude-standard', '-z', raw=True).split('\0')):
         try: info = os.lstat(workspace / name)

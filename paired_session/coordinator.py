@@ -3176,12 +3176,13 @@ class Coordinator:
             raise ValueError('the workspace must not be the filesystem root, the home dir or an ancestor of it, hold the context dir, '
                              'sit inside the context, run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), '
                              'or hold rule metacharacters')
-        rule = lambda path, tail: f'Edit(//{path.as_posix().lstrip("/")}{tail})'
+        rule = lambda path, tail: f'Edit(//{winplat.claude_rule_path(path)}{tail})'   # WI-WIN: //c/Users/... on Windows
         # No '//parent/*' sibling deny: gitignore-style matching could cover the workspace itself; siblings are not allowed anyway.
         return [rule(workspace, '/**')], [rule(context, '/**'), rule(home / '.cache' / 'review-loop' / 'probe-pass', '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]   # P0-4 V4
 
     def _claude_sandbox_settings(self, role: str) -> dict:
-        """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
+        """Strict OS boundary for Claude Bash, independent of Claude tool permissions. WI-WIN D1: native Windows has no Claude
+        Code Bash sandbox, so there it is off (the same nested shape, which helpers read); tool permissions still bound the roles."""
         secret_names = set(self._probe_env_names) if self._probe_env_names is not None else {
             name for name in os.environ
             if SECRET_ENV_NAME.search(name)
@@ -3199,8 +3200,8 @@ class Coordinator:
         return {
             'disableAllHooks': True,
             'sandbox': {
-                'enabled': True,
-                'failIfUnavailable': True,
+                'enabled': not winplat.IS_WINDOWS,
+                'failIfUnavailable': not winplat.IS_WINDOWS,
                 'allowUnsandboxedCommands': False,
                 'autoAllowBashIfSandboxed': False,
                 'excludedCommands': [],
@@ -3216,7 +3217,7 @@ class Coordinator:
                 },
             },
             'permissions': {
-                'deny': [f'Edit(//{self.run_dir.as_posix().lstrip("/")}/**)'],
+                'deny': [f'Edit(//{winplat.claude_rule_path(self.run_dir)}/**)'],
             },
         }
 
@@ -9742,6 +9743,28 @@ def restores_run(args: argparse.Namespace) -> bool:
     return args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
+def windows_refusal(args: argparse.Namespace) -> Optional[str]:
+    """WI-WIN D1/D2: what native Windows does not support, refused before any lease, run dir, state write or model turn.
+    None on POSIX. A saved run counts as strict as the Coordinator reads it (anything but efficient); an unreadable state is
+    left to the Coordinator's own report."""
+    if not winplat.IS_WINDOWS:
+        return None
+    if args.detach:
+        return '--detach is not supported on Windows; run the command in the foreground'
+    if args.action == 'permission-probe':
+        return ('permission-probe is not supported on Windows: it verifies the Claude Code Bash sandbox, which native Windows '
+                'does not have; the default efficient mode needs no probe')
+    if args.safety_mode == 'strict':
+        return ('strict safety mode (--strict, or safety_mode "strict" in the --config profile) is not supported on Windows: '
+                'Claude Code has no Bash sandbox there; use the default efficient mode')
+    try: config = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config') if restores_run(args) else None
+    except (OSError, ValueError, AttributeError): config = None
+    if isinstance(config, dict) and config.get('safety_mode', 'strict') != 'efficient':
+        return ('strict safety mode is not supported on Windows: this run was created strict; continue it on macOS, '
+                'or abort it and start a new run in the default efficient mode')
+    return None
+
+
 def validate_allowed_models(allowed) -> None:
     if allowed is not None and not (
             isinstance(allowed, dict) and set(allowed) <= {'codex', 'claude'} and all(
@@ -10129,6 +10152,9 @@ def main(argv=None) -> int:
         return 2
     args = normalize_cli_paths(args)
     args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
+    if refusal := windows_refusal(args):   # WI-WIN: None on POSIX
+        print('REFUSED: ' + refusal)
+        return 2
     if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
         try: return stop_detached(args.run_dir)
         except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
