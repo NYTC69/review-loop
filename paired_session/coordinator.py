@@ -322,6 +322,16 @@ def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
             sleep(min(0.05, remaining))
 
 
+def probe_group(pid: int, job: Optional[str] = None) -> None:
+    """WI-WIN W2b: is a turn's process tree gone? ProcessLookupError when gone; returns while alive; another OSError when
+    it cannot be verified. POSIX: retry_killpg_eperm(pid), looked up here so a test can patch it; Windows: the job named
+    in the receipt (winplat.probe_job)."""
+    if winplat.IS_WINDOWS:
+        winplat.probe_job(job)
+        return
+    retry_killpg_eperm(pid)
+
+
 def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') -> Optional[dict]:
     """Classify only explicit provider quota/rate-limit failures; other CLI errors stay billable."""
     if returncode == 0:
@@ -1397,7 +1407,7 @@ def run_lease(run_dir: Path):
     root = Path(run_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / '.coordinator.lock'
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
     try:
         fd = os.open(lock_path, flags, 0o600)
     except OSError as exc:
@@ -1485,7 +1495,7 @@ def workspace_lease(workspace: Path, run_dir: Path):
     if not private:
         raise RunLeaseError('workspace lease directory is not a private directory owned by this user')
 
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
     try:
         fd = os.open(lock_path, flags, 0o600)
     except OSError as exc:
@@ -6050,28 +6060,28 @@ class Coordinator:
         never-started turn; no pid, EPERM or any other error is refused (b296-f1d)."""
         receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}, self.state.get('uncertain_active') or {}]
                         if row.get('sequence') == sequence), {})
-        pid = receipt.get('pid')
+        pid, job = receipt.get('pid'), receipt.get('job')   # WI-WIN: Windows receipts also name the turn's Job Object
         if not kill:   # b296-f1d: the sweep deletes only on an explicit ESRCH or a recorded never-started turn; any unknown state keeps it
             if type(pid) is not int and any(row.get('sequence') == sequence and row.get('child_created') is False
                                             for row in self.state.get('spawn_failures', [])):
                 return   # _invoke_once recorded that the CLI process was never created
-            if type(pid) is not int or pid <= 1:
+            if type(pid) is not int or pid <= 1 or (winplat.IS_WINDOWS and not job):
                 raise RuntimeError('no verifiable pid is recorded for that turn')
-            try: retry_killpg_eperm(pid)   # a null-signal probe; no signal is ever sent on this path
+            try: probe_group(pid, job)   # a null-signal probe; no signal is ever sent on this path
             except ProcessLookupError: return
             except OSError as exc: raise RuntimeError(f'the process group of that turn cannot be verified gone ({exc}; its pid may be reused)') from exc
             raise RuntimeError('the process group of that turn still answers (alive, or its pid reused)')
-        if type(pid) is not int or pid <= 1:
+        if type(pid) is not int or pid <= 1 or (winplat.IS_WINDOWS and not job):
             return   # no child was started
         deadline = time.monotonic() + 3
         while True:
-            try: retry_killpg_eperm(pid)
+            try: probe_group(pid, job)
             except ProcessLookupError: return
             except PermissionError: return   # macOS: a group of our own uid left only with unreaped zombies answers EPERM; a zombie cannot act
             except OSError as exc: raise RuntimeError('cannot verify that the read-only role process group stopped; scratch kept') from exc
             if time.monotonic() > deadline:
                 raise RuntimeError('the read-only role process group outlived its turn; scratch kept')
-            try: os.killpg(pid, signal.SIGKILL)
+            try: winplat.kill_group(pid, job)
             except OSError: pass
             time.sleep(0.05)
 
@@ -6324,7 +6334,7 @@ class Coordinator:
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
         watched = (run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
                    if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR') else None)
-        process = None
+        process = job = None
         try:
             with stdout_path.open('wb') as out, stderr_path.open('wb') as err:
                 # Count durably before entering Popen: a crash during Popen is
@@ -6338,14 +6348,15 @@ class Coordinator:
                 self.save()
                 DETACH_TURN['spawning'] = True   # detach: a stop in this span waits until the group is known (no signal mask:
                 try:                              # a child would inherit it and could not be terminated)
-                    process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
-                                               stdout=out, stderr=err, start_new_session=True)
+                    process, job = winplat.spawn_group(command, f'{self.run_dir.name}-{seq:03d}', cwd=active_workspace,
+                                                       env=env, stdin=subprocess.PIPE, stdout=out, stderr=err)
                     DETACH_TURN['group'] = process.pid
                 finally:
                     DETACH_TURN['spawning'] = False
                     if DETACH_TURN.pop('stop', False):   # a stop noted while spawning: kill the new group, unwind below
                         stop_turn_group()
                 receipt['pid'] = process.pid
+                if job: receipt['job'] = job   # WI-WIN: Windows only; resume finds the tree by this name
                 self.state['active'] = receipt
                 self.save()
         except BaseException as exc:
@@ -6358,7 +6369,7 @@ class Coordinator:
                 except BaseException:
                     pass
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    winplat.kill_group(process.pid, job)
                 except OSError:
                     pass
                 try:
@@ -6397,7 +6408,7 @@ class Coordinator:
             process.communicate(prompt.encode(), timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                winplat.kill_group(process.pid, job)
             except ProcessLookupError:
                 pass
             except OSError:
@@ -6412,7 +6423,7 @@ class Coordinator:
             except BaseException:
                 pass
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                winplat.kill_group(process.pid, job)
             except OSError:
                 pass
             try:
@@ -7638,15 +7649,15 @@ class Coordinator:
         before, code, reason = git_snapshot(self.workspace)[0], None, ''
         try:
             with open(log, 'wb') as out:
-                proc = subprocess.Popen(['/bin/sh', '-c', self.args.test_command], cwd=self.workspace, stdout=out,
-                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
-                                        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                proc, job = winplat.spawn_group(['/bin/sh', '-c', self.args.test_command], f'{self.run_dir.name}-test-{label}',
+                                                cwd=self.workspace, stdout=out, stderr=subprocess.STDOUT,
+                                                stdin=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
                 try:
                     code = proc.wait(timeout=self.args.timeout)
                 except subprocess.TimeoutExpired:
                     reason = f'timed out after {self.args.timeout}s'
                 finally:   # before the snapshot: no leftover child of the command (a test server) may change the tree later
-                    try: os.killpg(proc.pid, signal.SIGKILL)
+                    try: winplat.kill_group(proc.pid, job)
                     except (ProcessLookupError, PermissionError): pass   # the group is already gone
                     proc.wait()
         except OSError as exc:
@@ -9072,7 +9083,7 @@ class Coordinator:
                 # Provider CLIs start a new session, making the recorded leader
                 # pid the group id. This detects remaining members of that group;
                 # detached descendants are outside this check.
-                retry_killpg_eperm(pid)
+                probe_group(pid, uncertain.get('job'))
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError):
@@ -9371,13 +9382,13 @@ class Coordinator:
             self.write_usage()
             return 'HOLD'
         pid = uncertain.get('pid') if uncertain else None
-        if uncertain and (type(pid) is not int or pid <= 1 or pid > 2**31 - 1):
+        if uncertain and (type(pid) is not int or pid <= 1 or pid > 2**31 - 1 or (winplat.IS_WINDOWS and not uncertain.get('job'))):
             return self.hold('uncertain CLI receipt has no verifiable pid; process existence cannot be verified; operator/manual resolution is required')
         if type(pid) is int:
             try:
                 # Each provider CLI starts a new session, so its pid is also the
                 # process-group id. Check the group to catch surviving descendants.
-                retry_killpg_eperm(pid)
+                probe_group(pid, uncertain.get('job'))
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError):

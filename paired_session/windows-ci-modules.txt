@@ -1,2 +1,3 @@
 test_winplat
 test_winplat_locks
+test_winjob

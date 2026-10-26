@@ -24,7 +24,8 @@ lease = rc.run_lease(Path(run)) if kind == 'run' else rc.workspace_lease(Path(wo
 try:
     with lease:
         if mode == 'hold':
-            Path(ready).write_bytes(str(os.getpid()).encode('ascii'))
+            Path(ready + '.tmp').write_bytes(str(os.getpid()).encode('ascii'))
+            os.replace(ready + '.tmp', ready)   # published whole: the parent never reads an empty pid file
             sys.stdin.buffer.read(1)
         print(json.dumps({'acquired': True}))
 except rc.RunLeaseError as exc:

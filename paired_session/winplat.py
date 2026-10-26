@@ -13,6 +13,7 @@ import re
 import stat
 import tempfile
 import time
+from typing import Optional
 
 IS_WINDOWS = os.name == 'nt'
 _REPARSE = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
@@ -229,6 +230,70 @@ def read_regular_file_nofollow(path) -> bytes:
     if any(getattr(before, field) != getattr(after, field) for field in fields):
         raise ValueError('role source changed while reading')
     return content
+
+
+def job_name(tag: str) -> str:
+    """W2b: a Job Object name unique to one dispatch: Local\\review-loop-<tag>-<random>, file-name safe characters only."""
+    import uuid
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', tag)[:120]
+    return f'Local\\review-loop-{safe}-{uuid.uuid4().hex[:12]}'
+
+
+def spawn_group(argv: list, tag: str, **kwargs):
+    """W2b: start argv as the leader of its own process tree; (process, job name or None). POSIX: today's
+    subprocess.Popen(argv, ..., start_new_session=True), no job. Windows: through winjob.py, which joins a fresh named Job
+    Object before starting argv; a missing argv[0] raises FileNotFoundError here, as Popen does on POSIX."""
+    import subprocess
+    if not IS_WINDOWS:
+        return subprocess.Popen(argv, **kwargs, start_new_session=True), None
+    import errno
+    import shutil
+    import sys
+    if shutil.which(argv[0]) is None:
+        raise FileNotFoundError(errno.ENOENT, 'No such file or directory', argv[0])
+    name = job_name(tag)
+    launcher = [sys.executable, '-I', str(Path(__file__).resolve().with_name('winjob.py')), name, '--', *argv]
+    flags = kwargs.pop('creationflags', 0) | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    return subprocess.Popen(launcher, creationflags=flags, **kwargs), name
+
+
+def _job_kernel():
+    try:
+        from paired_session import winjob
+    except ImportError:   # the coordinator's flat-import mode
+        import winjob
+    return winjob.Kernel()
+
+
+def kill_group(pid: int, job: Optional[str] = None) -> None:
+    """W2b: kill a process tree spawn_group started. POSIX: os.killpg(pid, SIGKILL) (ProcessLookupError when gone).
+    Windows: TerminateJobObject on the job opened by name; ProcessLookupError when no job of that name exists."""
+    if not IS_WINDOWS:
+        import signal
+        os.killpg(pid, signal.SIGKILL)
+        return
+    if not job:
+        raise ProcessLookupError('no job name is recorded for that process tree')
+    kernel = _job_kernel()
+    handle = kernel.open(job)
+    try:
+        kernel.terminate(handle, 1)
+    finally:
+        kernel.close(handle)
+
+
+def probe_job(job: Optional[str]) -> None:
+    """W2b, Windows: return while the job has a live process; ProcessLookupError when it is gone (no job of that name, or
+    no active process left). Any other failure raises OSError. The POSIX probe is coordinator.retry_killpg_eperm."""
+    if not job:
+        raise OSError('no job name is recorded for that process tree')
+    kernel = _job_kernel()
+    handle = kernel.open(job)
+    try:
+        if kernel.active(handle) == 0:
+            raise ProcessLookupError(f'job {job} has no active process')
+    finally:
+        kernel.close(handle)
 
 
 def write_text(path, value: str) -> None:
