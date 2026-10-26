@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 PROBE = 'claude-author-filesystem-v1'
 TREE_PREFIX = 'paired-session-claude-probe-tree-'   # FIELD-13 E: outside the /tmp/paired-session-author-probe-* glob below, so a tree in /tmp is never a host-wide name
-NO_SCHEMA = SimpleNamespace(read_text=lambda: '{}')   # lets the coordinator build an author argv just to read its surface
+NO_SCHEMA = SimpleNamespace(read_text=lambda encoding=None: '{}')   # lets the coordinator build an author argv just to read its surface
 SETTLE_SECONDS = 1.0   # the tree is listed twice this far apart: a late or detached write shows up as a difference
 # Claude Code's permission-denied tool_result wording ("Claude requested permissions to <use Bash|write to PATH>, but you haven't granted
 # it yet"), as the reviewer probe in coordinator.py and the test_real_coordinator.py fixture already match it. The repo records no CLI

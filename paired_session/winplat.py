@@ -1,0 +1,185 @@
+"""WI-WIN: the platform seam for native Windows (stdlib + ctypes only).
+
+On POSIX every helper runs exactly the code its call site ran before, so macOS behaviour and bytes do not change.
+On Windows, where a POSIX hardening (0700 + uid ownership, O_NOFOLLOW reads) has no cheap equivalent, the helper
+uses the simple reasonable check: a real directory or file (no symlink, no reparse point) under the user's own
+profile or temp directory. Users and models are assumed to act in good faith; these are guards against mistakes.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+import stat
+import tempfile
+import time
+
+IS_WINDOWS = os.name == 'nt'
+_REPARSE = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+
+
+def user_token() -> str:
+    """The per-user part of lock, temp and record names: the uid on POSIX, the (file-name safe) user name on Windows."""
+    if not IS_WINDOWS:
+        return str(os.getuid())
+    import getpass
+    return re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('USERNAME') or getpass.getuser()) or 'user'
+
+
+def uid():
+    """The operator id written into records: os.getuid() on POSIX (an int, as before), the user name on Windows."""
+    return os.getuid() if not IS_WINDOWS else user_token()
+
+
+def _reparse_or_link(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_file_attributes', 0) & _REPARSE)
+
+
+def _under_user_roots(path: Path) -> bool:
+    target = Path(path).resolve()
+    for root in (Path.home(), Path(tempfile.gettempdir())):
+        root = root.resolve()
+        if target == root or root in target.parents:
+            return True
+    return False
+
+
+def owned(info: os.stat_result) -> bool:
+    """This user owns the entry: st_uid on POSIX; on Windows st_uid is always 0, so ownership is not checked."""
+    return IS_WINDOWS or info.st_uid == os.getuid()
+
+
+def check_private_dir(path, mask: int = 0o077) -> bool:
+    """POSIX: lstat(path) is a directory owned by this uid with none of `mask`'s permission bits (the call sites' checks).
+    Windows: a real directory (no symlink, no reparse point) under the user's profile or temp root. lstat errors raise."""
+    info = os.lstat(path)
+    if not IS_WINDOWS:
+        return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not stat.S_IMODE(info.st_mode) & mask
+    return stat.S_ISDIR(info.st_mode) and not _reparse_or_link(info) and _under_user_roots(Path(path))
+
+
+def private_file_ok(info: os.stat_result, mask: int = 0o077) -> bool:
+    """A no-follow stat of a private regular file: POSIX owner + mode as the call sites check; Windows: a regular file that
+    is no symlink or reparse point."""
+    if not IS_WINDOWS:
+        return stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not stat.S_IMODE(info.st_mode) & mask
+    return stat.S_ISREG(info.st_mode) and not _reparse_or_link(info)
+
+
+def pid_alive(pid: int) -> bool:
+    """POSIX: os.kill(pid, 0) (a PermissionError means alive; other OSErrors raise). Windows: OpenProcess +
+    GetExitCodeProcess == STILL_ACTIVE; os.kill there would terminate the process."""
+    if not IS_WINDOWS:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    if not 0 < pid <= 0xFFFFFFFF:
+        return False
+    handle = kernel32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5   # ERROR_ACCESS_DENIED: it exists; anything else (87: no such pid) is gone
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == 259   # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def fsync_dir(path) -> None:
+    """Flush a directory entry after a rename (POSIX); Windows cannot open a directory for fsync, so it is a no-op."""
+    if IS_WINDOWS:
+        return
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def replace(src, dst) -> None:
+    """os.replace; on Windows a reader (antivirus, indexer, another reader) briefly holding dst gives a sharing violation,
+    so retry a few times before raising."""
+    if not IS_WINDOWS:
+        os.replace(src, dst)
+        return
+    for attempt in range(10):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def temp_root() -> Path:
+    """The shared temp root the POSIX call sites name literally (/tmp); the user's temp directory on Windows."""
+    return Path(tempfile.gettempdir()) if IS_WINDOWS else Path('/tmp')
+
+
+def devnull_path() -> str:
+    """The null device for git config values (core.hooksPath, core.attributesFile, GIT_CONFIG_GLOBAL)."""
+    return os.devnull if IS_WINDOWS else '/dev/null'
+
+
+def read_regular_file_nofollow(path) -> bytes:
+    """Read a regular file without following a link; ValueError when it cannot be opened that way, is not a regular file or
+    changed while reading. POSIX: an O_NOFOLLOW open checked with fstat. Windows (no O_NOFOLLOW): lstat refuses a symlink,
+    reparse point or non-regular file, then open, read and compare size and mtime before and after."""
+    if IS_WINDOWS:
+        try:
+            before = os.lstat(path)
+        except OSError as exc:
+            raise ValueError('role source cannot be opened without following links') from exc
+        if _reparse_or_link(before):
+            raise ValueError('role source cannot be opened without following links')
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('role source is not a regular file')
+        try:
+            with open(path, 'rb') as stream:
+                content = stream.read()
+            after = os.lstat(path)
+        except OSError as exc:
+            raise ValueError('role source cannot be opened without following links') from exc
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or len(content) != after.st_size:
+            raise ValueError('role source changed while reading')
+        return content
+    nofollow = getattr(os, 'O_NOFOLLOW', None)
+    if nofollow is None:
+        raise ValueError('role source no-follow reads are unavailable')
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, 'O_CLOEXEC', 0) |
+                     getattr(os, 'O_NONBLOCK', 0))
+    except OSError as exc:
+        raise ValueError('role source cannot be opened without following links') from exc
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode):
+        os.close(fd)
+        raise ValueError('role source is not a regular file')
+    with os.fdopen(fd, 'rb') as stream:
+        content = stream.read()
+        after = os.fstat(stream.fileno())
+    fields = ('st_dev', 'st_ino', 'st_mtime_ns', 'st_ctime_ns', 'st_size')
+    if any(getattr(before, field) != getattr(after, field) for field in fields):
+        raise ValueError('role source changed while reading')
+    return content
+
+
+def write_text(path, value: str) -> None:
+    """Path.write_text as UTF-8 with LF kept as LF on every platform (Python 3.9's write_text has no newline argument)."""
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(value)

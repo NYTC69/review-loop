@@ -19,6 +19,27 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+IS_WINDOWS = os.name == "nt"   # WI-WIN: the two helpers below copy paired_session/winplat.py (this script runs standalone)
+
+
+def user_token():
+    if not IS_WINDOWS:
+        return str(os.getuid())
+    import getpass
+    return re.sub(r"[^A-Za-z0-9._-]", "_", os.environ.get("USERNAME") or getpass.getuser()) or "user"
+
+
+def private_dir(path):
+    """POSIX: a directory owned by this uid with no group/other access. Windows: a real directory (no symlink or
+    reparse point) under the user's profile or temp directory."""
+    info = os.lstat(path)
+    if not IS_WINDOWS:
+        return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        return False
+    target = Path(path).resolve()
+    return any(target == root or root in target.parents
+               for root in (Path.home().resolve(), Path(tempfile.gettempdir()).resolve()))
 
 
 def headings(text):
@@ -60,7 +81,7 @@ def local_path(root, relative):
 
 
 def resolve(root, runtime, stage):
-    config = json.loads((root / "docs/protocol/loading.json").read_text())
+    config = json.loads((root / "docs/protocol/loading.json").read_text(encoding="utf-8"))
     roots = config["stages"][stage][runtime]
     resolved = []
     done, visiting = set(), set()
@@ -96,7 +117,7 @@ def resolve(root, runtime, stage):
 def outside_root():
     """The per-user temp-area root for bundles that must stay out of the product worktree (paired-session entry,
     FIELD-18). The last component is not resolved: write_bundle refuses it when it is a symlink."""
-    return Path(tempfile.gettempdir()).resolve() / f"review-loop-protocol-{os.getuid()}"
+    return Path(tempfile.gettempdir()).resolve() / f"review-loop-protocol-{user_token()}"
 
 
 def checked_outside_root(create=False):
@@ -107,8 +128,7 @@ def checked_outside_root(create=False):
             root.mkdir(mode=0o700)
         except FileExistsError:
             pass
-    info = os.lstat(root)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if not private_dir(root):
         raise ValueError(f"protocol temp root {root} must be a directory owned by this user with mode 0700")
     return root
 
@@ -132,7 +152,7 @@ def write_bundle(path, content):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", prefix=".protocol-", suffix=".tmp",
+            mode="w", encoding="utf-8", newline="", prefix=".protocol-", suffix=".tmp",
             dir=target.parent, delete=False,
         ) as output:
             temporary = Path(output.name)
@@ -184,6 +204,10 @@ def main(argv=None):
                 "bytes": len(rendered.encode("utf-8")),
                 "lines": len(rendered.splitlines()),
             }, sort_keys=True))
+        elif IS_WINDOWS:   # the console/pipe code page may not encode the docs; write the bundle's UTF-8 bytes with LF
+            sys.stdout.flush()
+            sys.stdout.buffer.write(rendered.encode("utf-8"))
+            sys.stdout.buffer.flush()
         else:
             print(rendered, end="")
     except (OSError, ValueError, KeyError, TypeError) as exc:

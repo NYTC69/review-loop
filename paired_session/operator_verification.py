@@ -11,6 +11,10 @@ import stat
 import tempfile
 from datetime import datetime
 from pathlib import Path
+try:
+    from paired_session import winplat
+except ModuleNotFoundError:
+    import winplat
 
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_TEXT_BYTES = 4096
@@ -125,7 +129,7 @@ def attach(co, args, tree_sha256: str, write_json) -> str:
         raise ValueError('log sha256 mismatch: the log file hashes to ' + digest)
     void_stale(co, tree_sha256, write_json)
     record_id = f"V{len(state.get('operator_verifications', [])) + 1:03d}"
-    row = {'id': record_id, 'actor': 'operator', 'uid': os.getuid(), 'time': datetime.now().astimezone().isoformat(),
+    row = {'id': record_id, 'actor': 'operator', 'uid': winplat.uid(), 'time': datetime.now().astimezone().isoformat(),
            'phase': state.get('phase'), 'command': command, 'cwd': str(cwd), 'exit_code': args.exit_code,
            'log_sha256': digest, 'log_bytes': len(data), 'log_source': str(source),
            'log_evidence': str(co.evidence / f'operator-verification-{record_id}.log'), 'note': note,
@@ -136,7 +140,7 @@ def attach(co, args, tree_sha256: str, write_json) -> str:
         out.write(data)
         out.flush()
         os.fsync(out.fileno())
-    os.replace(temp, row['log_evidence'])
+    winplat.replace(temp, row['log_evidence'])
     write_json(co.evidence / f'operator-verification-{record_id}.json', row)
     state.setdefault('operator_verifications', []).append(row)
     co.save()

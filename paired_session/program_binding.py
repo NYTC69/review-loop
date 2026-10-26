@@ -16,7 +16,7 @@ def snapshot(workspace, run_dir, author_tmp, codex_bin, claude_bin, gate_prompt,
     profile = workspace / Path(config_path or '.review-loop/paired-session.json').expanduser()
     roots = (workspace, Path(run_dir).resolve(), Path(author_tmp).resolve())
     if any(r == p or r in p.parents for p in (profile, profile.resolve()) for r in roots) and profile.is_file():
-        if keys := set(_PROFILE_PROGRAM_KEYS).intersection(json.loads(profile.read_text())):
+        if keys := set(_PROFILE_PROGRAM_KEYS).intersection(json.loads(profile.read_text(encoding='utf-8'))):
             return {}, 'workspace profile cannot select operator programs: ' + ', '.join(sorted(keys))
     path_env = safe_path(os.environ.get('PATH', ''), roots)
     records = {name: _record(resolve_binary(value, workspace, path_env)) for name, value in

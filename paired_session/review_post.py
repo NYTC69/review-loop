@@ -32,7 +32,7 @@ def _scan(report: Path) -> list:
 
 def prepare(run_dir) -> dict:
     run_dir = Path(run_dir)
-    state = json.loads((run_dir / 'state.json').read_text())
+    state = json.loads((run_dir / 'state.json').read_text(encoding='utf-8'))
     if not (state.get('config') or {}).get('review_report') or not (state.get('report') or {}).get('complete'):
         raise PostRefused('only a complete report run (REPORTED) is posted')
     pins = state.get('review_pr') or {}
@@ -43,7 +43,7 @@ def prepare(run_dir) -> dict:
     if hits := _scan(report):
         raise PostRefused('the secret scan matched, so the report stays local: ' +
                           ', '.join(f"{hit['rule']} at line {hit['line']}" for hit in hits))
-    body = report.read_text()
+    body = report.read_text(encoding='utf-8')
     command = ['gh', 'pr', 'review', url, '--comment', '--body-file', str(report)]
     digest = hashlib.sha256(json.dumps([command, head, body]).encode()).hexdigest()[:16]
     return {'command': command, 'url': url, 'repository': pins.get(PIN_REPO), 'head': head, 'body': body, 'digest': digest}

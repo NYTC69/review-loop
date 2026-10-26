@@ -14,7 +14,6 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime
 import errno
 import itertools
-import fcntl
 import hashlib
 import json
 import os
@@ -48,6 +47,7 @@ try:
     from paired_session import worktree_lifecycle
     from paired_session import review_report
     from paired_session import timeout_scale
+    from paired_session import winplat
     from paired_session.program_binding import snapshot as program_snapshot, safe_path
 except ModuleNotFoundError:
     import budget_policy
@@ -65,7 +65,10 @@ except ModuleNotFoundError:
     import worktree_lifecycle
     import review_report
     import timeout_scale
+    import winplat
     from program_binding import snapshot as program_snapshot, safe_path
+if not winplat.IS_WINDOWS:   # WI-WIN: no fcntl on native Windows; its lock sites get a Windows branch in a later batch
+    import fcntl
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
@@ -88,7 +91,7 @@ REVIEW_ONLY_EXISTING_CHANGE_ROUNDS = 1       # Q9: the pre-existing change is EX
 REVIEW_ONLY_LIFECYCLE_READY = True           # LG1-c: the delivery baseline is the base tree, so lifecycle on is supported
 REVIEW_ONLY_DOCS_PRE_OWNED = True            # Q8: docs files the change already edits are DOCS's to extend and review, not a HOLD
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
-    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
+    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
 CODEX_DEFAULT_MODEL = 'gpt-6.1-sol'   # ADR-12 (owner 2026-10-04); runs keep the models frozen in their state
 CODEX_DEFAULT_MODEL_MIN_CLI = (0, 159, 2)
@@ -227,25 +230,7 @@ def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
 
 
 def _read_role_source(path: Path) -> bytes:
-    nofollow = getattr(os, 'O_NOFOLLOW', None)
-    if nofollow is None:
-        raise ValueError('role source no-follow reads are unavailable')
-    try:
-        fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, 'O_CLOEXEC', 0) |
-                     getattr(os, 'O_NONBLOCK', 0))
-    except OSError as exc:
-        raise ValueError('role source cannot be opened without following links') from exc
-    before = os.fstat(fd)
-    if not stat.S_ISREG(before.st_mode):
-        os.close(fd)
-        raise ValueError('role source is not a regular file')
-    with os.fdopen(fd, 'rb') as stream:
-        content = stream.read()
-        after = os.fstat(stream.fileno())
-    fields = ('st_dev', 'st_ino', 'st_mtime_ns', 'st_ctime_ns', 'st_size')
-    if any(getattr(before, field) != getattr(after, field) for field in fields):
-        raise ValueError('role source changed while reading')
-    return content
+    return winplat.read_regular_file_nofollow(path)   # WI-WIN: POSIX keeps the O_NOFOLLOW read
 
 
 def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
@@ -617,7 +602,7 @@ OFF_NEVER_COMMITS_NOTE = 'auto_commit true is ignored: lifecycle off never commi
 def saved_state_is_old(run_dir) -> bool:
     """V3-B6: the run (or --supersedes parent) in run_dir was saved by another state format; checked before any of its
     keys is read. A missing or unreadable state is not old: its own readers report it."""
-    try: return json.loads((Path(run_dir).expanduser() / 'state.json').read_text()).get('version') != STATE_VERSION
+    try: return json.loads((Path(run_dir).expanduser() / 'state.json').read_text(encoding='utf-8')).get('version') != STATE_VERSION
     except (OSError, ValueError, AttributeError): return False
 
 
@@ -676,16 +661,15 @@ def concurrent_run_workspaces(own_workspace, live=True) -> dict:
     try:
         own = Path(own_workspace).expanduser().resolve()
         lock_dir = workspace_lease_path(own).parent
-        info = lock_dir.lstat()
+        private = winplat.check_private_dir(lock_dir)
     except (OSError, RunLeaseError):
         return {}
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    if not private:
         return {}
     found = {}
     for entry in sorted(lock_dir.glob('*.lock')):
         try:
-            meta = entry.lstat()
-            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or stat.S_IMODE(meta.st_mode) & 0o077:
+            if not winplat.private_file_ok(entry.lstat()):
                 continue
             record = json.loads(entry.read_text(encoding='utf-8', errors='replace')[:4096])
             if not isinstance(record, dict) or not isinstance(record.get('workspace'), str) or not isinstance(record.get('run_dir'), str):
@@ -703,9 +687,7 @@ def concurrent_run_workspaces(own_workspace, live=True) -> dict:
                 lock = json.loads((run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
                 if not isinstance(lock, dict) or lock.get('pid') != pid:   # the same coordinator holds the run lease
                     continue
-                try: os.kill(pid, 0)
-                except ProcessLookupError: continue
-                except PermissionError: pass
+                if not winplat.pid_alive(pid): continue
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RunLeaseError):
             continue
         found[str(workspace)] = run_dir.name
@@ -1270,11 +1252,10 @@ class DetachStop(BaseException):
 def detach_paths(run_dir) -> tuple[Path, Path]:
     """detach: the per-user 0700 record and lock of a run dir's detached command (outside the run dir and its parent, which the
     Claude author probe watches); keyed by the resolved run dir, so relative and symlinked spellings share them."""
-    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{os.getuid()}'
+    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{winplat.user_token()}'
     try: root.mkdir(mode=0o700)
     except FileExistsError: pass
-    info = os.lstat(root)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if not winplat.check_private_dir(root):
         raise ValueError(f'detach directory {root} must be a directory owned by this user with mode 0700')
     key = hashlib.sha256(str(Path(run_dir).expanduser().resolve()).encode()).hexdigest()[:16]
     return root / (key + '.json'), root / (key + '.lock')
@@ -1289,7 +1270,7 @@ def detach_holder(run_dir):
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
-        try: data = json.loads(record.read_text())
+        try: data = json.loads(record.read_text(encoding='utf-8'))
         except (OSError, ValueError): return 'starting'
         ok = data.get('status') == 'running' and type(data.get('pid')) is int and type(data.get('sid')) is int
         return data if ok else 'starting'
@@ -1374,7 +1355,7 @@ def detach(raw_argv: list, run_dir: str) -> int:
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the stop has been taken; finish the record
         sys.stdout.flush(); sys.stderr.flush()
-        try: atomic_json(record, {**json.loads(record.read_text()), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
+        try: atomic_json(record, {**json.loads(record.read_text(encoding='utf-8')), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
         finally: os._exit(code)
 
 
@@ -1400,7 +1381,7 @@ def stop_detached(run_dir: str, wait: float = 60) -> int:
     if detach_holder(run_dir) is not None:
         print(f'HOLD: the detached command (pid {pid}) has not exited after {wait:.0f} s; check it before acting on this run')
         return 2
-    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text()).get('exit_code')})")
+    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text(encoding='utf-8')).get('exit_code')})")
     return 0
 
 
@@ -1447,7 +1428,7 @@ def run_lease(run_dir: Path):
 
 
 def _workspace_lease_temp_roots() -> tuple[Path, ...]:
-    roots = (Path('/tmp'), Path('/var/tmp'), Path(tempfile.gettempdir()))
+    roots = (winplat.temp_root(),) if winplat.IS_WINDOWS else (Path('/tmp'), Path('/var/tmp'), Path(tempfile.gettempdir()))
     return tuple(dict.fromkeys(root.expanduser().resolve() for root in roots))
 
 
@@ -1458,7 +1439,7 @@ def workspace_lease_path(workspace: Path) -> Path:
         identity = root.stat()
     except OSError as exc:
         raise RunLeaseError('cannot stat workspace for lease key: ' + str(exc)) from exc
-    uid = os.getuid()
+    uid = winplat.user_token()
     for temp_root in _workspace_lease_temp_roots():
         lock_dir = temp_root / f'paired-session-workspace-leases-{uid}'
         try:
@@ -1486,11 +1467,10 @@ def workspace_lease(workspace: Path, run_dir: Path):
     except OSError as exc:
         raise RunLeaseError('cannot create workspace lease directory: ' + str(exc)) from exc
     try:
-        directory_info = lock_dir.lstat()
+        private = winplat.check_private_dir(lock_dir)
     except OSError as exc:
         raise RunLeaseError('cannot inspect workspace lease directory: ' + str(exc)) from exc
-    if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.getuid()
-            or stat.S_IMODE(directory_info.st_mode) & 0o077):
+    if not private:
         raise RunLeaseError('workspace lease directory is not a private directory owned by this user')
 
     flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
@@ -1543,7 +1523,7 @@ PROBE_LOCK_POLL_SECONDS, PROBE_LOCK_WAIT_FACTOR = 1.0, 3
 
 
 def probe_lock_dir() -> Path:   # FIELD-13: fixed and uid-keyed, so runs with any HOME, CODEX_HOME or workspace share it
-    return Path('/tmp') / f'paired-session-probe-locks-{os.getuid()}'
+    return winplat.temp_root() / f'paired-session-probe-locks-{winplat.user_token()}'
 
 
 def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
@@ -1551,7 +1531,7 @@ def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
     saved roles); an unreadable state counts as a Claude author, which only costs a wait."""
     vendor, timeout, path = args.author_vendor, args.timeout, Path(args.run_dir) / 'state.json'
     if path.exists():
-        try: config = json.loads(path.read_text())['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
+        try: config = json.loads(path.read_text(encoding='utf-8'))['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
         except (OSError, ValueError, KeyError, TypeError, AttributeError): vendor = 'claude'
     if type(timeout) not in (int, float) or not 0 < timeout < float('inf'): timeout = args.timeout
     return (vendor if vendor in ('codex', 'claude') else 'claude'), float(timeout)
@@ -1614,8 +1594,7 @@ class ProbeParentLock:
             raise RunLeaseError('the probe lock directory lies inside the workspace')
         try: lock_dir.mkdir(mode=0o700)
         except FileExistsError: pass
-        info = lock_dir.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        if not winplat.check_private_dir(lock_dir):
             raise RunLeaseError('probe lock directory is not a private directory owned by this user')
         ident = key_dir.stat()
         self.key_dir, self.path = key_dir, lock_dir / (hashlib.sha256(f'{ident.st_dev}:{ident.st_ino}'.encode()).hexdigest() + '.lock')
@@ -1659,32 +1638,24 @@ class ProbeParentLock:
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
-    with temp.open('w', encoding='utf-8') as handle:
+    with temp.open('w', encoding='utf-8', newline='') as handle:   # WI-WIN: LF bytes on every platform
         json.dump(value, handle, indent=2, ensure_ascii=False)
         handle.write('\n')
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temp, path)
-    fd = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    winplat.replace(temp, path)
+    winplat.fsync_dir(path.parent)
 
 
 def atomic_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
-    with temp.open('w', encoding='utf-8') as handle:
+    with temp.open('w', encoding='utf-8', newline='') as handle:   # WI-WIN: LF bytes on every platform
         handle.write(value)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temp, path)
-    fd = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    winplat.replace(temp, path)
+    winplat.fsync_dir(path.parent)
 
 
 def _control_file_digest(path: Path) -> str:
@@ -1817,7 +1788,7 @@ def read_json_lines(path: Path) -> list[dict]:
     rows = []
     if not path.exists():
         return rows
-    for line in path.read_text(errors='replace').splitlines():
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
         try:
             value = json.loads(line)
             if isinstance(value, dict):
@@ -1853,7 +1824,7 @@ def raise_subagent_final_output(requests: list[dict], row: dict) -> bool:
 def reported_provider_model(vendor: str, path: Path) -> tuple[Optional[str], Optional[str]]:
     """Read only the top-level provider model identity from a valid CLI stream."""
     try:
-        lines = path.read_text(errors='strict').splitlines()
+        lines = path.read_text(encoding='utf-8', errors='strict').splitlines()
         rows = [json.loads(line) for line in lines if line.strip()]
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None, None
@@ -2038,7 +2009,7 @@ def review_pr_pins(path: str, workspace: Path, head: Optional[str], base: Option
     """LG2-c: the JSON `scripts/materialize_pr.py --root` printed, as the report's pins (review-pr-port.md §2.5); it must
     describe this run: the clone is the workspace, its head is HEAD and its merge base is the review base."""
     try:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
         pins = {'Target repository': data.get('repository') or data['target_url'], 'PR URL': data.get('url'),
                 'Head': data['head']['oid'], 'Base (pinned)': data['base']['oid'], 'Merge base': data['merge_base']}
         clone = Path(data['workspace']).resolve()
@@ -2058,7 +2029,7 @@ def saved_no_test(config) -> bool:
 def _saved_configured_commands(run_dir: Path) -> list:
     """A restored run's saved test, reviewer and work-item reviewer commands, for admission (args keep the CLI defaults until the
     Coordinator restores the saved config); an unreadable state adds none, and the Coordinator reports it itself."""
-    try: config = json.loads((run_dir / 'state.json').read_text())['config']
+    try: config = json.loads((run_dir / 'state.json').read_text(encoding='utf-8'))['config']
     except (OSError, ValueError, KeyError, TypeError): return []
     if not isinstance(config, dict): return []
     found = [config.get('test_command'), *[c for key in ('reviewer_command', 'workitem_reviewer_commands')
@@ -2220,7 +2191,7 @@ def codex_rollout_usage(session: Optional[str], start: float, end: float,
         return []
     lower_bound = start - 1 if lower_bound is None else lower_bound
     found, seen = [], set()
-    with paths[0].open(errors='replace') as source:
+    with paths[0].open(encoding='utf-8', errors='replace') as source:
         for line_no, line in enumerate(source, 1):
             try:
                 row = json.loads(line)
@@ -2257,7 +2228,7 @@ def codex_rollout_attempts(session: Optional[str], start: float, end: float) -> 
     if len(paths) != 1:
         return [], []
     pending, commands, calls = {}, [], []
-    with paths[0].open(errors='replace') as source:
+    with paths[0].open(encoding='utf-8', errors='replace') as source:
         for line_no, line in enumerate(source, 1):
             try:
                 row = json.loads(line)
@@ -2318,7 +2289,7 @@ def codex_rollout_cwds(session: Optional[str], start: float, end: float, writabl
         return None
     rows = []
     try:
-        with paths[0].open(errors='replace') as source:
+        with paths[0].open(encoding='utf-8', errors='replace') as source:
             for line in source:
                 try:
                     row = json.loads(line)
@@ -2451,7 +2422,7 @@ class ReadOnlyTurnVoided(ValueError):
 class Coordinator:
     def __init__(self, args: argparse.Namespace):
         saved = Path(args.run_dir).expanduser() / 'state.json'
-        saved_state = json.loads(saved.read_text()) if saved.exists() else None
+        saved_state = json.loads(saved.read_text(encoding='utf-8')) if saved.exists() else None
         if (saved_state is not None and saved_state.get('version') != STATE_VERSION or   # V3-B6: before any key of it,
                 getattr(args, 'supersedes', None) and saved_state_is_old(Path(args.supersedes).resolve())):   # or of a parent, is read
             raise ValueError(OLD_STATE_REFUSAL)
@@ -2491,7 +2462,7 @@ class Coordinator:
         args.safety_mode = requested or DEFAULT_SAFETY_MODE
         upgraded = None
         if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
-            saved_state = json.loads(self.state_path.read_text())
+            saved_state = json.loads(self.state_path.read_text(encoding='utf-8'))
             self.state = saved_state
             self._review_report_args(saved_state['config'])
             if args.action in ('note', 'reject'): self._refuse_report_feedback()
@@ -2514,7 +2485,7 @@ class Coordinator:
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
-            self.state = json.loads(self.state_path.read_text())
+            self.state = json.loads(self.state_path.read_text(encoding='utf-8'))
             # test_a_filter_driver_name_git_cannot_pass_safely_fails_closed: validate git config on load.
             self._head_commit()
             worktree_lifecycle.refuse_saved(self.state, args)
@@ -2524,14 +2495,14 @@ class Coordinator:
                 raise ValueError('saved supersedes or effective task hash differs')
             if self.state.get('supersedes'):
                 parent = Path(self.state['supersedes'])
-                old = json.loads((parent / 'state.json').read_text())
+                old = json.loads((parent / 'state.json').read_text(encoding='utf-8'))
                 spec_path = parent / 'evidence/successor-spec.json'
-                spec = json.loads(spec_path.read_text())
+                spec = json.loads(spec_path.read_text(encoding='utf-8'))
                 claim = parent / 'evidence/successor-claim.json'
                 if (old.get('status') != 'ABORTED' or spec.get('run_dir') != str(self.run_dir) or
                         spec.get('task_sha256') != self.state['effective_task_sha256'] or
                         self.state.get('base_commit') != old.get('base_commit') or
-                        not claim.is_file() or json.loads(claim.read_text()).get('run_dir') != str(self.run_dir) or
+                        not claim.is_file() or json.loads(claim.read_text(encoding='utf-8')).get('run_dir') != str(self.run_dir) or
                         spec.get('config_sha256') != hashlib.sha256((parent / 'evidence/successor-config.json').read_bytes()).hexdigest() or
                         old.get('successor_spec_sha256') != hashlib.sha256(spec_path.read_bytes()).hexdigest() or
                         spec.get('original_hash') != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest()):
@@ -2582,7 +2553,7 @@ class Coordinator:
             self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
             if 'on' in (self.args.shadow, self.args.adversarial_gate):   # FIELD-30: what the fresh scan would hold on, before any turn
-                if markers := self._introduced_history('original-workitem', self.workitem.read_text(), self._head_commit() or ''):
+                if markers := self._introduced_history('original-workitem', self.workitem.read_text(encoding='utf-8'), self._head_commit() or ''):
                     raise ValueError(f'independence check rejected history in original-workitem: {markers[0]}; the fresh '
                                      'shadow and gate would hold on it. The phrase reads as this run\'s review history; say it another '
                                      'way, or put it in backticks when the repository already contains it')
@@ -2592,7 +2563,7 @@ class Coordinator:
             self.evidence.mkdir(exist_ok=True)
             self.context.mkdir(exist_ok=True)
             self.internal.mkdir(exist_ok=True)
-            atomic_text(self.context / 'workitem.md', self.workitem.read_text())
+            atomic_text(self.context / 'workitem.md', self.workitem.read_text(encoding='utf-8'))
             self.state = {
                 'version': STATE_VERSION, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
                 'workspace': str(self.workspace), 'workitem': str(self.workitem),
@@ -2625,8 +2596,8 @@ class Coordinator:
                 self._start_review_only(scope)
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
-                old = json.loads((parent / 'state.json').read_text())
-                spec = json.loads((parent / 'evidence/successor-spec.json').read_text())
+                old = json.loads((parent / 'state.json').read_text(encoding='utf-8'))
+                spec = json.loads((parent / 'evidence/successor-spec.json').read_text(encoding='utf-8'))
                 task_hash = hashlib.sha256(self.workitem.read_bytes()).hexdigest()
                 if (old.get('status') != 'ABORTED' or old.get('abort_kind') != 'scope-change' or
                         not old.get('base_commit') or
@@ -2645,7 +2616,7 @@ class Coordinator:
                     raise ValueError('parent base_commit is not an ancestor of HEAD')
                 with run_lease(parent):
                     claim = parent / 'evidence/successor-claim.json'
-                    if claim.exists() and json.loads(claim.read_text())['run_dir'] != str(self.run_dir):
+                    if claim.exists() and json.loads(claim.read_text(encoding='utf-8'))['run_dir'] != str(self.run_dir):
                         raise ValueError('parent already has a successor')
                     if not claim.exists():
                         atomic_json(claim, {'run_dir': str(self.run_dir)})
@@ -2814,7 +2785,7 @@ class Coordinator:
         config['docs_file'] = frozen_doc_path(docs_file) if docs_file else ''
         config['docs_allowlist'] = sorted({frozen_doc_path(value) for value in
                                            [*self.args.docs_allowlist, *([docs_file] if docs_file else [])]})
-        config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text())
+        config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
         return config
 
     def _author_tmp_isolated(self) -> bool:
@@ -2901,7 +2872,7 @@ class Coordinator:
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
     def reviewer_commands(self) -> list[str]:
-        current = workitem_reviewer_commands(self.workitem.read_text())
+        current = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
         frozen = self.state['config']['workitem_reviewer_commands']
         if current != frozen:
             reason = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
@@ -3118,7 +3089,7 @@ class Coordinator:
             return True, ''
         optin = self.state.get('claude_author_override') or {}
         try:
-            probed = json.loads((self.run_dir / 'permission-probe.json').read_text()).get(
+            probed = json.loads((self.run_dir / 'permission-probe.json').read_text(encoding='utf-8')).get(
                 'author_permission_probe', {}).get('claude_author_status') == 'PASS'
         except (OSError, ValueError, AttributeError):
             probed = False
@@ -3482,7 +3453,7 @@ class Coordinator:
     def _git(self, args: list[str], ok=(0,), raw: bool = False) -> str:
         """`raw` keeps git's own line endings; the text mode default turns `\\r\\n` and a bare `\\r` into `\\n`."""
         proc = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, **({} if raw else {'text': True, 'errors': 'replace'}))
+                              stderr=subprocess.PIPE, **({} if raw else {'text': True, 'encoding': 'utf-8', 'errors': 'replace'}))
         if raw:
             proc.stdout, proc.stderr = proc.stdout.decode(errors='replace'), proc.stderr.decode(errors='replace')
         if proc.returncode not in ok:
@@ -4029,13 +4000,13 @@ class Coordinator:
                                  + ('; --note is for attach-verification, so use --text' if getattr(self.args, 'note', None) is not None and not (text or file) else ''))
             note = Path(file).expanduser().read_bytes().decode('utf-8') if file else text or ''
             if not note.strip() or '```reviewer-commands' in note: raise ValueError('empty or command-bearing scope note')
-            raw = json.loads(self.state_path.read_text())
+            raw = json.loads(self.state_path.read_text(encoding='utf-8'))
             if not raw.get('base_commit'): raise ValueError('parent has no trustworthy base_commit')
-            task = self.workitem.read_text() + '\n\n## Operator scope change\n' + note + '\n'
+            task = self.workitem.read_text(encoding='utf-8') + '\n\n## Operator scope change\n' + note + '\n'
             if target.exists():
                 raise ValueError('successor run dir already exists')
             with tempfile.TemporaryDirectory() as tmp:
-                trial = copy.copy(self); trial.workitem = Path(tmp) / 'workitem.md'; trial.workitem.write_text(task)   # V326-SCOPE: match successor scan source
+                trial = copy.copy(self); trial.workitem = Path(tmp) / 'workitem.md'; winplat.write_text(trial.workitem, task)   # V326-SCOPE: match successor scan source
                 trial.context = Path(tmp); trial.evidence = Path(tmp); trial.run_dir = target
                 trial.author_temp_dir = target / 'author-tmp'; trial.state = {'sequence': 0, 'finding_ledger': []}
                 try: trial.assert_fresh_prompt('shadow', 'Clean prompt')
@@ -4051,7 +4022,7 @@ class Coordinator:
             self.state['scope_change_intent'] = intent; self.save()
         elif intent['action'] != self.args.action or intent['source'] != (str(Path(file).expanduser().resolve()) if file else 'cli') or (text is not None and text != intent['text']):
             raise ValueError('different scope-change request is pending')
-        task = self.workitem.read_text() + '\n\n## Operator scope change\n' + intent['text'] + '\n'
+        task = self.workitem.read_text(encoding='utf-8') + '\n\n## Operator scope change\n' + intent['text'] + '\n'
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
@@ -4195,7 +4166,7 @@ class Coordinator:
         self.state['status'] = 'ACCEPTED'
         self.state.pop('terminal_hold_kind', None)
         self.state['accepted_at'] = record['timestamp']
-        title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()), '')
+        title = next((line.lstrip('# ').strip() for line in self.workitem.read_text(encoding='utf-8').splitlines() if line.strip()), '')
         atomic_text(self.run_dir / 'delivery-report.md', '\n'.join([   # L120: as W's report, without its stages and commit
             '# 交付报告（lifecycle off）', '', f'- 运行：`{self.run_dir.name}`；工作项：{title}',
             f"- 结论：已接受（ACCEPTED）{'，--override-rejection' if record['override_rejection'] else ''}，{record['timestamp']}",
@@ -4223,7 +4194,7 @@ class Coordinator:
             raise ValueError('worktree lifecycle refuses external delivery (push, PR, merge; D8); set external_delivery '
                              'false in the operator profile')
         journal_path = self.evidence / 'delivery-commit.json'
-        journal = json.loads(journal_path.read_text()) if journal_path.exists() else None
+        journal = json.loads(journal_path.read_text(encoding='utf-8')) if journal_path.exists() else None
         receipts = hashlib.sha256(json.dumps(life['receipts'], sort_keys=True).encode()).hexdigest()
         if journal and self.args.expect == journal['intent']['digest'] and life.get('stage') == 'DONE' and (
                 self.state.get('status') in ('DONE', 'HOLD')) and (   # never ABORTED: a superseded run stays superseded
@@ -4266,7 +4237,7 @@ class Coordinator:
         self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
         self.state.pop('delivery_pending', None)
         atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
-            self.state, self.run_dir.name, self.workitem.read_text(), delivery) + '\n' + review_report.delivery_section(self.state))
+            self.state, self.run_dir.name, self.workitem.read_text(encoding='utf-8'), delivery) + '\n' + review_report.delivery_section(self.state))
         self.save()
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
@@ -4349,7 +4320,7 @@ class Coordinator:
                 return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc).split('; ', 1)[0]}
             if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                 raise ValueError('the tree changed during the accept; restore the approved tree or abort')
-            title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
+            title = next((line.lstrip('# ').strip() for line in self.workitem.read_text(encoding='utf-8').splitlines() if line.strip()),
                          'paired-session work item')
             message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
                        f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n"
@@ -4386,7 +4357,7 @@ class Coordinator:
     def _inherited_security_baseline(self, parent: Path) -> dict:
         """Supervisor decision (W3a): a scope-change successor inherits its parent's delivery baseline, so the delivery
         scope stays relative to the tree before the work item; the copy is bound to the parent's digest."""
-        base = (json.loads((parent / 'state.json').read_text()).get('lifecycle') or {}).get('security_baseline')
+        base = (json.loads((parent / 'state.json').read_text(encoding='utf-8')).get('lifecycle') or {}).get('security_baseline')
         if not base or Path(base['path']).parent != parent / 'evidence':
             raise ValueError('a worktree-lifecycle successor inherits its parent delivery baseline, and the parent has '
                              'none; start a new run instead')
@@ -4405,10 +4376,10 @@ class Coordinator:
         if action not in ('accept', 'reject', 'withdraw-findings'): raise ValueError('intent action must be accept, reject or withdraw-findings')
         if action == 'withdraw-findings': self._withdrawal_rows()
         payload = ((self.args.reason or '') if action == 'withdraw-findings' else
-                   (Path(file).expanduser().read_text() if file else text or self.args.reason or '')).encode()
+                   (Path(file).expanduser().read_text(encoding='utf-8') if file else text or self.args.reason or '')).encode()
         index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
         tree_sha, tree_snapshot = git_snapshot(self.workspace)
-        data = {'action': action, 'uid': os.getuid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
+        data = {'action': action, 'uid': winplat.uid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
                 'workspace': str(self.workspace), 'workitem': str(self.workitem), 'head': self._head_commit(),
                 'tree_sha256': tree_sha, 'workitem_sha256': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
                 'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
@@ -4495,7 +4466,7 @@ class Coordinator:
         intent = self.operator_intent('withdraw-findings', None, None, self.args.expect, required=True)
         rulings = self.state.setdefault('operator_rulings', [])
         ruling_id = f'O{len(rulings) + 1:03d}'
-        record = {'id': ruling_id, 'author': 'operator', 'uid': os.getuid(),
+        record = {'id': ruling_id, 'author': 'operator', 'uid': winplat.uid(),
                   'timestamp': datetime.now().astimezone().isoformat(),
                   'finding_ids': [row['id'] for row in rows], 'reason': self.args.reason, 'intent': intent,
                   'evidence': str(self.evidence / f'operator-ruling-{ruling_id}.json')}
@@ -4567,7 +4538,7 @@ class Coordinator:
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
         if file:
-            feedback = Path(file).expanduser().read_text()
+            feedback = Path(file).expanduser().read_text(encoding='utf-8')
             source = str(Path(file).expanduser().resolve())
         else:
             feedback = text or ''
@@ -4629,7 +4600,7 @@ class Coordinator:
             if changed:
                 pending = {'sequence': receipt['sequence'], 'after': changed}
                 if self.args.action == 'resume' and self.state.get('claude_uncertain_config_change') == pending:
-                    receipt['global_claude_ack'] = {'operator_uid': os.getuid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
+                    receipt['global_claude_ack'] = {'operator_uid': winplat.uid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
                 else: self.state['claude_uncertain_config_change'] = pending; self.hold('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain'); raise RuntimeError('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain')
             verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_claude_before']})
         if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
@@ -4646,7 +4617,7 @@ class Coordinator:
                            and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw,
                                                            extra=list(concurrent_run_workspaces(receipt['workspace'], live=False))))   # FIELD-22: the operator inspected it
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
-                self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
+                self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': winplat.uid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
@@ -4771,7 +4742,7 @@ class Coordinator:
                '--setting-sources', '', '--settings', json.dumps(
                    self._claude_sandbox_settings(role), separators=(',', ':')), '--no-chrome',
                '--add-dir', str(self.context),
-               '--json-schema', json.dumps(json.loads(schema_path.read_text()), separators=(',', ':'))]
+               '--json-schema', json.dumps(json.loads(schema_path.read_text(encoding='utf-8')), separators=(',', ':'))]
         if role == 'author':
             # The Agent deny came from the S1 read-only lockdown; it has no purpose for a role
             # that may already edit and run Bash. Read-only roles keep it denied.
@@ -5045,11 +5016,11 @@ class Coordinator:
                     'Rows already recorded as advisory may stay still_open without that alone being a reason for REVISE; '
                     'approve when the rewritten plan is the same in substance. '
                     'Return REVISE if the scope, steps, or verification changed.\n## Previously accepted plan\n'
-                    + (approved.read_text() if approved.is_file() else '(unavailable)'))
+                    + (approved.read_text(encoding='utf-8') if approved.is_file() else '(unavailable)'))
             if self._role_vendor(role) == 'codex':
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
-                          '## Work item content\n' + (self.context / 'workitem.md').read_text() +
-                          '\n## Plan content\n' + (self.context / 'plan.md').read_text())
+                          '## Work item content\n' + (self.context / 'workitem.md').read_text(encoding='utf-8') +
+                          '\n## Plan content\n' + (self.context / 'plan.md').read_text(encoding='utf-8'))
             return '\n'.join([
                 f'Role: reviewer, persistent plan-only reviewer. Phase: PLAN. {fresh_note}',
                 f'Work item: {self.context / "workitem.md"}',
@@ -5083,7 +5054,7 @@ class Coordinator:
         ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role)
 
     def _gate_prompt(self, snapshot: str) -> str:
-        template = Path(self.args.gate_prompt).read_text()
+        template = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         filled = template.replace('${REVIEW_TARGET_DESC}', str(self.context / 'workitem.md')).replace(
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
@@ -5179,7 +5150,7 @@ class Coordinator:
         reviewer-commands block), longest first. An absolute path in one may name a vendor or a review word."""
         frozen = ((getattr(self, 'state', None) or {}).get('config') or {}).get('workitem_reviewer_commands')
         if frozen is None:
-            try: frozen = workitem_reviewer_commands(self.workitem.read_text())
+            try: frozen = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
             except (OSError, ValueError): frozen = []
         commands = {c.strip() for c in (self.args.test_command, *(self.args.reviewer_command or ()), *frozen) if c and c.strip()}
         return sorted(commands, key=len, reverse=True)
@@ -5203,7 +5174,7 @@ class Coordinator:
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
 
         try:
-            workitem_text = (self.context / 'workitem.md').read_text()
+            workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
         except OSError:
             workitem_text = ''   # No frozen work item yet at run creation.
 
@@ -5438,7 +5409,7 @@ class Coordinator:
             return []
         self.materialize_review_context()
         path = self.context / 'delta.patch'
-        hits = self._delta_history_hits(path.read_text() if path.is_file() else '')
+        hits = self._delta_history_hits(path.read_text(encoding='utf-8') if path.is_file() else '')
         if not hits:
             return []
         shown = ', '.join(f'{marker!r} at {where}' for where, marker in hits[:10])
@@ -5485,7 +5456,7 @@ class Coordinator:
         kind are written, never the value. One open row carries the current hit list; a clean scan closes it."""
         hits = leak_scan.scan_patch(self._delta_patch(raw=True)[0], self._git_unquote)
         workitem = self.context / 'workitem.md'
-        allow = leak_scan.allow_patterns(workitem.read_text(errors='replace') if workitem.is_file() else '')
+        allow = leak_scan.allow_patterns(workitem.read_text(encoding='utf-8', errors='replace') if workitem.is_file() else '')
         blocking = [hit for hit in hits if not leak_scan.exempt(hit['path'], allow)]
         exempted = [leak_scan.where(hit) for hit in hits if hit not in blocking]
         self.state['secret_scan'] = {'sequence': sequence, 'blocking': [leak_scan.where(hit) for hit in blocking],
@@ -5546,7 +5517,7 @@ class Coordinator:
         """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval (or, for a
         review-only run, which has no PLAN approval, on the texts it is about to write)."""
         for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
-            text = texts[label] if texts else path.read_text() if path.is_file() else ''
+            text = texts[label] if texts else path.read_text(encoding='utf-8') if path.is_file() else ''
             text = self._fresh_history_text('context/' + path.name, text, base)   # FIELD-23: as the gate scan
             if ids := sorted(set(LEDGER_ID_RE.findall(text))):
                 return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
@@ -5562,7 +5533,7 @@ class Coordinator:
         return oid
 
     def _parent_spec(self) -> dict:   # the scope-change parent's spec; its full validation comes later in __init__
-        try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text())
+        try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text(encoding='utf-8'))
         except (OSError, ValueError): return {}
 
     def _review_report_args(self, saved: Optional[dict]) -> None:
@@ -5600,7 +5571,7 @@ class Coordinator:
             if self.args.reviewer_command:
                 raise ValueError('--no-test-command refuses --reviewer-command, including a reviewer_command list from the '
                                  'workspace or operator paired-session.json (a no-test report run allows no command)')
-            if workitem_reviewer_commands(self.workitem.read_text()):
+            if workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8')):
                 raise ValueError('--no-test-command refuses a work item that declares reviewer-commands')
         if (saved or {}).get('adversarial_gate', self.args.adversarial_gate) == 'off':
             raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
@@ -5708,7 +5679,7 @@ class Coordinator:
         changed = ''.join(f'{status}\t{review_scope_path(path)}\n' for status, path in zip(fields[0::2], fields[1::2]))
         if not changed and not untracked:
             raise ValueError(f'nothing to review: the workspace tree equals the review base {base[:12]}')
-        workitem = self.workitem.read_text()
+        workitem = self.workitem.read_text(encoding='utf-8')
         scope = ('# Review scope (review-only entry)\n\nNo plan was drafted or approved; review the change itself: the '
                  'workspace tree against the review base.\n\n'
                  f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command or "none (no tests run in this review)"}\n\n'
@@ -5750,7 +5721,7 @@ class Coordinator:
         if not self.args.supersedes:
             return None
         try:
-            record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text()).get('review_only') or {}
+            record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text(encoding='utf-8')).get('review_only') or {}
         except (OSError, ValueError, AttributeError):
             return None
         return record.get('history_mirror') or record.get('mirror')
@@ -5776,7 +5747,7 @@ class Coordinator:
         for name in ('workitem.md', 'plan.md'):
             path = self.context / name
             if path.is_file():
-                ids = sorted(set(LEDGER_ID_RE.findall(self._fresh_history_text(f'context/{name}', path.read_text()))))
+                ids = sorted(set(LEDGER_ID_RE.findall(self._fresh_history_text(f'context/{name}', path.read_text(encoding='utf-8')))))
                 if ids:
                     shown = ', '.join(ids[:5]) + (', …' if len(ids) > 5 else '')
                     if name == 'workitem.md':
@@ -5801,11 +5772,11 @@ class Coordinator:
             raise RuntimeError(f'{role} independence check rejected prompt leak: ' + ', '.join(details))
         # Inspect the literal launch inputs, not just the top-level prompt. Save
         # immutable copies outside context so a later audit can verify each launch.
-        sources = {'prompt': prompt, 'original-workitem': self.workitem.read_text()}
-        sources.update({f'context/{p.name}': p.read_text()
+        sources = {'prompt': prompt, 'original-workitem': self.workitem.read_text(encoding='utf-8')}
+        sources.update({f'context/{p.name}': p.read_text(encoding='utf-8')
                         for p in sorted(self.context.iterdir()) if p.is_file()})
         if role == 'gate':
-            sources['gate-template'] = Path(self.args.gate_prompt).read_text()
+            sources['gate-template'] = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         checked = {}
         for name, content in sources.items():
             matches = self._introduced_history(name, content)   # FIELD-23: repository text is not review history
@@ -6736,7 +6707,7 @@ class Coordinator:
         """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
-            (self.context / 'plan.md').read_text(), self.args.test_command,
+            (self.context / 'plan.md').read_text(encoding='utf-8'), self.args.test_command,
             ' '.join(filter(None, [self._docs_reserved_note(), LONG_COMMAND_RULE])),
             bool(self.state.get('review_only'))) + self.operator_rulings_prompt('author'))   # V317-B3
         self.render(result, 'finisher', 'FINISH')
@@ -6776,7 +6747,7 @@ class Coordinator:
                 raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
             if continued:
                 try:
-                    manifest = json.loads((self.evidence / f"{previous['request_id']}-docs-base.json").read_text())
+                    manifest = json.loads((self.evidence / f"{previous['request_id']}-docs-base.json").read_text(encoding='utf-8'))
                 except (OSError, ValueError) as exc:
                     raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
             owned = {**self._docs_owned(), **(previous['docs_written'] if continued else {})}
@@ -6789,7 +6760,7 @@ class Coordinator:
                                    ', '.join(bad) + '; restore it or abort')   # the writer would write through it
             atomic_json(base_file, manifest)
         try:   # bound to the POLISH-Q-approved tree before the writer runs
-            base = json.loads(base_file.read_text())
+            base = json.loads(base_file.read_text(encoding='utf-8'))
         except (OSError, ValueError) as exc:
             raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
         if hashlib.sha256(json.dumps(base, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest() != request['candidate_oid']:
@@ -6797,7 +6768,7 @@ class Coordinator:
         def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
             self._docs_budget()
             return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
-                                                  self.run_dir.name, self.workitem.read_text()) + self.operator_rulings_prompt('author')   # V317-B3
+                                                  self.run_dir.name, self.workitem.read_text(encoding='utf-8')) + self.operator_rulings_prompt('author')   # V317-B3
         result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
@@ -7115,7 +7086,7 @@ class Coordinator:
         diff = self._git(['diff', '--no-ext-diff', '--no-textconv', '-U0', base, '--'])
         untracked = [path for path in self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0') if path]
         added = ''.join('+' + line + '\n' for path in untracked if (self.workspace / path).is_file()
-                        for line in (self.workspace / path).read_text(errors='replace').splitlines())
+                        for line in (self.workspace / path).read_text(encoding='utf-8', errors='replace').splitlines())
         return worktree_lifecycle.report_specialists(paths, config.get('review_aspects') or worktree_lifecycle.REPORT_ASPECTS,
                                                      worktree_lifecycle.touches_comment_lines(diff + added))
 
@@ -7271,7 +7242,7 @@ class Coordinator:
         proc = self._security_script('security_preflight.py', '--manifest', str(manifest), '--output', str(report),
                                      *([] if self.state['config'].get('review_report') else ['--run-changes-only']))
         try:
-            document = json.loads(report.read_text())
+            document = json.loads(report.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             document = {}
         result = {'exit': proc.returncode, 'status': document.get('status', 'unknown'), 'report': str(report),
@@ -7576,7 +7547,7 @@ class Coordinator:
         """§2 write boundary, as for FINISH: a reserved DOCS path or `.review-loop/` config is outside the writer's grant,
         so such a change is refused before the local check and the review (`rolled-back:boundary`)."""
         keep = Path(leg['capture'])
-        recorded = json.loads((keep / 'record.json').read_text())
+        recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         now = readonly_guard.state(self.workspace, keep)['tree']
         reserved = set(self._docs_allowlist()) - set(self._docs_owned())
         leg['files'] = sorted(self._git_names(['diff', '--name-only', '--no-renames', '-z', recorded['tree'], now]))   # F2
@@ -7587,7 +7558,7 @@ class Coordinator:
         """D09 F1: the test functions per changed test file (a plain pattern count, no discovery): Python `def test…`,
         Go `func Test…`, Rust `#[test]`, JS/TS `it(…)`/`test(…)`. A deleted file counts 0."""
         paths = sorted({*extra, *(p for p in self._changed_paths() if worktree_lifecycle.is_test_path(p))})
-        read = lambda path: (self.workspace / path).read_text(errors='replace') if (self.workspace / path).is_file() else ''
+        read = lambda path: (self.workspace / path).read_text(encoding='utf-8', errors='replace') if (self.workspace / path).is_file() else ''
         return {path: len(TEST_CASE_RE.findall(read(path))) for path in paths}
 
     def _test_cases_dropped(self, leg: dict) -> bool:
@@ -7595,7 +7566,7 @@ class Coordinator:
         if 'test_cases' not in leg:
             return False
         now = self._test_case_count(tuple(leg['test_cases']))
-        tree = json.loads((Path(leg['capture']) / 'record.json').read_text())['tree']   # the leg's input tree
+        tree = json.loads((Path(leg['capture']) / 'record.json').read_text(encoding='utf-8'))['tree']   # the leg's input tree
         before = sum(leg['test_cases'].values()) + sum(self._tree_test_cases(tree, path) for path in now if path not in leg['test_cases'])
         after = sum(now.values())   # a test file the writer newly touched counts on both sides
         if after < before:
@@ -7794,11 +7765,11 @@ class Coordinator:
     def _revert_paths(self, paths: list[str], keep: Path, sequence: int) -> str:
         """F2: put these paths back to base_oid's content from base_capture's tree (a path absent there is deleted) and
         verify them; the other writer's files stay. The diff is kept as evidence."""
-        recorded = json.loads((keep / 'record.json').read_text())
+        recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         base_tree, perms = recorded['tree'], recorded.get('perms') or {}
         diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-review-partial.workspace-change.diff"
         now = readonly_guard.state(self.workspace, keep)['tree']
-        diff.write_text(self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
+        winplat.write_text(diff, self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
         for path in paths:
             target = self.workspace / path
             if target.is_symlink() or target.exists():
@@ -7828,7 +7799,7 @@ class Coordinator:
         """§2: put the writer's input back from its capture and verify it; an unverified restore HOLDs through the
         existing unrestored path (resume refuses until the workspace is back)."""
         keep = Path(leg['capture'])
-        recorded = json.loads((keep / 'record.json').read_text())
+        recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.workspace-change.diff"
         try:
             readonly_guard.evidence(self.workspace, recorded, keep, diff)
@@ -9857,7 +9828,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
         return p
     writable_profile = _author_writable_profile(config_path, workspace, known.run_dir)   # decided before reading
     try:
-        values = json.loads(config_path.read_text())
+        values = json.loads(config_path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f'cannot read paired-session config {config_path}: {exc}') from exc
     if not isinstance(values, dict):
@@ -9933,7 +9904,7 @@ def status_brief(run_dir: Path, count: int) -> int:
         try: print(progress_line(json.loads(line))); shown += 1
         except (ValueError, KeyError, TypeError): continue
     if not shown: print('no progress events yet')
-    try: written = json.loads((run_dir / 'state.json').read_text()).get('ignored_config_written')
+    try: written = json.loads((run_dir / 'state.json').read_text(encoding='utf-8')).get('ignored_config_written')
     except (OSError, ValueError, AttributeError): written = None
     if written:   # F3
         print('WARNING: ignored executable-config files written by the author: ' + ', '.join(written))
@@ -9944,7 +9915,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
     if args.action == 'status':
-        return print((Path(args.run_dir) / 'state.json').read_text()) or 0
+        return print((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')) or 0
     if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
         args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)
@@ -10135,7 +10106,7 @@ def main(argv=None) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
-    try: saved_null = restores_run(args) and saved_no_test(json.loads((Path(args.run_dir) / 'state.json').read_text()).get('config'))
+    try: saved_null = restores_run(args) and saved_no_test(json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config'))
     except (OSError, ValueError, AttributeError): saved_null = False   # the Coordinator reports an unreadable state itself
     if (saved_null or args.no_test_command) and any(a == '--test-command' or a.startswith('--test-command=') for a in raw_argv):
         print('REFUSED: --test-command conflicts with a no-test report run (--no-test-command)')
@@ -10202,7 +10173,7 @@ def main(argv=None) -> int:
         except ValueError as exc:
             print('REFUSED: ' + str(exc))
             return 2
-        try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text())
+        try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text(encoding='utf-8'))
         except (OSError, ValueError): workitem_commands = []                    # the coordinator reports an unreadable work item itself
         saved = _saved_configured_commands(run_dir) if args.action in ('run', 'resume') and restores_run(args) else []   # they dispatch turns
         if issue := configured_command_issue(workspace, run_dir, [c for c in (args.test_command, *args.reviewer_command, *workitem_commands, *saved) if c]):

@@ -29,7 +29,7 @@ except ImportError:   # run as a script from the package directory
 
 def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None, raw: bool = False) -> str:
     proc = subprocess.run(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, env={**candidate_tree.git_env(), **(env or {})},
-                          input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='surrogateescape', timeout=300)
+                          input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='surrogateescape', timeout=300)
     if check and proc.returncode:
         raise RuntimeError(f'git {args[0]} failed: {proc.stderr.strip()[:300]}')
     return '' if proc.returncode else proc.stdout if raw else proc.stdout.strip()   # raw: a -z path list keeps edge whitespace
@@ -160,7 +160,8 @@ def evidence(workspace: Path, recorded: dict, keep: Path, path: Path) -> dict:
     lines += [f'mode: {name} {recorded["perms"][name]:04o} -> {stat.S_IMODE(os.lstat(workspace / name).st_mode):04o}'
               for name in perm_changes(workspace, recorded)]   # roperm: bits the git diff below does not show
     diff =_git(workspace, 'diff', '--binary', '--no-ext-diff', '--no-textconv', recorded['tree'], now['tree'], check=False)
-    path.write_text('\n'.join(lines) + '\n\n' + diff + '\n', errors='surrogateescape')
+    with open(path, 'w', encoding='utf-8', errors='surrogateescape', newline='') as handle:   # WI-WIN: UTF-8 and LF everywhere
+        handle.write('\n'.join(lines) + '\n\n' + diff + '\n')
     return now
 
 

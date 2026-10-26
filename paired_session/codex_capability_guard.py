@@ -1,7 +1,7 @@
 """Read-only conservative scan of active Codex capability configuration."""
 import hashlib
 import json
-import os, pwd
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -93,6 +93,7 @@ def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=N
                 issues.append('cannot inspect plugin capability bundle: ' + str(path))
     if (platform or sys.platform) == 'darwin':
         managed = Path(managed_root or '/Library/Managed Preferences')
+        import pwd   # WI-WIN: POSIX-only module, needed on macOS only
         user = pwd.getpwuid(os.getuid()).pw_name
         paths = (managed / 'com.openai.codex.plist', managed / user / 'com.openai.codex.plist',
                  Path('/Library/Preferences/com.openai.codex.plist'))

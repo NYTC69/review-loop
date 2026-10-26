@@ -19,7 +19,7 @@ def fake_dispatch_guard(args):
         if path.is_symlink() or path.name in ('codex', 'claude'):
             return False
         try:
-            source = path.read_text()
+            source = path.read_text(encoding='utf-8')
         except (OSError, UnicodeError):
             return False
         if 'fake_cli.py' not in source or not source.startswith('#!'):

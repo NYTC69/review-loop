@@ -34,7 +34,8 @@ PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)/?
 REPO = re.compile(r"[\w.-]+/[\w.-]+\Z")
 OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 # Mirror paired_session.candidate_tree.GIT_NO_EXEC for direct script execution.
-GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+DEVNULL = os.devnull if os.name == "nt" else "/dev/null"   # WI-WIN: as paired_session.winplat.devnull_path()
+GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=' + DEVNULL,
                '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'core.sshCommand=false')
 # N1: transports git may use, whatever the repository's protocol.*.allow, url.*.insteadOf or core.gitProxy say (the
 # environment variable overrides them): no ext::/fd:: helper and no git:// proxy command can run.
@@ -57,7 +58,7 @@ def _run(argv: list[str], cwd: Path, network: bool, timeout: int, extra: dict) -
     for key in ("SSH_ASKPASS", "GH_REPO", "GH_HOST"):
         env.pop(key, None)
     if argv[0] == "git":
-        env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+        env.update(GIT_CONFIG_GLOBAL=DEVNULL, GIT_CONFIG_NOSYSTEM="1",
                    GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1",
                    GIT_SSH_COMMAND="ssh -o BatchMode=yes", GIT_OPTIONAL_LOCKS="0",
                    GIT_ALLOW_PROTOCOL=":".join(ALLOWED_PROTOCOLS), **extra)
