@@ -9796,7 +9796,7 @@ def windows_refusal(args: argparse.Namespace) -> Optional[str]:
     if args.action == 'permission-probe':
         return ('permission-probe is not supported on Windows: it verifies the Claude Code Bash sandbox, which native Windows '
                 'does not have; the default efficient mode needs no probe')
-    if args.safety_mode == 'strict':
+    if args.safety_mode == 'strict' and args.action not in ('status', 'abort', 'stop'):   # W4a r2: inspect / end a run stays usable
         return ('strict safety mode (--strict, or safety_mode "strict" in the --config profile) is not supported on Windows: '
                 'Claude Code has no Bash sandbox there; use the default efficient mode')
     try: config = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config') if restores_run(args) else None

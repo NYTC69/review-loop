@@ -190,6 +190,13 @@ class RefusalTests(unittest.TestCase):
         args = SimpleNamespace(detach=False, action='run', safety_mode=None, run_dir=str(self.run_dir))
         self.assertIsNone(rc.windows_refusal(args))
 
+    def test_status_abort_and_stop_stay_usable_with_a_strict_profile(self):   # W4a r2 (Codex R1 blocking 2)
+        for action in ('status', 'abort', 'stop'):
+            args = SimpleNamespace(detach=False, action=action, safety_mode='strict', run_dir=str(self.run_dir))
+            self.assertIsNone(rc.windows_refusal(args))
+        args = SimpleNamespace(detach=True, action='stop', safety_mode='strict', run_dir=str(self.run_dir))
+        self.assertIn('--detach is not supported on Windows', rc.windows_refusal(args))
+
 
 class ReadOnlyGuardWindowsTests(unittest.TestCase):
     """NTFS has no POSIX permission bits: on Windows nothing is recorded, compared or chmod-ed; content still is."""
