@@ -21,7 +21,12 @@ import uuid
 
 IS_WINDOWS = os.name == 'nt'
 REPO = Path(__file__).resolve().parents[1]
-TEST_COMMAND = 'python -m unittest -q'
+# unittest writes its progress to stderr. Capture it inside Python so Windows
+# PowerShell 5.1 cannot turn redirected native stderr into NativeCommandError.
+TEST_COMMAND = ('python -c "import subprocess, sys; '
+                "result = subprocess.run([sys.executable, '-m', 'unittest', '-q'], "
+                'stdout=subprocess.PIPE, stderr=subprocess.STDOUT); '
+                'sys.stdout.buffer.write(result.stdout); sys.exit(result.returncode)"')
 
 
 def without_bash_context(environment):
@@ -60,6 +65,18 @@ def windows_fake():
     """Called by the npm Python entry; no installed CLI or shell shim is run."""
     if not IS_WINDOWS:
         raise RuntimeError('the W7 provider adapter requires native Windows')
+    prompt = sys.stdin.read()
+    sys.stdin = io.StringIO(prompt)
+    if 'implementer. Phase: EXEC.' in prompt:
+        # Both quality writers must be eligible before _green_baseline runs:
+        # >=20 changed code lines and a changed, discoverable test file.
+        Path('w7_extra.py').write_text(''.join(f'VALUE_{n} = {n}\n' for n in range(30)), encoding='utf-8')
+        Path('test_w7_extra.py').write_text(
+            'import unittest\nimport w7_extra\n\n'
+            'class ExtraTest(unittest.TestCase):\n'
+            '    def test_values(self):\n'
+            '        self.assertEqual(sum(getattr(w7_extra, f"VALUE_{n}") for n in range(30)), 435)\n',
+            encoding='utf-8')
     telemetry = Path(os.environ['W7_TELEMETRY'])
     ready, release = telemetry / 'provider-ready', telemetry / 'provider-release'
     if os.environ.get('W7_PAUSE_PROVIDER') and not ready.exists():
@@ -193,7 +210,7 @@ class AdapterHelperTests(unittest.TestCase):
 @unittest.skipUnless(IS_WINDOWS, 'native Windows end-to-end CLI, Git Bash and Job Objects')
 class WindowsEndToEndTests(unittest.TestCase):
     def setUp(self):
-        self.deadline = time.monotonic() + 540
+        self.deadline = time.monotonic() + 840
         self.temp = tempfile.TemporaryDirectory(prefix='W7 windows e2e ')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -274,12 +291,12 @@ class WindowsEndToEndTests(unittest.TestCase):
 
     def remaining(self, cap=180):
         remaining = self.deadline - time.monotonic()
-        self.assertGreater(remaining, 0, 'W7 test exceeded its nine-minute budget')
+        self.assertGreater(remaining, 0, 'W7 test exceeded its fourteen-minute budget')
         return min(cap, remaining)
 
-    def run_process(self, argv, expected=0):
+    def run_process(self, argv, expected=0, cap=180):
         result = subprocess.run(argv, cwd=self.outside, env=self.env, capture_output=True,
-                                text=True, encoding='utf-8', errors='replace', timeout=self.remaining())
+                                text=True, encoding='utf-8', errors='replace', timeout=self.remaining(cap))
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
 
@@ -308,16 +325,19 @@ class WindowsEndToEndTests(unittest.TestCase):
             result = predicate()
             if result:
                 return result
-            time.sleep(0.05)
+            time.sleep(0.2)
         self.fail('timed out waiting for ' + description)
 
     def stop_children(self):
         (self.telemetry / 'local-release').touch()
         (self.telemetry / 'provider-release').touch()
         for process in self.processes:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=10)
+            try:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         from paired_session import winplat
         if (self.run_dir / 'state.json').exists():
             state = self.state()
@@ -325,7 +345,7 @@ class WindowsEndToEndTests(unittest.TestCase):
                 if row.get('job'):
                     try:
                         winplat.kill_group(row['pid'], row['job'])
-                    except ProcessLookupError:
+                    except (OSError, subprocess.TimeoutExpired):
                         pass
         ready = self.telemetry / 'local-ready.json'
         if ready.exists():
@@ -410,7 +430,7 @@ class WindowsEndToEndTests(unittest.TestCase):
                 if process.poll() is not None:
                     self.fail((self.root / 'interrupted.log').read_text(encoding='utf-8'))
                 return ready.exists()
-            self.wait_for(barrier, 'local test between model turns')
+            self.wait_for(barrier, 'local test between model turns', cap=300)
             interrupted = self.state()
             self.assertIsNone(interrupted.get('active'))
             self.assertIsNone(interrupted.get('uncertain_active'))
@@ -429,7 +449,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.assertTrue(winplat.pid_alive(row['pid']), 'local job survives coordinator restart')
         (self.telemetry / 'local-release').touch()
         self.wait_for(lambda: not winplat.pid_alive(row['pid']), 'released local test to exit', cap=15)
-        resumed = self.run_process(self.command('resume', *flags))
+        resumed = self.run_process(self.command('resume', *flags), cap=300)
         self.assertIn('DONE (acceptance pending)', resumed.stdout)
         done = self.state()
         self.assertEqual((done['status'], done['lifecycle']['stage']), ('DONE', 'DONE'))
@@ -468,6 +488,9 @@ class WindowsEndToEndTests(unittest.TestCase):
             blob = subprocess.check_output(['git', '-C', str(self.workspace), 'show', 'HEAD:' + name], env=self.env)
             self.assertNotIn(b'\r\n', blob, name)
         self.assertIn(b'\r\n', (self.workspace / 'sum_ints.py').read_bytes(), 'author fixture exercises CRLF cleaning')
+        for name in ('w7_extra.py', 'test_w7_extra.py'):
+            self.assertIn(name, manifest)
+            self.assertIn(b'\r\n', (self.workspace / name).read_bytes(), name)
         self.assertEqual(self.git('status', '--porcelain'), '')
         self.assertEqual(self.git('config', 'core.autocrlf'), 'true')
         self.assertEqual(self.git('config', 'core.fileMode'), 'false')
