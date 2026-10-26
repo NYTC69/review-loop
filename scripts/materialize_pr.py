@@ -68,7 +68,7 @@ def _run(argv: list[str], cwd: Path, network: bool, timeout: int, extra: dict) -
             argv[offset:offset] = ["-c", "credential.helper=", "-c",
                                    "credential.helper=!gh auth git-credential"]
     try:
-        result = subprocess.run(argv, cwd=cwd, env=env, text=True,
+        result = subprocess.run(argv, cwd=cwd, env=env, text=True, encoding='utf-8',
                                 capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ResolutionError(f"{argv[0]} unavailable or timed out") from exc

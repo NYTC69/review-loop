@@ -67,7 +67,7 @@ except ModuleNotFoundError:
     import timeout_scale
     import winplat
     from program_binding import snapshot as program_snapshot, safe_path
-if not winplat.IS_WINDOWS:   # WI-WIN: no fcntl on native Windows; its lock sites get a Windows branch in a later batch
+if not winplat.IS_WINDOWS:   # WI-WIN: only POSIX detach and probe scheduling use fcntl directly
     import fcntl
 
 HERE = Path(__file__).resolve().parent
@@ -121,7 +121,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
+    try: return subprocess.run([binary, '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 
 def cli_release_version(value: str):
@@ -465,7 +465,7 @@ def _codex_trust_paths(workspace) -> list[str]:
     ws = Path(workspace).resolve()
     paths = [str(ws)]
     try:
-        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--path-format=absolute', '--git-common-dir', cwd=ws), cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--path-format=absolute', '--git-common-dir', cwd=ws), cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', timeout=10)
         common = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
         if common is not None and common.is_absolute() and common.name == '.git' and (ws / '.git').is_file():
             paths.append(str(common.resolve().parent))
@@ -671,7 +671,8 @@ def concurrent_run_workspaces(own_workspace, live=True) -> dict:
         try:
             if not winplat.private_file_ok(entry.lstat()):
                 continue
-            record = json.loads(entry.read_text(encoding='utf-8', errors='replace')[:4096])
+            record = json.loads(winplat.holder_text(entry, 4096) if winplat.IS_WINDOWS else
+                                entry.read_text(encoding='utf-8', errors='replace')[:4096])
             if not isinstance(record, dict) or not isinstance(record.get('workspace'), str) or not isinstance(record.get('run_dir'), str):
                 continue
             workspace, run_dir = Path(record['workspace']).resolve(), Path(record['run_dir'])
@@ -684,7 +685,8 @@ def concurrent_run_workspaces(own_workspace, live=True) -> dict:
                 pid = record.get('pid')
                 if type(pid) is not int or pid <= 1 or state.get('status') != 'ACTIVE':
                     continue
-                lock = json.loads((run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
+                lock = json.loads(winplat.holder_text(run_dir / '.coordinator.lock', 1024) if winplat.IS_WINDOWS else
+                                  (run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
                 if not isinstance(lock, dict) or lock.get('pid') != pid:   # the same coordinator holds the run lease
                     continue
                 if not winplat.pid_alive(pid): continue
@@ -1265,6 +1267,8 @@ def detach_holder(run_dir):
     """None when no detached command holds this run dir's lock; 'starting' while the holder has not published its own record
     (the caller marks the record `starting` under the lock, so an older run's record is never read as the holder's); else the
     holder's record. Only the lock holder writes the record."""
+    if winplat.IS_WINDOWS:
+        return None   # detached commands cannot exist on Windows
     record, lock = detach_paths(run_dir)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -1296,6 +1300,8 @@ def detach(raw_argv: list, run_dir: str) -> int:
     """FIELD-17 follow-up (docs/detach.md): a host that ends its turn signals the process group it started (Claude Code: SIGTERM)
     or kills the command (Codex: SIGKILL). setsid() and a second fork leave that tree; the grandchild runs the same command and
     records its exit code. Nothing else changes: lease, active/uncertain turns, cleanup and every check are those of a plain run."""
+    if winplat.IS_WINDOWS:
+        raise ValueError('--detach is not supported on Windows')
     record, lock = detach_paths(run_dir)
     lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -1399,14 +1405,17 @@ def run_lease(run_dir: Path):
     acquired = False
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
+        if (not winplat.private_file_ok(info) if winplat.IS_WINDOWS else not stat.S_ISREG(info.st_mode)):
             raise RunLeaseError('coordinator lease path is not a regular file')
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            winplat.lock_exclusive(fd)
             acquired = True
         except BlockingIOError as exc:
-            os.lseek(fd, 0, os.SEEK_SET)
-            owner = os.read(fd, 1024).decode('utf-8', 'replace').strip()
+            if winplat.IS_WINDOWS:
+                owner = winplat.read_holder(fd, 1024)
+            else:
+                os.lseek(fd, 0, os.SEEK_SET)
+                owner = os.read(fd, 1024).decode('utf-8', 'replace').strip()
             detail = ''
             if owner:
                 try:
@@ -1416,14 +1425,17 @@ def run_lease(run_dir: Path):
                     detail = ''
             raise RunLeaseError('another coordinator currently owns this run' + detail) from exc
         payload = json.dumps({'pid': os.getpid(), 'started_at': datetime.now().astimezone().isoformat()})
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, payload.encode('utf-8'))
-        os.fsync(fd)
+        if winplat.IS_WINDOWS:
+            winplat.write_holder(fd, payload)
+        else:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, payload.encode('utf-8'))
+            os.fsync(fd)
         yield
     finally:
         if acquired:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            winplat.unlock(fd)
         os.close(fd)
 
 
@@ -1481,15 +1493,19 @@ def workspace_lease(workspace: Path, run_dir: Path):
     acquired = False
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o077):
+        if (not winplat.private_file_ok(info) if winplat.IS_WINDOWS else
+                (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                 or stat.S_IMODE(info.st_mode) & 0o077)):
             raise RunLeaseError('workspace lease path is not a private regular file owned by this user')
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            winplat.lock_exclusive(fd)
             acquired = True
         except BlockingIOError as exc:
-            os.lseek(fd, 0, os.SEEK_SET)
-            owner = os.read(fd, 4096).decode('utf-8', 'replace').strip()
+            if winplat.IS_WINDOWS:
+                owner = winplat.read_holder(fd, 4096)
+            else:
+                os.lseek(fd, 0, os.SEEK_SET)
+                owner = os.read(fd, 4096).decode('utf-8', 'replace').strip()
             try:
                 details = json.loads(owner)
             except (json.JSONDecodeError, TypeError):
@@ -1503,14 +1519,17 @@ def workspace_lease(workspace: Path, run_dir: Path):
             'pid': os.getpid(), 'run_dir': str(Path(run_dir).expanduser().resolve()),
             'workspace': str(root), 'started_at': datetime.now().astimezone().isoformat(),
         })
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, payload.encode('utf-8'))
-        os.fsync(fd)
+        if winplat.IS_WINDOWS:
+            winplat.write_holder(fd, payload)
+        else:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, payload.encode('utf-8'))
+            os.fsync(fd)
         yield
     finally:
         if acquired:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            winplat.unlock(fd)
         os.close(fd)
 
 
@@ -1557,6 +1576,10 @@ class ProbeParentLock:
         return key_dir
 
     def __enter__(self):
+        if winplat.IS_WINDOWS:
+            if self.whole:
+                raise ValueError('Claude author permission-probe is not supported on Windows')
+            return self   # only schedules against Claude probes, which cannot run on Windows
         while self.whole or self.fresh:
             self._acquire(key_dir := self._key_dir())
             if self._key_dir() == key_dir: break
@@ -1675,7 +1698,7 @@ def git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
 def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
     """D1: sha256 of the git control files an author could write: config, hooks/*, info/attributes (missing = a marker)."""
     if dirs is None:
-        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--absolute-git-dir', '--git-common-dir', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--absolute-git-dir', '--git-common-dir', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', timeout=10)
         dirs = list(dict.fromkeys(workspace / line for line in proc.stdout.splitlines() if line)) if proc.returncode == 0 else []
     digest = {}
     if (workspace / '.git').is_file(): digest['.git'] = _control_file_digest(workspace / '.git')
@@ -1691,7 +1714,7 @@ def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
 def git_head_state(workspace: Path) -> list:
     """D-EFF git guard: the commit HEAD names and the branch it is on (empty when detached or unborn)."""
     return [candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, text=True).stdout.strip()
+                                       stderr=subprocess.DEVNULL, text=True, encoding='utf-8').stdout.strip()
             for args in (('rev-parse', '--verify', '-q', 'HEAD'), ('symbolic-ref', '-q', 'HEAD'))]
 
 
@@ -2975,7 +2998,7 @@ class Coordinator:
     def _codex_cli_version(self) -> str:
         try:
             if self._program_state()[1]: return 'UNAVAILABLE'
-            result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True,
+            result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True, encoding='utf-8',
                                     capture_output=True, timeout=10 * timeout_scale.env_factor())
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
@@ -3431,7 +3454,7 @@ class Coordinator:
 
     def _head_commit(self) -> Optional[str]:
         proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--verify', 'HEAD', cwd=self.workspace), cwd=self.workspace,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         return proc.stdout.strip() if proc.returncode == 0 else None
 
     def _head_ref(self) -> Optional[str]:   # the branch HEAD names, None when detached
@@ -3532,7 +3555,7 @@ class Coordinator:
             current = self.internal / 'current-review'
             self._mirror_workspace(current)
             proc = candidate_tree.run_bounded(candidate_tree.git_command('-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
-                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
+                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
             atomic_text(since, proc.stdout)
@@ -4270,7 +4293,7 @@ class Coordinator:
             raise ValueError('auto_commit refuses skip-worktree (sparse) entries; abort and commit the tree yourself, or start a new run with auto_commit false (the value is frozen at run start)')
         proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
                                            'text', 'eol', 'working-tree-encoding'], cwd=self.workspace,
-                                          input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                          input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         fields = proc.stdout.split('\0')
         transforming = [f'{path}: {attr}={value}' for path, attr, value in zip(fields[0::3], fields[1::3], fields[2::3])
                         if value not in ('unspecified', 'unset')]
@@ -4287,12 +4310,12 @@ class Coordinator:
         oids = dict(zip(regular, candidate_tree.run_bounded(
             candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
             cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, check=True, timeout=600).stdout.split()))
+            stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True, timeout=600).stdout.split()))
         for path, value in files:   # --stdin-paths follows symlinks: a link blob is its target text
             if value.startswith('link:'):
                 oids[path] = candidate_tree.run_bounded(
                     candidate_tree.git_command('hash-object', '-w', '--stdin', cwd=self.workspace), cwd=self.workspace,
-                    input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                    input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True,
                     timeout=600).stdout.strip()
         rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if value.startswith('exec:') else '100644'}"
                        f' {oids[path]}\t{path}\0' for path, value in files)   # rel210-fixA: the accepted mode, not a live lstat
@@ -4300,9 +4323,9 @@ class Coordinator:
         env = {**candidate_tree.git_env(), 'GIT_INDEX_FILE': str(index)}
         try:
             subprocess.run(candidate_tree.git_command('update-index', '-z', '--index-info', cwd=self.workspace),
-                           cwd=self.workspace, env=env, input=rows, text=True, check=True, capture_output=True, timeout=600)
+                           cwd=self.workspace, env=env, input=rows, text=True, encoding='utf-8', check=True, capture_output=True, timeout=600)
             return subprocess.run(candidate_tree.git_command('write-tree', cwd=self.workspace), cwd=self.workspace, env=env,
-                                  text=True, check=True, capture_output=True, timeout=600).stdout.strip()
+                                  text=True, encoding='utf-8', check=True, capture_output=True, timeout=600).stdout.strip()
         finally:
             index.unlink(missing_ok=True)
 
@@ -6894,7 +6917,7 @@ class Coordinator:
     def _security_script(self, script: str, *args: str) -> subprocess.CompletedProcess:
         try:
             return subprocess.run([sys.executable, str(HERE.parent / 'scripts' / script), '--repo', str(self.workspace),
-                                   *args], cwd=self.workspace, capture_output=True, text=True, errors='replace', timeout=600)
+                                   *args], cwd=self.workspace, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
         except (OSError, subprocess.SubprocessError) as exc:   # a timeout or a missing interpreter HOLDs
             raise RuntimeError(f'{script} could not run: {exc}') from exc
 
@@ -8466,7 +8489,7 @@ class Coordinator:
                 outcome['copy_config_sha256'] = hashlib.sha256(copied.read_bytes()).hexdigest()
                 result = subprocess.run(args, cwd=workspace,
                     env={**self._author_environment(), 'CODEX_HOME': sandbox_home},
-                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                    text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             outcome.update({'returncode': result.returncode,
                             'stdout': result.stdout[-OUTPUT_TAIL_CHARS:],
                             'stderr': result.stderr[-OUTPUT_TAIL_CHARS:]})
@@ -8552,7 +8575,7 @@ class Coordinator:
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
+                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -9736,7 +9759,7 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def codex_cli_semver(binary: str) -> Optional[tuple]:
-    try: proc = subprocess.run([binary, '--version'], text=True, capture_output=True, stdin=subprocess.DEVNULL,
+    try: proc = subprocess.run([binary, '--version'], text=True, encoding='utf-8', capture_output=True, stdin=subprocess.DEVNULL,
                                timeout=10 * timeout_scale.env_factor())
     except (OSError, subprocess.SubprocessError): return None
     out = proc.stdout if proc.returncode == 0 else ''

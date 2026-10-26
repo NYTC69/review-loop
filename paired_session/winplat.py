@@ -126,6 +126,58 @@ def replace(src, dst) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
+def lock_exclusive(fd: int) -> None:
+    """Nonblocking lease lock; Windows reserves byte 0, leaving holder JSON at offset 1 readable."""
+    if not IS_WINDOWS:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    import errno
+    import msvcrt
+    os.lseek(fd, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            raise BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable') from exc
+        raise
+
+
+def unlock(fd: int) -> None:
+    if not IS_WINDOWS:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    import msvcrt
+    os.lseek(fd, 0, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def read_holder(fd: int, limit: int) -> str:
+    """Windows-only optional diagnostics: never read the byte another process has locked."""
+    try:
+        os.lseek(fd, 1, os.SEEK_SET)
+        return os.read(fd, limit).decode('utf-8', 'replace').strip()
+    except OSError:
+        return ''
+
+
+def write_holder(fd: int, payload: str) -> None:
+    """Windows-only: keep the locked byte allocated, and replace the JSON beyond it."""
+    data = payload.encode('utf-8')
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, b'\0' + data)
+    os.ftruncate(fd, len(data) + 1)
+    os.fsync(fd)
+
+
+def holder_text(path, limit: int) -> str:
+    """Windows-only reader for lease discovery, using the same unlocked metadata range."""
+    with open(path, 'rb') as stream:
+        stream.seek(1)
+        return stream.read(limit).decode('utf-8', 'replace')
+
+
 def temp_root() -> Path:
     """The shared temp root the POSIX call sites name literally (/tmp); the user's temp directory on Windows."""
     return Path(tempfile.gettempdir()) if IS_WINDOWS else Path('/tmp')

@@ -24,7 +24,7 @@ class PostRefused(Exception):
 
 def _scan(report: Path) -> list:
     proc = subprocess.run([sys.executable, str(HERE.parent / 'scripts' / 'security_preflight.py'), '--file', str(report)],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, encoding='utf-8', timeout=120)
     if proc.returncode not in (0, 1):
         raise PostRefused('the secret scan could not run: ' + (proc.stderr.strip() or f'exit {proc.returncode}'))
     return json.loads(proc.stdout)['findings']
@@ -60,7 +60,7 @@ def post(run_dir, confirm: str, runner=subprocess.run) -> str:
     plan = prepare(run_dir)
     if confirm != plan['digest']:
         raise PostRefused('the confirmation does not match the body and command shown; show them again')
-    view = runner(['gh', 'pr', 'view', plan['url'], '--json', 'headRefOid'], capture_output=True, text=True, timeout=120)
+    view = runner(['gh', 'pr', 'view', plan['url'], '--json', 'headRefOid'], capture_output=True, text=True, encoding='utf-8', timeout=120)
     try:
         current = json.loads(view.stdout)['headRefOid'] if view.returncode == 0 else None
     except (ValueError, KeyError, TypeError):
@@ -69,7 +69,7 @@ def post(run_dir, confirm: str, runner=subprocess.run) -> str:
         raise PostRefused('cannot read the PR head: ' + (view.stderr or '').strip())
     if current != plan['head']:
         raise PostRefused(f"the PR head moved since the review ({plan['head']} -> {current}); the report describes another commit")
-    done = runner(plan['command'], capture_output=True, text=True, timeout=120)
+    done = runner(plan['command'], capture_output=True, text=True, encoding='utf-8', timeout=120)
     if done.returncode:
         raise PostRefused('gh pr review failed: ' + (done.stderr or '').strip())
     return plan['url']

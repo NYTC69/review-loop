@@ -1,1 +1,2 @@
 test_winplat
+test_winplat_locks

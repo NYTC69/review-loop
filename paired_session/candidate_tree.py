@@ -36,7 +36,7 @@ EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
 @functools.lru_cache(maxsize=None)
 def _attr_source():   # git >= 2.40: read attributes from the empty tree, so no workspace .gitattributes can select a filter driver
-    try: version = tuple(int(part) for part in subprocess.run(['git', '--version'], stdout=subprocess.PIPE, text=True).stdout.split()[2].split('.')[:2])
+    try: version = tuple(int(part) for part in subprocess.run(['git', '--version'], stdout=subprocess.PIPE, text=True, encoding='utf-8').stdout.split()[2].split('.')[:2])
     except (OSError, IndexError, ValueError): return ()
     return ('--attr-source=' + EMPTY_TREE,) if version >= (2, 40) else ()
 
@@ -46,7 +46,7 @@ def git_env():
 
 def _filter_overrides(cwd):   # G1: blank every filter driver the effective config defines, whatever attribute source selects it
     proc = run_bounded(['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=' + winplat.devnull_path(), 'config', '--includes', '--null', '--get-regexp',
-                        r'^filter\..*\.(clean|smudge|process|required)$'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace', timeout=10)
+                        r'^filter\..*\.(clean|smudge|process|required)$'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', timeout=10)
     names = dict.fromkeys(row.split('\n', 1)[0][len('filter.'):].rsplit('.', 1)[0] for row in proc.stdout.split('\0') if row)
     if not all(re.fullmatch(r'[A-Za-z0-9_.+-]+', name) for name in names):
         raise RuntimeError('unsupported git filter driver name')   # a RuntimeError, so the drive loop HOLDs on it
@@ -115,7 +115,7 @@ def _git(args, *, cwd=None, env=None):
                '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
                '-c', 'transfer.fsckObjects=true', *args]
     result = subprocess.run(command, cwd=cwd, env=env or _git_env(),
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         raise CandidateError('git candidate operation failed: ' + result.stderr.strip())
     return result.stdout.strip()
@@ -288,7 +288,7 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
         raise CandidateError('candidate scratch must be outside workspace/worktrees, run and Git directories')
     for key in ('core.sparseCheckout', 'core.ignoreStat'):
         proc = subprocess.run(['git', '-C', str(workspace), 'config', '--bool', key], env=env,
-                              text=True, capture_output=True)
+                              text=True, encoding='utf-8', capture_output=True)
         if proc.returncode == 0 and proc.stdout.strip() == 'true':
             raise CandidateError('candidate admission refuses sparse or ignored-stat index')
     labels = _git(['ls-files', '-v', '-z'], cwd=workspace, env=env).split('\0')
