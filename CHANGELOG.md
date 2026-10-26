@@ -1,5 +1,35 @@
 # Changelog
 
+### v3.3.0：paired-session 和 review-pr 支持原生 Windows（高效模式）
+
+这是一个小版本，带来新功能：原生 Windows 支持（ADR-20）。它不是 v3.2.0 试用期内的修复版本。
+
+**升级须知**
+- 没有改 run 启动时固定下来的任何值，在 v3.2.x 上开始的 run 换到这一版后可以继续。
+- macOS 上的行为不变：所有 Windows 改动都在 `winplat.IS_WINDOWS` 分支之后，macOS 上的命令、角色设置、回执和写出的文件字节与 v3.2.8 相同；技能里给 macOS 的命令也没有变。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
+- Linux（包括 WSL）仍不支持。各入口的拒绝文字改为 `paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`。
+
+**新功能：原生 Windows**
+- 平台：入口接受 macOS 和原生 Windows（Git Bash 下 `uname -s` 以 `MINGW64_NT-` 或 `MSYS_NT-` 开头；PowerShell 下 `$env:OS` 为 `Windows_NT`）。新模块 `paired_session/winplat.py` 集中处理平台差异：用户标识（Windows 用用户名代替 uid）、私有目录检查（Windows：真实目录、不是 reparse point、位于用户目录或临时目录之下）、进程存活检查（OpenProcess，不用 `os.kill(pid, 0)`）、遇到共享冲突时重试的文件替换、临时目录和 devnull。coordinator 写的文本产物以 UTF-8、LF 写出；协议加载器 `scripts/read_protocol.py` 在 Windows 上同样可用。
+- 进程树：Windows 上每个角色回合和 coordinator 自己跑的测试都经由独立启动器 `paired_session/winjob.py` 启动，进入一个按回合命名的 Job Object（`Local\review-loop-<tag>-<hex>`）；名字记在回合回执里，超时、中断和重启后的恢复都按名字探测或结束整棵进程树。目标进程退出后，启动器结束它留下的子进程。
+- 锁：run 锁和 worktree 锁在 Windows 上用 `msvcrt.locking` 锁住持久锁文件的第 0 字节（持有时从不删除锁文件），持有者信息从第 1 字节写起；争用时的提示与 macOS 相同。
+- CLI：在 PATH 中按 PATHEXT 解析 `claude` 和 `codex`；npm 安装的 shim 映射为 `node.exe` 加包里的脚本（按 package.json 的 `bin`），原生安装的 `claude.exe` 直接使用；两者都绑定路径和 sha256。命令行超过 CreateProcess 的 32767 字符上限时拒绝并给出实际长度。不经过 cmd.exe。
+- 角色设置：Claude Code 在原生 Windows 上没有 Bash 沙箱，所以 Claude 角色的设置关闭沙箱（`sandbox.enabled`、`failIfUnavailable` 为 false）。只读角色保留 `dontAsk`、精确的 `Bash(<cmd>)` 白名单、Edit/Write 禁止和回合后的只读检查（Windows 上比较内容和存在性，不比较权限位）；作者的 Edit 规则用 Claude Code 的 Windows 写法 `//c/Users/...`；`permissions.deny` 为所有 Claude 角色加上常见凭据文件和目录的 Read 禁止规则（Bash 仍能读到）。Codex 角色的参数不变。
+- 临时目录：只读角色的 scratch 在 Windows 上按路径创建、校验和删除（reparse point 当作自身删除，从不跟随；只读属性先清除）；Codex 作者和只读角色同时拿到 `TMPDIR`、`TMP`、`TEMP`。
+- 命令证据：识别 Codex 在 Windows 上的 PowerShell 包装（`powershell.exe` 或 `pwsh` 的 `-Command`，含常见开关）和 Git Bash 包装（`bash -c`、`bash -lc`），解包后仍要求整条命令等于配置的测试命令；路径接受 `C:\...`、`C:/...`、`/c/...`、`file:///C:/...` 和 UNC，比较时不区分大小写。`-EncodedCommand`、`-File`、`cmd.exe /c` 等形式不识别，结果是 HOLD，不会误批准。
+- 测试执行：coordinator 自己跑测试（quality writers 的基线和检查）时，Windows 上用 Git Bash 执行 `bash -c <测试命令>`（先看 `CLAUDE_CODE_GIT_BASH_PATH`，再从 Git for Windows 的安装位置找，从不用 WSL 的 System32\bash.exe）；找不到时报 `Git for Windows is required for local tests`。文件的可执行位在 Windows 上取自 git 索引；新增 `.gitattributes`，在 `core.autocrlf` 的 checkout 中源码、脚本、JSON 和 Markdown 也保持提交时的 LF 字节（冻结的角色清单和协议加载依赖这些字节）。隔离候选树里被跟踪的 symlink 需要真实链接，没有 symlink 权限（开发者模式）时明确报错。
+- 拒绝的功能：Windows 上 `--strict`（包括 profile 里的 `"safety_mode": "strict"` 和以 strict 创建的已有 run）、`permission-probe` 和 `--detach` 都在取锁、写 state 之前被拒绝（`REFUSED: ...`，exit 2）；对 strict 的 profile 或 run，`status`、`abort`、`stop` 仍可用。
+- 技能：各入口给出 Windows 的命令写法（用 `python` 或 `py -3` 代替 `python3`；bundle 目录名用用户名代替 uid；以 `python <plugin>/bin/paired-session` 启动 coordinator）。Claude Code 入口是经过测试的 Windows 路径，Codex 技能的 PowerShell 命令是尽力而为。
+
+**Windows 前提**
+- Git for Windows（Claude Code 的 Bash 工具和 coordinator 的本地测试都用它的 Git Bash）。
+- Python 3（`python` 或 `py -3`）。
+- Node.js：`claude` 或 `codex` 通过 npm 安装时需要。
+- run 目录和工作区不要放在 OneDrive 同步的文件夹里。
+
+**审查与验收**：待补。
+
 ### v3.2.8：审查历史扫描不再漏遮罩已豁免名称在连字符组合中的出现
 
 v3.2.0 试用期内的小版本，修复裸厂商或模型名称已获豁免，但同一行的连字符组合（例如 `codex-cli`）仍被误判为审查历史的问题。

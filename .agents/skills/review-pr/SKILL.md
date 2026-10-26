@@ -15,7 +15,8 @@ absent. `<support-root>` is this plugin, not the task workspace.
 
 - The user asks for "the legacy review-pr workflow": refused with
   `review-pr: the legacy workflow was removed in v2.13.0; ask for a review-pr without the legacy workflow (report mode)`.
-- A host that is not macOS (`uname -s` is not `Darwin`): refused with `review-pr: paired-session needs macOS; Linux and other hosts are not supported`.
+- A host that is neither macOS (`uname -s` is `Darwin`) nor native Windows (PowerShell: `$env:OS -eq 'Windows_NT'`;
+  Git Bash: `uname -s` starts with `MINGW64_NT-` or `MSYS_NT-`): refused with `review-pr: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`.
 - Otherwise the paired route. Print
   `review-pr: paired-session report mode (entry set in .review-loop/config.md)` when the key is set, or
   `review-pr: paired-session report mode (the default entry)`

@@ -17,7 +17,8 @@ Resolve `entry` in `.review-loop/config.md` (exact values `legacy` and `paired-s
 an unreadable config prints `code-quality-loop: entry could not be read (<reason>); using paired-session`, and both
 continue as absent. Then:
 - `--legacy` in `$ARGUMENTS`: refused with `code-quality-loop: the legacy workflow was removed in v2.13.0; run /review-loop:code-quality-loop without --legacy`.
-- A host that is not macOS (`uname -s` is not `Darwin`): refused with `code-quality-loop: paired-session needs macOS; Linux and other hosts are not supported`.
+- A host that is neither macOS (`uname -s` is `Darwin`) nor native Windows (Git Bash: `uname -s` starts with
+  `MINGW64_NT-` or `MSYS_NT-`): refused with `code-quality-loop: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`.
 - Otherwise the paired route. This skill owns the notice lines of steps 1 and 3: print each verbatim as visible reply text (not only in a tool call), as the first output after resolving `entry` and before any other tool call or skill invocation, also on a headless run. The paired-session skill prints them only when they are missing.
   1. Print `code-quality-loop: paired-session review-only run (entry set in .review-loop/config.md)` when the
      key is set, or

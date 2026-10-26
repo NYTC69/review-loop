@@ -6,7 +6,7 @@
 
 - Branch: `audit/paired-session-next-batch` (lane A).
 - Released: v2.13.2. The paired-session coordinator is the only workflow; the legacy workflow was removed in
-  v2.13.0-v2.13.2. macOS only.
+  v2.13.0-v2.13.2. macOS, and native Windows in efficient mode from v3.3.0 (ADR-20).
 - In progress: the v3.0.0 review (ADR-17). Lane A fixed the live docs (V3-FIX-1, -2, -4, -5, -6); lane B the
   historical docs and leftover code.
 

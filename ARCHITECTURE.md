@@ -9,7 +9,9 @@ coordinator (`bin/paired-session` → `paired_session/coordinator.py`), which ru
 adversarial gate, FINISH, POLISH-Q, DOCS and SECURITY to DONE and delivers only on the operator's `accept`. The
 author, reviewer, shadow, gate and specialists are separate Codex or Claude CLI processes that the coordinator starts
 with their own sandboxes; the skills resolve the entry, run the stage A checks and drive the coordinator commands.
-macOS only. The user-facing description is README.md.
+macOS and, since v3.3.0, native Windows in efficient mode (ADR-20; the platform seams live in
+`paired_session/winplat.py` and the Job Object launcher `paired_session/winjob.py`); Linux is not supported. The
+user-facing description is README.md.
 
 ## Module layout
 

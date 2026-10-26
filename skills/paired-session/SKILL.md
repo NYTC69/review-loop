@@ -29,6 +29,15 @@ then write that printed directory out literally as `<bundle-dir>`:
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/read_protocol.py --runtime claude --stage entry-paired-session --output <bundle-dir>/protocol-claude-entry-paired-session.md
 ```
 
+On native Windows (the Bash tool runs Git Bash there) Python is `python` (or `py -3`) and `os.getuid` does not exist:
+print the bundle directory with
+`python -c "import getpass, os, re, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), 'review-loop-protocol-' + (re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('USERNAME') or getpass.getuser()) or 'user'), uuid.uuid4().hex[:12]).replace(os.sep, '/'))"`
+(the loader names the directory after the Windows user name), then run, with both paths quoted:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/scripts/read_protocol.py" --runtime claude --stage entry-paired-session --output '<bundle-dir>/protocol-claude-entry-paired-session.md'
+```
+
 After exit 0, read the complete output file in bounded chunks and follow it; a
 missing, unreadable or incompletely read file is a failed stage A check,
 reported as `stage A failure: cannot load the shared entry contract (<reason>)`.
@@ -87,6 +96,15 @@ adds only the Claude Code host rules:
   ask the user before any `--retry-uncertain`.
 - Default (efficient): one Bash call with the `run` block below. Strict: the
   probe block first, then the `run` block as a second Bash call.
+- Native Windows (Git Bash): efficient only; the coordinator refuses `--strict`, `permission-probe` and `--detach`,
+  so a headless session is not supported there (use an interactive session). Git Bash has no `pgrep`: wait for the
+  background task notification. Resolve the run root with
+  `cygpath -m "${XDG_STATE_HOME:-$HOME/.local/state}/review-loop"` (it prints a `C:/Users/...` path the Write tool and
+  the coordinator both take; Git Bash's own `/c/...` form is not a Windows path) and use that form for `WORKSPACE`,
+  `WORKITEM` and `RUN_DIR` too. Keep the run root and the workspace out of OneDrive-synced folders. Run the
+  coordinator through Python (no shebang execution on Windows): in the `run` block below, replace
+  `"${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run` with `python "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run`, and
+  run every other coordinator command and script the same way.
 
 Strict only, first Bash call (`run_in_background: true`):
 
@@ -121,7 +139,7 @@ Add `--auto-commit false` too when the review-loop entry handed it over.
 
 A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the
 shared contract's Review-PR entry. Host rules: `<support-root>` in the shared contract is
-`${CLAUDE_PLUGIN_ROOT}` (for example `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/materialize_pr.py"`); the run
+`${CLAUDE_PLUGIN_ROOT}` (for example `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/materialize_pr.py"`; Windows: `python`); the run
 root above is the materializer's `--root`; the materializer runs as its own foreground Bash call with
 `timeout: 600000` (a clone and fetch can outlast the default), before the blocks. In both blocks set
 `WORKSPACE` to the clone it printed (no input: the current worktree), replace

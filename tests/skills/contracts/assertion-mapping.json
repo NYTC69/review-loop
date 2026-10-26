@@ -337,31 +337,31 @@
     "non_macos_refused": [
       {
         "path": "skills/review-loop/references/entry.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       },
       {
         "path": ".agents/skills/review-loop/references/entry.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       },
       {
         "path": "skills/review-pr/SKILL.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       },
       {
         "path": ".agents/skills/review-pr/SKILL.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       },
       {
         "path": "skills/code-quality-loop/SKILL.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       },
       {
         "path": "docs/paired-session-migration.md",
-        "needle": "paired-session needs macOS; Linux and other hosts are not supported"
+        "needle": "paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported"
       }
     ],
     "plan_exists_as_work_item": [

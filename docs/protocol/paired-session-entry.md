@@ -33,20 +33,32 @@ the first command that runs `bin/paired-session`):
 
 ## Stage A checks
 
-On every entry, first check the host and the CLIs: a host that is not macOS
-(`uname -s` is not `Darwin`) is refused with
-`<entry>: paired-session needs macOS; Linux and other hosts are not supported` (`<entry>` is the
+On every entry, first check the host and the CLIs. Supported hosts are macOS
+(`uname -s` is `Darwin`) and native Windows (under Git Bash, which Claude Code's
+Bash tool uses there, `uname -s` starts with `MINGW64_NT-` or `MSYS_NT-`;
+in PowerShell `$env:OS -eq 'Windows_NT'`). Any other host, Linux and
+WSL (`uname -s` is `Linux`) included, is refused with
+`<entry>: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported` (`<entry>` is the
 handing-off entry's name, or `paired-session` when this skill was invoked directly),
-and both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
+and both `codex` and `claude` must be on PATH (`command -v`; PowerShell:
+`Get-Command`), whatever vendors the
 resolved roles use: the coordinator binds both binaries at run start (the
 review-loop entry has already checked both on a handoff).
+On Windows only the default efficient mode runs: the coordinator refuses
+`--strict` (or `"safety_mode": "strict"` in the profile), `permission-probe` and
+`--detach`, so never choose them there, and report such a refusal verbatim. Git
+for Windows (its Git Bash) is required, and the run directory and the workspace
+must not be in a OneDrive-synced folder.
 Identify the intended Git worktree. Use a dedicated task worktree; preserve
 unrelated user changes and do not switch away from a dirty checkout. If a
 dedicated worktree is unavailable, ask before creating one. Determine the
 project's test command from its docs/manifests and ask only if it cannot be
 established safely. When a Claude role (reviewer or gate) runs it, the command
 must be one exact command without `$(`, backticks, `|`, `;`, `&&`, redirection
-or loops; otherwise ask for a `/bin/bash /absolute/path/script.sh` form. A
+or loops; otherwise ask for a `/bin/bash /absolute/path/script.sh` form (on
+Windows `bash ./script.sh`; there Codex roles run commands in PowerShell and
+Claude roles and the coordinator's own test run in Git Bash, so prefer a command
+that runs the same in both, such as `python -m pytest -q`). A
 declined or unanswered question is a failed stage A check. Under `--handsfree`
 or `handsfree: true` nobody answers, so any such question is a failed stage A
 check, reported as `stage A failure: handsfree cannot answer (<question>)`.
@@ -270,7 +282,8 @@ Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, 
 and goes to `permission-probe` and `run` alike:
 both modes keep every sandbox; the default `efficient` mode does not require
 the probe PASS and its evidence guard only logs, while `--strict` restores
-both (`paired_session/docs/efficient-mode.md`). An efficient run needs no probe waiver. The run is strict when the user asked for
+both (`paired_session/docs/efficient-mode.md`; on Windows the Claude roles run without the Claude Code Bash
+sandbox, which native Windows lacks, and strict is refused). An efficient run needs no probe waiver. The run is strict when the user asked for
 `--strict` or the operator profile sets `"safety_mode": "strict"`; read the
 profile before choosing the flow.
 - Default (efficient): no permission probe; the first coordinator command is

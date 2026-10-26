@@ -19,6 +19,9 @@ Both stages may precede a paired-session run, so they write to an absolute
 python3 <support-root>/scripts/read_protocol.py --runtime <claude|codex> --stage <stage> --output <bundle-dir>/protocol-<runtime>-<stage>.md
 ```
 
+On native Windows `<uid>` is the user name (characters outside `A-Za-z0-9._-` become `_`), Python is `python` (or
+`py -3`), and the paths are quoted; the entry skills give the Windows forms.
+
 Every `read_protocol.py` call is its own Bash command, with no `&&`, `;`, pipes,
 loops, command substitution or shell variables. Write `--loaded` values out literally.
 

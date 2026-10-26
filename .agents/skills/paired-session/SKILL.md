@@ -17,6 +17,13 @@ then write that printed directory out literally as `<bundle-dir>`:
 python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-paired-session --output <bundle-dir>/protocol-codex-entry-paired-session.md
 ```
 
+On native Windows Codex runs commands in PowerShell, Python is `python` (or `py -3`) and `os.getuid` does not exist:
+print the bundle directory with
+`python -c "import getpass, os, re, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), 'review-loop-protocol-' + (re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('USERNAME') or getpass.getuser()) or 'user'), uuid.uuid4().hex[:12]).replace(os.sep, '/'))"`
+(the loader names the directory after the Windows user name), then run
+`python '<support-root>\scripts\read_protocol.py' --runtime codex --stage entry-paired-session --output '<bundle-dir>/protocol-codex-entry-paired-session.md'`.
+The Windows commands in this skill are best effort; the Claude Code entry is the tested Windows path.
+
 Resolve `<support-root>` to this plugin, not the task workspace. After exit 0,
 read the complete output file in bounded chunks and follow it; a missing,
 unreadable or incompletely read file is a failed stage A check, reported as
@@ -114,6 +121,48 @@ Replace the placeholders before running. Keep the heredoc delimiter unique and
 quoted. Exit 4 from the second invocation means the installed plugin changed
 or became unresolvable after the probe: report it as a HOLD (no fallback); the
 run was not started.
+
+Native Windows (PowerShell; best effort, the Claude Code entry is the tested Windows path): efficient only, so
+there is no second invocation; the coordinator refuses `--strict`, `permission-probe` and `--detach`. Git for
+Windows (Git Bash) must be installed, and the run root and the workspace stay out of OneDrive-synced folders. The
+first invocation becomes (same placeholders, same exit 3 rule; run the coordinator and every script through
+`python`, never by shebang):
+
+```powershell
+$ErrorActionPreference = 'Stop'
+function Stage-A($Reason) { Write-Output "stage A failure: $Reason"; exit 3 }
+$CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+$env:CODEX_HOME = $CodexHome
+if (-not (Test-Path -LiteralPath $CodexHome -PathType Container)) { Stage-A "CODEX_HOME $CodexHome is not an existing directory" }
+try { $Rows = @((codex plugin list --json --marketplace review-loop-marketplace | ConvertFrom-Json).installed | Where-Object { $_.pluginId -eq 'review-loop@review-loop-marketplace' -and $_.enabled }) } catch { $Rows = @() }
+if ($Rows.Count -ne 1) { Stage-A 'review-loop plugin is not installed and enabled exactly once' }
+$Version = [string]$Rows[0].version
+try { $Parsed = [version]$Version } catch { Stage-A "cannot parse installed review-loop version '$Version'" }
+if ($Parsed -lt [version]'3.3.0') { Stage-A "installed review-loop $Version predates native Windows support (3.3.0)" }
+Write-Output "VERSION=$Version"
+$PluginRoot = Join-Path $CodexHome "plugins\cache\review-loop-marketplace\review-loop\$Version"
+$Launcher = Join-Path $PluginRoot 'bin\paired-session'
+if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) { Stage-A 'paired-session launcher missing from installed plugin' }
+$Workspace = 'C:\absolute\path\to\the-selected-dedicated-worktree'
+try { $Workspace = (Resolve-Path -LiteralPath $Workspace).ProviderPath } catch { Stage-A 'selected workspace does not exist' }
+$Top = git -C $Workspace rev-parse --show-toplevel
+if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top) -ne [IO.Path]::GetFullPath($Workspace)) { Stage-A 'selected workspace is not a Git worktree root' }
+$RunDir = Join-Path $CodexHome ('state\paired-session\runs\' + [guid]::NewGuid())
+$WorkItem = Join-Path $RunDir 'WORKITEM.md'
+try { New-Item -ItemType Directory -Force -Path $RunDir | Out-Null } catch { Stage-A 'cannot create the run directory' }
+$WorkItemText = @'
+[Write the user's approved goal, acceptance criteria, scope, and verification here.]
+'@
+try { [IO.File]::WriteAllText($WorkItem, $WorkItemText.Replace("`r`n", "`n") + "`n", (New-Object Text.UTF8Encoding $false)) } catch { Stage-A 'cannot write the work item' }
+Write-Output "RUN_DIR=$RunDir"
+$TestCommand = '[verified project command, or the exact value from the profile]'
+python $Launcher run --workspace $Workspace --workitem $WorkItem --run-dir $RunDir --test-command $TestCommand --lifecycle-mode on
+exit $LASTEXITCODE
+```
+
+Add the review-only and review-pr options below to this block as to the POSIX one; a second quoted
+here-string writes `pr-pins.json` the same way as the work item. Windows PowerShell 5.1 does not pass a `"` inside an
+argument intact to `python`: keep `"` out of the test command and the option values, or use PowerShell 7.3 or later.
 
 A review-only request (the user asks to review an existing change, or the review-loop handoff of
 a code target) follows the shared contract's review-only entry: add `--review-only` (and

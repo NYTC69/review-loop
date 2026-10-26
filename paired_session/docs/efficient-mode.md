@@ -39,6 +39,25 @@ What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
 - **A(b):** the run dir is not writable by any role. The author's TMPDIR, `run_dir/author-tmp`, holds no records.
 
+**Native Windows exception (v3.3.0, ADR-20 D1).** Claude Code has no Bash sandbox on native Windows, so there
+`_claude_sandbox_settings` sets `sandbox.enabled` and `sandbox.failIfUnavailable` to false; the rest of the settings
+keeps its shape and the macOS settings are byte-identical. Only efficient mode runs: `--strict` (or a strict
+profile, or a saved strict run), `permission-probe` and `--detach` are refused before any lease or state write.
+- Claude read-only roles keep `--restricted --permission-mode dontAsk`, the exact `Bash(<cmd>)` allow rules and the
+  Edit/Write/NotebookEdit/Agent denies, with no OS layer under them; the post-turn read-only workspace check (§4a)
+  still voids, restores and holds. On Windows it compares content and existence, not permission bits.
+- The Claude author's Bash runs unsandboxed: its Edit/Write stay limited by the path rules (written in Claude Code's
+  Windows form `//c/Users/...`), but its Bash can write outside the workspace, the run dir included. The context
+  digest, the global-config check and the other post-turn checks still run; a Bash write to the run dir's records
+  (for example `state.json`) is neither prevented nor detected.
+- Secret-named env vars are not hidden from Claude's Bash. Instead `permissions.deny` gets Read rules for the
+  credential paths the sandbox hid (`~/.aws`, `~/.ssh`, `~/.config/gcloud`, `~/.config/gh`, `~/.azure`,
+  `~/.docker/config.json`, `~/.git-credentials`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.kube/config`) for every
+  Claude role; Bash can still read those files.
+- Codex roles keep their flags. Their scratch and the author's temp dir are given as `TMPDIR`, `TMP` and `TEMP`.
+These are accepted residuals under the owner rule: reasonable protection for normal use, assuming users and models do
+not act maliciously.
+
 **Owner question (friction).** Friction must be listed with evidence before any flag is removed, and this change removes none. Recorded so far: the read-only roles' exact `Bash(<cmd>)` allowlist makes a reviewer that runs an unlisted command get a denial, not a run. The supervisor may want to collect real-run evidence on this.
 
 ## 3. Category C gates

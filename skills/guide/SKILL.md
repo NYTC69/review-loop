@@ -54,7 +54,7 @@ existing code (`run --review-only`, plus `--base <ref>` when you name a base) ar
 handed to paired-session; resuming a legacy session is refused. Unrelated dirty
 work is not existing code: a review-only run reviews and, with `auto_commit`,
 delivers every change against its base. A failed check before the
-coordinator starts (a host other than macOS, required CLIs, background or outside-sandbox
+coordinator starts (a host other than macOS or native Windows, required CLIs, background or outside-sandbox
 execution, Codex home, on Codex an installed plugin older than v2.10.0, or a
 declined or unanswered worktree or test-command question; under handsfree any
 such question counts as unanswered) refuses with the reason, whether the key is set or not
@@ -66,6 +66,9 @@ Runs are `efficient` by default: every sandbox applies, but no permission-probe
 PASS is required; `--strict` or `"safety_mode": "strict"` in the operator
 profile adds the probe gate. In both modes a reviewer turn that changes the
 workspace is voided and restored, and an author commit is a HOLD.
+Platforms: macOS and native Windows (Linux and WSL are refused). On Windows only efficient mode runs (`--strict`,
+`permission-probe` and `--detach` are refused), Claude roles run without the Claude Code Bash sandbox, Git for
+Windows (Git Bash) is required, and run directories and workspaces stay out of OneDrive-synced folders.
 On Codex, ask "use paired-session for this task".
 Details: `docs/paired-session-migration.md`.
 

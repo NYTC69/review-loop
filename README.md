@@ -13,9 +13,20 @@ and security run with lifecycle on, and nothing is delivered until you accept.
 
 Start a new session. The `/review-loop` command is now available in all your projects.
 
-**Requirements (default entry).** macOS only (Linux is not supported for now; ADR-15 amendment); `claude` and
+**Requirements (default entry).** macOS or native Windows (Linux, WSL included, is not supported; ADR-15
+amendment, ADR-20); `claude` and
 `codex` on PATH (codex-cli 0.159.2 or later); a dedicated git worktree for the task and a test command; an
-interactive session (a headless session needs `--detach`); one absolute `CODEX_HOME` per run.
+interactive session (a headless session needs `--detach`, macOS only); one absolute `CODEX_HOME` per run.
+
+**Native Windows (v3.3.0, ADR-20).** Supported in the default efficient mode, with Claude Code on Windows as the
+tested entry (the Codex skills' PowerShell commands are best effort). Prerequisites: Git for Windows (the coordinator
+runs the local test command with its Git Bash; set `CLAUDE_CODE_GIT_BASH_PATH` if it is not found), Python 3 as
+`python` or `py -3`, and Node.js when `claude` or `codex` is installed through npm. The skills run the coordinator as
+`python <plugin>/bin/paired-session`. Refused on Windows: `--strict` (and `"safety_mode": "strict"` in the operator
+profile), `permission-probe` and `--detach`. Claude Code has no Bash sandbox on native Windows, so the Claude roles
+run without it: read-only roles keep their exact command allowlist, Edit/Write denies and the post-turn workspace
+check, and Read deny rules cover the usual credential files (their Bash can still read them). Keep run directories
+and workspaces out of OneDrive-synced folders.
 
 From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 `.review-loop/config.md` hands off to the paired-session coordinator (the default
@@ -35,7 +46,7 @@ profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
 
 **Safety modes (D-EFF).** Every role runs with the same OS sandboxes in both
-modes. `efficient`, the default, does not require a permission-probe PASS before
+modes (on native Windows the Claude roles have no Claude Code Bash sandbox, and only efficient runs). `efficient`, the default, does not require a permission-probe PASS before
 dispatch, and its evidence guard only records what it would have held. `strict`
 (`--strict`, or `"safety_mode": "strict"` in the operator profile; the
 workspace file cannot set it) also requires the probe PASS and lets the evidence
@@ -210,7 +221,7 @@ flowchart TD
   E -->|"new work / existing plan"| SA
   E -->|"code already written: review-only"| SA
   E -->|"review-pr: report only"| SA
-  SA["Stage A: macOS, CLIs, worktree, test command, WORKITEM.md"] --> M{"safety mode"}
+  SA["Stage A: macOS or Windows, CLIs, worktree, test command, WORKITEM.md"] --> M{"safety mode"}
   M -->|"efficient (default)"| RUN["coordinator run"]
   M -->|"--strict"| PB["permission-probe"] --> RUN
   RUN -->|"main pipeline"| PLAN["PLAN: author drafts, reviewer reviews; revise until approved"]
@@ -260,7 +271,8 @@ The coordinator prints one progress line per event (the role, its verdict and th
 - to resume after a HOLD, once you have answered or fixed what it names; at a PLAN or EXEC round-limit HOLD,
   `resume --add-rounds N` (1-10) continues the same run with N more rounds of that phase;
 - to abort the run (`abort`).
-A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it).
+A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it;
+macOS only, refused on Windows).
 
 ## Example: Rust repo
 

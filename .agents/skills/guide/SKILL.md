@@ -48,7 +48,10 @@ Not on Codex:
   `scripts/read_protocol.py`, shared with Claude Code.
 - Codex loads the skills from the installed plugin (`codex plugin add review-loop@review-loop-marketplace`,
   see `docs/install-codex.md`), not from the workspace.
-- macOS only: every entry refuses another host (`paired-session needs macOS; Linux and other hosts are not supported`).
+- macOS and native Windows: every entry refuses another host (`paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`).
+  On Windows only efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git for Windows
+  (Git Bash) is required, and run directories and workspaces stay out of OneDrive-synced folders. On Windows the
+  Codex skills run their commands in PowerShell as best effort; the Claude Code entry is the tested Windows path.
 - **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
   Eligible advisory-only reviews get one repair attempt per phase, then advisory acceptance, or exit at the cap
   without an attempt. Writer replay takes the advisory exit at any round and preserves the attempt.

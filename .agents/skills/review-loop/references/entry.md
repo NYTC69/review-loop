@@ -29,14 +29,18 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
 Stage A checks (before the first `bin/paired-session` command), read-only, the same whether the key is set or
 absent; nothing falls back (there is no legacy route). A failed check refuses: print
 `review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
-- Host: `uname -s` is not `Darwin` → `review-loop: paired-session needs macOS; Linux and other hosts are not supported` (no reason wrapper).
-- CLIs: both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
+- Host: neither macOS (`uname -s` is `Darwin`) nor native Windows (PowerShell: `$env:OS -eq 'Windows_NT'`; Git Bash:
+  `uname -s` starts with `MINGW64_NT-` or `MSYS_NT-`) → `review-loop: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported` (no reason wrapper).
+  On Windows only the default efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git for
+  Windows is required, and run directories and workspaces stay out of OneDrive-synced folders. The Codex entry on
+  Windows is best effort; the Claude Code entry is the tested Windows path.
+- CLIs: both `codex` and `claude` must be on PATH (`command -v`; PowerShell: `Get-Command`), whatever vendors the
   resolved roles use: the coordinator binds both binaries at run start; a missing one is refused
   with the reason `needs <cli> for paired-session program binding`.
 - Outside-sandbox execution: the coordinator needs full host permission outside the Codex
   sandbox; if it cannot be granted, or the approval for a paired-session shell call is declined → HOLD
   with the reason, as the paired-session skill does.
-- Codex home: `${CODEX_HOME:-$HOME/.codex}` is not an existing directory → refused with the
+- Codex home: `${CODEX_HOME:-$HOME/.codex}` (PowerShell: `$env:CODEX_HOME`, else `$HOME\.codex`) is not an existing directory → refused with the
   coordinator's CODEX_HOME reason.
 - Questions and host setup (run directory, `WORKITEM.md`, loading the shared contract, the plugin-version floor):
   the paired-session skill asks its own stage A questions (dedicated worktree, test command and its shape; under
