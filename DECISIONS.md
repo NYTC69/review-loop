@@ -392,7 +392,7 @@ Threat model: reasonable safeguards within the task's scope, assuming users and 
 
 Owner request (Yuan, 2026-10-26): "要支持在windows上跑这个插件 … 你直接开一个wi, 把这个支持加一下吧." Target host: native
 Windows, Claude Code desktop, PowerShell; paired-session full runs and review-pr. Plan:
-`.compass/results/2026-10-26_wi-win_plan.md` (WI-WIN, batches W1-W7). Every Windows change sits behind
+`.compass/results/2026-10-26_wi-win_plan.md` (WI-WIN, batches W1-W7, then W8-W9 from the windows-latest runs and the final gate). Every Windows change sits behind
 `winplat.IS_WINDOWS`; the macOS code paths and bytes are unchanged.
 
 Decisions:

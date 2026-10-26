@@ -29,7 +29,11 @@
 - Node.js：`claude` 或 `codex` 通过 npm 安装时需要。
 - run 目录和工作区不要放在 OneDrive 同步的文件夹里。
 
-**审查与验收**：待补。
+**审查与验收**
+- 每个批次（W1–W9 及修复轮）都由另一家模型审查并通过（Opus 执行的由 Codex 审，Codex 执行的由 Opus 审）；整个 WI 的 Codex 终审第一轮指出 Windows 管道输出不是 UTF-8（W9 修复），第二轮 APPROVE。
+- CI：windows-latest 上 159 个 Windows 测试通过，其中两条用假 CLI 的端到端 run（完整流程到 ACCEPTED，review-pr 到 REPORTED）使用真实的 CRLF 检出、中文任务和中文 run 目录；macOS/Linux 全量：待补。
+- macOS 真实 run（固定副本 v3.3.0-rc1 = f85f329，产品默认：Codex 作者、Claude 审查、Codex gate）：DONE 后 ACCEPTED，14 次调用，约 23 分钟。
+- Yuan 的 Windows 实机验收：待补。
 
 ### v3.2.8：审查历史扫描不再漏遮罩已豁免名称在连字符组合中的出现
 
