@@ -233,3 +233,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/run-skill-lint
+
+  # WI-WIN (owner 2026-10-26): native Windows. Runs the modules listed in paired_session/windows-ci-modules.txt
+  # (one module name per line, '#' comments), which each WI-WIN batch extends. Git Bash is the step shell.
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Environment
+        run: |
+          uname -a; python --version; command -v python bash git
+          git config --global user.name ci; git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+          git config --get core.autocrlf || true
+      - name: Run Windows modules
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee test.log
+          import os, sys, unittest
+          path = 'paired_session/windows-ci-modules.txt'
+          if not os.path.exists(path):
+              print('no ' + path + ' yet; nothing to run'); sys.exit(0)
+          mods = [l.split('#', 1)[0].strip() for l in open(path, encoding='utf-8')]
+          mods = ['paired_session.' + m for m in mods if m]
+          print('modules:', mods, flush=True)
+          result = unittest.TextTestRunner(verbosity=2, stream=sys.stdout).run(unittest.TestLoader().loadTestsFromNames(mods))
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-windows-latest
+          path: test.log
+          retention-days: 14
