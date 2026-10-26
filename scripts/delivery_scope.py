@@ -206,12 +206,14 @@ def windows_leaf(repo: str, path: str) -> Optional[str]:
     return os.path.join(cursor, path.split("/")[-1])
 
 
-def windows_disk_entry(repo: str, path: str, algorithm: str, index_entries: Optional[list] = None) -> Optional[dict]:
-    """WI-WIN: disk_entry by path. A linked or missing parent makes the leaf absent; a symlink leaf hashes its readlink
-    text (backslashes as slashes, as Git for Windows stores a link); a junction or other reparse point leaf is refused;
-    a regular file is read with its size and mtime compared before, during and after. Windows has no executable bit,
-    so a regular file takes its index entry's mode (Git with core.fileMode=false; 120000 for a link checked out as a
-    plain file with core.symlinks=false), else 100644."""
+def windows_disk_entry(repo: str, path: str, algorithm: str, index_entries: Optional[list] = None,
+                       seen: Optional[dict] = None) -> Optional[dict]:
+    """WI-WIN: disk_entry by path, raw bytes (windows_clean_oids then gives a regular file Git's cleaned blob id). A
+    linked or missing parent makes the leaf absent; a symlink leaf hashes its readlink text (backslashes as slashes, as
+    Git for Windows stores a link); a junction or other reparse point leaf is refused; a regular file is read with its
+    size and mtime compared before, during and after, and recorded in `seen`. Windows has no executable bit, so a
+    regular file takes its index entry's mode (Git with core.fileMode=false; 120000 for a link checked out as a plain
+    file with core.symlinks=false), else 100644."""
     path_name(path)
     leaf = windows_leaf(repo, path)
     if leaf is None:
@@ -254,7 +256,54 @@ def windows_disk_entry(repo: str, path: str, algorithm: str, index_entries: Opti
     if (after.st_mode, after.st_size, after.st_mtime_ns, windows_link(after)) != (
             before.st_mode, before.st_size, before.st_mtime_ns, windows_link(before)):
         raise CaptureError(f"file changed during capture: {path!r}")
+    if seen is not None:
+        seen[path] = (after.st_size, after.st_mtime_ns)
     return {"mode": mode, "oid": blob.hexdigest(), "sha256": raw.hexdigest(), "size": size}
+
+
+# As paired_session/candidate_tree.GIT_NO_EXEC: no repository config chooses a program git runs (safecrlf only warns).
+WINDOWS_GIT_NO_EXEC = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull, "-c", "core.pager=cat",
+                       "-c", "diff.external=", "-c", "core.sshCommand=false", "-c", "core.safecrlf=false")
+
+
+def windows_filter_overrides(repo: str) -> list:
+    """WI-WIN: as paired_session/candidate_tree._filter_overrides: blank every filter driver the effective config
+    defines, so hash-object applies Git's text/eol cleaning but never runs a configured clean program."""
+    rows = git(repo, "config", "--includes", "--null", "--get-regexp",
+               r"^filter\..*\.(clean|smudge|process|required)$", codes=(0, 1))
+    names = dict.fromkeys(os.fsdecode(row).split("\n", 1)[0][len("filter."):].rsplit(".", 1)[0]
+                          for row in rows.split(b"\0") if row)
+    if not all(re.fullmatch(r"[A-Za-z0-9_.+-]+", name) for name in names):
+        raise CaptureError("unsupported git filter driver name")
+    return [arg for name in names for arg in ("-c", f"filter.{name}.clean=", "-c", f"filter.{name}.smudge=",
+                                              "-c", f"filter.{name}.process=", "-c", f"filter.{name}.required=false")]
+
+
+def windows_clean_oids(repo: str, worktree: dict, seen: dict, head_paths: dict, index: dict) -> None:
+    """WI-WIN: a regular file's "oid" becomes the blob `git add` would store (core.autocrlf / text / eol cleaning, no
+    filter driver), so a CRLF checkout of an unchanged LF blob classifies as unchanged; "sha256" and "size" stay the raw
+    bytes that bind freshness. A file whose raw bytes already are its index or HEAD blob keeps that id (a CRLF blob
+    committed as is). One git process hashes the rest; each leaf's size and mtime must still be what the raw read saw."""
+    known = {path: {entry["oid"] for entry in index.get(path, [])} | ({head_paths[path]["oid"]} if path in head_paths
+                                                                      else set()) for path in worktree}
+    paths = [path for path, entry in sorted(worktree.items())
+             if entry["mode"] in {"100644", "100755"} and entry["oid"] not in known[path]]
+    if not paths:
+        return
+    env = {**git_env("hash-object"), "GIT_ATTR_NOSYSTEM": "1"}
+    result = subprocess.run(["git", *WINDOWS_GIT_NO_EXEC, *windows_filter_overrides(repo), "hash-object", "--stdin-paths"],
+                            cwd=repo, env=env, input=b"".join(os.fsencode(path) + b"\n" for path in paths),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    oids = result.stdout.decode("ascii", "replace").split()
+    if result.returncode or len(oids) != len(paths):
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise CaptureError(f"git hash-object failed ({result.returncode}): {detail}")
+    for path, oid in zip(paths, oids):
+        leaf = windows_leaf(repo, path)
+        info = os.lstat(leaf) if leaf else None
+        if info is None or (info.st_size, info.st_mtime_ns) != seen[path]:
+            raise CaptureError(f"file changed during capture: {path!r}")
+        worktree[path]["oid"] = oid
 
 
 def read_state(repo: dict) -> dict:
@@ -286,12 +335,14 @@ def read_state(repo: dict) -> dict:
             if path.endswith("/"):
                 raise CaptureError(f"nested repositories are unsupported by this manifest version: {path!r}")
             untracked.append(path_name(path))
-    worktree = {}
+    worktree, seen = {}, {}
     for path in sorted(set(head_paths) | set(index) | set(untracked)):
-        entry = (windows_disk_entry(root, path, repo["object_format"], index.get(path)) if IS_WINDOWS
+        entry = (windows_disk_entry(root, path, repo["object_format"], index.get(path), seen) if IS_WINDOWS
                  else disk_entry(root, path, repo["object_format"]))
         if entry is not None:
             worktree[path] = entry
+    if IS_WINDOWS:
+        windows_clean_oids(root, worktree, seen, head_paths, index)
     index_path = git_line(root, "rev-parse", "--git-path", "index")
     if not os.path.isabs(index_path):
         index_path = os.path.join(root, index_path)

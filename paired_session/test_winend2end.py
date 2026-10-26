@@ -300,6 +300,12 @@ class WindowsEndToEndTests(unittest.TestCase):
         (self.workspace / 'run_w7_tests.py').write_bytes(FIXTURE_RUNNER.encode())
         self.git('add', '-A')
         self.git('commit', '-qm', 'base')
+        # W8 r3: check the LF blobs out again, so the worktree holds the CRLF text a Git for Windows user has.
+        for name in self.git('ls-files').splitlines():
+            (self.workspace / name).unlink()
+        self.git('checkout', '--', '.')
+        self.assertIn(b'\r\n', (self.workspace / 'sum_ints.py').read_bytes())
+        self.assertEqual(self.git('status', '--porcelain'), '')
         self.base = self.git('rev-parse', 'HEAD')
         self.workitem = self.root / 'WORKITEM.md'
         self.workitem.write_text('# Toy\nImplement sum_ints; verify the sum and document it.\n', encoding='utf-8')

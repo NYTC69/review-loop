@@ -217,6 +217,165 @@ class CliTests(unittest.TestCase):
             self.assertNotIn(b'\r\n', path.read_bytes(), path.name)
 
 
+# The sensitive-path coverage security_preflight.IGNORE_CASES expects (as the end-to-end fixture's .gitignore).
+REQUIRED_IGNORES = '\n'.join(('__pycache__/', '.env', '.env.*', '*.env', '!.env.example', '!.env.sample', '*.pem',
+    '*.key', '*.crt', '*.cert', '*.cer', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.ppk', 'id_rsa*', 'id_dsa*',
+    'id_ecdsa*', 'id_ed25519*', '*.asc', '*.gpg', '*.pgp', '*credentials*', '!*credentials.example*',
+    '!*credentials.sample*', 'service-account*.json', '.aws/', '.gcloud/', '*secret*', '!*secret.example*',
+    '!*secret.sample*', 'secrets.*', '!secrets.example*', '!secrets.sample*', '*.sqlite', '*.sqlite3', '*.db', '*.dump',
+    '*.sql.gz', '*.map', '*.tfstate', '*.tfstate.*', '*.tfvars', '!*.tfvars.example', '.terraform/', '*.log', 'logs/', ''))
+
+
+class CrlfCheckout(unittest.TestCase):
+    """W8 r3: a real core.autocrlf=true checkout of LF blobs (Git for Windows' default), so every tracked text file is CRLF
+    in the worktree while HEAD and the index hold LF. It holds a preexisting sensitive path (docs/credentials.md) and a
+    .gitignore that is Git-clean but misses the required coverage."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='w8r3 crlf ')
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.repo = self.root / 'repo'
+        for name, content in (('.gitignore', b'__pycache__/\n'), ('docs/credentials.md', b'how to rotate\nthe keys\n'),
+                              ('docs/big.txt', b'line of text\n' * 8), ('pkg/mod.py', b'VALUE = 1\n')):
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / name).write_bytes(content)
+        self.git('init', '-q')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'base')
+        self.git('config', 'core.autocrlf', 'true')
+        for name in ('.gitignore', 'docs/credentials.md', 'docs/big.txt', 'pkg/mod.py'):
+            (self.repo / name).unlink()
+        self.git('checkout', '--', '.')
+        self.assertEqual((self.repo / 'docs/credentials.md').read_bytes(), b'how to rotate\r\nthe keys\r\n')
+        self.assertEqual(self.git('status', '--porcelain'), b'')
+        self.out = self.root / 'out'
+        self.out.mkdir()
+
+    def git(self, *args):
+        return subprocess.run(['git', *args], cwd=self.repo, env={**os.environ, **GIT_ENV}, check=True,
+                              capture_output=True).stdout
+
+    def head_oid(self, name):
+        return self.git('rev-parse', 'HEAD:' + name).decode().strip()
+
+    def add_required_ignores(self):
+        """The prescribed recovery: add the missing patterns to the tracked .gitignore during the run (a Windows editor
+        keeps CRLF), neither staged nor committed."""
+        (self.repo / '.gitignore').write_bytes(REQUIRED_IGNORES.replace('\n', '\r\n').encode())
+
+
+class CrlfCheckoutTests(CrlfCheckout):
+    """The Windows capture (IS_WINDOWS patched; it uses only path calls and git) and the scan, in process, on every OS."""
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (mock.patch.object(ds, 'IS_WINDOWS', True),
+                        mock.patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.repository = ds.repository(str(self.repo))
+
+    def baseline(self):
+        return ds.build_baseline(self.repository, ds.scope_paths(self.repository['worktree'], ['.']),
+                                 ds.capture_state(self.repository))
+
+    def scan(self, baseline):
+        manifest = ds.build_manifest(baseline, ds.capture_state(self.repository))
+        return manifest, sp.scan(self.repository['worktree'], manifest=manifest, run_changes_only=True)
+
+    def test_a_crlf_checkout_keeps_git_blob_ids_and_raw_freshness_hashes(self):
+        state = ds.read_state(self.repository)
+        raw = (self.repo / 'docs/credentials.md').read_bytes()
+        self.assertEqual(state['worktree']['docs/credentials.md'], {
+            'mode': '100644', 'oid': self.head_oid('docs/credentials.md'),
+            'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
+        self.assertEqual(ds.baseline_changes(state), {'staged': [], 'unstaged': [], 'untracked': [], 'conflicted': []})
+
+    def test_one_git_process_hashes_the_converted_files_and_filter_drivers_never_run(self):
+        self.git('config', 'filter.probe.clean', 'touch filter-ran')
+        (self.repo / '.git' / 'info' / 'attributes').write_text('* filter=probe\n', encoding='utf-8')
+        (self.repo / 'pkg' / 'new.py').write_bytes(b'NEW = 1\r\n')
+        real, calls = subprocess.run, []
+
+        def recording(argv, *args, **kwargs):
+            calls.append(argv)
+            return real(argv, *args, **kwargs)
+
+        with mock.patch.object(ds.subprocess, 'run', side_effect=recording):
+            state = ds.read_state(self.repository)
+        self.assertEqual(sum('hash-object' in argv for argv in calls), 1)
+        self.assertFalse((self.repo / 'filter-ran').exists())
+        self.assertEqual(state['worktree']['pkg/new.py']['oid'], git_blob(b'NEW = 1\n'))
+        self.assertEqual(state['worktree']['pkg/mod.py']['oid'], self.head_oid('pkg/mod.py'))
+
+    def test_a_blob_committed_with_crlf_keeps_its_raw_identity(self):
+        self.git('config', 'core.autocrlf', 'false')
+        (self.repo / 'win.txt').write_bytes(b'kept\r\n')
+        self.git('add', 'win.txt')
+        self.git('commit', '-qm', 'crlf blob')
+        self.git('config', 'core.autocrlf', 'true')
+        state = ds.read_state(self.repository)
+        self.assertEqual(state['worktree']['win.txt']['oid'], self.head_oid('win.txt'))
+        self.assertEqual(ds.baseline_changes(state)['unstaged'], [])
+
+    def test_a_file_changed_after_its_raw_read_is_refused(self):
+        state = ds.read_state(self.repository)
+        worktree = {path: dict(entry, oid='0' * 40) for path, entry in state['worktree'].items()}
+        seen = {path: (entry['size'], 0) for path, entry in worktree.items()}   # an mtime the leaf no longer has
+        with self.assertRaisesRegex(ds.CaptureError, 'file changed during capture'):
+            ds.windows_clean_oids(self.repository['worktree'], worktree, seen, state['head_paths'], state['index'])
+
+    def test_an_untouched_preexisting_finding_is_a_note_and_an_oversized_unchanged_file_is_skipped(self):
+        baseline = self.baseline()
+        (self.repo / 'pkg' / 'mod.py').write_bytes(b'VALUE = 2\r\n')
+        with mock.patch.object(sp, 'MAX_FILE_BYTES', 64):
+            manifest, report = self.scan(baseline)
+        self.assertEqual([row['path'] for row in manifest['task_delta']], ['pkg/mod.py'])
+        self.assertEqual(report['findings'], [])
+        self.assertIn({'rule': 'credential-name', 'path': 'docs/credentials.md', 'line': None, 'in_head': True,
+                       'in_index': True}, report['preexisting_findings'])
+        self.assertEqual(report['skipped_preexisting_files'], ['docs/big.txt'])
+        self.assertTrue(report['coverage_complete'], report)
+        self.assertEqual(report['status'], 'review-required')   # only the .gitignore coverage is missing
+
+    def test_the_gitignore_recovery_is_credited(self):
+        baseline = self.baseline()
+        self.add_required_ignores()
+        manifest, report = self.scan(baseline)
+        row = next(row for row in manifest['task_delta'] if row['path'] == '.gitignore')
+        self.assertEqual(row['ownership'], 'declared-post-baseline')
+        self.assertEqual(manifest['ownership_ambiguities'], [])
+        self.assertTrue(report['ignore_coverage_complete'], report['ignore_coverage'])
+        self.assertEqual((report['status'], report['findings']), ('clean', []))
+
+
+@unittest.skipUnless(IS_WINDOWS, 'native Git for Windows CRLF checkout through the scripts')
+class NativeWindowsCrlfTests(CrlfCheckout):
+    def script(self, name, *args):
+        return subprocess.run([sys.executable, str(REPO / 'scripts' / name), '--repo', str(self.repo), *args],
+                              cwd=self.repo, env={**os.environ, **GIT_ENV}, capture_output=True, text=True,
+                              encoding='utf-8', errors='replace', timeout=120)
+
+    def test_preexisting_finding_and_gitignore_recovery_through_the_scripts(self):
+        baseline, manifest, report = self.out / 'baseline.json', self.out / 'manifest.json', self.out / 'report.json'
+        done = self.script('delivery_scope.py', 'capture', '--scope', '.', '--output', str(baseline))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.add_required_ignores()
+        (self.repo / 'pkg' / 'mod.py').write_bytes(b'VALUE = 2\r\n')
+        done = self.script('delivery_scope.py', 'manifest', '--baseline', str(baseline), '--output', str(manifest))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        document = json.loads(manifest.read_text(encoding='utf-8'))
+        self.assertEqual([row['path'] for row in document['task_delta']], ['.gitignore', 'pkg/mod.py'])
+        self.assertEqual(document['baseline_changes']['unstaged'], [])
+        done = self.script('security_preflight.py', '--manifest', str(manifest), '--output', str(report),
+                           '--run-changes-only')
+        result = json.loads(report.read_text(encoding='utf-8'))
+        self.assertEqual(done.returncode, 0, result)
+        self.assertEqual((result['status'], result['findings']), ('clean', []))
+        self.assertIn('docs/credentials.md', [row['path'] for row in result['preexisting_findings']])
+
+
 @unittest.skipUnless(IS_WINDOWS, 'native Windows directory junctions')
 class NativeWindowsScriptTests(TreeTest):
     def junction(self, link: Path, target: Path) -> None:
@@ -251,6 +410,7 @@ class PosixPinTests(TreeTest):
         subprocess.run(['git', 'init', '-q'], cwd=self.repo, env={**os.environ, **GIT_ENV}, check=True)
         repo = ds.repository(str(self.repo))
         with mock.patch.object(ds, 'windows_disk_entry', side_effect=AssertionError('Windows walk on POSIX')), \
+                mock.patch.object(ds, 'windows_clean_oids', side_effect=AssertionError('Windows hash on POSIX')), \
                 mock.patch.object(sp, '_open_regular_windows', side_effect=AssertionError('Windows open on POSIX')):
             state = ds.read_state(repo)
             os.close(sp._open_regular(repo['worktree'], 'top.txt'))
