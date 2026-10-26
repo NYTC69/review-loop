@@ -239,6 +239,16 @@ def job_name(tag: str) -> str:
     return f'Local\\review-loop-{safe}-{uuid.uuid4().hex[:12]}'
 
 
+def check_command_line(argv: list) -> int:
+    """Windows CreateProcess counts UTF-16 code units, including quoting and the final NUL."""
+    import subprocess
+    size = len(subprocess.list2cmdline(argv).encode('utf-16-le')) // 2 + 1
+    if IS_WINDOWS and size > 32767:
+        raise ValueError(f'Windows CLI command line is {size} UTF-16 units (CreateProcess limit 32767); '
+                         'reduce inline --settings / --json-schema or other arguments')
+    return size
+
+
 def spawn_group(argv: list, tag: str, **kwargs):
     """W2b: start argv as the leader of its own process tree; (process, job name or None). POSIX: today's
     subprocess.Popen(argv, ..., start_new_session=True), no job. Windows: through winjob.py, which joins a fresh named Job
@@ -253,6 +263,8 @@ def spawn_group(argv: list, tag: str, **kwargs):
         raise FileNotFoundError(errno.ENOENT, 'No such file or directory', argv[0])
     name = job_name(tag)
     launcher = [sys.executable, '-I', str(Path(__file__).resolve().with_name('winjob.py')), name, '--', *argv]
+    check_command_line(argv)
+    check_command_line(launcher)
     flags = kwargs.pop('creationflags', 0) | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     return subprocess.Popen(launcher, creationflags=flags, **kwargs), name
 

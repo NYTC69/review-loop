@@ -48,7 +48,7 @@ try:
     from paired_session import review_report
     from paired_session import timeout_scale
     from paired_session import winplat
-    from paired_session.program_binding import snapshot as program_snapshot, safe_path
+    from paired_session.program_binding import snapshot as program_snapshot, safe_path, program_argv
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
@@ -66,7 +66,7 @@ except ModuleNotFoundError:
     import review_report
     import timeout_scale
     import winplat
-    from program_binding import snapshot as program_snapshot, safe_path
+    from program_binding import snapshot as program_snapshot, safe_path, program_argv
 if not winplat.IS_WINDOWS:   # WI-WIN: only POSIX detach and probe scheduling use fcntl directly
     import fcntl
 
@@ -121,7 +121,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
+    try: return subprocess.run([*program_argv(binary), '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 
 def cli_release_version(value: str):
@@ -141,12 +141,13 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
         if key == 'claude_bin':
             # Native Claude releases are siblings under one versions directory.
             if old_path.parent.name != 'versions' or old_path.parent != new_path.parent: return None
-            old_version = cli_release_version(old_path.name)
-            path_version = cli_release_version(new_path.name)
+            old_version = cli_release_version(old_path.stem if winplat.IS_WINDOWS and old_path.suffix.lower() == '.exe' else old_path.name)
+            path_version = cli_release_version(new_path.stem if winplat.IS_WINDOWS and new_path.suffix.lower() == '.exe' else new_path.name)
             if old_version is None or path_version is None or path_version <= old_version: return None
         elif old_path != new_path:
             return None
-        new_version = cli_release_version(claude_cli_version(str(new_path)))
+        if winplat.IS_WINDOWS and before.get('node') != after.get('node'): return None
+        new_version = cli_release_version(claude_cli_version(after if winplat.IS_WINDOWS else str(new_path)))
         if new_version is None or (old_version is not None and (new_version <= old_version or new_version != path_version)):
             return None
         # Codex's in-place updater removes the old executable; its old version
@@ -3008,7 +3009,7 @@ class Coordinator:
     def _codex_cli_version(self) -> str:
         try:
             if self._program_state()[1]: return 'UNAVAILABLE'
-            result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True, encoding='utf-8',
+            result = subprocess.run([*program_argv(self.state['operator_programs']['codex_bin']), '--version'], text=True, encoding='utf-8',
                                     capture_output=True, timeout=10 * timeout_scale.env_factor())
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
@@ -3298,7 +3299,7 @@ class Coordinator:
     def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
         root, ws = probe_cache_root().resolve(), self.workspace.resolve()
         if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
-        versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
+        versions = [claude_cli_version(self.state['operator_programs']['claude_bin'] if winplat.IS_WINDOWS else self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
         if 'UNAVAILABLE' in versions: return None
         inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions,
                   **({'review_report': True} if self.state['config'].get('review_report') else {})}   # LG2-a2: report and ordinary entries never share a key
@@ -4825,8 +4826,12 @@ class Coordinator:
 
     def command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
         vendor = self._role_vendor(role)
-        return (self._claude_command(role, schema_path, fresh, workspace) if vendor == 'claude'
-                else self._codex_command(role, schema_path, fresh))
+        command = (self._claude_command(role, schema_path, fresh, workspace) if vendor == 'claude'
+                   else self._codex_command(role, schema_path, fresh))
+        if winplat.IS_WINDOWS:
+            command[:1] = program_argv(self.state['operator_programs'][vendor + '_bin'])
+            winplat.check_command_line(command)
+        return command
 
     def _author_prompt(self) -> str:
         contract = self.author_control_contract()
@@ -6296,7 +6301,8 @@ class Coordinator:
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh, active_workspace)
-        command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
+        if not winplat.IS_WINDOWS:
+            command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
         if self._role_vendor(role) == 'codex' and ('-c', 'features.plugins=false') not in zip(command, command[1:]):   # rel210-fixCG:
             raise RuntimeError('Codex argv lacks -c features.plugins=false, so cached plugin bundles would not be inert')   # the guard's premise
         now = time.time()
@@ -8479,7 +8485,7 @@ class Coordinator:
             return {'label': label, 'status': 'CONTRACT-FAIL', 'reason': str(exc),
                     'expected': 'allowed' if expected_allowed else 'denied',
                     'sandbox_overrides': self._author_sandbox_overrides(), 'returncode': None}
-        args = [self.state['operator_programs']['codex_bin']['path'],
+        args = [*program_argv(self.state['operator_programs']['codex_bin']),
                 'sandbox', '--log-denials', '-C', str(workspace),
                 *profile_args, *self._author_sandbox_config_args(), '--', *command]
         outcome = {'label': label, 'command': shlex.join(command), 'argv': args,
@@ -8586,7 +8592,8 @@ class Coordinator:
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
+                version_command = program_argv(self.state['operator_programs']['claude_bin']) if winplat.IS_WINDOWS else [argv[0]]
+                try: out['claude_version'] = subprocess.run([*version_command, '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -9770,7 +9777,7 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def codex_cli_semver(binary: str) -> Optional[tuple]:
-    try: proc = subprocess.run([binary, '--version'], text=True, encoding='utf-8', capture_output=True, stdin=subprocess.DEVNULL,
+    try: proc = subprocess.run([*program_argv(binary), '--version'], text=True, encoding='utf-8', capture_output=True, stdin=subprocess.DEVNULL,
                                timeout=10 * timeout_scale.env_factor())
     except (OSError, subprocess.SubprocessError): return None
     out = proc.stdout if proc.returncode == 0 else ''
@@ -10162,7 +10169,7 @@ def main(argv=None) -> int:
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,
                                                args.gate_prompt, args.config)
             if not issue:   # a binding issue keeps its own refusal; only the bound program is run, fake harness included
-                refuse_default_codex_model_on_old_cli(args, programs['codex_bin']['path'])
+                refuse_default_codex_model_on_old_cli(args, programs['codex_bin'] if winplat.IS_WINDOWS else programs['codex_bin']['path'])
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
