@@ -17,8 +17,8 @@ top-level `README.md` Quick Start.
   `gpt-6.1-sol`, which needs 0.159.2+. The plugin install command below was
   verified on 0.155.1; older releases may require the `/plugins` UI path, so
   check `codex plugin --help` before using it.
-- **Python ≥ 3.11** — the paired-session coordinator and review-loop's helper
-  scripts depend on it.
+- **Python ≥ 3.9** — the paired-session coordinator and review-loop's helper
+  scripts depend on it; CI runs them on 3.9.
 - **git** — used by the coordinator and its roles to scope diffs.
 - **Claude CLI** — both `codex` and `claude` must be on PATH, whatever vendors the paired-session
   roles use: the coordinator binds both binaries at run start. Role selection in the paired-session
