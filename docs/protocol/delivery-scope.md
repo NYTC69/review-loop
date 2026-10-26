@@ -172,7 +172,13 @@ fingerprint alone cannot reconstruct overwritten user content.
 - No clean/smudge filter, hook, or content transformation runs. Consequently
   CRLF normalization, filters, or filesystem-mode differences may appear as raw
   baseline differences even when porcelain reports a clean file. Consumers must
-  not confuse these raw identities with filtered staging output. Sparse checkout
+  not confuse these raw identities with filtered staging output. On Windows
+  (ADR-20) a regular file's oid is instead the blob Git would store after its
+  text/eol cleaning (`core.autocrlf`, `.gitattributes`), computed by one
+  `git hash-object --stdin-paths` with filter drivers disabled, so an unchanged
+  CRLF checkout keeps its HEAD/index identity; `sha256` and `size` still bind the
+  raw bytes, and a leaf whose size or mtime moved between the raw read and the
+  hash is an unstable capture. Sparse checkout
   omissions are similarly recorded as absent disk content, not proof of a
   task-authored deletion.
 - Submodules/gitlinks, untracked nested repositories, and special files such as

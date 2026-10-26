@@ -3,6 +3,8 @@
 
 Only --output writes a file. Git objects, refs, the index and source files are
 never written. Worktree blobs are hashed as raw bytes, without executing filters.
+On Windows a regular file's oid is the blob Git would store (text/eol cleaning,
+no filter drivers); its sha256 and size stay the raw bytes.
 """
 
 from __future__ import annotations
