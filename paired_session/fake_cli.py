@@ -701,8 +701,9 @@ def main():
 
     if (os.environ.get('FAKE_REVIEW_HOLD') and 'Role: reviewer,' in prompt and
             'Phase: PLAN' in prompt):
-        answer = {'status': 'HOLD', 'prior_findings': [], 'full_review': [],
-                  'self_run_evidence': []}
+        answer = {'status': 'HOLD', 'prior_findings': [], 'full_review': [],   # W10: the reviewer's words, as in the field
+                  'self_run_evidence': ([{'command': os.environ['FAKE_REVIEW_HOLD_EVIDENCE']}]
+                                        if os.environ.get('FAKE_REVIEW_HOLD_EVIDENCE') else [])}
     if 'Role: persistent' not in prompt and 'Role: permission-system probe' not in prompt:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')

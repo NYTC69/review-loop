@@ -121,6 +121,30 @@ def remove_tree(path) -> None:
         _retry_busy(os.unlink, path)
 
 
+def rmtree(path, ignore_errors: bool = False) -> None:
+    """W10, Windows only (POSIX call sites keep shutil.rmtree): shutil.rmtree that, when removing an entry fails with a
+    PermissionError, clears its read-only attribute (os.chmod S_IWRITE) and retries once. Git for Windows writes object
+    and pack files read-only, which shutil.rmtree cannot delete there (WinError 5 in Yuan's acceptance run, 2026-10-27).
+    ignore_errors keeps shutil's meaning: a removal that still fails is skipped instead of raised."""
+    import shutil
+
+    def retry(function, target, exc):
+        if isinstance(exc, PermissionError) and getattr(function, '__name__', '') in ('unlink', 'remove', 'rmdir'):
+            try:
+                os.chmod(target, stat.S_IWRITE)
+                function(target)
+                return
+            except OSError as again:
+                exc = again
+        if not ignore_errors:
+            raise exc
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=lambda function, target, info: retry(function, target, info[1]))
+
+
 def _under_user_roots(path: Path) -> bool:
     target = Path(path).resolve()
     for root in (Path.home(), Path(tempfile.gettempdir())):

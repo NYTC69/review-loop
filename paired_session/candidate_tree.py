@@ -386,8 +386,8 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
                                  object_format, tuple(entries))
     except BaseException:
         for path in (candidate_base, metadata_base):
-            if path is not None:
-                shutil.rmtree(path, ignore_errors=True)
+            if path is not None:   # W10: on Windows the fetched objects are read-only
+                (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(path, ignore_errors=True)
         raise
 
 

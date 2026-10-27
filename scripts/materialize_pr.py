@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -333,9 +334,25 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
         git_step("checkout", ["git", "checkout", "--quiet", "--detach", "refs/review/head"], dest)
     except BaseException:   # also a clone killed by its timeout before the marker was written
         if dest.is_dir() and not dest.is_symlink():
-            shutil.rmtree(dest)
+            (rmtree_windows if os.name == "nt" else shutil.rmtree)(dest)
         raise
     return {**resolution, "workspace": str(dest), "run_id": run_id, "merge_base": bases[0]}
+
+
+def rmtree_windows(path: str | Path) -> None:
+    """WI-WIN W10, standalone copy of paired_session.winplat.rmtree: Git for Windows writes pack/idx and object files
+    read-only, which shutil.rmtree cannot delete there (WinError 5); clear the attribute and retry the removal once."""
+    def retry(function, target, exc):
+        if isinstance(exc, PermissionError) and getattr(function, "__name__", "") in ("unlink", "remove", "rmdir"):
+            os.chmod(target, stat.S_IWRITE)
+            function(target)
+            return
+        raise exc
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=lambda function, target, info: retry(function, target, info[1]))
 
 
 def remove(directory: str | Path) -> str:
@@ -349,7 +366,7 @@ def remove(directory: str | Path) -> str:
     if path.parent.name != "pr" or marker.is_symlink() or not marker.is_file() \
             or marker.read_text().strip() != path.name:
         raise MaterializeError("no matching marker; directory kept")
-    shutil.rmtree(path)
+    (rmtree_windows if os.name == "nt" else shutil.rmtree)(path)
     return str(path)
 
 

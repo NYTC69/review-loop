@@ -26,7 +26,16 @@ runs the local test command with its Git Bash; set `CLAUDE_CODE_GIT_BASH_PATH` i
 profile), `permission-probe` and `--detach`. Claude Code has no Bash sandbox on native Windows, so the Claude roles
 run without it: read-only roles keep their exact command allowlist, Edit/Write denies and the post-turn workspace
 check, and Read deny rules cover the usual credential files (their Bash can still read them). Keep run directories
-and workspaces out of OneDrive-synced folders.
+and workspaces out of OneDrive-synced folders. Windows setup notes:
+- Git Bash: when Git is not under `C:\Program Files\Git` (a scoop install, say), set `CLAUDE_CODE_GIT_BASH_PATH` to
+  its `bin\bash.exe` and fully quit the Claude desktop app from the tray before reopening it; otherwise the desktop
+  session has no Bash tool.
+- The Claude Code CLI does not share the desktop app's login: run `claude /login` in a terminal once. The native
+  installer may not add `%USERPROFILE%\.local\bin` to PATH.
+- A machine with the Codex desktop app has MCP servers and `notify` in `~/.codex/config.toml`, which the coordinator
+  refuses: use a dedicated `CODEX_HOME` directory with its own `codex login`.
+- The coordinator runs Codex with the elevated Windows sandbox (`windows.sandbox="elevated"`); its first use may ask
+  for administrator approval.
 
 From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 `.review-loop/config.md` hands off to the paired-session coordinator (the default

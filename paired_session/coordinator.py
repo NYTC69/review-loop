@@ -84,6 +84,9 @@ CLASS_LABEL_REUSE = ' Reuse the exact label of an earlier finding of the same cl
 PROBE_SURFACE_VERSION = 9
 CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
+# W10, Windows only, every Codex role: Yuan's acceptance run (2026-10-27, codex-cli 0.164.0) showed no [windows] table → every shell
+# command "blocked by policy", sandbox="unelevated" → "cannot enforce split writable root sets"; "elevated" runs the profile
+CODEX_WINDOWS_SANDBOX = ('-c', 'windows.sandbox="elevated"')
 # D-LG1 review-only entry (docs/review-only-entry.md); the owner's provisional choices, one place each:
 REVIEW_ONLY_DEFAULT_BASE = 'HEAD'            # Q2: the uncommitted work, as legacy --review-only
 REVIEW_ONLY_BASE_MUST_BE_ANCESTOR = True     # Q5: refuse a base that is not an ancestor of HEAD
@@ -2464,6 +2467,17 @@ def brief_reason(text: str, limit: int = 160) -> str:
     return text[:head] + ' ... ' + text[len(text) - (limit - 5 - head):]
 
 
+def hold_explanation(prefix: str, findings, evidence, limit: int = 300) -> str:
+    """W10: a reviewer-type HOLD reason with the role's own words after `prefix` (Yuan's Windows acceptance run held with a bare
+    `reviewer HOLD` while the answer said why). The review schema has no reason field: the summaries of the role's own
+    findings, else its self_run_evidence commands; one line and at most `limit` characters, as a finding's progress summary."""
+    texts = [row.get('summary') for row in findings or () if isinstance(row, dict)]
+    if not any(texts):
+        texts = [row.get('command') for row in evidence or () if isinstance(row, dict)]
+    text = ' '.join(' '.join(str(text) for text in texts if text).split())[:limit]
+    return f'{prefix}: {text}' if text else prefix
+
+
 def progress_line(row: dict) -> str:
     """PL: the one human-readable rendering of a progress.jsonl row, shared by the live stdout line and status --brief."""
     f = {k: v for k, v in row.items() if k not in ('ts', 'seq')}
@@ -3564,8 +3578,8 @@ class Coordinator:
         return sorted(name for name in raw.decode(errors='surrogateescape').split('\0') if name)
 
     def _mirror_workspace(self, target: Path) -> None:
-        if target.exists():
-            shutil.rmtree(target)
+        if target.exists():   # W10: copy2 keeps a workspace file's read-only attribute on Windows
+            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(target)
         target.mkdir(parents=True)
         for name in self._workspace_names():
             source, destination = self.workspace / name, target / name
@@ -3608,7 +3622,7 @@ class Coordinator:
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
             atomic_text(since, proc.stdout)
-            shutil.rmtree(current)
+            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(current)
         elif since.exists():
             since.unlink()
 
@@ -4864,6 +4878,8 @@ class Coordinator:
         cmd = [self.args.codex_bin, 'exec', '-m', model, '--json', '--output-schema', str(schema_path),
                '-c', f'model_reasoning_effort="{effort}"',
                '-c', 'approval_policy="never"', '-c', 'features.hooks=false', *CODEX_PLUGINS_OFF]
+        if winplat.IS_WINDOWS:
+            cmd += CODEX_WINDOWS_SANDBOX
         if role == 'author':
             cmd += self._author_sandbox_config_args()
         else:
@@ -6340,7 +6356,7 @@ class Coordinator:
         if self._role_vendor(role) == 'codex':
             capability = self.codex_capabilities(active_workspace)
             if capability['status'] != 'PASS':
-                raise RuntimeError('; '.join(capability['issues']))
+                raise RuntimeError(codex_capability_guard.refusal(capability))
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
@@ -8192,7 +8208,7 @@ class Coordinator:
             self.render(shadow, 'shadow', phase)
             if self.state['config'].get('review_report') and shadow['answer']['status'] == 'HOLD':
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold('shadow HOLD')
+                self.hold(hold_explanation('shadow HOLD', shadow_rows, shadow['answer'].get('self_run_evidence')))
                 return
         limit = self.plan_round_limit() if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
@@ -8267,7 +8283,7 @@ class Coordinator:
             if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: not APPROVE
                 return
             self.state['pending_reviewer_result_sequence'] = None
-            self.hold('reviewer HOLD')
+            self.hold(hold_explanation('reviewer HOLD', persistent_findings, answer.get('self_run_evidence')))
             return
         if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and not (
                 self.args.test_command is None and self.state['config'].get('review_report')):   # LG2-b2: a static approval
@@ -8731,7 +8747,7 @@ class Coordinator:
             return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
         capability = self.codex_capabilities()
         if capability['status'] != 'PASS':
-            return {'status': 'FAIL', 'reason': '; '.join(capability['issues'])}
+            return {'status': 'FAIL', 'reason': codex_capability_guard.refusal(capability)}
         codex_sandbox_checks = {'status': 'NOT-ATTEMPTED', 'checks': {}}
         advisory = {'note': 'advisory: not proven policy-equivalent to codex exec',
                     'checks': codex_sandbox_checks['checks']}

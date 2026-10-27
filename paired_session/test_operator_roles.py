@@ -929,8 +929,9 @@ TARGET_NAME = {'write_abs': 'w-abs.txt', 'write_rel': 'w-rel.txt', 'write_symlin
                'write_context': 'w-ctx.txt', 'write_tmp': 'paired-session-author-probe-', 'bash_abs': 'b-abs.txt',
                'bash_context': 'b-ctx.txt', 'write_case': 'w-case.txt'}
 # Hash of exactly the Codex branch of _author_permission_probe (source minus the two Claude-dispatch lines), as of
-# P0-3a (7ebbf14). An intentional change to the Codex probe must update this hash.
-CODEX_PROBE_SHA256 = '53ee857e69245684b076600bc6c391ae02b587443cca1ff4b7687cd85d58dbb9'
+# P0-3a (7ebbf14). An intentional change to the Codex probe must update this hash. WI-WIN W10 (owner-approved text
+# change): the guard FAIL reason is codex_capability_guard.refusal(), the issues plus the CODEX_HOME hint.
+CODEX_PROBE_SHA256 = 'c4c12b7f202298158013b9a301294512c1cc4e70553afb00af621dcb94f9308a'
 
 
 class ClaudeAuthorProbeTests(unittest.TestCase):

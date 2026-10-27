@@ -54,7 +54,8 @@ profile, or a saved strict run), `permission-probe` and `--detach` are refused b
   credential paths the sandbox hid (`~/.aws`, `~/.ssh`, `~/.config/gcloud`, `~/.config/gh`, `~/.azure`,
   `~/.docker/config.json`, `~/.git-credentials`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.kube/config`) for every
   Claude role; Bash can still read those files.
-- Codex roles keep their flags. Their scratch and the author's temp dir are given as `TMPDIR`, `TMP` and `TEMP`.
+- Codex roles keep their flags and add `-c windows.sandbox="elevated"` (W10: without it every shell command is
+  rejected by policy). Their scratch and the author's temp dir are given as `TMPDIR`, `TMP` and `TEMP`.
 These are accepted residuals under the owner rule: reasonable protection for normal use, assuming users and models do
 not act maliciously.
 

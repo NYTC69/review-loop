@@ -9,3 +9,4 @@ test_wintest
 test_winend2end
 test_winscripts
 test_winstdio
+test_winfield

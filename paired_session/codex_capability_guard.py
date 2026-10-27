@@ -11,6 +11,14 @@ from pathlib import Path
 _CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions'}
 _REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes', 'features',
                  'allowed_permission_profiles', 'permissions'}
+# W10: the Codex desktop app writes MCP servers and notify into ~/.codex/config.toml (Yuan's Windows acceptance run)
+CONFIG_HINT = '; use a dedicated CODEX_HOME directory with its own `codex login` (see README)'
+
+
+def refusal(result):
+    """The refusal text of a FAIL: its issues joined, plus CONFIG_HINT when one of them is a config finding."""
+    text = '; '.join(result['issues'])
+    return text + CONFIG_HINT if any(' configured in ' in issue for issue in result['issues']) else text
 
 
 def _root_key(line):
