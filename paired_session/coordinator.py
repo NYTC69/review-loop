@@ -8747,7 +8747,7 @@ class Coordinator:
             return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
         capability = self.codex_capabilities()
         if capability['status'] != 'PASS':
-            return {'status': 'FAIL', 'reason': codex_capability_guard.refusal(capability)}
+            return {'status': 'FAIL', 'reason': '; '.join(capability['issues'])}
         codex_sandbox_checks = {'status': 'NOT-ATTEMPTED', 'checks': {}}
         advisory = {'note': 'advisory: not proven policy-equivalent to codex exec',
                     'checks': codex_sandbox_checks['checks']}
