@@ -1,4 +1,5 @@
 """V317-FE: per-turn token reporting across failures, fast retries and recovery."""
+import io
 import json
 import os
 from datetime import datetime, timezone
@@ -48,6 +49,8 @@ class UsageAccountingTests(unittest.TestCase):
                 with self.subTest(lifecycle=lifecycle, mode=mode):
                     self.run_dir = self.root / (lifecycle + '-' + mode)
                     co = self.coordinator('--author-vendor', 'claude', '--lifecycle-mode', lifecycle)
+                    if mode == 'timed-out':
+                        co.args.timeout = 0   # expire the outer deadline without waiting in real time
                     rows = claude_rows()
                     rows[-1]['session_id'] = co.state['sessions']['author']
                     # A fake Popen delivers CLI stdout. The timeout is simulated, so this test
@@ -56,11 +59,12 @@ class UsageAccountingTests(unittest.TestCase):
                         pid = 123456
                         returncode = 7 if mode == 'failed' else -9 if mode == 'timed-out' else 0
 
-                        def communicate(self, *args, **kwargs):
-                            if mode == 'timed-out':
-                                raise subprocess.TimeoutExpired('fake-cli', 1)
+                        def __init__(self):
+                            self.stdin = io.BytesIO()
 
-                        def wait(self):
+                        def wait(self, timeout=None):
+                            if mode == 'timed-out' and timeout is not None:
+                                raise subprocess.TimeoutExpired('fake-cli', 1)
                             return self.returncode
 
                     real_popen = rc.subprocess.Popen

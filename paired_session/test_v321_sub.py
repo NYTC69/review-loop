@@ -1,4 +1,5 @@
 """V321-SUB: a Claude author with subagents forwards subagent text, so text-only subagent requests reach usage.json."""
+import io
 import json
 from pathlib import Path
 import unittest
@@ -216,8 +217,9 @@ class ForwardSubagentTextTests(unittest.TestCase):
 
         class Child:
             pid, returncode = 123456, 0
-            def communicate(self, *args, **kwargs): return None
-            def wait(self): return 0
+            def __init__(self):
+                self.stdin = io.BytesIO()
+            def wait(self, timeout=None): return 0
 
         real_popen = rc.subprocess.Popen
         def spawn(*args, **kwargs):
