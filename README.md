@@ -35,7 +35,7 @@ and workspaces out of OneDrive-synced folders. Windows setup notes:
 - A machine with the Codex desktop app has MCP servers and `notify` in `~/.codex/config.toml`, which the coordinator
   refuses: use a dedicated `CODEX_HOME` directory with its own `codex login`.
 - The coordinator runs Codex with the elevated Windows sandbox (`windows.sandbox="elevated"`); its first use may ask
-  for administrator approval.
+  for administrator approval. If Codex shell calls never return, its sandbox helper may be wedged; restart Windows to clear it.
 
 From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 `.review-loop/config.md` hands off to the paired-session coordinator (the default

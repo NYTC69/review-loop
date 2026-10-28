@@ -1842,6 +1842,61 @@ def directory_digest(root: Path) -> str:
     return hashlib.sha256(json.dumps(manifest, separators=(',', ':')).encode()).hexdigest()
 
 
+# WI-WIN W11: applies to both providers on every platform; tests shorten the grace.
+EXIT_AFTER_COMPLETION_GRACE_SECONDS = 60
+ROLE_WAIT_STEP_SECONDS = 0.25
+
+
+def wait_role_turn(process, prompt: bytes, stdout_path: Path, timeout_seconds: float,
+                   receipt: dict, job=None) -> None:
+    """Feed stdin via communicate, then tail complete JSONL rows while waiting in short steps."""
+    deadline = time.monotonic() + timeout_seconds
+    completed_at = None
+    offset, buffered = 0, b''
+    terminal_types = {'turn.completed', 'turn.failed'} if receipt['vendor'] == 'codex' else {'result'}
+    with stdout_path.open('rb') as stream:
+        while True:
+            now = time.monotonic()
+            remaining = (completed_at + EXIT_AFTER_COMPLETION_GRACE_SECONDS - now
+                         if completed_at is not None else deadline - now)
+            if remaining <= 0:
+                if completed_at is None:
+                    raise subprocess.TimeoutExpired(process.args if hasattr(process, 'args') else 'role CLI', timeout_seconds)
+                try:
+                    winplat.kill_group(process.pid, job)
+                except OSError:
+                    pass
+                process.wait()
+                waited = round(time.monotonic() - completed_at, 3)
+                receipt['exit_after_completion'] = {'waited_s': waited, 'killed': True}
+                message = (f"NOTE: {receipt['role']} CLI did not exit {waited:g} s after its turn completed; "
+                           "ended it and kept the turn's answer")
+                if winplat.IS_WINDOWS and receipt['vendor'] == 'codex':
+                    message += (' (a wedged Codex sandbox helper can keep sandboxed commands from returning; '
+                                'restarting Windows clears it)')
+                print(message)
+                return
+            try:
+                process.communicate(prompt, timeout=min(ROLE_WAIT_STEP_SECONDS, remaining))
+                return
+            except subprocess.TimeoutExpired:
+                prompt = None   # communicate retains any input still waiting to be written
+            if completed_at is None:
+                stream.seek(offset)
+                data = stream.read()
+                offset += len(data)
+                chunks = (buffered + data).split(b'\n')
+                buffered = chunks.pop()
+                for raw in chunks:
+                    try:
+                        row = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if isinstance(row, dict) and row.get('type') in terminal_types:
+                        completed_at = time.monotonic()
+                        break
+
+
 def read_json_lines(path: Path) -> list[dict]:
     rows = []
     if not path.exists():
@@ -6507,7 +6562,7 @@ class Coordinator:
                                          args=(stdout_path, receipt, usage_stop), daemon=True)
         usage_monitor.start()
         try:
-            process.communicate(prompt.encode(), timeout=timeout_seconds)
+            wait_role_turn(process, prompt.encode(), stdout_path, timeout_seconds, receipt, job)
         except subprocess.TimeoutExpired:
             try:
                 winplat.kill_group(process.pid, job)
@@ -6619,7 +6674,7 @@ class Coordinator:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
                     print('WARNING: ' + warning)
-            if process.returncode:
+            if process.returncode and not receipt.get('exit_after_completion', {}).get('killed'):
                 error_text = read_text_tail(stderr_path)
                 output_text = read_text_tail(stdout_path)
                 limit = (None if process.returncode <= 0 or receipt.get('timed_out', False) else

@@ -10,3 +10,4 @@ test_winend2end
 test_winscripts
 test_winstdio
 test_winfield
+test_role_completion_wait

@@ -1113,6 +1113,25 @@ sys.exit(result.returncode)
             '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), *extra])
         return rc.Coordinator(args)
 
+    def test_completion_kill_returncode_keeps_normal_answer_and_checks(self):
+        co = self.coordinator()
+        original_wait = rc.wait_role_turn
+
+        def completed_kill(process, prompt, path, timeout, receipt, job):
+            original_wait(process, prompt, path, timeout, receipt, job)
+            receipt['exit_after_completion'] = {'waited_s': 60, 'killed': True}
+            process.returncode = -9   # the real linger/kill is covered by test_role_completion_wait
+
+        with patch.object(rc, 'wait_role_turn', side_effect=completed_kill):
+            result = co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        self.assertIsInstance(result, dict)
+        receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        self.assertEqual(receipt['returncode'], -9)
+        self.assertTrue(receipt['exit_after_completion']['killed'])
+        self.assertIn('snapshot_after', receipt)
+        self.assertEqual(receipt['global_config_changes']['status'], 'PASS')
+        self.assertTrue(receipt['invocation_budget_counted'])
+
     def test_failed_first_persistent_claude_turn_rotates_session(self):
         for role, flags in (('author', ['--author-vendor', 'claude']),
                             ('reviewer', ['--reviewer-vendor', 'claude'])):
@@ -1183,6 +1202,7 @@ sys.exit(result.returncode)
 
     def test_timeout_race_with_positive_rate_limit_exit_remains_counted(self):
         co = self.coordinator()
+        co.args.timeout = .01   # W11: short-step communicate retries until the actual outer deadline
 
         class TimeoutRaceProcess:
             pid = 12345

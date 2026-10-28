@@ -6,7 +6,7 @@
 
 **升级须知**
 - 没有改 run 启动时固定下来的任何值，在 v3.2.x 上开始的 run 换到这一版后可以继续。
-- macOS 上的行为不变：所有 Windows 改动都在 `winplat.IS_WINDOWS` 分支之后，macOS 上的命令、角色设置、回执和写出的文件字节与 v3.2.8 相同（W10 的两处提示文字除外，见下）；技能里给 macOS 的命令也没有变。
+- macOS 上的行为不变：所有 Windows 改动都在 `winplat.IS_WINDOWS` 分支之后，macOS 上的命令、角色设置、回执和写出的文件字节与 v3.2.8 相同（W10 的提示文字和 W11 的回合结束后等待修复除外，见下）；技能里给 macOS 的命令也没有变。
 - 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
 - Linux（包括 WSL）仍不支持。各入口的拒绝文字改为 `paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`。
 
@@ -22,6 +22,7 @@
 - 交付与提交：`scripts/delivery_scope.py` 和 `scripts/security_preflight.py` 在 Windows 上按路径逐级检查（遇到 symlink、junction 或其他 reparse point 时，按 macOS 上拒绝链接的方式处理），读普通文件时前后比较大小和 mtime。Git for Windows 默认 `core.autocrlf=true`，检出的文本文件是 CRLF；判断文件是否改动时，用 Git 实际会存的 blob（按 `git add` 的 text/eol 规则规整，不运行 filter driver），所以没改过的 CRLF 文件不算改动，仓库里原有的敏感文件名仍只记为已有提示，run 中补上的 `.gitignore` 规则照常计入。原始字节的 sha256 和大小仍用来确认审查之后文件没被改过。`auto_commit` 在 Windows 上接受 `core.fileMode=false` 和 `core.autocrlf`，提交的 blob 同样按 `git add` 的规则规整（一个 `git hash-object --stdin-paths` 进程），工作区里已审查的 CRLF 文件保持原样。
 - 拒绝的功能：Windows 上 `--strict`（包括 profile 里的 `"safety_mode": "strict"` 和以 strict 创建的已有 run）、`permission-probe` 和 `--detach` 都在取锁、写 state 之前被拒绝（`REFUSED: ...`，exit 2）；对 strict 的 profile 或 run，`status`、`abort`、`stop` 仍可用。
 - 删除只读文件（W10）：Git for Windows 把 pack/idx 和对象文件设为只读，`shutil.rmtree` 在 Windows 上删不掉（Yuan 实机上 `materialize_pr.py --remove` 报 WinError 5）。Windows 上删除 review-pr 克隆、候选树的元数据目录和审查镜像时，遇到 PermissionError 先清除只读属性再重试一次；macOS 仍直接调用 `shutil.rmtree`。
+- W11：所有平台的 Codex / Claude CLI 发出回合终结事件后仍不退出时，等待 60 秒再结束进程树，保留回答和原有检查；回执记录 `exit_after_completion` 并打印 NOTE。没有终结事件时仍按原超时处理。Windows 上 Codex shell 调用一直不返回可能是沙箱 helper 卡住，重启 Windows 可清除。
 - Codex 沙箱（W10）：Windows 上每个 Codex 角色都加 `-c windows.sandbox="elevated"`。实机上没有 `[windows]` 设置时所有 shell 命令被策略拒绝，`unelevated` 也拒绝运行；macOS 的参数不变。
 - 审查者 HOLD 原因（W10，所有平台，只改提示文字）：审查者或 shadow 回答 HOLD 时，`hold_reason` 和终止进度行在 `reviewer HOLD`（或 `shadow HOLD`）之后附上它自己的说明（它的 finding 摘要，没有时取 `self_run_evidence` 的文字，单行，最多 300 字符）。DOCS 审查者、SECURITY 审查者和 POLISH-Q 专项审查者回答 HOLD 时，原有的 `... returned HOLD without a usable review` 之后同样附上说明。判定、重试和预算逻辑都不变。
 - Codex 配置拒绝提示（W10，所有平台，只改提示文字）：guard 因配置项（MCP servers、notify、插件 MCP 或 app bundle 等）拒绝时，原文字之后加一句修复建议。配置在 `CODEX_HOME` 之下时，建议使用独立的 `CODEX_HOME` 目录并在其中 `codex login`；配置在项目的 `.codex/config.toml` 或系统文件（`/etc/codex/...`）里时，换 `CODEX_HOME` 没有用，建议到指出的那个文件里修改或删除这项设置。permission-probe 的 FAIL 原因不加提示。
