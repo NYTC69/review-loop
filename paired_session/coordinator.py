@@ -2478,6 +2478,15 @@ def hold_explanation(prefix: str, findings, evidence, limit: int = 300) -> str:
     return f'{prefix}: {text}' if text else prefix
 
 
+def unusable_review(label: str, answer: dict) -> str:
+    """'<label> returned <status> without a usable review' (DOCS, SECURITY, POLISH-Q specialists); a HOLD adds the role's own
+    words through hold_explanation (W10 r2, text only)."""
+    reason = f"{label} returned {answer['status']} without a usable review"
+    if answer['status'] != 'HOLD':
+        return reason
+    return hold_explanation(reason, answer.get('full_review'), answer.get('self_run_evidence'))
+
+
 def progress_line(row: dict) -> str:
     """PL: the one human-readable rendering of a progress.jsonl row, shared by the live stdout line and status --brief."""
     f = {k: v for k, v in row.items() if k not in ('ts', 'seq')}
@@ -6356,7 +6365,7 @@ class Coordinator:
         if self._role_vendor(role) == 'codex':
             capability = self.codex_capabilities(active_workspace)
             if capability['status'] != 'PASS':
-                raise RuntimeError(codex_capability_guard.refusal(capability))
+                raise RuntimeError(codex_capability_guard.refusal(capability, self.global_codex_home))
         if role == 'author' and self._role_vendor(role) == 'codex':
             self.author_temp_dir.mkdir(parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
@@ -6960,7 +6969,7 @@ class Coordinator:
         findings = worktree_lifecycle.normalized_findings('docs-reviewer', answer['full_review'], 'docs reviewer')
         blocking = [row for row in findings if row['severity'] in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
-            raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
+            raise RuntimeError(unusable_review('docs reviewer', answer) + '; resume reviews again')
         if not (observed := self._observed_test(answer)):
             cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
             raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
@@ -7311,7 +7320,7 @@ class Coordinator:
             findings = worktree_lifecycle.normalized_findings(owner, answer['full_review'], 'security reviewer')
             if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings and not any(
                     row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
-                raise RuntimeError(f"security reviewer returned {answer['status']} without a usable review")
+                raise RuntimeError(unusable_review('security reviewer', answer))
             ledger = copy.deepcopy(self.state['finding_ledger'])
             try:
                 if missing := self.apply_dispositions(answer.get('prior_findings') or [], sequence,
@@ -8039,7 +8048,7 @@ class Coordinator:
         answer = result['answer']
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not answer['full_review'] and not any(
                 row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
-            raise RuntimeError(f"specialist {name} returned {answer['status']} without a usable review")
+            raise RuntimeError(unusable_review(f'specialist {name}', answer))
         findings = worktree_lifecycle.normalized_findings(name, answer['full_review'])   # validate before any ledger write
         if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
                                               [row['id'] for row in owned], owner):

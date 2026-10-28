@@ -13,12 +13,21 @@ _REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes', 'fe
                  'allowed_permission_profiles', 'permissions'}
 # W10: the Codex desktop app writes MCP servers and notify into ~/.codex/config.toml (Yuan's Windows acceptance run)
 CONFIG_HINT = '; use a dedicated CODEX_HOME directory with its own `codex login` (see README)'
+# W10 r2: a project .codex/config.toml or a system (/etc/codex) file stays active whatever CODEX_HOME is
+SOURCE_HINT = '; change or remove that setting in the named project or system file (CODEX_HOME does not cover it)'
 
 
-def refusal(result):
-    """The refusal text of a FAIL: its issues joined, plus CONFIG_HINT when one of them is a config finding."""
+def refusal(result, code_home):
+    """The refusal text of a FAIL: its issues joined, then a hint per kind of config finding (`... configured in <path>`):
+    CONFIG_HINT for one under code_home (config, plugin cache), SOURCE_HINT for a project or system file."""
+    home = Path(code_home).resolve()
+    sources = [Path(issue.split(' configured in ', 1)[1]) for issue in result['issues'] if ' configured in ' in issue]
     text = '; '.join(result['issues'])
-    return text + CONFIG_HINT if any(' configured in ' in issue for issue in result['issues']) else text
+    if any(home in source.parents for source in sources):
+        text += CONFIG_HINT
+    if any(home not in source.parents for source in sources):
+        text += SOURCE_HINT
+    return text
 
 
 def _root_key(line):

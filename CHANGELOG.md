@@ -23,8 +23,8 @@
 - 拒绝的功能：Windows 上 `--strict`（包括 profile 里的 `"safety_mode": "strict"` 和以 strict 创建的已有 run）、`permission-probe` 和 `--detach` 都在取锁、写 state 之前被拒绝（`REFUSED: ...`，exit 2）；对 strict 的 profile 或 run，`status`、`abort`、`stop` 仍可用。
 - 删除只读文件（W10）：Git for Windows 把 pack/idx 和对象文件设为只读，`shutil.rmtree` 在 Windows 上删不掉（Yuan 实机上 `materialize_pr.py --remove` 报 WinError 5）。Windows 上删除 review-pr 克隆、候选树的元数据目录和审查镜像时，遇到 PermissionError 先清除只读属性再重试一次；macOS 仍直接调用 `shutil.rmtree`。
 - Codex 沙箱（W10）：Windows 上每个 Codex 角色都加 `-c windows.sandbox="elevated"`。实机上没有 `[windows]` 设置时所有 shell 命令被策略拒绝，`unelevated` 也拒绝运行；macOS 的参数不变。
-- 审查者 HOLD 原因（W10，所有平台，只改提示文字）：审查者或 shadow 回答 HOLD 时，`hold_reason` 和终止进度行在 `reviewer HOLD`（或 `shadow HOLD`）之后附上它自己的说明（它的 finding 摘要，没有时取 `self_run_evidence` 的文字，单行，最多 300 字符）；判定逻辑不变。
-- Codex 配置拒绝提示（W10，所有平台，只改提示文字）：guard 因配置项（MCP servers、notify、插件 MCP 或 app bundle 等）拒绝时，原文字之后加一句修复建议：使用独立的 `CODEX_HOME` 目录并在其中 `codex login`。
+- 审查者 HOLD 原因（W10，所有平台，只改提示文字）：审查者或 shadow 回答 HOLD 时，`hold_reason` 和终止进度行在 `reviewer HOLD`（或 `shadow HOLD`）之后附上它自己的说明（它的 finding 摘要，没有时取 `self_run_evidence` 的文字，单行，最多 300 字符）。DOCS 审查者、SECURITY 审查者和 POLISH-Q 专项审查者回答 HOLD 时，原有的 `... returned HOLD without a usable review` 之后同样附上说明。判定、重试和预算逻辑都不变。
+- Codex 配置拒绝提示（W10，所有平台，只改提示文字）：guard 因配置项（MCP servers、notify、插件 MCP 或 app bundle 等）拒绝时，原文字之后加一句修复建议。配置在 `CODEX_HOME` 之下时，建议使用独立的 `CODEX_HOME` 目录并在其中 `codex login`；配置在项目的 `.codex/config.toml` 或系统文件（`/etc/codex/...`）里时，换 `CODEX_HOME` 没有用，建议到指出的那个文件里修改或删除这项设置。permission-probe 的 FAIL 原因不加提示。
 - 技能：各入口给出 Windows 的命令写法（用 `python` 或 `py -3` 代替 `python3`；bundle 目录名用用户名代替 uid；以 `python <plugin>/bin/paired-session` 启动 coordinator）。Claude Code 入口是经过测试的 Windows 路径，Codex 技能的 PowerShell 命令是尽力而为。
 
 **Windows 前提**

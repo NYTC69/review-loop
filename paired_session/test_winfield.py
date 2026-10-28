@@ -4,8 +4,10 @@
    scripts/materialize_pr.py) clears the attribute and retries once. The retry logic runs on every OS with patched calls;
    NativeWindowsRemoveTests (windows-latest CI) remove a real cloned repository and a plain read-only file.
 2. Every Codex role argv carries `-c windows.sandbox="elevated"` on Windows only; the POSIX argv is pinned.
-3a. A reviewer / shadow HOLD reason carries the role's own words after the `reviewer HOLD` prefix (text only).
-3b. A Codex config refusal ends with a dedicated-CODEX_HOME hint (text only).
+3a. A reviewer / shadow HOLD reason carries the role's own words after the `reviewer HOLD` prefix; r2: so does a DOCS,
+   SECURITY or specialist HOLD after its `... without a usable review` prefix (text only).
+3b. A Codex config refusal ends with a hint: a dedicated CODEX_HOME for a user-home finding, the named file for a
+   project or system finding (r2) (text only).
 CoordinatorTextTests drive the coordinator with the POSIX fake-CLI harness (the Windows lifecycle is test_winend2end)."""
 import os
 from pathlib import Path
@@ -202,22 +204,39 @@ class CodexWindowsSandboxTests(unittest.TestCase):
 
 
 class GuardHintTests(unittest.TestCase):
-    def test_a_config_finding_gets_the_codex_home_hint_after_the_unchanged_text(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home, workspace = Path(directory) / 'codex-home', Path(directory) / 'workspace'
-            home.mkdir()
-            workspace.mkdir()
-            (home / 'config.toml').write_text('notify = ["notify.exe"]\n[mcp_servers.node_repl]\ncommand = "node"\n')
-            result = guard.inspect(home, workspace, platform='win32')
-            config = home.resolve() / 'config.toml'
-            self.assertEqual(guard.refusal(result), f'MCP servers configured in {config}; notify configured in {config}'
-                             '; use a dedicated CODEX_HOME directory with its own `codex login` (see README)')
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.home, self.workspace = Path(directory.name) / 'codex-home', Path(directory.name) / 'workspace'
+        self.home.mkdir()
+        (self.workspace / '.git').mkdir(parents=True)
 
-    def test_the_plugin_bundle_finding_gets_the_hint_and_other_issues_do_not(self):
-        bundle = {'status': 'FAIL', 'issues': ['plugin MCP or app bundle configured in /h/plugins/cache/a/b/1/.mcp.json']}
-        self.assertTrue(guard.refusal(bundle).endswith(guard.CONFIG_HINT))
+    def test_a_user_config_finding_gets_the_codex_home_hint_after_the_unchanged_text(self):
+        (self.home / 'config.toml').write_text('notify = ["notify.exe"]\n[mcp_servers.node_repl]\ncommand = "node"\n')
+        result = guard.inspect(self.home, self.workspace, platform='win32')
+        config = self.home.resolve() / 'config.toml'
+        self.assertEqual(guard.refusal(result, self.home),
+                         f'MCP servers configured in {config}; notify configured in {config}'
+                         '; use a dedicated CODEX_HOME directory with its own `codex login` (see README)')
+
+    def test_a_project_config_finding_names_its_file_not_codex_home(self):
+        (self.workspace / '.codex').mkdir()
+        (self.workspace / '.codex' / 'config.toml').write_text('[mcp_servers.local]\ncommand = "node"\n')
+        result = guard.inspect(self.home, self.workspace, platform='win32')
+        project = self.workspace.resolve() / '.codex' / 'config.toml'
+        self.assertEqual(guard.refusal(result, self.home), f'MCP servers configured in {project}; change or remove that '
+                         'setting in the named project or system file (CODEX_HOME does not cover it)')
+
+    def test_system_and_bundle_findings_and_both_kinds_together(self):
+        home = self.home.resolve()
+        system = {'status': 'FAIL', 'issues': ['notify configured in /etc/codex/config.toml']}
+        self.assertEqual(guard.refusal(system, self.home), system['issues'][0] + guard.SOURCE_HINT)
+        bundle = {'status': 'FAIL', 'issues': [f'plugin MCP or app bundle configured in {home}/plugins/cache/a/b/1/.mcp.json']}
+        self.assertEqual(guard.refusal(bundle, self.home), bundle['issues'][0] + guard.CONFIG_HINT)
+        both = {'status': 'FAIL', 'issues': [f'notify configured in {home}/config.toml', system['issues'][0]]}
+        self.assertEqual(guard.refusal(both, self.home), '; '.join(both['issues']) + guard.CONFIG_HINT + guard.SOURCE_HINT)
         for issue in ('cannot parse effective Codex config: /h/config.toml', 'macOS MDM Codex policy configured: key'):
-            self.assertEqual(guard.refusal({'status': 'FAIL', 'issues': [issue]}), issue)
+            self.assertEqual(guard.refusal({'status': 'FAIL', 'issues': [issue]}, self.home), issue)
 
 
 class HoldExplanationTests(unittest.TestCase):
@@ -273,6 +292,54 @@ class CoordinatorTextTests(unittest.TestCase):
             co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
         self.assertRegex(str(raised.exception), r'^notify configured in .*; use a dedicated CODEX_HOME directory')
         self.assertEqual(co.state['sequence'], 0)
+
+
+@unittest.skipIf(IS_WINDOWS, 'the POSIX fake-CLI harness; the Windows lifecycle is test_winend2end')
+class StageHoldTextTests(unittest.TestCase):
+    """W10 r2: a DOCS, SECURITY or POLISH-Q specialist HOLD keeps its `<role> returned HOLD without a usable review` prefix
+    and appends the role's own words; a REVISE without a usable review keeps its old text."""
+    HOLD = {'status': 'HOLD', 'full_review': [], 'prior_findings': [], 'self_run_evidence': [{'command': FIELD_EVIDENCE}]}
+
+    def setUp(self):
+        from paired_session import test_worktree_lifecycle as twl
+        self.case = twl.WorktreeLifecycleActivationTests('test_the_security_budget_caps_reviewer_dispatches')
+        self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
+
+    def test_unusable_review_text(self):
+        self.assertEqual(rc.unusable_review('docs reviewer', self.HOLD),
+                         'docs reviewer returned HOLD without a usable review: ' + FIELD_EVIDENCE)
+        self.assertEqual(rc.unusable_review('docs reviewer', {**self.HOLD, 'self_run_evidence': []}),
+                         'docs reviewer returned HOLD without a usable review')
+        self.assertEqual(rc.unusable_review('specialist x', {**self.HOLD, 'status': 'REVISE'}),
+                         'specialist x returned REVISE without a usable review')
+
+    def test_a_docs_reviewer_hold(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self.case.docs_review_with(self.HOLD)
+        self.assertEqual(str(raised.exception), 'docs reviewer returned HOLD without a usable review: '
+                         + FIELD_EVIDENCE + '; resume reviews again')
+
+    def test_a_security_reviewer_hold_is_discarded_as_before(self):
+        co, tree = self.case.at_security()
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.case.security_turn_stub(co, tree, self.HOLD)), \
+                self.assertRaises(RuntimeError) as raised:
+            co._security_review_turn(tree, 'w-SECURITY-0-0')
+        reason = 'security reviewer returned HOLD without a usable review: ' + FIELD_EVIDENCE
+        self.assertEqual(str(raised.exception), reason + '; resume reviews again')
+        self.assertEqual((co.state['turns'][-1]['discarded'], co.state['lifecycle'].get('security_turn')),
+                         (reason[:200], None))
+
+    def test_a_specialist_hold(self):
+        co, tree = self.case.at_security()
+        stub = self.case.security_turn_stub(co, tree, self.HOLD)
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=stub), self.assertRaises(RuntimeError) as raised:
+            co._specialist_turn('code-reviewer', ['sum_ints.py'], tree)
+        self.assertEqual(str(raised.exception),
+                         'specialist code-reviewer returned HOLD without a usable review: ' + FIELD_EVIDENCE)
 
 
 if __name__ == '__main__':
