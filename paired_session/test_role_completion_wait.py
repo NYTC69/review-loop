@@ -15,7 +15,7 @@ from paired_session import winplat
 
 
 class RoleCompletionWaitTests(unittest.TestCase):
-    def run_cli(self, vendor, terminal=True, linger=True, split=False, event=None):
+    def run_cli(self, vendor, terminal=True, linger=True, split=False, event=None, prompt=b'prompt', read_delay=0, read_prompt=True):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             stdout, stderr = root / 'stdout.jsonl', root / 'stderr.log'
@@ -27,7 +27,9 @@ class RoleCompletionWaitTests(unittest.TestCase):
                              'structured_output': answer})
             payload = ''.join(json.dumps(row) + '\n' for row in rows)
             script = root / 'cli.py'
-            script.write_text('import sys, time\nsys.stdin.buffer.read()\n'
+            script.write_text('import sys, time\n' + 'time.sleep(' + repr(read_delay) + ')\n'
+                              + ('data = sys.stdin.buffer.read()\nassert data == ' + repr(prompt) + '\n'
+                                 if read_prompt else '')
                               + ('sys.stdout.write("not-json\\n[]\\n"); sys.stdout.flush()\n' if split else '')
                               + 'payload = ' + repr(payload) + '\n'
                               + ('sys.stdout.write(payload[:-1]); sys.stdout.flush(); time.sleep(.1)\n'
@@ -44,12 +46,16 @@ class RoleCompletionWaitTests(unittest.TestCase):
                 with patch.object(rc, 'EXIT_AFTER_COMPLETION_GRACE_SECONDS', .2), \
                         patch.object(rc, 'ROLE_WAIT_STEP_SECONDS', .03), contextlib.redirect_stdout(output):
                     if terminal:
-                        rc.wait_role_turn(process, b'prompt', stdout, 3, receipt, job)
+                        rc.wait_role_turn(process, prompt, stdout, 3, receipt, job)
                     else:
                         with self.assertRaises(subprocess.TimeoutExpired):
-                            rc.wait_role_turn(process, b'prompt', stdout, .35, receipt, job)
+                            rc.wait_role_turn(process, prompt, stdout, .35, receipt, job)
                 elapsed = time.monotonic() - started
                 if terminal:
+                    self.assertTrue(process.stdin.closed)
+                    if not linger:
+                        self.assertEqual(process.returncode, 0)
+                if terminal and event != 'turn.failed':
                     collected = rc.Coordinator._collect(None, vendor, stdout, stderr)[0]
                     self.assertEqual(collected, answer)
                 if terminal and linger:
@@ -57,7 +63,10 @@ class RoleCompletionWaitTests(unittest.TestCase):
                     self.assertGreaterEqual(receipt['exit_after_completion']['waited_s'], .19)
                     self.assertNotEqual(process.returncode, 0)
                     self.assertIn("reviewer CLI did not exit", output.getvalue())
-                    self.assertIn("kept the turn's answer", output.getvalue())
+                    expected_type = event or ('turn.completed' if vendor == 'codex' else 'result')
+                    self.assertEqual(receipt['exit_after_completion']['terminal_type'], expected_type)
+                    self.assertIn("processing the turn failure" if event == 'turn.failed' else
+                                  "kept the turn's answer", output.getvalue())
                     if winplat.IS_WINDOWS and vendor == 'codex':
                         self.assertIn('restarting Windows clears it', output.getvalue())
                 else:
@@ -72,6 +81,19 @@ class RoleCompletionWaitTests(unittest.TestCase):
                 process.wait()
                 if process.stdin:
                     process.stdin.close()
+                self.assertTrue(process.stdin.closed)
+
+    def test_large_prompt_with_delayed_reader_is_complete(self):
+        self.run_cli('codex', linger=False, prompt=b'x' * (256 * 1024), read_delay=.2)
+
+    def test_early_exit_without_reading_large_prompt_closes_stdin(self):
+        self.run_cli('codex', linger=False, prompt=b'x' * (256 * 1024), read_prompt=False)
+
+    def test_completion_kill_with_blocked_writer_closes_stdin(self):
+        self.run_cli('codex', prompt=b'x' * (256 * 1024), read_prompt=False)
+
+    def test_timeout_with_blocked_writer_can_be_killed_and_closed(self):
+        self.run_cli('codex', terminal=False, prompt=b'x' * (256 * 1024), read_prompt=False)
 
     def test_codex_completion_lingers(self):
         self.run_cli('codex')

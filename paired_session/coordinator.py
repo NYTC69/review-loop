@@ -1849,7 +1849,21 @@ ROLE_WAIT_STEP_SECONDS = 0.25
 
 def wait_role_turn(process, prompt: bytes, stdout_path: Path, timeout_seconds: float,
                    receipt: dict, job=None) -> None:
-    """Feed stdin via communicate, then tail complete JSONL rows while waiting in short steps."""
+    """Feed stdin independently of timed waits, and incrementally tail terminal JSONL rows."""
+    def feed_prompt():
+        try:
+            process.stdin.write(prompt)
+        except (OSError, ValueError):   # exited child or cleanup already closed the pipe
+            pass
+        finally:
+            try:
+                process.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+    # A blocked pipe write must neither block timeout handling nor keep the coordinator alive.
+    writer = threading.Thread(target=feed_prompt, daemon=True)
+    writer.start()
     deadline = time.monotonic() + timeout_seconds
     completed_at = None
     offset, buffered = 0, b''
@@ -1867,20 +1881,24 @@ def wait_role_turn(process, prompt: bytes, stdout_path: Path, timeout_seconds: f
                 except OSError:
                     pass
                 process.wait()
+                writer.join(timeout=1)
                 waited = round(time.monotonic() - completed_at, 3)
-                receipt['exit_after_completion'] = {'waited_s': waited, 'killed': True}
+                receipt['exit_after_completion'] = {'waited_s': waited, 'killed': True,
+                                                    'terminal_type': terminal_type}
                 message = (f"NOTE: {receipt['role']} CLI did not exit {waited:g} s after its turn completed; "
-                           "ended it and kept the turn's answer")
+                           + ("ended it; processing the turn failure" if terminal_type == 'turn.failed'
+                            else "ended it and kept the turn's answer"))
                 if winplat.IS_WINDOWS and receipt['vendor'] == 'codex':
                     message += (' (a wedged Codex sandbox helper can keep sandboxed commands from returning; '
                                 'restarting Windows clears it)')
                 print(message)
                 return
             try:
-                process.communicate(prompt, timeout=min(ROLE_WAIT_STEP_SECONDS, remaining))
+                process.wait(timeout=min(ROLE_WAIT_STEP_SECONDS, remaining))
+                writer.join(timeout=1)
                 return
             except subprocess.TimeoutExpired:
-                prompt = None   # communicate retains any input still waiting to be written
+                pass
             if completed_at is None:
                 stream.seek(offset)
                 data = stream.read()
@@ -1893,6 +1911,7 @@ def wait_role_turn(process, prompt: bytes, stdout_path: Path, timeout_seconds: f
                     except (ValueError, UnicodeDecodeError):
                         continue
                     if isinstance(row, dict) and row.get('type') in terminal_types:
+                        terminal_type = row['type']
                         completed_at = time.monotonic()
                         break
 
@@ -6592,6 +6611,13 @@ class Coordinator:
             DETACH_TURN['group'] = None   # reaped (or being re-raised after its group was killed)
             usage_stop.set()
             usage_monitor.join()
+            # The child has been reaped on normal, timeout, completion-kill and exception paths.
+            # Killing it releases any blocked writer before we close the pipe here.
+            if getattr(process, 'stdin', None):
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
@@ -6674,7 +6700,9 @@ class Coordinator:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
                     print('WARNING: ' + warning)
-            if process.returncode and not receipt.get('exit_after_completion', {}).get('killed'):
+            completion_exit = receipt.get('exit_after_completion', {})
+            if process.returncode and not (completion_exit.get('killed') and
+                                           completion_exit.get('terminal_type') in ('turn.completed', 'result')):
                 error_text = read_text_tail(stderr_path)
                 output_text = read_text_tail(stdout_path)
                 limit = (None if process.returncode <= 0 or receipt.get('timed_out', False) else

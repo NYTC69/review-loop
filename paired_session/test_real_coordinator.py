@@ -1119,7 +1119,7 @@ sys.exit(result.returncode)
 
         def completed_kill(process, prompt, path, timeout, receipt, job):
             original_wait(process, prompt, path, timeout, receipt, job)
-            receipt['exit_after_completion'] = {'waited_s': 60, 'killed': True}
+            receipt['exit_after_completion'] = {'waited_s': 60, 'killed': True, 'terminal_type': 'turn.completed'}
             process.returncode = -9   # the real linger/kill is covered by test_role_completion_wait
 
         with patch.object(rc, 'wait_role_turn', side_effect=completed_kill):
@@ -1131,6 +1131,56 @@ sys.exit(result.returncode)
         self.assertIn('snapshot_after', receipt)
         self.assertEqual(receipt['global_config_changes']['status'], 'PASS')
         self.assertTrue(receipt['invocation_budget_counted'])
+
+    def test_failed_terminal_kill_retains_exit_failure_classification(self):
+        for code, stderr, expected in ((-9, '', 'CLI exit -9'),
+                                       (1, '429 too many requests', 'rate_limited'),
+                                       (1, 'Selected model is at capacity', 'transient provider error')):
+            with self.subTest(code=code, stderr=stderr):
+                self.run_dir = self.root / ('failure-' + str(code) + '-' + str(len(stderr)))
+                co = self.coordinator()
+                original_wait = rc.wait_role_turn
+
+                def failed_kill(process, prompt, path, timeout, receipt, job):
+                    original_wait(process, prompt, path, timeout, receipt, job)
+                    with path.open('a') as stream:
+                        stream.write(json.dumps({'type': 'turn.failed'}) + '\n')
+                    path.with_name(path.name.replace('.stdout.jsonl', '.stderr.log')).write_text(stderr)
+                    receipt['exit_after_completion'] = {
+                        'waited_s': 60, 'killed': True, 'terminal_type': 'turn.failed'}
+                    process.returncode = code
+
+                with patch.object(rc, 'wait_role_turn', side_effect=failed_kill), \
+                        patch.object(co, '_collect', wraps=co._collect) as collect, \
+                        patch.object(rc, 'classify_transient_failure', wraps=rc.classify_transient_failure) as transient:
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+                collect.assert_not_called()   # the fake's interim agent_message must not become the answer
+                if 'capacity' in stderr:
+                    transient.assert_called_once()
+                receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+                self.assertIn('snapshot_after', receipt)
+                self.assertEqual(receipt['global_config_changes']['status'], 'PASS')
+
+    def test_role_wait_baseexception_closes_stdin_after_reaping(self):
+        co = self.coordinator()
+        original_wait = rc.wait_role_turn
+        pipes = []
+
+        def interrupted_wait(process, prompt, path, timeout, receipt, job):
+            pipes.append(process.stdin)
+            original_process_wait = process.wait
+            def wait(timeout=None):
+                if timeout is not None:
+                    raise KeyboardInterrupt()
+                return original_process_wait()
+            with patch.object(process, 'wait', side_effect=wait):
+                original_wait(process, b'x' * (256 * 1024), path, timeout, receipt, job)
+
+        with patch.object(rc, 'wait_role_turn', side_effect=interrupted_wait):
+            with self.assertRaises(KeyboardInterrupt):
+                co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        self.assertTrue(pipes[0].closed)
 
     def test_failed_first_persistent_claude_turn_rotates_session(self):
         for role, flags in (('author', ['--author-vendor', 'claude']),
@@ -1202,16 +1252,17 @@ sys.exit(result.returncode)
 
     def test_timeout_race_with_positive_rate_limit_exit_remains_counted(self):
         co = self.coordinator()
-        co.args.timeout = .01   # W11: short-step communicate retries until the actual outer deadline
+        co.args.timeout = .01   # W11 r2: short-step wait retries until the actual outer deadline
 
         class TimeoutRaceProcess:
             pid = 12345
             returncode = None
 
-            def communicate(self, *_args, **_kwargs):
-                raise subprocess.TimeoutExpired('mock-cli', 1)
+            stdin = io.BytesIO()
 
-            def wait(self):
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired('mock-cli', timeout)
                 self.returncode = 7
                 return self.returncode
 
