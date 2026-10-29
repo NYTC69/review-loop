@@ -9818,10 +9818,20 @@ def refuse_gemini_roles(args: argparse.Namespace) -> None:
 def refuse_gemini_dispatch(args: argparse.Namespace) -> None:
     """WI-GEM B2a: a gemini reviewer (PLAN, EXEC), shadow and gate run; the stage reviews that use the reviewer vendor (lifecycle
     on, report mode) do not yet, so such a run is refused before any state or provider turn. invoke() refuses any other path."""
-    if getattr(args, 'reviewer_vendor', None) != 'gemini': return
-    lifecycle = getattr(args, 'lifecycle_mode', None) or (
-        'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')   # the default Coordinator applies
-    if lifecycle == 'on' or getattr(args, 'review_report', None): raise ValueError(GEMINI_STAGE_REVIEWS)
+    if getattr(args, 'reviewer_vendor', None) == 'gemini':
+        lifecycle = getattr(args, 'lifecycle_mode', None) or (
+            'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')   # the default Coordinator applies
+        if lifecycle == 'on' or getattr(args, 'review_report', None): raise ValueError(GEMINI_STAGE_REVIEWS)
+    refuse_gemini_probe(args)
+
+
+def refuse_gemini_probe(args: argparse.Namespace) -> None:
+    """WI-GEM B2a r1: permission-probe dispatches the reviewer and author probes before the gate probe, and no probe runs
+    gemini (efficient mode needs none, ADR-20 G4); a probe of a run with a gemini reviewer or gate is refused before any turn."""
+    vendors = vendor_by_role(args)
+    if getattr(args, 'action', None) == 'permission-probe' and 'gemini' in (vendors['reviewer'], vendors['gate']):
+        raise ValueError('permission-probe cannot run with a gemini reviewer or gate: gemini roles run in efficient mode, '
+                         'which needs no permission probe (ADR-20 G4)')
 
 
 def gemini_stdin(prompt: str) -> bytes:
@@ -10087,6 +10097,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
         args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)
+    refuse_gemini_probe(co.args)   # a restored run's frozen vendors, before any probe turn
     if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too

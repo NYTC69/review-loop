@@ -363,6 +363,25 @@ class GeminiAdapterTests(unittest.TestCase):
                 co.invoke(role, phase, PLAN_REVIEW, rc.review_schema(), fresh=True)
         self.assertEqual((co.state['turns'], co.state['invocations_used'], self.calls()), ([], 0, []))
 
+    def test_a_permission_probe_with_a_gemini_reviewer_or_gate_is_refused_before_any_turn(self):   # B2a r1 (Codex review)
+        refusal = 'permission-probe cannot run with a gemini reviewer or gate'
+        agy = ['--gemini-bin', str(self.h.fake_gemini_cli()), '--lifecycle-mode', 'off']   # lifecycle on refuses a gemini reviewer first
+        for name, flags in (('gate', [*GEMINI_GATE, *agy]), ('reviewer', [*GEMINI_REVIEWER, *agy]),
+                            ('both', [*GEMINI_REVIEWER, *GEMINI_GATE, *agy])):
+            self.h.run_dir = self.h.root / ('new-' + name)
+            self.assert_refused(refusal, *flags, actions=('permission-probe',))   # a new run: before any state
+            self.h.run_dir = self.h.root / ('saved-' + name)
+            rc.Coordinator(self.args(*flags))
+            with self.subTest(run='saved', roles=name):   # a restored run: its frozen vendors, before the reviewer or author probe
+                refused = self.main('permission-probe', *flags)
+                self.assertEqual(refused.returncode, 2, refused.stdout)
+                self.assertIn('REFUSED: ' + refusal, refused.stdout)
+                state = json.loads((self.h.run_dir / 'state.json').read_text())
+                self.assertEqual((state['sequence'], state['turns'], state['invocations_used'], state.get('active')), (0, [], 0, None))
+                self.assertFalse((self.h.run_dir / 'permission-probe.json').exists())
+                self.assertEqual(list((self.h.run_dir / 'evidence').glob('*')) if (self.h.run_dir / 'evidence').exists() else [], [])
+        self.assertEqual(self.calls(), [])
+
     def test_a_frozen_gemini_bin_is_rebound_on_resume(self):
         co = self.coordinator()
         frozen = co._program_state()[0]
