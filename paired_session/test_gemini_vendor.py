@@ -1,16 +1,20 @@
-"""WI-GEM B1 (ADR-20 G1-G4, G9, G10): gemini as a third vendor value; validation and binding only, no agy dispatch."""
+"""WI-GEM B1 (ADR-20 G1-G4, G9, G10): gemini as a third vendor value; B2a (G5-G7): the agy adapter for the read-only roles."""
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from paired_session import test_real_coordinator as trc
 from paired_session import timeout_scale as tsc
 
 rc = trc.rc
-B2 = 'gemini roles cannot be dispatched yet (WI-GEM B2)'
+B2 = 'this gemini role path cannot be dispatched yet (WI-GEM B2b)'
 GEMINI_REVIEWER = ['--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-flash-medium']
 GEMINI_GATE = ['--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-pro']
 
@@ -94,16 +98,19 @@ class GeminiVendorTests(unittest.TestCase):
                 rc.validate_role_models(a)
                 self.assertEqual((a.author_vendor, a.author_model), ('codex', rc.CODEX_DEFAULT_MODEL))
                 self.assertEqual(rc.required_programs(a), ('claude_bin', 'codex_bin', 'gemini_bin'))
-                with self.assertRaisesRegex(ValueError, B2.replace('(', r'\(').replace(')', r'\)')):
-                    rc.refuse_gemini_dispatch(a)
+                rc.refuse_gemini_dispatch(a)   # B2a: dispatchable (the harness runs lifecycle off)
 
-    def test_b1_refuses_a_gemini_role_before_state_or_any_turn(self):
-        for flags in (GEMINI_REVIEWER, GEMINI_GATE, [*GEMINI_REVIEWER, *GEMINI_GATE]):
-            self.assert_refused(B2, *flags)
-            with self.subTest(coordinator=flags), self.assertRaises(ValueError) as refused:
-                rc.Coordinator(self.args(*flags))
-            self.assertEqual(str(refused.exception), B2)
-            self.assertFalse(self.h.run_dir.exists())
+    def test_a_gemini_reviewer_with_stage_reviews_is_refused_before_state_or_any_turn(self):
+        self.assert_refused(rc.GEMINI_STAGE_REVIEWS, *GEMINI_REVIEWER, '--lifecycle-mode', 'on', actions=('run', 'permission-probe'))
+        with self.assertRaises(ValueError) as refused:
+            rc.Coordinator(self.args(*GEMINI_REVIEWER, '--lifecycle-mode', 'on'))
+        self.assertEqual(str(refused.exception), rc.GEMINI_STAGE_REVIEWS)
+        self.assertFalse(self.h.run_dir.exists())
+        report = self.resolved(*GEMINI_REVIEWER)
+        report.review_report = True
+        with self.assertRaisesRegex(ValueError, 'cannot run gemini yet'):
+            rc.refuse_gemini_dispatch(report)
+        rc.refuse_gemini_dispatch(self.resolved(*GEMINI_GATE, '--lifecycle-mode', 'on'))   # a gemini gate runs only the EXEC gate
 
     def test_a_gemini_author_is_refused(self):
         self.assert_refused('author_vendor gemini is not supported yet (ADR-20 G2)', '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro')
@@ -206,7 +213,7 @@ class GeminiVendorTests(unittest.TestCase):
         self.assertEqual([(u['program'], u['new_version']) for u in updates], [('gemini_bin', '1.4.11')])
 
     # ---- G1: explicit vendor tables fail closed ----
-    def test_vendor_tables_refuse_gemini_until_b2_and_an_unknown_vendor(self):
+    def test_a_vendor_table_without_an_entry_fails_closed(self):
         self.assertEqual(rc.vendor_entry({'codex': 1, 'claude': 2}, 'claude'), 2)
         with self.assertRaises(ValueError) as gemini:
             rc.vendor_entry({'codex': 1, 'claude': 2}, 'gemini')
@@ -216,12 +223,190 @@ class GeminiVendorTests(unittest.TestCase):
         co = rc.Coordinator(self.args())
         schema = self.h.root / 'schema.json'
         rc.atomic_json(schema, rc.review_schema())
-        for vendor, message in (('gemini', B2), ('mistral', "unknown vendor 'mistral'")):
-            co.args.reviewer_vendor = vendor
-            for call in (lambda: co.command('reviewer', schema, True), lambda: co._vendor_binary(vendor), co.reviewer_flags):
-                with self.subTest(vendor=vendor, call=call), self.assertRaises(ValueError) as refused:
-                    call()
-                self.assertEqual(str(refused.exception), message)
+        co.args.reviewer_vendor = 'mistral'
+        for call in (lambda: co.command('reviewer', schema, True), lambda: co._vendor_binary('mistral'), co.reviewer_flags):
+            with self.subTest(call=call), self.assertRaises(ValueError) as refused:
+                call()
+            self.assertEqual(str(refused.exception), "unknown vendor 'mistral'")
+
+
+SETTINGS = '{"permissions":{"deny":["write_file(*)","read_url(*)","execute_url(*)","mcp(*)"],"allow":["command(*)"]}}'
+PLAN_REVIEW = 'Role: reviewer, persistent plan-only reviewer. Phase: PLAN.'
+GATE_PROMPT = 'You are an adversarial reviewer.\nRun this test command exactly as written in one Bash call: python3 -m unittest\n'
+
+
+class GeminiAdapterTests(unittest.TestCase):
+    """WI-GEM B2a (ADR-20 G5-G7): agy runs the reviewer, the shadow and the gate on the fake gemini CLI."""
+    argv, args, resolved, main, assert_refused = (GeminiVendorTests.argv, GeminiVendorTests.args, GeminiVendorTests.resolved,
+                                                  GeminiVendorTests.main, GeminiVendorTests.assert_refused)
+
+    def setUp(self):
+        GeminiVendorTests.setUp(self)
+        self.log = self.h.root / 'agy-log.jsonl'
+        env = patch.dict(os.environ, {'FAKE_GEMINI_LOG': str(self.log)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def coordinator(self, *extra, action='run'):
+        return rc.Coordinator(self.args(*GEMINI_REVIEWER, *GEMINI_GATE, '--gemini-bin', str(self.h.fake_gemini_cli()), *extra, action=action))
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def receipt(self, co, sequence, phase, role):
+        return json.loads((co.evidence / f'{sequence:03d}-{phase.lower()}-{role}.receipt.json').read_text())
+
+    def test_the_argv_is_read_only_and_resumes_by_conversation(self):
+        co = self.coordinator()
+        schema = self.h.root / 'schema.json'
+        rc.atomic_json(schema, rc.review_schema())
+        agy = str(self.h.fake_gemini_cli())
+        base = ['--print=', '--input-format', 'stream-json', '--output-format', 'stream-json']
+        self.assertEqual(co.command('reviewer', schema, False), [
+            agy, *base, '--model', 'gemini-3.8-flash-medium', '--effort', 'medium', '--json-schema', str(schema),
+            '--sandbox', '--settings', SETTINGS])
+        co.state['started']['reviewer'], co.state['sessions']['reviewer'] = True, 'conv-1'
+        self.assertEqual(co.command('reviewer', schema, False)[-2:], ['--conversation', 'conv-1'])
+        for role in ('shadow', 'gate'):   # fresh roles never resume
+            command = co.command(role, schema, True)
+            self.assertEqual(command[:6], [agy, *base])
+            self.assertNotIn('--conversation', command)
+            for flag in ('--dangerously-skip-permissions', '--print-timeout', '--mode', '-p'):
+                self.assertFalse(any(arg == flag or arg.startswith(flag + '=') for arg in command), flag)
+        self.assertEqual(co.command('gate', schema, True)[6:8], ['--model', 'gemini-3.8-pro'])
+        flags = co.reviewer_flags()
+        self.assertEqual((flags['reviewer_binary'], flags['permission_mode'], flags['sandbox'], flags['gemini_settings']),
+                         (agy, 'settings-deny', 'agy-sandbox', rc.GEMINI_READONLY_SETTINGS))
+        with self.assertRaisesRegex(ValueError, 'ADR-20 G2'):
+            co._gemini_command('author', schema, False)
+
+    def test_a_persistent_reviewer_gets_the_prompt_on_stdin_and_resumes_its_conversation(self):
+        co = self.coordinator()
+        prompt = PLAN_REVIEW + ' ' + 'x' * 120_000   # a long prompt goes on stdin, never in argv
+        co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())   # invoke() makes the scratch TMPDIR
+        first = self.calls()[0]
+        self.assertEqual(first['stdin'], json.dumps({'event': 'user', 'message': {'content': prompt}}) + '\n')
+        self.assertNotIn(prompt, first['args'])
+        self.assertEqual(Path(first['cwd']).resolve(), self.h.workspace.resolve())
+        self.assertEqual(Path(first['TMPDIR']).parent, co.run_dir / 'role-tmp')   # the per-dispatch scratch, as for Codex
+        receipt = self.receipt(co, 1, 'PLAN', 'reviewer')
+        self.assertEqual((receipt['vendor'], receipt['reported_model'], receipt['reported_model_source'], receipt['model_identity']),
+                         ('gemini', 'gemini-3.8-flash-medium', 'init', 'MATCH'))
+        self.assertEqual(receipt['usage_requests'], [{'input': 100, 'cached': 30, 'output': 20, 'source': 'result'}])
+        conversation = co.state['sessions']['reviewer']
+        self.assertTrue(conversation and co.state['started']['reviewer'])
+        co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+        self.assertEqual(self.calls()[1]['args'][-2:], ['--conversation', conversation])
+        self.assertEqual(co.state['sessions']['reviewer'], conversation)
+        with patch.dict(os.environ, {'FAKE_GEMINI_OTHER_CONVERSATION': 'someone-else'}), \
+                self.assertRaisesRegex(RuntimeError, 'reviewer resumed a different session'):
+            co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+
+    def test_a_gemini_gate_approval_counts_the_test_run_from_a_tool_step(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_GEMINI_TOOL_ERROR': '1'}):   # a tool step in ERROR mid-turn does not fail the turn
+            result = co._invoke_once('gate', 'EXEC', GATE_PROMPT, rc.gate_schema(), fresh=True)
+        self.assertEqual(result['answer']['verdict'], 'approve')
+        observed = self.receipt(co, 1, 'EXEC', 'gate')['observed_commands']
+        self.assertEqual([(row['command'], row['exit_code'], row['source']) for row in observed], [('python3 -m unittest', 0, 'run_command')])
+        self.assertNotIn('--conversation', self.calls()[0]['args'])
+        with patch.dict(os.environ, {'FAKE_MISSING_OBSERVED': '1'}), \
+                self.assertRaisesRegex(RuntimeError, 'gate EXEC approval lacks an observed successful configured test command'):
+            co._invoke_once('gate', 'EXEC', GATE_PROMPT, rc.gate_schema(), fresh=True)
+
+    def test_parsing_reads_tool_steps_and_falls_back_to_the_response(self):
+        rows = [{'event': 'step_update', 'step_update': {'step_index': 2, 'state': 'ACTIVE', 'step_type': 'tool', 'tool_name': 'run_command',
+                                                         'tool_info': {'parameters': {'CommandLine': 'make test'}}}},
+                {'event': 'step_update', 'step_update': {'step_index': 3, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
+                                                         'tool_info': {'parameters': {'CommandLine': 'false'}, 'output': 'Command exited with code 1.\n'}}},
+                {'event': 'result', 'result': {'status': 'SUCCESS', 'conversation_id': 'c1', 'response': '{"verdict": "approve"}'}}]
+        commands, calls = rc.observed_events('gemini', rows)
+        self.assertEqual([(row['command'], row['exit_code'], row['error'], row.get('evidence_kind')) for row in commands],
+                         [('make test', None, False, 'started; no exit status when the turn ended'), ('false', 1, True, None)])
+        self.assertEqual(calls[1], {'tool': 'command_execution', 'input': {'command': 'false'}, 'error': True})
+        self.assertEqual(rc.gemini_turn(rows, '', '')[:2], ({'verdict': 'approve'}, 'c1'))
+        self.assertTrue(rc.failed_turn_did_work('gemini', self._lines(rows[:1])))
+
+    def _lines(self, rows):
+        path = self.h.root / 'stream.jsonl'
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        return path
+
+    def test_each_hazard_fails_the_turn_with_its_reason(self):
+        cases = (({'FAKE_GEMINI_FAIL': 'denied'}, r'agy denied write_file; a denied permission ends the turn \(ADR-20 G6\)'),
+                 ({'FAKE_GEMINI_FAIL': 'empty'}, 'agy returned an empty response and no structured_output'),
+                 ({'FAKE_GEMINI_FAIL': 'error'}, 'CLI exit 1: fake agy failure'),
+                 ({'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_FAIL_EXIT': '0', 'FAKE_GEMINI_ERROR': 'quota zq-17 left the building'},
+                  'agy turn status ERROR: quota zq-17 left the building'),   # unknown error text, verbatim
+                 ({'FAKE_GEMINI_FAIL': 'no-result'}, 'agy emitted no result'),
+                 ({'FAKE_GEMINI_MODEL': 'gemini-other'},
+                  'model identity mismatch: reviewer configured gemini-3.8-flash-medium, CLI reported gemini-other'))
+        for index, (env, message) in enumerate(cases):
+            with self.subTest(env=env):
+                self.h.run_dir = self.h.root / f'hazard-{index}'
+                co = self.coordinator()
+                with patch.dict(os.environ, env), self.assertRaisesRegex(RuntimeError, message):
+                    co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+                state = json.loads(co.state_path.read_text())
+                self.assertRegex(state['turns'][-1]['error'], message)
+                self.assertFalse(state['started']['reviewer'])
+                self.assertIsNone(state['sessions']['reviewer'])
+        self.h.run_dir = self.h.root / 'no-structured'
+        with patch.dict(os.environ, {'FAKE_GEMINI_NO_STRUCTURED': '1'}):   # G7: the response is the fallback answer
+            self.assertEqual(self.coordinator()._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())['answer']['status'], 'APPROVE')
+
+    def test_other_role_paths_refuse_gemini_before_any_turn(self):
+        co = self.coordinator()
+        for role, phase in (('reviewer', 'DOCS'), ('reviewer', 'SECURITY'), ('reviewer', 'POLISH-Q'), ('probe', 'PROBE'),
+                            ('gate-probe', 'PROBE'), ('gate', 'PLAN')):
+            with self.subTest(role=role, phase=phase), self.assertRaisesRegex(RuntimeError, f'{role} {phase} turns cannot run gemini yet'):
+                co.invoke(role, phase, PLAN_REVIEW, rc.review_schema(), fresh=True)
+        self.assertEqual((co.state['turns'], co.state['invocations_used'], self.calls()), ([], 0, []))
+
+    def test_a_frozen_gemini_bin_is_rebound_on_resume(self):
+        co = self.coordinator()
+        frozen = co._program_state()[0]
+        self.assertIn('gemini_bin', co.state['operator_programs'])
+        resumed = self.coordinator(action='resume')
+        self.assertEqual(resumed._program_state(), (frozen, None))
+        other = self.h.root / 'other-agy'
+        other.write_text(self.h.fake_gemini_cli().read_text())
+        other.chmod(0o755)
+        resumed.args.gemini_bin = str(other)
+        _, issue = resumed._program_state()
+        self.assertRegex(issue, r'operator program or PATH changed since run start \(changed: gemini_bin\)')
+
+    def test_a_saved_run_without_gemini_bin_resumes_unchanged(self):
+        co = rc.Coordinator(self.args())
+        frozen = co._program_state()[0]
+        resumed = rc.Coordinator(self.args('--gemini-bin', str(self.h.fake_gemini_cli()), action='resume'))
+        self.assertEqual(resumed._program_state(), (frozen, None))
+        self.assertNotIn('gemini_bin', json.loads(resumed.state_path.read_text())['operator_programs'])
+
+    def run_cli(self, *flags):
+        h = self.h
+        command = [arg for arg in h.command('--exercise-revisions', *flags) if arg != '--strict']   # gemini roles run efficient (G4)
+        return subprocess.run(command, cwd=h.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def test_a_codex_author_with_gemini_reviewer_and_gate_ends_like_codex_and_claude(self):
+        h, outcomes = self.h, {}
+        for name, flags in (('codex-claude', ()), ('gemini', (*GEMINI_REVIEWER, *GEMINI_GATE, '--gemini-bin', str(h.fake_gemini_cli())))):
+            h.run_dir = h.root / ('run-' + name)
+            subprocess.run(['git', 'checkout', '-q', '--', '.'], cwd=h.workspace, check=True)
+            subprocess.run(['git', 'clean', '-qfd'], cwd=h.workspace, check=True)
+            done = self.run_cli(*flags)
+            state = json.loads((h.run_dir / 'state.json').read_text())
+            outcomes[name] = (done.returncode, done.stdout.splitlines()[-1:], state['status'],
+                              [(t['role'], t['phase'], (t.get('answer') or {}).get('status', (t.get('answer') or {}).get('verdict')))
+                               for t in state['turns']])
+            if name == 'gemini':
+                self.assertEqual({t['vendor'] for t in state['turns'] if t['role'] != 'author'}, {'gemini'})
+                reviewer_calls = [c['args'] for c in self.calls() if '--conversation' in c['args']]
+                self.assertTrue(reviewer_calls)   # the persistent reviewer resumed its conversation after the exercise REVISE
+                self.assertEqual({c[c.index('--conversation') + 1] for c in reviewer_calls}, {state['sessions']['reviewer']})
+        self.assertEqual(outcomes['gemini'], outcomes['codex-claude'], outcomes)
+        self.assertEqual(outcomes['gemini'][2], 'DONE', outcomes)
+        self.assertLessEqual({'reviewer', 'shadow', 'gate'}, {role for role, _, _ in outcomes['gemini'][3]})
 
 
 if __name__ == '__main__':

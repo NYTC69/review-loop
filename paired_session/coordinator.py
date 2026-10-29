@@ -821,7 +821,11 @@ def cli_failure_reason(prefix: str, stdout: str, stderr: str = '') -> str:
             continue
         if not isinstance(event, dict):
             continue
-        if event.get('type') not in ('error', 'turn.failed') and not (event.get('type') == 'result' and event.get('is_error')):
+        if event.get('event') == 'result' and isinstance(event.get('result'), dict):   # agy (ADR-20 G6): a status ERROR's own text
+            result = event['result']
+            value = result.get('error') or result.get('response') if result.get('status') == 'ERROR' else None
+            event = {'message': value.get('message') if isinstance(value, dict) else value}
+        elif event.get('type') not in ('error', 'turn.failed') and not (event.get('type') == 'result' and event.get('is_error')):
             continue
         error = event.get('error')
         value = (error.get('message') if isinstance(error, dict) else None) or event.get('message') or event.get('result')
@@ -1881,6 +1885,11 @@ def reported_provider_model(vendor: str, path: Path) -> tuple[Optional[str], Opt
                 model = row.get('message', {}).get('model')
                 if isinstance(model, str) and model:
                     candidates.append((model, 'assistant'))
+        elif vendor == 'gemini':   # ADR-20 G7
+            if row.get('event') == 'init' and isinstance(row.get('init'), dict):
+                model = row['init'].get('model')
+                if isinstance(model, str) and model:
+                    candidates.append((model, 'init'))
     real = [(model, source) for model, source in candidates if model != '<synthetic>']
     if not real or len({model for model, _ in real}) != 1:
         return None, None
@@ -1952,6 +1961,27 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
             commands.append({'command': command, 'raw_command': raw_command, 'exit_code': None, 'error': False,
                              'output': item.get('aggregated_output', ''), 'source': 'command_execution',
                              'evidence_kind': 'started; no exit status when the turn ended'})
+        return commands, calls
+    if vendor == 'gemini':   # ADR-20 G7: agy tool steps; a step's last update wins (ACTIVE, then DONE or ERROR)
+        steps = {}
+        for row in rows:
+            step = row.get('step_update')
+            if row.get('event') == 'step_update' and isinstance(step, dict) and step.get('step_type') == 'tool':
+                steps[step.get('step_index')] = step
+        for step in steps.values():
+            info = step.get('tool_info') if isinstance(step.get('tool_info'), dict) else {}
+            given = info.get('parameters') if isinstance(info.get('parameters'), dict) else {}
+            output = info.get('output') if isinstance(info.get('output'), str) else ''
+            done = step.get('state') in ('DONE', 'ERROR')
+            if step.get('tool_name') != 'run_command':   # other tools reach the evidence guard under their agy names
+                calls.append({'tool': step.get('tool_name', ''), 'input': given, 'error': step.get('state') == 'ERROR' if done else None})
+                continue
+            command = given.get('CommandLine', '')
+            exit_code = int(found.group(1)) if (found := GEMINI_EXIT_RE.search(output)) else None
+            error = step.get('state') == 'ERROR' or (exit_code is not None and exit_code != 0)
+            calls.append({'tool': 'command_execution', 'input': {'command': command}, 'error': error if done else None})
+            commands.append({'command': command, 'exit_code': exit_code, 'error': error, 'output': output, 'source': 'run_command',
+                             **({} if done else {'evidence_kind': 'started; no exit status when the turn ended'})})
         return commands, calls
     pending = {}
     for row in rows:
@@ -2925,7 +2955,7 @@ class Coordinator:
                                 self.args.gate_prompt, self.args.config, gemini_bin=gemini)
 
     def _vendor_binary(self, vendor: str) -> str:
-        return vendor_entry({'codex': self.args.codex_bin, 'claude': self.args.claude_bin}, vendor)   # ADR-20 G1: gemini in B2
+        return vendor_entry({'codex': self.args.codex_bin, 'claude': self.args.claude_bin, 'gemini': self.args.gemini_bin}, vendor)
 
     def _program_state(self, hold=False):
         current, issue = self._program_snapshot()
@@ -2966,9 +2996,12 @@ class Coordinator:
             prefix + '_effort': getattr(self.args, prefix + '_effort'),
             prefix + '_commands': self.reviewer_commands(),
             prefix + '_binary': self._vendor_binary(vendor),
-            'permission_mode': vendor_entry({'claude': 'dontAsk', 'codex': 'never'}, vendor),
-            'sandbox': vendor_entry({'claude': 'restricted-allowlist', 'codex': 'read-only'}, vendor),
+            'permission_mode': vendor_entry({'claude': 'dontAsk', 'codex': 'never', 'gemini': 'settings-deny'}, vendor),
+            'sandbox': vendor_entry({'claude': 'restricted-allowlist', 'codex': 'read-only', 'gemini': 'agy-sandbox'}, vendor),
         }
+        if vendor == 'gemini':   # ADR-20 G5
+            flags['gemini_settings'] = GEMINI_READONLY_SETTINGS
+            flags['scratch_tmp'] = str(self.run_dir / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
         if vendor == 'claude':
             flags['claude_child_env'] = CLAUDE_CHILD_ENV
             flags['claude_bash_sandbox'] = self._claude_sandbox_settings(sandbox_role)
@@ -4829,9 +4862,22 @@ class Coordinator:
             cmd += ['resume', self.state['sessions'][role]]
         return cmd + ['-']
 
+    def _gemini_command(self, role: str, schema_path: Path, fresh: bool) -> list[str]:
+        """ADR-20 G5: agy for a read-only role (cwd = workspace, a per-dispatch TMPDIR); the prompt goes on stdin (gemini_stdin).
+        Never --dangerously-skip-permissions, --print-timeout or --mode plan; the coordinator's own timeout ends the process."""
+        if role == 'author': raise ValueError('author_vendor gemini is not supported yet (ADR-20 G2)')
+        model, effort = self._model_effort(role)
+        cmd = [self.args.gemini_bin, '--print=', '--input-format', 'stream-json', '--output-format', 'stream-json',
+               '--model', model, *(['--effort', effort] if effort else []), '--json-schema', str(schema_path),
+               '--sandbox', '--settings', json.dumps(GEMINI_READONLY_SETTINGS, separators=(',', ':'))]
+        if not fresh and self.state['started'][role]:
+            cmd += ['--conversation', self.state['sessions'][role]]
+        return cmd
+
     def command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
         return vendor_entry({'claude': lambda: self._claude_command(role, schema_path, fresh, workspace),
-                             'codex': lambda: self._codex_command(role, schema_path, fresh)}, self._role_vendor(role))()
+                             'codex': lambda: self._codex_command(role, schema_path, fresh),
+                             'gemini': lambda: self._gemini_command(role, schema_path, fresh)}, self._role_vendor(role))()
 
     def _author_prompt(self) -> str:
         contract = self.author_control_contract()
@@ -5847,6 +5893,9 @@ class Coordinator:
                       'output': x.get('output_tokens', 0), 'source': 'turn.completed-fallback'} for x in totals]
             return (unwrap_json(texts[-1]), sessions[0] if sessions else None, usage,
                     max(1, len(totals)), commands, calls)
+        if vendor == 'gemini':
+            answer, session, usage = gemini_turn(rows, read_text_tail(path), read_text_tail(stderr_path) if stderr_path else '')
+            return answer, session, usage, len(usage), commands, calls
         results = [row for row in rows if row.get('type') == 'result']
         if not results or results[-1].get('is_error'):
             raise ValueError(cli_failure_reason('Claude emitted no successful result', read_text_tail(path),
@@ -6032,7 +6081,7 @@ class Coordinator:
         """b295-f1 FIELD-1: a fresh 0700 temp root under run_dir/role-tmp for one Codex read-only dispatch; never the workspace, never the
         author's roots (workspace, author-tmp), never shared. Under the run lease one dispatch runs at a time, so a leftover is stale.
         b296-f1b: role-tmp must be a real 0700 directory we own (never a link), and everything is created and removed through it no-follow."""
-        if role not in READONLY_SCRATCH_ROLES or self._role_vendor(role) != 'codex':
+        if role not in READONLY_SCRATCH_ROLES or self._role_vendor(role) not in ('codex', 'gemini'):   # ADR-20 G5: agy as Codex
             return None
         base = self.run_dir / 'role-tmp'
         try: os.mkdir(base, 0o700)
@@ -6144,6 +6193,9 @@ class Coordinator:
                env_overrides: Optional[dict] = None) -> dict:
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
+        if self._role_vendor(role) == 'gemini' and (role, phase) not in GEMINI_ROLE_PHASES:   # WI-GEM B2a, before any provider turn
+            raise RuntimeError(f'{role} {phase} turns cannot run gemini yet (WI-GEM B2b); gemini runs the reviewer (PLAN, EXEC), '
+                               'the shadow and the gate')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         transient_retried = False                                        # V327-RETRY: one transient-provider retry per invoke
         for attempt in range(2):
@@ -6334,7 +6386,7 @@ class Coordinator:
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
             raise RuntimeError(issue)
-        vendor_prefix = vendor_entry({'codex': 'codex_', 'claude': 'claude_'}, receipt['vendor'])
+        vendor_prefix = vendor_entry({'codex': 'codex_', 'claude': 'claude_', 'gemini': 'gemini_'}, receipt['vendor'])   # gemini: no label until G8 (B2b)
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
         watched = (run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
@@ -6409,7 +6461,7 @@ class Coordinator:
                                          args=(stdout_path, receipt, usage_stop), daemon=True)
         usage_monitor.start()
         try:
-            process.communicate(prompt.encode(), timeout=timeout_seconds)
+            process.communicate(gemini_stdin(prompt) if receipt['vendor'] == 'gemini' else prompt.encode(), timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -9728,7 +9780,13 @@ MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 VENDORS = ('codex', 'claude', 'gemini')   # ADR-20 G1
 VENDOR_MODEL_PREFIXES = {'codex': 'gpt-', 'claude': 'claude-', 'gemini': 'gemini-'}   # ADR-10 M4, ADR-20 G3
-GEMINI_NOT_DISPATCHED = 'gemini roles cannot be dispatched yet (WI-GEM B2)'
+GEMINI_NOT_DISPATCHED = 'this gemini role path cannot be dispatched yet (WI-GEM B2b)'
+GEMINI_ROLE_PHASES = {('reviewer', 'PLAN'), ('reviewer', 'EXEC'), ('shadow', 'PLAN'), ('shadow', 'EXEC'), ('gate', 'EXEC')}   # WI-GEM B2a
+GEMINI_STAGE_REVIEWS = ('reviewer_vendor gemini needs lifecycle_mode off and no report mode for now: the DOCS, SECURITY and POLISH-Q '
+                        'stage reviews run on the reviewer vendor and cannot run gemini yet (WI-GEM B2b)')
+GEMINI_READONLY_SETTINGS = {'permissions': {'deny': ['write_file(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'],
+                                            'allow': ['command(*)']}}   # ADR-20 G5: session-only, under --sandbox
+GEMINI_EXIT_RE = re.compile(r'Command exited with code (-?\d+)\.')   # ADR-20 G7: the exit status of an agy run_command step
 
 
 def vendor_entry(table: dict, vendor: str):
@@ -9758,8 +9816,42 @@ def refuse_gemini_roles(args: argparse.Namespace) -> None:
 
 
 def refuse_gemini_dispatch(args: argparse.Namespace) -> None:
-    """WI-GEM B1: a gemini role passes validation, but the agy adapter comes in B2; refused before any state or provider turn."""
-    if 'gemini' in vendor_by_role(args).values(): raise ValueError(GEMINI_NOT_DISPATCHED)
+    """WI-GEM B2a: a gemini reviewer (PLAN, EXEC), shadow and gate run; the stage reviews that use the reviewer vendor (lifecycle
+    on, report mode) do not yet, so such a run is refused before any state or provider turn. invoke() refuses any other path."""
+    if getattr(args, 'reviewer_vendor', None) != 'gemini': return
+    lifecycle = getattr(args, 'lifecycle_mode', None) or (
+        'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')   # the default Coordinator applies
+    if lifecycle == 'on' or getattr(args, 'review_report', None): raise ValueError(GEMINI_STAGE_REVIEWS)
+
+
+def gemini_stdin(prompt: str) -> bytes:
+    """ADR-20 G5: agy -p does not read stdin; --input-format stream-json reads one user event per line."""
+    return (json.dumps({'event': 'user', 'message': {'content': prompt}}) + '\n').encode()
+
+
+def gemini_turn(rows: list, stdout: str, stderr: str) -> tuple[dict, Optional[str], list[dict]]:
+    """ADR-20 G6, G7: the answer, conversation id and usage of an agy stream-json turn. It succeeds only with status SUCCESS,
+    no denied action and a structured_output (else a non-empty JSON response); otherwise it fails with the reason named."""
+    results = [row['result'] for row in rows if row.get('event') == 'result' and isinstance(row.get('result'), dict)]
+    if not results:
+        raise ValueError(cli_failure_reason('agy emitted no result', stdout, stderr))
+    result = results[-1]
+    if denied := result.get('denied_actions'):   # a denial ends the agy turn with SUCCESS and an empty response
+        names = ', '.join(str(row.get('action', row)) if isinstance(row, dict) else str(row) for row in denied)
+        raise ValueError(f'agy denied {names}; a denied permission ends the turn (ADR-20 G6)')
+    if result.get('status') != 'SUCCESS':
+        raise ValueError(cli_failure_reason(f"agy turn status {result.get('status')}", stdout, stderr))
+    answer = result.get('structured_output')
+    if not isinstance(answer, dict):
+        response = result.get('response')
+        if not isinstance(response, str) or not response.strip():
+            raise ValueError('agy returned an empty response and no structured_output')
+        answer = unwrap_json(response)
+    use = result.get('usage') if isinstance(result.get('usage'), dict) else {}
+    usage = [{'input': use.get('input_tokens', 0) + use.get('cache_read_tokens', 0),   # agy input_tokens excludes cache reads
+              'cached': use.get('cache_read_tokens', 0), 'output': use.get('output_tokens', 0), 'source': 'result'}]
+    session = result.get('conversation_id') or next((row.get('conversation_id') for row in rows if row.get('event') == 'init'), None)
+    return answer, session, usage
 
 
 def restores_run(args: argparse.Namespace) -> bool:

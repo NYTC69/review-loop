@@ -169,6 +169,57 @@ def emit_claude(answer, session, extra_commands=None):
           'cache_creation_input_tokens': 5, 'cache_read_input_tokens': 20, 'output_tokens': 12}}))
 
 
+def gemini_prompt(stdin):
+    """ADR-20 G5: agy reads one stream-json user event per line; anything else is refused like a malformed input."""
+    lines = stdin.splitlines()
+    event = json.loads(lines[0]) if len(lines) == 1 else None
+    if not isinstance(event, dict) or event.get('event') != 'user' or not isinstance(event.get('message', {}).get('content'), str):
+        print('error: fake agy expects one stream-json user event on stdin', file=sys.stderr)
+        raise SystemExit(2)
+    return event['message']['content']
+
+
+def emit_gemini(answer, session, model, command_events=None):
+    """ADR-20 G7: agy stream-json (init, step_update, result). FAKE_GEMINI_FAIL=denied|empty|error|no-result gives the hazard
+    shapes of G6; FAKE_GEMINI_TOOL_ERROR adds a tool step that ends in ERROR mid-turn, which does not fail the turn."""
+    rows = [{'event': 'init', 'conversation_id': session, 'init': {'model': model, 'cwd': os.getcwd(), 'tools': ['run_command', 'view_file']}}]
+    step = lambda index, **fields: {'event': 'step_update', 'step_update': {'conversation_id': session, 'step_index': index, **fields}}
+    rows.append(step(0, state='DONE', step_type='user_input'))
+    if os.environ.get('FAKE_GEMINI_TOOL_ERROR'):
+        rows.append(step(1, state='ERROR', step_type='tool', tool_name='view_file', tool_info={
+            'name': 'view_file', 'parameters': {'Path': 'missing.txt'}, 'error': {'type': 'TOOL_ERROR', 'message': 'not found'}}))
+    events = command_events if command_events is not None else [
+        {'command': row['command'], 'exit_code': 1 if os.environ.get('FAKE_REVIEW_TEST_FAILURE') and row['command'] == 'python3 -m unittest' else 0}
+        for row in answer.get('self_run_evidence', [])] if not os.environ.get('FAKE_MISSING_OBSERVED') else []
+    for index, event in enumerate(events, start=2):
+        tool = {'name': 'run_command', 'parameters': {'CommandLine': event['command']}}
+        rows.append(step(index, state='ACTIVE', step_type='tool', tool_name='run_command', tool_info=tool))
+        text = 'FAILED fake test' if event['exit_code'] else 'OK'
+        rows.append(step(index, state='DONE', step_type='tool', tool_name='run_command', tool_info={
+            **tool, 'output': f"Command exited with code {event['exit_code']}.\n\nCommand output:\n{text}\r\n"}))
+    fail = os.environ.get('FAKE_GEMINI_FAIL')
+    usage = {'input_tokens': 70, 'output_tokens': 20, 'thinking_tokens': 5, 'cache_read_tokens': 30, 'total_tokens': 90}
+    result = {'conversation_id': session, 'status': 'SUCCESS', 'response': json.dumps(answer), 'duration_seconds': 1.0,
+              'num_turns': 1, 'structured_output': answer, 'usage': usage}
+    if os.environ.get('FAKE_GEMINI_NO_STRUCTURED'):
+        del result['structured_output']
+    if fail in ('denied', 'empty'):
+        result.update(response='')
+        del result['structured_output']
+        if fail == 'denied':
+            result['denied_actions'] = [{'action': 'write_file', 'display_name': 'WriteFile'}]
+            print('jetski: no output produced — a tool required the "write_file" permission that headless mode cannot prompt for, '
+                  'so it was auto-denied.', file=sys.stderr)
+    if fail == 'error':
+        result = {'conversation_id': '', 'status': 'ERROR', 'response': '', 'error': os.environ.get('FAKE_GEMINI_ERROR', 'fake agy failure'),
+                  'num_turns': 0, 'usage': {key: 0 for key in usage}}
+        print('error: ' + result['error'], file=sys.stderr)
+    if fail != 'no-result':
+        rows.append({'event': 'result', 'result': result})
+    print(''.join(json.dumps(row) + '\n' for row in rows), end='')
+    return int(os.environ.get('FAKE_GEMINI_FAIL_EXIT', '1')) if fail == 'error' else 0
+
+
 def mutate(mode):
     root = Path.cwd()
     if mode == 'echo':
@@ -190,6 +241,8 @@ def mutate(mode):
 def main():
     args = sys.argv[1:]
     prompt = sys.stdin.read()
+    if '--print=' in args:   # ADR-20: agy, the prompt in one stream-json user event
+        prompt = gemini_prompt(prompt)
     append_commands = os.environ.get('FAKE_APPEND_REVIEWER_COMMAND')
     if append_commands and 'implementer. Phase: EXEC.' in prompt:
         with Path(os.environ['FAKE_APPEND_REVIEWER_COMMAND_FILE']).open('a') as target:
@@ -211,7 +264,7 @@ def main():
         (Path(os.environ['HOME']) / '.claude' / 'settings.json').write_text(Path(settings).read_text())
         Path(settings + '.done').write_text('done')
     extra_observed_commands = []
-    vendor = 'codex' if args and args[0] == 'exec' else 'claude'
+    vendor = 'codex' if args and args[0] == 'exec' else 'gemini' if '--print=' in args else 'claude'
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
     if vendor == 'codex' and rejected:   # b296-f1e: like codex-cli 0.160.0, `codex exec` has no -P/--permission-profile
         flag = '-P' if rejected.startswith('-P') else '--permission-profile'
@@ -288,6 +341,9 @@ def main():
         session = args[args.index('--resume') + 1]
     elif vendor == 'claude':
         session = str(uuid.uuid4())
+    elif vendor == 'gemini':   # a new conversation gets a fresh id; --conversation resumes (FAKE_GEMINI_OTHER_CONVERSATION: another one)
+        session = (os.environ.get('FAKE_GEMINI_OTHER_CONVERSATION') or args[args.index('--conversation') + 1]
+                   if '--conversation' in args else str(uuid.uuid4()))
 
     if 'Role: persistent' in prompt:
         if 'Phase: PLAN' in prompt:
@@ -745,6 +801,9 @@ def main():
                                    *(extra_observed_commands or [])]
     if vendor == 'codex':
         emit_codex(answer, session, locals().get('command_events'))
+    elif vendor == 'gemini':
+        return emit_gemini(answer, session, os.environ.get('FAKE_GEMINI_MODEL') or args[args.index('--model') + 1],
+                           locals().get('command_events'))
     else:
         emit_claude(answer, session, extra_observed_commands)
     return 0

@@ -7,16 +7,20 @@ def fake_guard(args):
     if not root_text: return False
     root = Path(root_text).resolve()
     if root in (Path('/'), Path.home().resolve()): return False
-    if not Path(args.codex_bin).is_absolute() or not Path(args.claude_bin).is_absolute(): return False
-    names = ('workspace', 'workitem', 'run_dir', 'codex_bin', 'claude_bin')
+    if not all(Path(getattr(args, name)).is_absolute() for name in fake_programs(args)): return False
+    names = ('workspace', 'workitem', 'run_dir', *fake_programs(args))
     return all(root in Path(getattr(args, name)).resolve().parents for name in names)
+
+def fake_programs(args):   # ADR-20: gemini_bin too when a role runs gemini
+    vendors = {getattr(args, key, None) for key in ('author_vendor', 'reviewer_vendor', 'gate_vendor')}
+    return ('codex_bin', 'claude_bin') + (('gemini_bin',) if 'gemini' in vendors else ())
 
 def fake_dispatch_guard(args):
     if not fake_guard(args):
         return False
-    for name in ('codex_bin', 'claude_bin'):
+    for name in fake_programs(args):
         path = Path(getattr(args, name))
-        if path.is_symlink() or path.name in ('codex', 'claude'):
+        if path.is_symlink() or path.name in ('codex', 'claude', 'agy'):
             return False
         try:
             source = path.read_text()

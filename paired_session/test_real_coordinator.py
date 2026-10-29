@@ -109,7 +109,7 @@ class RealCoordinatorTests(unittest.TestCase):
             json.dumps({'plugins': []}))
         stub_bin = self.root / 'bin'   # CI-TESTFIX R1: a Coordinator built without --codex-bin/--claude-bin binds these stubs
         stub_bin.mkdir()
-        for name in ('codex', 'claude'):
+        for name in ('codex', 'claude', 'agy'):   # ADR-20: the default --gemini-bin never reaches a real agy
             (stub_bin / name).write_text('#!/bin/sh\necho "test stub: no real provider CLI" >&2\nexit 127\n')
             (stub_bin / name).chmod(0o755)
         # Start the env patch before changing HOME: its stop (an addCleanup, so after tearDown)
@@ -1066,6 +1066,24 @@ sys.exit(result.returncode)
             '        output_rows.append(row)\n'
             '    result.stdout = "\\n".join(json.dumps(row) for row in output_rows) + "\\n"\n'
             'sys.stdout.write(result.stdout); sys.stderr.write(result.stderr); sys.exit(result.returncode)\n')
+        path.chmod(0o755)
+        return path
+
+    def fake_gemini_cli(self):
+        """ADR-20: a fake agy for read-only roles; FAKE_GEMINI_LOG records each call's argv, stdin, cwd and TMPDIR."""
+        path = self.root / 'fake-gemini'
+        path.write_text(
+            f'#!{sys.executable}\n'
+            'import json, os, subprocess, sys\n'
+            'args = sys.argv[1:]\n'
+            'if args == ["--version"]: print(os.environ.get("FAKE_GEMINI_VERSION", "1.4.10")); sys.exit(0)\n'
+            'stdin = sys.stdin.read()\n'
+            'if os.environ.get("FAKE_GEMINI_LOG"):\n'
+            '    with open(os.environ["FAKE_GEMINI_LOG"], "a") as log:\n'
+            '        log.write(json.dumps({"args": args, "stdin": stdin, "cwd": os.getcwd(), "TMPDIR": os.environ.get("TMPDIR")}) + "\\n")\n'
+            'if "--sandbox" not in args or "--settings" not in args:\n'
+            '    print("error: fake agy runs read-only roles only", file=sys.stderr); sys.exit(2)\n'
+            f'sys.exit(subprocess.run([sys.executable, {str(FAKE)!r}, *args], input=stdin, text=True).returncode)\n')
         path.chmod(0o755)
         return path
 

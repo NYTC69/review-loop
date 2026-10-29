@@ -407,3 +407,5 @@ Decision (owner approved 2026-10-29, "通过，开始 B1"; Q1 and Q2 answered "�
 - G11 The work stays on branch `explore/gemini-vendor` during the stable trial and is released later as a minor version, gated by a cross-vendor review, CI and one real run with gemini as reviewer and gate that ends ACCEPTED. Batches: B1 plumbing and validation with a fake gemini CLI; B2 the agy adapter (argv, parsing, outcome classification, global config); B3 docs and the real run.
 
 Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.
+
+Amendment 2026-10-29 (B1 fix 7902669, V317-FB contract): codex_bin and claude_bin stay always bound and required; gemini_bin is bound and required only when a role runs gemini or the saved run froze it.
