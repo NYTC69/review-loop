@@ -14,7 +14,7 @@ from paired_session import test_real_coordinator as trc
 from paired_session import timeout_scale as tsc
 
 rc = trc.rc
-B2 = 'this gemini role path cannot be dispatched yet (WI-GEM B2b)'
+B2 = 'this gemini role path cannot be dispatched: gemini runs read-only roles only (ADR-20 G2)'
 GEMINI_REVIEWER = ['--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-flash-medium']
 GEMINI_GATE = ['--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-pro']
 
@@ -98,19 +98,14 @@ class GeminiVendorTests(unittest.TestCase):
                 rc.validate_role_models(a)
                 self.assertEqual((a.author_vendor, a.author_model), ('codex', rc.CODEX_DEFAULT_MODEL))
                 self.assertEqual(rc.required_programs(a), ('claude_bin', 'codex_bin', 'gemini_bin'))
-                rc.refuse_gemini_dispatch(a)   # B2a: dispatchable (the harness runs lifecycle off)
+                rc.refuse_gemini_probe(a)   # dispatchable outside a permission probe
 
-    def test_a_gemini_reviewer_with_stage_reviews_is_refused_before_state_or_any_turn(self):
-        self.assert_refused(rc.GEMINI_STAGE_REVIEWS, *GEMINI_REVIEWER, '--lifecycle-mode', 'on', actions=('run', 'permission-probe'))
-        with self.assertRaises(ValueError) as refused:
-            rc.Coordinator(self.args(*GEMINI_REVIEWER, '--lifecycle-mode', 'on'))
-        self.assertEqual(str(refused.exception), rc.GEMINI_STAGE_REVIEWS)
-        self.assertFalse(self.h.run_dir.exists())
+    def test_a_gemini_reviewer_with_stage_reviews_creates_its_run(self):   # B2b: lifecycle on and report mode run gemini
+        co = rc.Coordinator(self.args(*GEMINI_REVIEWER, '--lifecycle-mode', 'on', '--gemini-bin', str(self.h.fake_gemini_cli())))
+        self.assertEqual((co.state['config']['lifecycle_mode'], co.args.reviewer_vendor), ('on', 'gemini'))
         report = self.resolved(*GEMINI_REVIEWER)
         report.review_report = True
-        with self.assertRaisesRegex(ValueError, 'cannot run gemini yet'):
-            rc.refuse_gemini_dispatch(report)
-        rc.refuse_gemini_dispatch(self.resolved(*GEMINI_GATE, '--lifecycle-mode', 'on'))   # a gemini gate runs only the EXEC gate
+        rc.refuse_gemini_probe(report)
 
     def test_a_gemini_author_is_refused(self):
         self.assert_refused('author_vendor gemini is not supported yet (ADR-20 G2)', '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro')
@@ -357,9 +352,8 @@ class GeminiAdapterTests(unittest.TestCase):
 
     def test_other_role_paths_refuse_gemini_before_any_turn(self):
         co = self.coordinator()
-        for role, phase in (('reviewer', 'DOCS'), ('reviewer', 'SECURITY'), ('reviewer', 'POLISH-Q'), ('probe', 'PROBE'),
-                            ('gate-probe', 'PROBE'), ('gate', 'PLAN')):
-            with self.subTest(role=role, phase=phase), self.assertRaisesRegex(RuntimeError, f'{role} {phase} turns cannot run gemini yet'):
+        for role, phase in (('probe', 'PROBE'), ('gate-probe', 'PROBE'), ('gate', 'PLAN')):
+            with self.subTest(role=role, phase=phase), self.assertRaisesRegex(RuntimeError, fr'{role} {phase} turns cannot run gemini \(ADR-20 G2, G4\)'):
                 co.invoke(role, phase, PLAN_REVIEW, rc.review_schema(), fresh=True)
         self.assertEqual((co.state['turns'], co.state['invocations_used'], self.calls()), ([], 0, []))
 
@@ -426,6 +420,205 @@ class GeminiAdapterTests(unittest.TestCase):
         self.assertEqual(outcomes['gemini'], outcomes['codex-claude'], outcomes)
         self.assertEqual(outcomes['gemini'][2], 'DONE', outcomes)
         self.assertLessEqual({'reviewer', 'shadow', 'gate'}, {role for role, _, _ in outcomes['gemini'][3]})
+
+
+class GeminiParityTests(unittest.TestCase):
+    """WI-GEM B2b: global config (G8), agy version, prompt wording, the independence scan, recovery usage and typed evidence."""
+    argv, args, resolved, main = GeminiVendorTests.argv, GeminiVendorTests.args, GeminiVendorTests.resolved, GeminiVendorTests.main
+    setUp, coordinator, calls, receipt = (GeminiAdapterTests.setUp, GeminiAdapterTests.coordinator, GeminiAdapterTests.calls,
+                                          GeminiAdapterTests.receipt)
+
+    def settings(self, document):
+        path = self.h.test_home / rc.GEMINI_SETTINGS_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document))
+        return path
+
+    def test_agy_settings_are_snapshotted_for_gemini_turns_only(self):
+        home = self.h.test_home
+        self.settings({'colorScheme': 'dark', 'model': 'gemini-3.8-flash', 'trustedWorkspaces': ['/a']})
+        (home / '.gemini' / 'antigravity-cli' / 'antigravity-oauth-token').write_text('secret')
+        self.assertEqual(set(rc.global_config_snapshot(home)), {'codex_config', 'claude_settings', 'claude_plugins'})   # codex, claude
+        before = rc.global_config_snapshot(home, gemini=True)
+        self.assertEqual(before['gemini_settings']['path'], str(home / '.gemini' / 'antigravity-cli' / 'settings.json'))
+        self.assertNotIn('secret', json.dumps(before))
+        for document, expected in (({'colorScheme': 'dark', 'model': 'gemini-3.8-pro', 'trustedWorkspaces': ['/a', '/b']},
+                                     [{'file': 'gemini_settings', 'change': 'agy-preference', 'keys': ['model', 'trustedWorkspaces']}]),
+                                    ({'colorScheme': 'light', 'model': 'gemini-3.8-flash', 'trustedWorkspaces': ['/a']}, None)):
+            with self.subTest(document=document):
+                self.settings(document)
+                changes = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home, gemini=True))
+                if expected:
+                    self.assertEqual((changes['status'], changes['expected_changes']), ('PASS', expected))
+                else:
+                    self.assertEqual(changes['findings'], [{'file': 'gemini_settings', 'reason': 'unexpected-content-change'}])
+
+    def test_a_gemini_turn_keeps_an_agy_preference_change_and_holds_on_any_other(self):
+        self.settings({'colorScheme': 'dark', 'model': 'gemini-3.8-flash', 'trustedWorkspaces': []})
+        source = self.h.root / 'agy-settings.json'
+        source.write_text(json.dumps({'colorScheme': 'dark', 'model': 'gemini-3.8-pro', 'trustedWorkspaces': [str(self.h.workspace)]}))
+        co, out = self.coordinator(), io.StringIO()
+        with patch.dict(os.environ, {'FAKE_GEMINI_SETTINGS_WRITE': str(source)}), contextlib.redirect_stdout(out):
+            co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+        receipt = self.receipt(co, 1, 'PLAN', 'reviewer')
+        self.assertEqual(list(receipt['global_gemini_before']), ['gemini_settings'])
+        self.assertEqual(receipt['global_config_changes']['expected_changes'],
+                         [{'file': 'gemini_settings', 'change': 'agy-preference', 'keys': ['model', 'trustedWorkspaces']}])
+        self.assertIn('NOTE: agy updated its own settings (model, trustedWorkspaces) during the reviewer turn', out.getvalue())
+        source.write_text(json.dumps({'colorScheme': 'light'}))
+        Path(str(source) + '.done').unlink()
+        with patch.dict(os.environ, {'FAKE_GEMINI_SETTINGS_WRITE': str(source)}), \
+                self.assertRaisesRegex(RuntimeError, 'gemini turn changed global config: gemini_settings'):
+            co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+
+    def test_a_claude_reviewer_turn_records_no_gemini_label(self):
+        self.settings({'model': 'gemini-3.8-flash'})
+        co = rc.Coordinator(self.args())
+        co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+        receipt = self.receipt(co, 1, 'PLAN', 'reviewer')
+        self.assertEqual(receipt['vendor'], 'claude')
+        self.assertEqual(set(receipt['global_config_changes']['before']), {'codex_config', 'claude_settings', 'claude_plugins'})
+        self.assertNotIn('gemini_cli_version', receipt)
+        self.assertNotIn('gemini_cli_version', co.state)
+
+    def test_the_agy_version_is_recorded_per_turn_and_a_change_is_a_note(self):
+        co, out = self.coordinator(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+            with patch.dict(os.environ, {'FAKE_GEMINI_VERSION': '1.4.11'}):
+                co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+        first, second = self.receipt(co, 1, 'PLAN', 'reviewer'), self.receipt(co, 2, 'PLAN', 'reviewer')
+        self.assertEqual((first['gemini_cli_version'], 'gemini_cli_version_previous' in first), ('1.4.10', False))
+        self.assertEqual((second['gemini_cli_version'], second['gemini_cli_version_previous']), ('1.4.11', '1.4.10'))
+        self.assertEqual(co.state['gemini_cli_version'], '1.4.11')
+        self.assertIn('NOTE: agy version changed since the previous gemini turn (1.4.10 -> 1.4.11)', out.getvalue())
+
+    def test_gemini_prompts_name_agy_tools_and_codex_and_claude_wording_is_unchanged(self):
+        claude = rc.Coordinator(self.args())
+        self.h.run_dir = self.h.root / 'codex-run'
+        codex = rc.Coordinator(self.args('--reviewer-vendor', 'codex'))
+        self.assertEqual(claude.inspection_prompt('reviewer'),
+                         'Use Read/Grep/Glob on context and workspace; Git through Bash is intentionally unavailable.')
+        self.assertTrue(codex.inspection_prompt('reviewer').startswith('For file inspection, use read-only shell reads (cat, sed, or rg)'))
+        self.assertIn('Analyse those concerns with Read/Grep/Glob instead.', claude._review_protocol([]))
+        self.h.run_dir = self.h.root / 'gemini-run'
+        co = self.coordinator()
+        for role in ('reviewer', 'shadow', 'gate'):
+            self.assertIn('your file reading and search tools', co.inspection_prompt(role))
+            self.assertNotIn('Read/Grep/Glob', co.inspection_prompt(role))
+        self.assertIn('Analyse those concerns with your file reading and search tools instead.', co._review_protocol([]))
+        for each in (co, claude):
+            (each.context / 'plan.md').write_text('Plan body\n')
+            each.state['phase'] = 'PLAN'
+        self.assertIn('## Plan content\nPlan body', co._review_prompt('reviewer', ''))   # inline, as for Codex
+        self.assertNotIn('## Plan content', claude._review_prompt('reviewer', ''))
+
+    def test_the_independence_scan_counts_gemini_only_in_a_gemini_run(self):
+        claude = rc.Coordinator(self.args())
+        self.h.run_dir = self.h.root / 'gemini-run'
+        gemini = self.coordinator()
+        text = 'Claude approved it; Gemini found it; gemini-3.8-flash said so.'
+        self.assertEqual(claude._history_markers('prompt', text), ['Claude', 'Claude'])   # unchanged: the attribution and the bare name
+        self.assertEqual(gemini._history_markers('prompt', text), ['Claude', 'Claude', 'Gemini', 'gemini'])
+        for co in (claude, gemini):
+            co.state.update(phase='EXEC', exec_rounds=1, next='author')
+        self.assertIn(rc.AUTHOR_HISTORY_RULE, claude._author_prompt())
+        self.assertNotIn('Gemini', claude._author_prompt())
+        self.assertIn(rc.GEMINI_AUTHOR_HISTORY_RULE, gemini._author_prompt())
+        self.assertIn('(Claude, Codex, Opus, Astra, Gemini)', rc.GEMINI_AUTHOR_HISTORY_RULE)
+        self.assertEqual(gemini._introduced_history('context/workitem.md', 'Run the reviewer on Gemini.'), [])   # operator input
+
+    def test_recovery_rebuilds_gemini_usage_and_notes_a_settings_change(self):
+        co = self.coordinator()
+        self.settings({'model': 'gemini-3.8-pro'})
+        rows = [{'event': 'init', 'conversation_id': 'conv-9', 'init': {'model': 'gemini-3.8-flash-medium'}},
+                {'event': 'result', 'result': {'status': 'SUCCESS', 'conversation_id': 'conv-9',
+                                               'usage': {'input_tokens': 70, 'output_tokens': 20, 'cache_read_tokens': 30}}}]
+        (co.evidence / '001-exec-reviewer.stdout.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        receipt = {'sequence': 1, 'role': 'reviewer', 'phase': 'EXEC', 'vendor': 'gemini', 'usage_requests': [], 'model_requests': 0,
+                   'global_gemini_before': {'gemini_settings': 'stale'}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            co.archive_abandoned_turn(receipt)
+        row = co.state['abandoned_turns'][-1]
+        self.assertEqual((row['usage_requests'], row['provider_usage']),
+                         ([{'input': 100, 'cached': 30, 'output': 20, 'source': 'result-stream'}], 'reported'))
+        self.assertEqual(list(row['global_gemini_after']), ['gemini_settings'])
+        self.assertIn('NOTE: agy settings changed during the uncertain gemini turn (gemini_settings)', out.getvalue())
+
+    def test_an_agy_read_file_step_is_a_typed_read_for_the_evidence_guard(self):
+        co = self.coordinator()
+        with patch.dict(os.environ, {'FAKE_GEMINI_READ_FILE': str(self.h.workspace / 'tracked.txt')}):
+            co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+        receipt = self.receipt(co, 1, 'PLAN', 'reviewer')
+        self.assertIn({'tool': 'read_file', 'input': {'Path': str(self.h.workspace / 'tracked.txt')}, 'error': False},
+                      receipt['observed_tool_calls'])
+        self.assertEqual(receipt['evidence_guard']['fallbacks'], 0)
+        evidence = co.evidence / '001-plan-reviewer.receipt.json'
+        for tool in ('read_file', 'write_file'):
+            with self.subTest(tool=tool):
+                self.assertEqual(rc.sensitive_access([{'tool': tool, 'input': {'Path': str(evidence)}}], 'reviewer', co.evidence,
+                                                     co.rounds, self.h.workspace), 'evidence directory')
+        fallbacks = []   # a tool step agy names otherwise is recorded through the fallback guard, never a crash
+        self.assertIsNone(rc.sensitive_access([{'tool': 'view_file', 'input': {'Path': 'missing.txt'}}], 'reviewer', co.evidence,
+                                              co.rounds, self.h.workspace, fallbacks=fallbacks))
+        self.assertEqual(fallbacks, ['unknown tool view_file'])
+
+
+class GeminiStageReviewTests(unittest.TestCase):
+    """WI-GEM B2b: with lifecycle on and in report mode the stage reviews (DOCS, SECURITY, POLISH-Q) run on a gemini reviewer."""
+    locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in (
+        'setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli', 'fake_claude_cli',
+        'fake_gemini_cli', 'command')})
+
+    def setUp(self):
+        from paired_session.test_worktree_lifecycle import COVERING_GITIGNORE   # security preflight is clean
+        trc.RealCoordinatorTests.setUp(self)
+        (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)
+        subprocess.run(['git', 'commit', '-qam', 'ignore sensitive files'], cwd=self.workspace, check=True)
+
+    def run_pair(self, flags, markers=(), env=None, prepare=lambda: None):
+        """The same efficient run with codex+claude and with a gemini reviewer and gate: (role, phase, status) per turn.
+        Each run gets its own file for every name in `markers` (a once-only fake behaviour)."""
+        outcomes = {}
+        for name, extra in (('codex-claude', ()), ('gemini', (*GEMINI_REVIEWER, *GEMINI_GATE, '--gemini-bin', str(self.fake_gemini_cli())))):
+            self.run_dir = self.root / ('run-' + name)
+            subprocess.run(['git', 'checkout', '-q', '--', '.'], cwd=self.workspace, check=True)
+            subprocess.run(['git', 'clean', '-qfd'], cwd=self.workspace, check=True)
+            prepare()
+            marker = {key: str(self.root / (name + '-' + key)) for key in markers}
+            command = [arg for arg in self.command(*flags, *extra) if arg != '--strict']
+            done = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  env={**os.environ, **(env or {}), **marker})
+            state = json.loads((self.run_dir / 'state.json').read_text())
+            outcomes[name] = (done.returncode, state['status'], [
+                (t['role'], t['phase'], t.get('discarded'), (t.get('answer') or {}).get('status', (t.get('answer') or {}).get('verdict')))
+                for t in state['turns']])
+            if name == 'gemini':
+                self.assertEqual({t['vendor'] for t in state['turns'] if t['role'] != 'author'}, {'gemini'}, done.stdout)
+                gemini_state = state
+        self.assertEqual(outcomes['gemini'], outcomes['codex-claude'], outcomes)
+        return gemini_state
+
+    def test_lifecycle_on_runs_the_stage_reviews_on_gemini(self):
+        state = self.run_pair(['--lifecycle-mode', 'on'], markers=('FAKE_SPECIALIST_NO_TOOLS_ONCE',),
+                              env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'})   # a docs write gets a docs review
+        self.assertEqual((state['status'], state['lifecycle']['stage']), ('DONE', 'DONE'))
+        self.assertEqual([row['stage'] for row in state['lifecycle']['receipts']], ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
+        stages = [t for t in state['turns'] if t['phase'] in ('DOCS', 'SECURITY', 'POLISH-Q') and t['role'] == 'reviewer']
+        self.assertEqual({t['phase'] for t in stages}, {'DOCS', 'SECURITY', 'POLISH-Q'})
+        self.assertTrue(all('--conversation' not in t['command'] for t in stages))   # stage reviews are fresh
+        discarded = [t for t in stages if t.get('discarded')]   # a gemini specialist turn without tool steps is retried once
+        self.assertEqual([(t['phase'], t['discarded'], t['observed_tool_calls']) for t in discarded], [('POLISH-Q', 'no tool calls', [])])
+        self.assertTrue(all(t['observed_tool_calls'] for t in stages if not t.get('discarded')))
+
+    def test_report_mode_runs_on_a_gemini_reviewer(self):
+        def change():
+            (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+        state = self.run_pair(['--review-only', '--review-report', '--lifecycle-mode', 'on'], prepare=change)
+        self.assertEqual((state['status'], state['lifecycle']['stage']), ('REPORTED', 'REPORTED'))
+        self.assertEqual(sum(t['phase'] == 'SECURITY' for t in state['turns']), 1)
+        self.assertTrue(any(t['phase'] == 'POLISH-Q' for t in state['turns']))
 
 
 if __name__ == '__main__':

@@ -207,6 +207,9 @@ REVIEW_HISTORY_GUIDANCE = ('Flag accidental review-history carry-over, but do no
 AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
                        '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
                        'them: the independent shadow and gate refuse such text.')
+# ADR-20: a run with a gemini role scans for Gemini too and tells the author so; a codex and claude run is unchanged.
+GEMINI_BARE_MODEL_NAME_RE = re.compile(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra|Gemini)\b', re.I)
+GEMINI_AUTHOR_HISTORY_RULE = AUTHOR_HISTORY_RULE.replace('(Claude, Codex, Opus, Astra)', '(Claude, Codex, Opus, Astra, Gemini)')
 # FIELD-23: delta.stat names every path in full (git shortens long ones to ".../tail"), so a path that exists at the base
 # commit is recognised as repository text by the fresh scan.
 STAT_FULL_PATHS = ('--stat=100000,100000', '--no-renames')   # a rename lists both full paths, not dir/{a => b}
@@ -436,8 +439,9 @@ def _global_file_snapshot(path: Path, parser=None) -> dict:
     return result
 
 
-def global_config_snapshot(home: Optional[Path] = None, codex_home: Optional[Path] = None) -> dict:
-    """Capture only the three user-global files checked by the installed probe."""
+def global_config_snapshot(home: Optional[Path] = None, codex_home: Optional[Path] = None, gemini: bool = False) -> dict:
+    """Capture only the three user-global files checked by the installed probe, and for a gemini turn agy's settings.json
+    (ADR-20 G8; its per-conversation directories and the OAuth token are never read)."""
     home = (home or Path.home()).expanduser()
     codex_home = (codex_home or home / '.codex').expanduser()
     snapshots = {
@@ -448,6 +452,8 @@ def global_config_snapshot(home: Optional[Path] = None, codex_home: Optional[Pat
     }
     if codex_home.resolve() != (home / '.codex').resolve():
         snapshots['codex_default_config'] = _global_file_snapshot(home / '.codex' / 'config.toml')
+    if gemini:
+        snapshots['gemini_settings'] = _global_file_snapshot(home / GEMINI_SETTINGS_PATH, json.loads)
     return snapshots
 
 
@@ -718,7 +724,8 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=(), co
     expected, findings = [], []
     public = {'before': {}, 'after': {}}
     for label in ('codex_config', 'claude_settings', 'claude_plugins',
-                  *(['codex_default_config'] if 'codex_default_config' in before else [])):
+                  *(['codex_default_config'] if 'codex_default_config' in before else []),
+                  *(['gemini_settings'] if 'gemini_settings' in before else [])):
         old, new = before[label], after[label]
         public['before'][label] = {'path': old['path'], 'sha256': old['sha256']}
         public['after'][label] = {'path': new['path'], 'sha256': new['sha256']}
@@ -748,6 +755,14 @@ def attribute_global_config_changes(before: dict, after: dict, workspaces=(), co
             paths = _changed_mapping_key_paths(old_doc, new_doc, 'lastUpdated')
             if paths and _without_mapping_key(old_doc, 'lastUpdated') == _without_mapping_key(new_doc, 'lastUpdated'):
                 expected.append({'file': label, 'change': 'plugin-lastUpdated', 'paths': sorted(paths)})
+            else:
+                findings.append({'file': label, 'reason': 'unexpected-content-change'})
+        elif label == 'gemini_settings':   # ADR-20 G8: agy itself appends trustedWorkspaces or rewrites model in normal use
+            old_doc, new_doc = ({} if row['missing'] else row['document'] for row in (old, new))
+            keys = sorted(key for key in {*old_doc, *new_doc} if old_doc.get(key) != new_doc.get(key)) if (
+                isinstance(old_doc, dict) and isinstance(new_doc, dict)) else []
+            if keys and set(keys) <= GEMINI_PREFERENCE_KEYS:
+                expected.append({'file': label, 'change': 'agy-preference', 'keys': keys})
             else:
                 findings.append({'file': label, 'reason': 'unexpected-content-change'})
         else:
@@ -2492,7 +2507,7 @@ class Coordinator:
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates after restoring its models
             validate_role_models(args)
-            refuse_gemini_dispatch(args)
+            refuse_gemini_probe(args)
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -3052,6 +3067,21 @@ class Coordinator:
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
             return 'UNAVAILABLE'
+
+    def _record_gemini_version(self, receipt: dict) -> None:
+        """ADR-20 G8: agy updates itself in the background, so every gemini turn records `agy --version`; a change since the
+        previous gemini turn is a NOTE, never a HOLD."""
+        try:
+            result = subprocess.run([receipt['command'][0], '--version'], stdin=subprocess.DEVNULL, text=True, capture_output=True,
+                                    timeout=10 * timeout_scale.env_factor(), env=cli_env())
+            version = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else 'UNAVAILABLE'
+        except (OSError, subprocess.SubprocessError):
+            version = 'UNAVAILABLE'
+        receipt['gemini_cli_version'] = version
+        if (previous := self.state.get('gemini_cli_version')) and previous != version:
+            receipt['gemini_cli_version_previous'] = previous
+            print(f'NOTE: agy version changed since the previous gemini turn ({previous} -> {version}); agy updates itself, the turn runs')
+        self.state['gemini_cli_version'] = version
 
     def _codex_config_bytes(self) -> bytes:
         """CG-2: a missing $CODEX_HOME/config.toml (a fresh login home has only auth.json) is an empty config everywhere it is read or digested."""
@@ -4690,13 +4720,18 @@ class Coordinator:
                                                            extra=list(concurrent_run_workspaces(receipt['workspace'], live=False))))   # FIELD-22: the operator inspected it
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
                 self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
+        if receipt.get('vendor') == 'gemini' and receipt.get('global_gemini_before'):   # ADR-20 G8: agy rewrites its own preferences
+            current = global_config_snapshot(self.global_config_home, self.global_codex_home, gemini=True)   # in normal use: noted only
+            if changed := {key: current[key]['sha256'] for key, value in receipt['global_gemini_before'].items() if current[key]['sha256'] != value}:
+                receipt['global_gemini_after'] = changed
+                print('NOTE: agy settings changed during the uncertain gemini turn (' + ', '.join(changed) + '); recorded, not held')
         sequence = receipt.get('sequence')
         rows = self.state.setdefault('abandoned_turns', [])
         if sequence is not None and any(row.get('sequence') == sequence for row in rows):
             return verified
         # The child may have finished writing after the coordinator stopped. Rebuild from
         # the evidence rather than appending to the partial usage persisted before the stop.
-        if sequence is not None and receipt.get('vendor') in ('claude', 'codex') and receipt.get('phase'):
+        if sequence is not None and receipt.get('vendor') in ('claude', 'codex', 'gemini') and receipt.get('phase'):
             path = self.evidence / f'{sequence:03d}-{receipt["phase"].lower()}-{receipt["role"]}.stdout.jsonl'
             recovered = {**receipt, 'usage_requests': [], 'model_requests': 0}
             self._drain_usage_stream(path, 0, b'', None, recovered, final=True)
@@ -4928,7 +4963,7 @@ class Coordinator:
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
             *([rulings] if (rulings := self.operator_rulings_prompt('author').strip()) else []),   # V317-B3
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
-            AUTHOR_HISTORY_RULE,
+            GEMINI_AUTHOR_HISTORY_RULE if 'gemini' in vendor_by_role(self.args).values() else AUTHOR_HISTORY_RULE,
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
             'Return only JSON matching the supplied schema. READY means this turn is complete; HOLD means blocked.',
@@ -5008,6 +5043,10 @@ class Coordinator:
             return ('For file inspection, use read-only shell reads (cat, sed, or rg) of the named '
                     'context files and workspace source. These reads are permitted in addition to '
                     'the exact test commands below. Do not modify files or use Git through the shell.')
+        if self._role_vendor(role) == 'gemini':   # ADR-20: agy's own file tools, and its shell for the commands listed
+            return ('For file inspection, use your file reading and search tools, or read-only shell reads (cat, sed, or rg), on '
+                    'the named context files and workspace source. Never write, edit or create files, and do not use Git or '
+                    'network access.')
         return 'Use Read/Grep/Glob on context and workspace; Git through Bash is intentionally unavailable.'
 
     def _reviewer_open_findings(self) -> list[dict]:
@@ -5101,7 +5140,7 @@ class Coordinator:
                     'approve when the rewritten plan is the same in substance. '
                     'Return REVISE if the scope, steps, or verification changed.\n## Previously accepted plan\n'
                     + (approved.read_text() if approved.is_file() else '(unavailable)'))
-            if self._role_vendor(role) == 'codex':
+            if self._role_vendor(role) in ('codex', 'gemini'):   # ADR-20: as for Codex, agy gets the PLAN inputs inline
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
                           '## Work item content\n' + (self.context / 'workitem.md').read_text() +
                           '\n## Plan content\n' + (self.context / 'plan.md').read_text())
@@ -5213,7 +5252,7 @@ class Coordinator:
         matches += findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
                            r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
         prose = DOTTED_PATH_RE.sub('<path>', prose)
-        matches += findall(BARE_MODEL_NAME_RE, prose)
+        matches += findall(self._bare_name_re(), prose)
         if name not in ('prompt', 'gate-template'):
             matches += findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
         return matches
@@ -5273,7 +5312,7 @@ class Coordinator:
 
         def workitem_name(whole, text):
             named = repo_word(whole).search(workitem_text) or model_id_component(whole)
-            return bool(BARE_MODEL_NAME_RE.fullmatch(whole) and named
+            return bool(self._bare_name_re().fullmatch(whole) and named
                         and name != 'context/plan.md' and self._plan_tool_name(whole, text))
 
         def mask(text, exists):
@@ -5285,7 +5324,7 @@ class Coordinator:
                 if exempt and not any(whole.lower() in other for other in kept):
                     # V328-MASK: mask every occurrence the bare-name scan can find, including hyphen compounds.
                     pattern = (re.compile(r'\b' + re.escape(whole) + r'\b', re.I)
-                               if BARE_MODEL_NAME_RE.fullmatch(whole) else repo_word(whole))
+                               if self._bare_name_re().fullmatch(whole) else repo_word(whole))
                     text = pattern.sub('<repo-text>', text)
             return text
 
@@ -5331,7 +5370,7 @@ class Coordinator:
                 for line in section[len(header):].splitlines():
                     if line.startswith('+'):
                         result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository)
-                                           or (data_file and BARE_MODEL_NAME_RE.fullmatch(whole)))))
+                                           or (data_file and self._bare_name_re().fullmatch(whole)))))
             return '\n'.join(result)
 
         # V303-A: apply the same bare-name exception to stat/status and workitem prose.
@@ -5433,8 +5472,12 @@ class Coordinator:
     # model suffix ("Codex/GPT approved."); other tool-named paths stay caught.
     SANDBOX_SCRATCH_RE = re.compile(r'(?<![\w/.-])/(?:private/)?tmp/claude-\d+/')
 
+    def _bare_name_re(self) -> re.Pattern:
+        """ADR-20: the bare reviewer/tool names of this run; Gemini counts only in a run with a gemini role."""
+        return GEMINI_BARE_MODEL_NAME_RE if 'gemini' in vendor_by_role(getattr(self, 'args', None)).values() else BARE_MODEL_NAME_RE
+
     def _plan_tool_name(self, whole: str, text: str) -> bool:
-        if not re.fullmatch(r'(?i:claude|codex|opus|astra|gpt-6-astra)', whole):
+        if not self._bare_name_re().fullmatch(whole):   # the bare names: claude, codex, opus, astra, gpt-6-astra (and gemini)
             return False
         text = DOTTED_PATH_RE.sub('<path>', self._run_path_prose('context/plan.md', text))   # as the bare-name scan reads it
         word = re.escape(whole)
@@ -5454,7 +5497,8 @@ class Coordinator:
             text = self.SANDBOX_SCRATCH_RE.sub('/sandbox-scratch/', text)   # no '>': a tool-named path below it is still caught
         matches = self._history_matches(name, text)
         if name in self.WORKITEM_SOURCES:
-            matches = [(shown, whole) for shown, whole in matches if not self.OPERATOR_TOOL_NAME_RE.fullmatch(whole)]
+            matches = [(shown, whole) for shown, whole in matches
+                       if not (self.OPERATOR_TOOL_NAME_RE.fullmatch(whole) or self._bare_name_re().fullmatch(whole))]   # ADR-20: gemini
         elif name == 'context/plan.md':
             matches = [(shown, whole) for shown, whole in matches if not self._plan_tool_name(whole, text)]
         return [shown for shown, _ in matches]
@@ -6009,6 +6053,12 @@ class Coordinator:
                     'cached': use.get('cached_input_tokens', 0),
                     'output': use.get('output_tokens', 0), 'source': 'turn.completed-stream'})
                 changed = True
+            elif receipt['vendor'] == 'gemini' and row.get('event') == 'init' and row.get('conversation_id'):   # ADR-20 G7
+                receipt['provider_session_id'] = row['conversation_id']
+                changed = True
+            elif receipt['vendor'] == 'gemini' and row.get('event') == 'result' and isinstance(row.get('result'), dict):
+                receipt.setdefault('usage_requests', []).append(gemini_usage(row['result'], 'result-stream'))
+                changed = True
         if changed:
             receipt['model_requests'] = len(receipt['usage_requests'])
         return offset, buffered, active_request, changed
@@ -6194,8 +6244,8 @@ class Coordinator:
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
         if self._role_vendor(role) == 'gemini' and (role, phase) not in GEMINI_ROLE_PHASES:   # WI-GEM B2a, before any provider turn
-            raise RuntimeError(f'{role} {phase} turns cannot run gemini yet (WI-GEM B2b); gemini runs the reviewer (PLAN, EXEC), '
-                               'the shadow and the gate')
+            raise RuntimeError(f'{role} {phase} turns cannot run gemini (ADR-20 G2, G4); gemini runs the reviewer with its stage '
+                               'reviews, the shadow and the EXEC gate')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         transient_retried = False                                        # V327-RETRY: one transient-provider retry per invoke
         for attempt in range(2):
@@ -6383,11 +6433,13 @@ class Coordinator:
         if env_overrides:
             env.update(env_overrides)
         if receipt['vendor'] == 'codex': env['CODEX_HOME'] = str(self.global_codex_home)
-        vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
+        vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home, gemini=receipt['vendor'] == 'gemini')
         if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
             raise RuntimeError(issue)
-        vendor_prefix = vendor_entry({'codex': 'codex_', 'claude': 'claude_', 'gemini': 'gemini_'}, receipt['vendor'])   # gemini: no label until G8 (B2b)
+        vendor_prefix = vendor_entry({'codex': 'codex_', 'claude': 'claude_', 'gemini': 'gemini_'}, receipt['vendor'])
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
+        if receipt['vendor'] == 'gemini':
+            self._record_gemini_version(receipt)
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
         watched = (run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
                    if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR') else None)
@@ -6534,7 +6586,7 @@ class Coordinator:
                 if (run_dir_touched := sorted(path for path, mark in watched.items() if after_inodes.get(path) != mark)):   # a link made and removed within the turn
                     raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(run_dir_touched[:5]))
             if vendor_config_before is not None:
-                config_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
+                config_after = global_config_snapshot(self.global_config_home, self.global_codex_home, gemini=receipt['vendor'] == 'gemini')
                 concurrent = (concurrent_run_workspaces(active_workspace) if receipt['vendor'] == 'codex' and   # FIELD-22, read lazily
                               vendor_config_before['codex_config']['sha256'] != config_after['codex_config']['sha256'] else None)
                 changes = attribute_global_config_changes(vendor_config_before, config_after, [active_workspace], concurrent)
@@ -6569,6 +6621,8 @@ class Coordinator:
                         changes['next_turn_registry'] = 'the next turn starts on the updated plugin registry: ' + versions
                         print(f'NOTE: a normal plugin update outside the run during the {role} turn ({versions}); the turn '
                               'is kept and the next turn starts on the updated registry')
+                if preference := next((row['keys'] for row in changes['expected_changes'] if row['change'] == 'agy-preference'), None):
+                    print(f'NOTE: agy updated its own settings ({", ".join(preference)}) during the {role} turn; recorded, the turn stands')
                 if changes['warnings']:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
@@ -8013,7 +8067,8 @@ class Coordinator:
             'Changed paths: ' + (', '.join(paths) or 'none'), self.inspection_prompt('reviewer'),
             REVIEW_SEVERITY_GUIDANCE, self.verified_claims_prompt(), self.allowed_command_prompt(),
             'A command the instructions above ask for that is not in this list is unavailable here; that is not a '
-            'failure and not a reason to HOLD. Analyse those concerns with Read/Grep/Glob instead.',
+            'failure and not a reason to HOLD. Analyse those concerns with '
+            + ('your file reading and search tools' if self._role_vendor('reviewer') == 'gemini' else 'Read/Grep/Glob') + ' instead.',
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.'])
 
@@ -9780,10 +9835,11 @@ MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 VENDORS = ('codex', 'claude', 'gemini')   # ADR-20 G1
 VENDOR_MODEL_PREFIXES = {'codex': 'gpt-', 'claude': 'claude-', 'gemini': 'gemini-'}   # ADR-10 M4, ADR-20 G3
-GEMINI_NOT_DISPATCHED = 'this gemini role path cannot be dispatched yet (WI-GEM B2b)'
-GEMINI_ROLE_PHASES = {('reviewer', 'PLAN'), ('reviewer', 'EXEC'), ('shadow', 'PLAN'), ('shadow', 'EXEC'), ('gate', 'EXEC')}   # WI-GEM B2a
-GEMINI_STAGE_REVIEWS = ('reviewer_vendor gemini needs lifecycle_mode off and no report mode for now: the DOCS, SECURITY and POLISH-Q '
-                        'stage reviews run on the reviewer vendor and cannot run gemini yet (WI-GEM B2b)')
+GEMINI_NOT_DISPATCHED = 'this gemini role path cannot be dispatched: gemini runs read-only roles only (ADR-20 G2)'
+GEMINI_ROLE_PHASES = {('reviewer', 'PLAN'), ('reviewer', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY'),
+                      ('reviewer', 'POLISH-Q'), ('shadow', 'PLAN'), ('shadow', 'EXEC'), ('gate', 'EXEC')}   # WI-GEM B2a, B2b
+GEMINI_SETTINGS_PATH = Path('.gemini') / 'antigravity-cli' / 'settings.json'   # ADR-20 G8, under the home directory
+GEMINI_PREFERENCE_KEYS = {'trustedWorkspaces', 'model'}   # G8: settings agy itself rewrites during normal use
 GEMINI_READONLY_SETTINGS = {'permissions': {'deny': ['write_file(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'],
                                             'allow': ['command(*)']}}   # ADR-20 G5: session-only, under --sandbox
 GEMINI_EXIT_RE = re.compile(r'Command exited with code (-?\d+)\.')   # ADR-20 G7: the exit status of an agy run_command step
@@ -9813,16 +9869,6 @@ def refuse_gemini_roles(args: argparse.Namespace) -> None:
     if args.author_vendor == 'gemini': raise ValueError('author_vendor gemini is not supported yet (ADR-20 G2)')
     if (getattr(args, 'safety_mode', None) or DEFAULT_SAFETY_MODE) == 'strict':
         raise ValueError('gemini roles run in efficient mode only (ADR-20 G4)')
-
-
-def refuse_gemini_dispatch(args: argparse.Namespace) -> None:
-    """WI-GEM B2a: a gemini reviewer (PLAN, EXEC), shadow and gate run; the stage reviews that use the reviewer vendor (lifecycle
-    on, report mode) do not yet, so such a run is refused before any state or provider turn. invoke() refuses any other path."""
-    if getattr(args, 'reviewer_vendor', None) == 'gemini':
-        lifecycle = getattr(args, 'lifecycle_mode', None) or (
-            'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')   # the default Coordinator applies
-        if lifecycle == 'on' or getattr(args, 'review_report', None): raise ValueError(GEMINI_STAGE_REVIEWS)
-    refuse_gemini_probe(args)
 
 
 def refuse_gemini_probe(args: argparse.Namespace) -> None:
@@ -9857,11 +9903,15 @@ def gemini_turn(rows: list, stdout: str, stderr: str) -> tuple[dict, Optional[st
         if not isinstance(response, str) or not response.strip():
             raise ValueError('agy returned an empty response and no structured_output')
         answer = unwrap_json(response)
-    use = result.get('usage') if isinstance(result.get('usage'), dict) else {}
-    usage = [{'input': use.get('input_tokens', 0) + use.get('cache_read_tokens', 0),   # agy input_tokens excludes cache reads
-              'cached': use.get('cache_read_tokens', 0), 'output': use.get('output_tokens', 0), 'source': 'result'}]
     session = result.get('conversation_id') or next((row.get('conversation_id') for row in rows if row.get('event') == 'init'), None)
-    return answer, session, usage
+    return answer, session, [gemini_usage(result, 'result')]
+
+
+def gemini_usage(result: dict, source: str) -> dict:
+    """ADR-20 G7: one agy result's usage; agy input_tokens excludes cache reads."""
+    use = result.get('usage') if isinstance(result.get('usage'), dict) else {}
+    return {'input': use.get('input_tokens', 0) + use.get('cache_read_tokens', 0), 'cached': use.get('cache_read_tokens', 0),
+            'output': use.get('output_tokens', 0), 'source': source}
 
 
 def restores_run(args: argparse.Namespace) -> bool:
@@ -10302,7 +10352,7 @@ def main(argv=None) -> int:
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates its restored, frozen models (ADR-9 M5)
             validate_role_models(args)
-            refuse_gemini_dispatch(args)
+            refuse_gemini_probe(args)
         if args.action in ('run', 'resume', 'permission-probe') and not restores_run(args):   # ADR-12: actions that create state
             workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,

@@ -73,7 +73,8 @@ FILTER_COMMANDS = {'rsync', 'tar', 'grep', 'egrep', 'fgrep', 'du', 'ag', 'ack'} 
 DIR_OPTS = {'-C', '--directory', '--chdir', '--cwd', '--prefix', '--work-tree', '--git-dir', '--rootdir', '--package-path'}
 TEXT_TOOLS = {'StructuredOutput', 'TodoWrite', 'Agent', 'Task', 'ExitPlanMode', 'BashOutput', 'KillShell', 'KillBash'}
 PATH_TOOLS = {'Read': 'file_path', 'Write': 'file_path', 'Edit': 'file_path', 'MultiEdit': 'file_path', 'NotebookEdit': 'notebook_path',
-              'NotebookRead': 'notebook_path', 'LS': 'path'}
+              'NotebookRead': 'notebook_path', 'LS': 'path',
+              'read_file': 'Path', 'write_file': 'Path'}   # ADR-20: the agy tool steps observed with a Path parameter
 CODE_MODE = re.compile(r'\s*const\s+(\w+)\s*=\s*await\s+tools\.exec_command\(')
 CODE_MODE_KEYS = {'cmd', 'workdir', 'yield_time_ms', 'max_output_tokens', 'justification', 'timeout_ms'}
 CODE_MODE_POLL = re.compile(r'\s*const\s+(\w+)\s*=\s*await\s+tools\.write_stdin\(')   # FIELD-20: waiting on a still-running command

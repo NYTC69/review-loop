@@ -188,6 +188,8 @@ def emit_gemini(answer, session, model, command_events=None):
     if os.environ.get('FAKE_GEMINI_TOOL_ERROR'):
         rows.append(step(1, state='ERROR', step_type='tool', tool_name='view_file', tool_info={
             'name': 'view_file', 'parameters': {'Path': 'missing.txt'}, 'error': {'type': 'TOOL_ERROR', 'message': 'not found'}}))
+    if read := os.environ.get('FAKE_GEMINI_READ_FILE'):   # a read_file step with its Path, as agy 1.4.10 emits it
+        rows.append(step(50, state='DONE', step_type='tool', tool_name='read_file', tool_info={'name': 'read_file', 'parameters': {'Path': read}}))
     events = command_events if command_events is not None else [
         {'command': row['command'], 'exit_code': 1 if os.environ.get('FAKE_REVIEW_TEST_FAILURE') and row['command'] == 'python3 -m unittest' else 0}
         for row in answer.get('self_run_evidence', [])] if not os.environ.get('FAKE_MISSING_OBSERVED') else []
@@ -263,6 +265,12 @@ def main():
     if settings and os.environ.get('FAKE_CLAUDE_SETTINGS_MATCH', 'You are an adversarial reviewer') in prompt and not Path(settings + '.done').exists():
         (Path(os.environ['HOME']) / '.claude' / 'settings.json').write_text(Path(settings).read_text())
         Path(settings + '.done').write_text('done')
+    gemini_settings = os.environ.get('FAKE_GEMINI_SETTINGS_WRITE')   # ADR-20 G8: agy rewrites its own settings.json, once
+    if gemini_settings and '--print=' in args and not Path(gemini_settings + '.done').exists():
+        target = Path(os.environ['HOME']) / '.gemini' / 'antigravity-cli' / 'settings.json'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(Path(gemini_settings).read_text())
+        Path(gemini_settings + '.done').write_text('done')
     extra_observed_commands = []
     vendor = 'codex' if args and args[0] == 'exec' else 'gemini' if '--print=' in args else 'claude'
     rejected = next((arg for arg in args if arg.startswith('-P') or arg.split('=', 1)[0] == '--permission-profile'), None)
