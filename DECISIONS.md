@@ -409,3 +409,5 @@ Decision (owner approved 2026-10-29, "通过，开始 B1"; Q1 and Q2 answered "�
 Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.
 
 Amendment 2026-10-29 (B1 fix 7902669, V317-FB contract): codex_bin and claude_bin stay always bound and required; gemini_bin is bound and required only when a role runs gemini or the saved run froze it.
+
+Amendment 2026-10-29 (B3a, live agy test): the read-only settings also allow read_file(*); headless agy denies reads outside the workspace otherwise, and reviews read run/context files there.

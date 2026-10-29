@@ -241,7 +241,7 @@ class GeminiVendorTests(unittest.TestCase):
             self.assertEqual(str(refused.exception), "unknown vendor 'mistral'")
 
 
-SETTINGS = '{"permissions":{"deny":["write_file(*)","read_url(*)","execute_url(*)","mcp(*)"],"allow":["command(*)"]}}'
+SETTINGS = '{"permissions":{"deny":["write_file(*)","read_url(*)","execute_url(*)","mcp(*)"],"allow":["command(*)","read_file(*)"]}}'
 PLAN_REVIEW = 'Role: reviewer, persistent plan-only reviewer. Phase: PLAN.'
 GATE_PROMPT = 'You are an adversarial reviewer.\nRun this test command exactly as written in one Bash call: python3 -m unittest\n'
 

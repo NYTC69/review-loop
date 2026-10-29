@@ -9842,7 +9842,8 @@ GEMINI_ROLE_PHASES = {('reviewer', 'PLAN'), ('reviewer', 'EXEC'), ('reviewer', '
 GEMINI_SETTINGS_PATH = Path('.gemini') / 'antigravity-cli' / 'settings.json'   # ADR-20 G8, under the home directory
 GEMINI_PREFERENCE_KEYS = {'trustedWorkspaces', 'model'}   # G8: settings agy itself rewrites during normal use
 GEMINI_READONLY_SETTINGS = {'permissions': {'deny': ['write_file(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'],
-                                            'allow': ['command(*)']}}   # ADR-20 G5: session-only, under --sandbox
+                                            'allow': ['command(*)', 'read_file(*)']}}   # ADR-20 G5: session-only, under --sandbox;
+# read_file(*) (B3a): headless agy otherwise denies reads outside the workspace (the run's context files)
 GEMINI_EXIT_RE = re.compile(r'Command exited with code (-?\d+)\.')   # ADR-20 G7: the exit status of an agy run_command step
 
 
