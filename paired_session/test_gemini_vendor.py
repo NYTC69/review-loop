@@ -1,5 +1,6 @@
 """WI-GEM B1 (ADR-20 G1-G4, G9, G10): gemini as a third vendor value; B2a (G5-G7): the agy adapter for the read-only roles."""
 import contextlib
+import copy
 import io
 import json
 import os
@@ -206,6 +207,21 @@ class GeminiVendorTests(unittest.TestCase):
         new = {'gemini_bin': {'path': str(agy), 'sha256': 'b'}}
         updates = rc.normal_cli_updates(old, new)
         self.assertEqual([(u['program'], u['new_version']) for u in updates], [('gemini_bin', '1.4.11')])
+
+    def test_args_saved_by_a_released_version_without_gemini_bin_build_the_manifest_and_resume(self):   # CI test_v318cap
+        co = rc.Coordinator(self.args())
+        co._program_state()   # the run froze its programs before it was saved
+        frozen = copy.deepcopy({key: co.state[key] for key in ('config', 'role_dispatch_manifest', 'operator_programs')})
+        released = copy.deepcopy(co.args)
+        del released.gemini_bin   # a released parser had no --gemini-bin
+        released.action = 'resume'
+        resumed = rc.Coordinator(released)
+        self.assertIsNone(resumed._program_state()[1])
+        self.assertEqual(resumed._role_dispatch_manifest(), frozen['role_dispatch_manifest'])
+        self.assertEqual({key: resumed.state[key] for key in frozen}, frozen)
+        self.assertEqual((resumed._vendor_binary('codex'), resumed._vendor_binary('claude')), (released.codex_bin, released.claude_bin))
+        resumed._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())   # a claude reviewer turn dispatches
+        self.assertEqual(resumed.state['turns'][-1]['vendor'], 'claude')
 
     # ---- G1: explicit vendor tables fail closed ----
     def test_a_vendor_table_without_an_entry_fails_closed(self):

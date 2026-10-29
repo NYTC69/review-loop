@@ -2965,12 +2965,13 @@ class Coordinator:
     def _program_snapshot(self):
         """ADR-20 G1: codex_bin and claude_bin as always; gemini_bin is bound and required when a role runs gemini or the run froze it."""
         frozen = (getattr(self, 'state', None) or {}).get('operator_programs') or {}
-        gemini = self.args.gemini_bin if 'gemini_bin' in (*required_programs(self.args), *frozen) else None
+        gemini = getattr(self.args, 'gemini_bin', None) if 'gemini_bin' in (*required_programs(self.args), *frozen) else None
         return program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin, self.args.claude_bin,
                                 self.args.gate_prompt, self.args.config, gemini_bin=gemini)
 
-    def _vendor_binary(self, vendor: str) -> str:
-        return vendor_entry({'codex': self.args.codex_bin, 'claude': self.args.claude_bin, 'gemini': self.args.gemini_bin}, vendor)
+    def _vendor_binary(self, vendor: str) -> str:   # args saved by a released version have no gemini_bin (CI test_v318cap)
+        return vendor_entry({'codex': self.args.codex_bin, 'claude': self.args.claude_bin,
+                             'gemini': getattr(self.args, 'gemini_bin', None)}, vendor)
 
     def _program_state(self, hold=False):
         current, issue = self._program_snapshot()
