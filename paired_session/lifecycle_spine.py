@@ -11,7 +11,7 @@ def fake_guard(args):
     names = ('workspace', 'workitem', 'run_dir', *fake_programs(args))
     return all(root in Path(getattr(args, name)).resolve().parents for name in names)
 
-def fake_programs(args):   # ADR-20: gemini_bin too when a role runs gemini
+def fake_programs(args):   # ADR-21: gemini_bin too when a role runs gemini
     vendors = {getattr(args, key, None) for key in ('author_vendor', 'reviewer_vendor', 'gate_vendor')}
     return ('codex_bin', 'claude_bin') + (('gemini_bin',) if 'gemini' in vendors else ())
 

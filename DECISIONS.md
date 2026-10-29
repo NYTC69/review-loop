@@ -388,7 +388,7 @@ The separate removals of gate off, round-limit override acceptance, strict Claud
 Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.
 
 
-## ADR-20: WI-GEM — Gemini (Antigravity CLI `agy`) as a third paired-session vendor (owner 2026-10-29)
+## ADR-21: WI-GEM — Gemini (Antigravity CLI `agy`) as a third paired-session vendor (owner 2026-10-29)
 
 Context: Yuan has a Google AI Pro plan and wants a third agent that keeps a run going when the Codex or the Claude quota runs out, and a path to adopt future Gemini models by changing a model id. Gemini CLI personal OAuth is shut down; the client is `agy` (Antigravity CLI). A 2026-10-29 spike passed non-interactive auth, `--json-schema`, `--conversation <id>`, tool steps in stream-json and read-only under `--sandbox`. The coordinator hard-codes two vendors.
 

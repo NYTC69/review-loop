@@ -170,7 +170,7 @@ def emit_claude(answer, session, extra_commands=None):
 
 
 def gemini_prompt(stdin):
-    """ADR-20 G5: agy reads one stream-json user event per line; anything else is refused like a malformed input."""
+    """ADR-21 G5: agy reads one stream-json user event per line; anything else is refused like a malformed input."""
     lines = stdin.splitlines()
     event = json.loads(lines[0]) if len(lines) == 1 else None
     if not isinstance(event, dict) or event.get('event') != 'user' or not isinstance(event.get('message', {}).get('content'), str):
@@ -180,7 +180,7 @@ def gemini_prompt(stdin):
 
 
 def emit_gemini(answer, session, model, command_events=None):
-    """ADR-20 G7: agy stream-json (init, step_update, result). FAKE_GEMINI_FAIL=denied|empty|error|no-result gives the hazard
+    """ADR-21 G7: agy stream-json (init, step_update, result). FAKE_GEMINI_FAIL=denied|empty|error|no-result gives the hazard
     shapes of G6; FAKE_GEMINI_TOOL_ERROR adds a tool step that ends in ERROR mid-turn, which does not fail the turn."""
     rows = [{'event': 'init', 'conversation_id': session, 'init': {'model': model, 'cwd': os.getcwd(), 'tools': ['run_command', 'view_file']}}]
     step = lambda index, **fields: {'event': 'step_update', 'step_update': {'conversation_id': session, 'step_index': index, **fields}}
@@ -243,7 +243,7 @@ def mutate(mode):
 def main():
     args = sys.argv[1:]
     prompt = sys.stdin.read()
-    if '--print=' in args:   # ADR-20: agy, the prompt in one stream-json user event
+    if '--print=' in args:   # ADR-21: agy, the prompt in one stream-json user event
         prompt = gemini_prompt(prompt)
     append_commands = os.environ.get('FAKE_APPEND_REVIEWER_COMMAND')
     if append_commands and 'implementer. Phase: EXEC.' in prompt:
@@ -265,7 +265,7 @@ def main():
     if settings and os.environ.get('FAKE_CLAUDE_SETTINGS_MATCH', 'You are an adversarial reviewer') in prompt and not Path(settings + '.done').exists():
         (Path(os.environ['HOME']) / '.claude' / 'settings.json').write_text(Path(settings).read_text())
         Path(settings + '.done').write_text('done')
-    gemini_settings = os.environ.get('FAKE_GEMINI_SETTINGS_WRITE')   # ADR-20 G8: agy rewrites its own settings.json, once
+    gemini_settings = os.environ.get('FAKE_GEMINI_SETTINGS_WRITE')   # ADR-21 G8: agy rewrites its own settings.json, once
     if gemini_settings and '--print=' in args and not Path(gemini_settings + '.done').exists():
         target = Path(os.environ['HOME']) / '.gemini' / 'antigravity-cli' / 'settings.json'
         target.parent.mkdir(parents=True, exist_ok=True)

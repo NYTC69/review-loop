@@ -40,7 +40,7 @@ handing-off entry's name, or `paired-session` when this skill was invoked direct
 and both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
 resolved roles use: the coordinator binds both binaries at run start (the
 review-loop entry has already checked both on a handoff).
-`agy` (`gemini_bin`) is needed only when a role runs gemini (ADR-20).
+`agy` (`gemini_bin`) is needed only when a role runs gemini (ADR-21).
 Identify the intended Git worktree. Use a dedicated task worktree; preserve
 unrelated user changes and do not switch away from a dirty checkout. If a
 dedicated worktree is unavailable, ask before creating one. Determine the
@@ -70,7 +70,7 @@ outside the workspace and run directory. CLI options override the profile.
 Models are operator-set (ADR-9); a role without one gets its vendor's default
 (`claude-opus-5-5` for Claude; `gpt-6.1-sol` for Codex), and the gate defaults
 to the author's vendor (ADR-10).
-Gemini (`agy`, ADR-20) may run the reviewer and the gate only, in efficient mode, and has no default model:
+Gemini (`agy`, ADR-21) may run the reviewer and the gate only, in efficient mode, and has no default model:
 its role needs `reviewer_model` / `gate_model`.
 The keys in `.review-loop/config.md` that are set map to one-run options:
 `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish

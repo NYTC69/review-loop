@@ -1,4 +1,4 @@
-"""WI-GEM B1 (ADR-20 G1-G4, G9, G10): gemini as a third vendor value; B2a (G5-G7): the agy adapter for the read-only roles."""
+"""WI-GEM B1 (ADR-21 G1-G4, G9, G10): gemini as a third vendor value; B2a (G5-G7): the agy adapter for the read-only roles."""
 import contextlib
 import copy
 import io
@@ -15,7 +15,7 @@ from paired_session import test_real_coordinator as trc
 from paired_session import timeout_scale as tsc
 
 rc = trc.rc
-B2 = 'this gemini role path cannot be dispatched: gemini runs read-only roles only (ADR-20 G2)'
+B2 = 'this gemini role path cannot be dispatched: gemini runs read-only roles only (ADR-21 G2)'
 GEMINI_REVIEWER = ['--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-flash-medium']
 GEMINI_GATE = ['--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-pro']
 
@@ -109,15 +109,15 @@ class GeminiVendorTests(unittest.TestCase):
         rc.refuse_gemini_probe(report)
 
     def test_a_gemini_author_is_refused(self):
-        self.assert_refused('author_vendor gemini is not supported yet (ADR-20 G2)', '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro')
-        self.assert_refused('author_vendor gemini is not supported yet (ADR-20 G2)', '--author-vendor', 'gemini', actions=('run',))   # before the model rule
+        self.assert_refused('author_vendor gemini is not supported yet (ADR-21 G2)', '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro')
+        self.assert_refused('author_vendor gemini is not supported yet (ADR-21 G2)', '--author-vendor', 'gemini', actions=('run',))   # before the model rule
 
     # ---- G4: efficient mode only ----
     def test_a_gemini_role_with_strict_mode_is_refused(self):
-        self.assert_refused('gemini roles run in efficient mode only (ADR-20 G4)', *GEMINI_REVIEWER, '--strict')
-        self.assert_refused('gemini roles run in efficient mode only (ADR-20 G4)', *GEMINI_GATE, '--strict', actions=('run',))
+        self.assert_refused('gemini roles run in efficient mode only (ADR-21 G4)', *GEMINI_REVIEWER, '--strict')
+        self.assert_refused('gemini roles run in efficient mode only (ADR-21 G4)', *GEMINI_GATE, '--strict', actions=('run',))
         profile = self.operator_profile({'safety_mode': 'strict', 'gate_vendor': 'gemini', 'gate_model': 'gemini-3.8-pro'})
-        self.assert_refused('gemini roles run in efficient mode only (ADR-20 G4)', '--config', str(profile), actions=('run',))
+        self.assert_refused('gemini roles run in efficient mode only (ADR-21 G4)', '--config', str(profile), actions=('run',))
 
     # ---- G3, G9: models ----
     def test_a_gemini_role_needs_an_explicit_model(self):
@@ -247,7 +247,7 @@ GATE_PROMPT = 'You are an adversarial reviewer.\nRun this test command exactly a
 
 
 class GeminiAdapterTests(unittest.TestCase):
-    """WI-GEM B2a (ADR-20 G5-G7): agy runs the reviewer, the shadow and the gate on the fake gemini CLI."""
+    """WI-GEM B2a (ADR-21 G5-G7): agy runs the reviewer, the shadow and the gate on the fake gemini CLI."""
     argv, args, resolved, main, assert_refused = (GeminiVendorTests.argv, GeminiVendorTests.args, GeminiVendorTests.resolved,
                                                   GeminiVendorTests.main, GeminiVendorTests.assert_refused)
 
@@ -288,7 +288,7 @@ class GeminiAdapterTests(unittest.TestCase):
         flags = co.reviewer_flags()
         self.assertEqual((flags['reviewer_binary'], flags['permission_mode'], flags['sandbox'], flags['gemini_settings']),
                          (agy, 'settings-deny', 'agy-sandbox', rc.GEMINI_READONLY_SETTINGS))
-        with self.assertRaisesRegex(ValueError, 'ADR-20 G2'):
+        with self.assertRaisesRegex(ValueError, 'ADR-21 G2'):
             co._gemini_command('author', schema, False)
 
     def test_a_persistent_reviewer_gets_the_prompt_on_stdin_and_resumes_its_conversation(self):
@@ -344,7 +344,7 @@ class GeminiAdapterTests(unittest.TestCase):
         return path
 
     def test_each_hazard_fails_the_turn_with_its_reason(self):
-        cases = (({'FAKE_GEMINI_FAIL': 'denied'}, r'agy denied write_file; a denied permission ends the turn \(ADR-20 G6\)'),
+        cases = (({'FAKE_GEMINI_FAIL': 'denied'}, r'agy denied write_file; a denied permission ends the turn \(ADR-21 G6\)'),
                  ({'FAKE_GEMINI_FAIL': 'empty'}, 'agy returned an empty response and no structured_output'),
                  ({'FAKE_GEMINI_FAIL': 'error'}, 'CLI exit 1: fake agy failure'),
                  ({'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_FAIL_EXIT': '0', 'FAKE_GEMINI_ERROR': 'quota zq-17 left the building'},
@@ -369,7 +369,7 @@ class GeminiAdapterTests(unittest.TestCase):
     def test_other_role_paths_refuse_gemini_before_any_turn(self):
         co = self.coordinator()
         for role, phase in (('probe', 'PROBE'), ('gate-probe', 'PROBE'), ('gate', 'PLAN')):
-            with self.subTest(role=role, phase=phase), self.assertRaisesRegex(RuntimeError, fr'{role} {phase} turns cannot run gemini \(ADR-20 G2, G4\)'):
+            with self.subTest(role=role, phase=phase), self.assertRaisesRegex(RuntimeError, fr'{role} {phase} turns cannot run gemini \(ADR-21 G2, G4\)'):
                 co.invoke(role, phase, PLAN_REVIEW, rc.review_schema(), fresh=True)
         self.assertEqual((co.state['turns'], co.state['invocations_used'], self.calls()), ([], 0, []))
 

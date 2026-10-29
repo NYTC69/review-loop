@@ -13,7 +13,7 @@ def resolve_binary(value, workspace, path_env):
 def _record(path):
     return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None}
 def snapshot(workspace, run_dir, author_tmp, codex_bin, claude_bin, gate_prompt, config_path, gemini_bin=None):
-    """codex_bin and claude_bin are always bound (V317-FB); gemini_bin only when given (ADR-20 G1: a role runs gemini).
+    """codex_bin and claude_bin are always bound (V317-FB); gemini_bin only when given (ADR-21 G1: a role runs gemini).
     Every bound program and the gate prompt must exist outside the author-writable roots."""
     profile = workspace / Path(config_path or '.review-loop/paired-session.json').expanduser()
     roots = (workspace, Path(run_dir).resolve(), Path(author_tmp).resolve())

@@ -378,7 +378,7 @@ class RoleModelTests(unittest.TestCase):
         a.allowed_models = {'claude': ['claude-opus-5-5']}      # codex missing: nothing is allowed for it
         with self.assertRaisesRegex(ValueError, 'reviewer_model gpt-6.1-sol is not in allowed_models'):
             rc.validate_role_models(a)
-        for bad in ([], 'gpt-6', {'codex': 'gpt-6-luna'}, {'codex': [1]}, {'mistral': ['x']}, {'codex': None}):   # gemini is a vendor key since ADR-20 (WI-GEM B1)
+        for bad in ([], 'gpt-6', {'codex': 'gpt-6-luna'}, {'codex': [1]}, {'mistral': ['x']}, {'codex': None}):   # gemini is a vendor key since ADR-21 (WI-GEM B1)
             with self.subTest(bad=bad):
                 a = self.resolved()
                 a.allowed_models = bad
