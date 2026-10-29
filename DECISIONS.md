@@ -386,3 +386,24 @@ The test-only `PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF` remains solely as the
 The separate removals of gate off, round-limit override acceptance, strict Claude-author opt-in and probe-skip acceptance stay approved and refused. The Codex CLI version override remains supported.
 
 Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.
+
+
+## ADR-20: WI-GEM — Gemini (Antigravity CLI `agy`) as a third paired-session vendor (owner 2026-10-29)
+
+Context: Yuan has a Google AI Pro plan and wants a third agent that keeps a run going when the Codex or the Claude quota runs out, and a path to adopt future Gemini models by changing a model id. Gemini CLI personal OAuth is shut down; the client is `agy` (Antigravity CLI). A 2026-10-29 spike passed non-interactive auth, `--json-schema`, `--conversation <id>`, tool steps in stream-json and read-only under `--sandbox`. The coordinator hard-codes two vendors.
+
+Decision (owner approved 2026-10-29, "通过，开始 B1"; Q1 and Q2 answered "允许"):
+
+- G1 `gemini` is a third value for `author_vendor`, `reviewer_vendor` and `gate_vendor`, driven by `agy` (`--gemini-bin`, operator profile key `gemini_bin`). Vendor branches become explicit tables; an unknown vendor fails closed instead of falling through to Codex. Only the binaries of dispatched vendors are bound, so installations without agy keep working.
+- G2 In v1 gemini may be reviewer (the shadow follows the reviewer vendor) and gate. `author_vendor: gemini` is refused until a later batch.
+- G3 Defaults are unchanged (author codex, reviewer claude, ADR-10 gate default = author vendor); gemini is used only when the operator names it. ADR-10 M4 generalises from "the other vendor" to "any vendor other than the gate vendor", adding the `gemini-` prefix and consulting every vendor's `allowed_models`.
+- G4 Gemini roles run in efficient mode only; `--strict` with a gemini role is refused before dispatch (no agy permission probe in v1). All post-turn guards apply unchanged.
+- G5 Read-only roles run `agy` with `--sandbox` and session-only `--settings` permissions (deny `write_file(*)`, `read_url(*)`, `execute_url(*)`, `mcp(*)`; allow `command(*)`), a per-dispatch TMPDIR, cwd = workspace. Never `--dangerously-skip-permissions`, `--print-timeout` (it returns partial output as SUCCESS) or `--mode plan` (it does not confine the shell); the coordinator's own timeout ends the process.
+- G6 A gemini turn succeeds only with status SUCCESS, a non-empty response or schema-valid `structured_output`, and no `denied_actions` (a denial ends the agy turn with SUCCESS and an empty response). Otherwise it fails with the reason named; unknown error text holds verbatim.
+- G7 Answer = `structured_output`; session id = `conversation_id` (persistent reviewer via `--conversation`); model = `init.model`; usage = `result.usage`; tool calls = `step_update` tool steps, with the "Command exited with code N" line as the exit status.
+- G8 agy has no documented home-isolation variable: v1 snapshots `~/.gemini/antigravity-cli/settings.json` (label `gemini_settings`) like the other vendors' global config, ignores per-conversation directories, and records `agy --version` per turn; a version change between turns is a NOTE (agy self-updates), not a HOLD.
+- G9 A vendor is the CLI that runs the role. Under vendor gemini the profile may choose any model agy serves, including claude-* and gpt-oss; the run records vendor and model so a same-family pairing is visible. No new refusal.
+- G10 A gemini gate with a gemini reviewer is allowed, like today's same-vendor combinations.
+- G11 The work stays on branch `explore/gemini-vendor` during the stable trial and is released later as a minor version, gated by a cross-vendor review, CI and one real run with gemini as reviewer and gate that ends ACCEPTED. Batches: B1 plumbing and validation with a fake gemini CLI; B2 the agy adapter (argv, parsing, outcome classification, global config); B3 docs and the real run.
+
+Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.

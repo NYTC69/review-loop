@@ -129,7 +129,7 @@ def cli_release_version(value: str):
 def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
     """CLI-UPD: recognize release updates within the already bound installation."""
     changed = {key for key in set(old) | set(new) if old.get(key) != new.get(key)}
-    if not changed or changed - {'claude_bin', 'codex_bin'}: return None
+    if not changed or changed - {'claude_bin', 'codex_bin', 'gemini_bin'}: return None   # gemini_bin as codex_bin: an in-place update
     updates = []
     for key in sorted(changed):
         before, after = old.get(key, {}), new.get(key, {})
@@ -2460,7 +2460,9 @@ class Coordinator:
             args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else (
                 'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')
         resolve_role_model_defaults(args)
-        if not (Path(args.run_dir) / 'state.json').exists(): validate_role_models(args)   # an existing run validates after restoring its models
+        if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates after restoring its models
+            validate_role_models(args)
+            refuse_gemini_dispatch(args)
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -2575,8 +2577,7 @@ class Coordinator:
                 raise ValueError('--workspace must be a git worktree')
             if not self.workitem.is_file():
                 raise ValueError('--workitem must be a file')
-            _, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin,
-                                        self.args.claude_bin, self.args.gate_prompt, self.args.config)
+            _, issue = self._program_snapshot()
             if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
             self._review_only_args(None, self._parent_spec() if args.supersedes else None)
             self._review_report_args(None)
@@ -2831,9 +2832,9 @@ class Coordinator:
         author_vendor, reviewer_vendor = config.author_vendor, config.reviewer_vendor
         author = {'vendor': author_vendor, 'model': config.author_model,
                   'effort': config.author_effort,
-                  'binary': config.claude_bin if author_vendor == 'claude' else config.codex_bin,
-                  'sandbox': (self._author_sandbox_overrides() if author_vendor == 'codex'
-                              else self._claude_sandbox_settings('author')),
+                  'binary': self._vendor_binary(author_vendor),
+                  'sandbox': vendor_entry({'codex': self._author_sandbox_overrides,
+                                           'claude': lambda: self._claude_sandbox_settings('author')}, author_vendor)(),
                   'subagents': config.author_subagents,
                   'tmp_isolated': self._author_tmp_isolated()}
         reviewer = self.reviewer_flags()
@@ -2916,9 +2917,19 @@ class Coordinator:
                 result.append(command)
         return result
 
+    def _program_snapshot(self):
+        """ADR-20 G1: require only the dispatched vendors' programs; gemini_bin is bound when a role runs gemini or the run froze it."""
+        required = dispatched_programs(self.args)
+        frozen = (getattr(self, 'state', None) or {}).get('operator_programs') or {}
+        gemini = self.args.gemini_bin if 'gemini_bin' in (*required, *frozen) else None
+        return program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin, self.args.claude_bin,
+                                self.args.gate_prompt, self.args.config, gemini_bin=gemini, required=required)
+
+    def _vendor_binary(self, vendor: str) -> str:
+        return vendor_entry({'codex': self.args.codex_bin, 'claude': self.args.claude_bin}, vendor)   # ADR-20 G1: gemini in B2
+
     def _program_state(self, hold=False):
-        current, issue = program_snapshot(self.workspace, self.run_dir, self.author_temp_dir,
-                                    self.args.codex_bin, self.args.claude_bin, self.args.gate_prompt, self.args.config)
+        current, issue = self._program_snapshot()
         frozen = self.state.get('operator_programs')
         if issue is None and (frozen is None or self.args.action == 'permission-probe'):
             self.state['operator_programs'] = current
@@ -2955,9 +2966,9 @@ class Coordinator:
             prefix + '_model': getattr(self.args, prefix + '_model'),
             prefix + '_effort': getattr(self.args, prefix + '_effort'),
             prefix + '_commands': self.reviewer_commands(),
-            prefix + '_binary': self.args.claude_bin if vendor == 'claude' else self.args.codex_bin,
-            'permission_mode': 'dontAsk' if vendor == 'claude' else 'never',
-            'sandbox': 'restricted-allowlist' if vendor == 'claude' else 'read-only',
+            prefix + '_binary': self._vendor_binary(vendor),
+            'permission_mode': vendor_entry({'claude': 'dontAsk', 'codex': 'never'}, vendor),
+            'sandbox': vendor_entry({'claude': 'restricted-allowlist', 'codex': 'read-only'}, vendor),
         }
         if vendor == 'claude':
             flags['claude_child_env'] = CLAUDE_CHILD_ENV
@@ -2977,7 +2988,7 @@ class Coordinator:
                 'author_vendor': self.args.author_vendor,
                 'author_model': self.args.author_model,
                 'author_effort': self.args.author_effort,
-                'author_binary': self.args.claude_bin if self.args.author_vendor == 'claude' else self.args.codex_bin,
+                'author_binary': self._vendor_binary(self.args.author_vendor),
                 'operator_programs': self._program_state()[0],
         }
         if self.args.author_vendor == 'codex':
@@ -4820,9 +4831,8 @@ class Coordinator:
         return cmd + ['-']
 
     def command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
-        vendor = self._role_vendor(role)
-        return (self._claude_command(role, schema_path, fresh, workspace) if vendor == 'claude'
-                else self._codex_command(role, schema_path, fresh))
+        return vendor_entry({'claude': lambda: self._claude_command(role, schema_path, fresh, workspace),
+                             'codex': lambda: self._codex_command(role, schema_path, fresh)}, self._role_vendor(role))()
 
     def _author_prompt(self) -> str:
         contract = self.author_control_contract()
@@ -6325,7 +6335,7 @@ class Coordinator:
         vendor_config_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
         if issue := self._recovery_config_issue(vendor_config_before):   # F7: before the child exists or the budget counts
             raise RuntimeError(issue)
-        vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
+        vendor_prefix = vendor_entry({'codex': 'codex_', 'claude': 'claude_'}, receipt['vendor'])
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
         watched = (run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
@@ -9594,13 +9604,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--run-dir', required=True)
     p.add_argument('--supersedes', help='resolved parent run dir for a scope-change successor')
     p.add_argument('--config', help='JSON profile; defaults to <workspace>/.review-loop/paired-session.json')
-    p.add_argument('--author-vendor', choices=['codex', 'claude'], default='codex')
+    p.add_argument('--author-vendor', choices=VENDORS, default='codex')
     p.add_argument('--author-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--author-effort', default='medium')
-    p.add_argument('--reviewer-vendor', choices=['codex', 'claude'], default='claude')
+    p.add_argument('--reviewer-vendor', choices=VENDORS, default='claude')
     p.add_argument('--reviewer-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--reviewer-effort', default='medium')
-    p.add_argument('--gate-vendor', choices=['codex', 'claude'], help="defaults to the author's vendor (ADR-10); an explicit value is recorded as operator")
+    p.add_argument('--gate-vendor', choices=VENDORS, help="defaults to the author's vendor (ADR-10); an explicit value is recorded as operator")
     p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
     p.add_argument('--gate-effort', default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
@@ -9651,6 +9661,7 @@ def parser() -> argparse.ArgumentParser:
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
     p.add_argument('--codex-bin', default='codex')
     p.add_argument('--claude-bin', default='claude')
+    p.add_argument('--gemini-bin', default='agy', help='the Antigravity CLI that runs gemini roles (ADR-20)')
     p.add_argument('--exercise-revisions', action='store_true')
     p.add_argument('--stop-after-plan', action='store_true',
                    help='HOLD once right after PLAN approval; a later resume enters EXEC')
@@ -9706,7 +9717,7 @@ CONFIGURABLE_DESTS = {
     'reviewer_model', 'reviewer_effort', 'gate_vendor', 'gate_model', 'gate_effort', 'shadow',
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
     'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
-    'reviewer_command', 'codex_bin', 'claude_bin', 'author_subagents',
+    'reviewer_command', 'codex_bin', 'claude_bin', 'gemini_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_quality_polish', 'auto_commit', 'external_delivery',
     'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
 }
@@ -9716,8 +9727,39 @@ ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_mode
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
-def old_gate_vendor(author_vendor: str) -> str:   # the opposite-vendor rule, now used only by M4
-    return 'claude' if author_vendor == 'codex' else 'codex'
+VENDORS = ('codex', 'claude', 'gemini')   # ADR-20 G1
+VENDOR_MODEL_PREFIXES = {'codex': 'gpt-', 'claude': 'claude-', 'gemini': 'gemini-'}   # ADR-10 M4, ADR-20 G3
+GEMINI_NOT_DISPATCHED = 'gemini roles cannot be dispatched yet (WI-GEM B2)'
+
+
+def vendor_entry(table: dict, vendor: str):
+    """ADR-20 G1: an explicit per-vendor table entry; a vendor without one fails closed instead of falling through to Codex."""
+    if vendor in table: return table[vendor]
+    raise ValueError(GEMINI_NOT_DISPATCHED if vendor == 'gemini' else f'unknown vendor {vendor!r}')
+
+
+def vendor_by_role(args) -> dict:
+    """The vendor of each dispatched role (the shadow follows the reviewer); an unresolved gate takes the author's (ADR-10)."""
+    author = getattr(args, 'author_vendor', None)
+    return {'author': author, 'reviewer': getattr(args, 'reviewer_vendor', None), 'gate': getattr(args, 'gate_vendor', None) or author}
+
+
+def dispatched_programs(args) -> tuple:
+    """ADR-20 G1: the operator programs a run must bind, those of the vendors its roles run on."""
+    return tuple(sorted({vendor + '_bin' for vendor in vendor_by_role(args).values() if vendor}))
+
+
+def refuse_gemini_roles(args: argparse.Namespace) -> None:
+    """ADR-20 G2, G4: refused before any state exists."""
+    if 'gemini' not in vendor_by_role(args).values(): return
+    if args.author_vendor == 'gemini': raise ValueError('author_vendor gemini is not supported yet (ADR-20 G2)')
+    if (getattr(args, 'safety_mode', None) or DEFAULT_SAFETY_MODE) == 'strict':
+        raise ValueError('gemini roles run in efficient mode only (ADR-20 G4)')
+
+
+def refuse_gemini_dispatch(args: argparse.Namespace) -> None:
+    """WI-GEM B1: a gemini role passes validation, but the agy adapter comes in B2; refused before any state or provider turn."""
+    if 'gemini' in vendor_by_role(args).values(): raise ValueError(GEMINI_NOT_DISPATCHED)
 
 
 def restores_run(args: argparse.Namespace) -> bool:
@@ -9726,29 +9768,31 @@ def restores_run(args: argparse.Namespace) -> bool:
 
 def validate_allowed_models(allowed) -> None:
     if allowed is not None and not (
-            isinstance(allowed, dict) and set(allowed) <= {'codex', 'claude'} and all(
+            isinstance(allowed, dict) and set(allowed) <= set(VENDORS) and all(
                 isinstance(v, list) and all(isinstance(m, str) for m in v) for v in allowed.values())):
-        raise ValueError('allowed_models must be an object {"codex": [...], "claude": [...]} of string lists')
+        raise ValueError('allowed_models must be an object {"codex": [...], "claude": [...], "gemini": [...]} of string lists')
 
 
 def refuse_foreign_gate_model(args: argparse.Namespace) -> None:
-    """ADR-10 M4: an explicit gate_model of the other vendor needs an explicit --gate-vendor (never applies to a restored run)."""
+    """ADR-10 M4 (ADR-20 G3): an explicit gate_model of any vendor other than the gate vendor needs an explicit --gate-vendor
+    (never applies to a restored run). A gemini gate may run any model id (G9), so nothing is foreign to it."""
     model, given = getattr(args, 'gate_model', None), getattr(args, 'gate_vendor', None)
     vendor = given or args.author_vendor
-    other = old_gate_vendor(vendor)
     if model is None or restores_run(args): return
     validate_allowed_models(getattr(args, 'allowed_models', None))   # structure first: a list or a null vendor value is a configuration refusal, never an AttributeError
     allowed = getattr(args, 'allowed_models', None) or {}
-    if model in allowed.get(vendor, []): return
-    if model in allowed.get(other, []) or model.startswith({'claude': 'claude-', 'codex': 'gpt-'}[other]):
-        raise ValueError(f'gate_model {model} belongs to {other}, but the gate ' + (
-            f'vendor is {vendor}; pass --gate-vendor {other} or a {vendor} model' if given else
-            f"now defaults to the author's vendor {vendor}; pass --gate-vendor {other} to keep it"))
+    if vendor == 'gemini' or model in allowed.get(vendor, []): return
+    for other in (v for v in VENDORS if v != vendor):
+        if model in allowed.get(other, []) or model.startswith(VENDOR_MODEL_PREFIXES[other]):
+            raise ValueError(f'gate_model {model} belongs to {other}, but the gate ' + (
+                f'vendor is {vendor}; pass --gate-vendor {other} or a {vendor} model' if given else
+                f"now defaults to the author's vendor {vendor}; pass --gate-vendor {other} to keep it"))
 
 
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply the vendor default model (ADR-12; ADR-9 keeps the operator's choice) to every role without an explicit model."""
-    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': CODEX_DEFAULT_MODEL}
+    model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': CODEX_DEFAULT_MODEL}   # ADR-20 G3: gemini has no default
+    refuse_gemini_roles(args)
     refuse_foreign_gate_model(args)
     if getattr(args, 'gate_vendor_source', None) is None:
         args.gate_vendor_source = 'default' if getattr(args, 'gate_vendor', None) is None else 'operator'
@@ -9758,6 +9802,9 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
                     'gate_model': args.gate_vendor}
     for key, vendor in role_vendors.items():
         if getattr(args, key) is None:
+            if vendor not in model_for_vendor:
+                role = key[:-len('_model')]
+                raise ValueError(f'{key} is required when {role}_vendor is {vendor}')
             setattr(args, key, model_for_vendor[vendor])
             if vendor == 'codex':   # ADR-12: these roles need a CLI that runs the default model; a sorted list keeps args JSON-serializable
                 args.defaulted_codex_models = sorted({*getattr(args, 'defaulted_codex_models', ()), key})
@@ -10152,10 +10199,13 @@ def main(argv=None) -> int:
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates its restored, frozen models (ADR-9 M5)
             validate_role_models(args)
+            refuse_gemini_dispatch(args)
         if args.action in ('run', 'resume', 'permission-probe') and not restores_run(args):   # ADR-12: actions that create state
             workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
+            required = dispatched_programs(args)
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,
-                                               args.gate_prompt, args.config)
+                                               args.gate_prompt, args.config, required=required,
+                                               gemini_bin=args.gemini_bin if 'gemini_bin' in required else None)
             if not issue:   # a binding issue keeps its own refusal; only the bound program is run, fake harness included
                 refuse_default_codex_model_on_old_cli(args, programs['codex_bin']['path'])
     except ValueError as exc:
