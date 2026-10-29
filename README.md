@@ -373,12 +373,14 @@ were removed with the legacy workflow and have no effect.
 ### Gemini (agy) as an optional third vendor
 
 `gemini` is an optional third vendor, driven by the Antigravity CLI `agy` (`--gemini-bin`, operator profile key
-`gemini_bin`, default `agy`). Installing agy and logging in (`agy login`) are yours; the personal Gemini CLI OAuth
-login no longer works. The defaults are unchanged (author Codex, reviewer Claude, gate = the author's vendor), so
-gemini runs only where the operator profile names it:
+`gemini_bin`, default `agy`). Installing agy and signing in are yours: agy has no `login` subcommand, so sign in
+on the first interactive `agy` run (over SSH agy stores the token in a file); the personal Gemini CLI OAuth login no
+longer works. The defaults are unchanged (author Codex, reviewer Claude, gate = the author's vendor), so gemini runs
+only where the operator profile or the CLI flags name it:
 
 - Roles: `reviewer_vendor: gemini` (the shadow and the reviewer's stage reviews follow it) and
-  `gate_vendor: gemini`. `author_vendor: gemini` is refused, a gemini role with `--strict` or
+  `gate_vendor: gemini`, or `--reviewer-vendor gemini` / `--gate-vendor gemini` with `--reviewer-model` /
+  `--gate-model`. `author_vendor: gemini` is refused, a gemini role with `--strict` or
   `"safety_mode": "strict"` is refused, and `permission-probe` with a gemini reviewer or gate is refused (efficient
   mode needs no probe).
 - Models: gemini has no default model, so `reviewer_model` / `gate_model` is required, for example
@@ -389,8 +391,9 @@ gemini runs only where the operator profile names it:
 - Read-only: agy runs with `--sandbox` and session-only settings that deny file writes, URLs and MCP and allow shell
   commands and file reads; a turn in which agy denies an action fails.
 - agy's `~/.gemini/antigravity-cli/settings.json` is snapshotted around each gemini turn like the other vendors'
-  global config: a change of only `trustedWorkspaces` or `model` (agy writes these itself) is a NOTE, any other change
-  holds. A changed `agy --version` between turns is a NOTE (agy updates itself).
+  global config: after a completed gemini turn, a change of only `trustedWorkspaces` or `model` (agy writes these
+  itself) is a NOTE and any other change holds; in the recovery of an uncertain (abandoned) gemini turn any change is
+  recorded as a NOTE. A changed `agy --version` between turns is a NOTE (agy updates itself).
 
 ### Natural language config examples
 
