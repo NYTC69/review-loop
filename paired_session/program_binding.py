@@ -12,10 +12,9 @@ def resolve_binary(value, workspace, path_env):
             Path(shutil.which(value, path=path_env) or workspace / value)).resolve()
 def _record(path):
     return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None}
-def snapshot(workspace, run_dir, author_tmp, codex_bin, claude_bin, gate_prompt, config_path,
-             gemini_bin=None, required=('codex_bin', 'claude_bin')):
-    """ADR-20 G1: codex_bin and claude_bin are always recorded, gemini_bin only when given; only the `required`
-    programs (the dispatched vendors') and the gate prompt must exist outside the author-writable roots."""
+def snapshot(workspace, run_dir, author_tmp, codex_bin, claude_bin, gate_prompt, config_path, gemini_bin=None):
+    """codex_bin and claude_bin are always bound (V317-FB); gemini_bin only when given (ADR-20 G1: a role runs gemini).
+    Every bound program and the gate prompt must exist outside the author-writable roots."""
     profile = workspace / Path(config_path or '.review-loop/paired-session.json').expanduser()
     roots = (workspace, Path(run_dir).resolve(), Path(author_tmp).resolve())
     if any(r == p or r in p.parents for p in (profile, profile.resolve()) for r in roots) and profile.is_file():
@@ -26,7 +25,6 @@ def snapshot(workspace, run_dir, author_tmp, codex_bin, claude_bin, gate_prompt,
                (('codex_bin', codex_bin), ('claude_bin', claude_bin), ('gemini_bin', gemini_bin)) if value is not None}
     records['gate_prompt'] = _record(Path(gate_prompt).resolve())
     for name, record in records.items():
-        if name not in (*required, 'gate_prompt'): continue
         path = Path(record['path'])
         if not record['sha256'] or path in roots or any(root in path.parents for root in roots):
             return records, f'configured {name} is missing or inside an author-writable root: {path}'

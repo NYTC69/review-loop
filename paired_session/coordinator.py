@@ -2918,12 +2918,11 @@ class Coordinator:
         return result
 
     def _program_snapshot(self):
-        """ADR-20 G1: require only the dispatched vendors' programs; gemini_bin is bound when a role runs gemini or the run froze it."""
-        required = dispatched_programs(self.args)
+        """ADR-20 G1: codex_bin and claude_bin as always; gemini_bin is bound and required when a role runs gemini or the run froze it."""
         frozen = (getattr(self, 'state', None) or {}).get('operator_programs') or {}
-        gemini = self.args.gemini_bin if 'gemini_bin' in (*required, *frozen) else None
+        gemini = self.args.gemini_bin if 'gemini_bin' in (*required_programs(self.args), *frozen) else None
         return program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin, self.args.claude_bin,
-                                self.args.gate_prompt, self.args.config, gemini_bin=gemini, required=required)
+                                self.args.gate_prompt, self.args.config, gemini_bin=gemini)
 
     def _vendor_binary(self, vendor: str) -> str:
         return vendor_entry({'codex': self.args.codex_bin, 'claude': self.args.claude_bin}, vendor)   # ADR-20 G1: gemini in B2
@@ -9744,9 +9743,10 @@ def vendor_by_role(args) -> dict:
     return {'author': author, 'reviewer': getattr(args, 'reviewer_vendor', None), 'gate': getattr(args, 'gate_vendor', None) or author}
 
 
-def dispatched_programs(args) -> tuple:
-    """ADR-20 G1: the operator programs a run must bind, those of the vendors its roles run on."""
-    return tuple(sorted({vendor + '_bin' for vendor in vendor_by_role(args).values() if vendor}))
+def required_programs(args) -> tuple:
+    """The operator programs a new run binds and requires: codex_bin and claude_bin always (V317-FB), and gemini_bin
+    only when a role runs gemini (ADR-20 G1), so installations without agy keep working."""
+    return ('claude_bin', 'codex_bin') + (('gemini_bin',) if 'gemini' in vendor_by_role(args).values() else ())
 
 
 def refuse_gemini_roles(args: argparse.Namespace) -> None:
@@ -10202,10 +10202,9 @@ def main(argv=None) -> int:
             refuse_gemini_dispatch(args)
         if args.action in ('run', 'resume', 'permission-probe') and not restores_run(args):   # ADR-12: actions that create state
             workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
-            required = dispatched_programs(args)
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,
-                                               args.gate_prompt, args.config, required=required,
-                                               gemini_bin=args.gemini_bin if 'gemini_bin' in required else None)
+                                               args.gate_prompt, args.config,
+                                               gemini_bin=args.gemini_bin if 'gemini_bin' in required_programs(args) else None)
             if not issue:   # a binding issue keeps its own refusal; only the bound program is run, fake harness included
                 refuse_default_codex_model_on_old_cli(args, programs['codex_bin']['path'])
     except ValueError as exc:

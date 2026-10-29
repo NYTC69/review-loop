@@ -93,7 +93,7 @@ class GeminiVendorTests(unittest.TestCase):
                 a = self.resolved(*flags)
                 rc.validate_role_models(a)
                 self.assertEqual((a.author_vendor, a.author_model), ('codex', rc.CODEX_DEFAULT_MODEL))
-                self.assertEqual(rc.dispatched_programs(a), tuple(sorted({'codex_bin', 'gemini_bin', a.reviewer_vendor + '_bin'})))
+                self.assertEqual(rc.required_programs(a), ('claude_bin', 'codex_bin', 'gemini_bin'))
                 with self.assertRaisesRegex(ValueError, B2.replace('(', r'\(').replace(')', r'\)')):
                     rc.refuse_gemini_dispatch(a)
 
@@ -167,31 +167,35 @@ class GeminiVendorTests(unittest.TestCase):
                 a = self.resolved(*GEMINI_REVIEWER, '--gate-vendor', 'gemini', '--gate-model', model)
                 self.assertEqual((a.gate_vendor, a.gate_model), ('gemini', model))
 
-    # ---- G1: bind only what is dispatched ----
+    # ---- G1: codex and claude are always bound (V317-FB); gemini_bin only when a role runs gemini ----
     def test_a_codex_and_claude_run_binds_no_agy(self):
         args = self.args('--gemini-bin', str(self.h.root / 'no-such-agy'))
         co = rc.Coordinator(args)
-        self.assertEqual(rc.dispatched_programs(co.args), ('claude_bin', 'codex_bin'))
+        self.assertEqual(rc.required_programs(co.args), ('claude_bin', 'codex_bin'))
         programs, issue = co._program_state()
         self.assertIsNone(issue)
         self.assertEqual(set(programs), {'codex_bin', 'claude_bin', 'gate_prompt', 'path_env'})
         self.assertEqual(co.state['operator_programs'], programs)
 
-    def test_only_the_dispatched_programs_are_required(self):
-        h, missing = self.h, str(self.h.root / 'no-such-cli')
-        def snap(codex, claude, **kw):
-            return rc.program_snapshot(h.workspace, h.run_dir, h.run_dir / 'author-tmp', codex, claude, rc.DEFAULT_GATE_PROMPT, None, **kw)
-        _, issue = snap(h.fake_codex_cli(), missing)   # the default keeps today's rule: both are required
-        self.assertIn('configured claude_bin is missing', issue)
-        programs, issue = snap(h.fake_codex_cli(), missing, required=('codex_bin',))
-        self.assertIsNone(issue)
-        self.assertIsNone(programs['claude_bin']['sha256'])   # still recorded, as before, but not required
-        self.assertNotIn('gemini_bin', programs)
-        _, issue = snap(h.fake_codex_cli(), h.fake_claude_cli(), gemini_bin=missing, required=('claude_bin', 'codex_bin', 'gemini_bin'))
-        self.assertIn('configured gemini_bin is missing', issue)
+    def test_an_all_codex_run_still_requires_claude_bin(self):
+        refused = self.main('run', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--claude-bin', str(self.h.root / 'no-such-claude'))
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('configured claude_bin is missing or inside an author-writable root', refused.stdout)
+        state = self.h.run_dir / 'state.json'   # as test_v317fb: refused before any turn
+        self.assertEqual(json.loads(state.read_text())['turns'] if state.exists() else [], [])
+
+    def test_a_gemini_role_requires_gemini_bin(self):
+        h = self.h
+        def snap(gemini_bin):
+            return rc.program_snapshot(h.workspace, h.run_dir, h.run_dir / 'author-tmp', h.fake_codex_cli(), h.fake_claude_cli(),
+                                       rc.DEFAULT_GATE_PROMPT, None, gemini_bin=gemini_bin)
+        self.assertEqual(rc.required_programs(self.resolved(*GEMINI_GATE)), ('claude_bin', 'codex_bin', 'gemini_bin'))
+        _, issue = snap(str(h.root / 'no-such-agy'))
+        self.assertIn('configured gemini_bin is missing or inside an author-writable root', issue)
         agy = executable(h.root / 'bin' / 'agy', '1.4.10')
-        programs, issue = snap(h.fake_codex_cli(), missing, gemini_bin=str(agy), required=('codex_bin', 'gemini_bin'))
+        programs, issue = snap(str(agy))
         self.assertIsNone(issue)
+        self.assertEqual(set(programs), {'codex_bin', 'claude_bin', 'gemini_bin', 'gate_prompt', 'path_env'})
         self.assertEqual(programs['gemini_bin']['path'], str(agy.resolve()))
 
     def test_a_gemini_bin_update_in_place_is_a_normal_update(self):
