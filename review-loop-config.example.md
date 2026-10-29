@@ -9,6 +9,8 @@
 # vendor keys in the workspace .review-loop/paired-session.json are refused.
 # reviewer_model / executor_model here are not applied (a warning when set to anything other than "" or inherit);
 # models come from the operator profile.
+# Operator profile vendors: codex, claude, and the optional gemini (Antigravity CLI agy, gemini_bin, default agy) for
+# reviewer_vendor / gate_vendor only, with reviewer_model / gate_model required; see README.md (Configuration).
 # Entry for fresh `/review-loop <work item>` (Claude) or the review-loop skill (Codex); default paired-session from v2.10.0.
 # "paired-session" (exact values only: since v2.13.0 "legacy" is refused, and anything else is warned about and treated as absent).
 # Fresh work, an existing plan (as the work item) and review-only requests (run --review-only) are routed; a legacy

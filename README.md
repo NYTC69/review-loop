@@ -370,6 +370,28 @@ print a warning; models come from the operator profile. The legacy-only keys `re
 `commit_message_prefix`, `cross_vendor_review`, `adversarial_gate_skip_paths` and `context_persist_threshold`
 were removed with the legacy workflow and have no effect.
 
+### Gemini (agy) as an optional third vendor
+
+`gemini` is an optional third vendor, driven by the Antigravity CLI `agy` (`--gemini-bin`, operator profile key
+`gemini_bin`, default `agy`). Installing agy and logging in (`agy login`) are yours; the personal Gemini CLI OAuth
+login no longer works. The defaults are unchanged (author Codex, reviewer Claude, gate = the author's vendor), so
+gemini runs only where the operator profile names it:
+
+- Roles: `reviewer_vendor: gemini` (the shadow and the reviewer's stage reviews follow it) and
+  `gate_vendor: gemini`. `author_vendor: gemini` is refused, a gemini role with `--strict` or
+  `"safety_mode": "strict"` is refused, and `permission-probe` with a gemini reviewer or gate is refused (efficient
+  mode needs no probe).
+- Models: gemini has no default model, so `reviewer_model` / `gate_model` is required, for example
+  `gemini-3.8-flash-medium` or any id `agy models` lists. agy also serves `claude-*` and `gpt-oss` ids; the vendor
+  is the CLI that runs the role, and the run records vendor and model. `allowed_models` accepts the key `gemini`.
+- Programs: `codex` and `claude` are still bound and required at run start; `agy` is bound and required only when a
+  role runs gemini.
+- Read-only: agy runs with `--sandbox` and session-only settings that deny file writes, URLs and MCP and allow shell
+  commands and file reads; a turn in which agy denies an action fails.
+- agy's `~/.gemini/antigravity-cli/settings.json` is snapshotted around each gemini turn like the other vendors'
+  global config: a change of only `trustedWorkspaces` or `model` (agy writes these itself) is a NOTE, any other change
+  holds. A changed `agy --version` between turns is a NOTE (agy updates itself).
+
 ### Natural language config examples
 
 ```yaml

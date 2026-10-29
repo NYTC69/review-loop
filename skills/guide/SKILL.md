@@ -62,6 +62,7 @@ such question counts as unanswered) refuses with the reason, whether the key is 
 Once the coordinator has started, a refusal or HOLD is reported. Roles come from the
 operator profile you name or `~/.config/review-loop/paired-session.json`;
 without one, Codex is the author and gate and Claude the reviewer.
+Gemini (Antigravity CLI `agy`) is an optional third vendor for the reviewer and the gate (README.md, Configuration).
 Runs are `efficient` by default: every sandbox applies, but no permission-probe
 PASS is required; `--strict` or `"safety_mode": "strict"` in the operator
 profile adds the probe gate. In both modes a reviewer turn that changes the

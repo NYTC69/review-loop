@@ -19,6 +19,8 @@ top-level `README.md` Quick Start.
 - **Claude CLI** — both `codex` and `claude` must be on PATH, whatever vendors the paired-session
   roles use: the coordinator binds both binaries at run start. Role selection in the paired-session
   operator profile does not remove either CLI requirement.
+- **Antigravity CLI (`agy`)** — optional; needed only when the operator profile names gemini for the reviewer
+  or the gate (see README.md, Configuration).
 - **GitHub CLI (`gh`)** — needed only to review a pull request (a PR number or URL).
 
 ## Install path: marketplace + CLI install

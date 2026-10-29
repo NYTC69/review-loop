@@ -56,7 +56,8 @@ Not on Codex:
   own run evidence and the current tree.
   See [the advisory rules](../../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
-  paired-session operator profile. Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
+  paired-session operator profile; gemini (Antigravity CLI `agy`) is an optional third vendor for the reviewer and
+  the gate (README.md, Configuration). Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
   `docs/protocol/paired-session-entry.md` (Profile and settings).
 - A review of existing code is a review-only run. With lifecycle on, `accept` normally makes one local commit (never a push);

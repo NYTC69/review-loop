@@ -32,7 +32,8 @@ absent; nothing falls back (there is no legacy route). A failed check refuses: p
 - Host: `uname -s` is not `Darwin` → `review-loop: paired-session needs macOS; Linux and other hosts are not supported` (no reason wrapper).
 - CLIs: both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
   resolved roles use: the coordinator binds both binaries at run start; a missing one is refused
-  with the reason `needs <cli> for paired-session program binding`.
+  with the reason `needs <cli> for paired-session program binding`. `agy` is needed only when a role runs
+  gemini; the coordinator checks it.
 - Outside-sandbox execution: the coordinator needs full host permission outside the Codex
   sandbox; if it cannot be granted, or the approval for a paired-session shell call is declined → HOLD
   with the reason, as the paired-session skill does.
