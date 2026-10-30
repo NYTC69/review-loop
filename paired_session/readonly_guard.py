@@ -133,9 +133,35 @@ def _only_cli_created_dir(workspace: Path, before: dict, after: dict) -> bool:
                for path, meta in before.items())
 
 
+INTERNAL_WORKSPACE_DIRS = ('.review-loop/runs', '.review-loop/codex-home')
+
+
+def _internal_entry(name: str) -> bool:
+    return any(name == root or name.startswith(root + '/') for root in INTERNAL_WORKSPACE_DIRS)
+
+
+def _ignored_entries(workspace: Path) -> list:
+    # Git collapses ignored directories. Expand only ancestors of our excluded roots,
+    # using Git again so tracked config.md and nonignored siblings remain outside this set.
+    def listing(prefix=None):
+        args = ['ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z']
+        if prefix is not None:
+            args += ['--', prefix + '/']
+        return [name.rstrip('/') for name in _git(workspace, *args).split('\0') if name]
+    entries = listing()
+    if '.review-loop' in entries:
+        entries.remove('.review-loop')
+        for child in (workspace / '.review-loop').iterdir():
+            name = child.relative_to(workspace).as_posix()
+            if not _internal_entry(name):
+                entries.extend(listing(name) if child.is_dir() and not child.is_symlink() else
+                               [name] if _git(workspace, 'check-ignore', '--', name, check=False) else [])
+    return sorted({name for name in entries if not _internal_entry(name)})
+
+
 def ignored_changes(workspace: Path, recorded: dict) -> list:
     """The recorded ignored entries (as git lists them; a collapsed directory is one entry) that changed or are gone."""
-    changed = {name for name, meta in (recorded.get('ignored_meta') or {}).items() if _lstat(workspace / name) != meta}
+    changed = {name for name, meta in (recorded.get('ignored_meta') or {}).items() if not _internal_entry(name) and _lstat(workspace / name) != meta}
     if '.claude' in changed and (before := recorded.get('ignored_claude')):
         after = _claude_listing(workspace)
         if after is not None and _only_cli_created_dir(workspace, before, after): changed.discard('.claude')
@@ -146,7 +172,7 @@ def capture(workspace: Path, keep: Path) -> dict:
     keep.mkdir(parents=True, exist_ok=True)
     index = _index_path(workspace)
     if index.exists(): shutil.copy2(index, keep / 'index')
-    ignored = [name.rstrip('/') for name in _git(workspace, 'ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z').split('\0') if name]
+    ignored = _ignored_entries(workspace)
     meta, deadline = {}, time.monotonic() + IGNORED_SECONDS
     for name in ignored[:IGNORED_LIMIT]:
         if time.monotonic() > deadline: break

@@ -930,7 +930,7 @@ TARGET_NAME = {'write_abs': 'w-abs.txt', 'write_rel': 'w-rel.txt', 'write_symlin
                'bash_context': 'b-ctx.txt', 'write_case': 'w-case.txt'}
 # Hash of exactly the Codex branch of _author_permission_probe (source minus the two Claude-dispatch lines), as of
 # P0-3a (7ebbf14). An intentional change to the Codex probe must update this hash.
-CODEX_PROBE_SHA256 = '53ee857e69245684b076600bc6c391ae02b587443cca1ff4b7687cd85d58dbb9'
+CODEX_PROBE_SHA256 = 'c4ee8e7b6f35a19bcc1f064e2f69cdc29ac45785f80b9f22a1bf81ed36fba4ec'
 
 
 class ClaudeAuthorProbeTests(unittest.TestCase):
@@ -1008,7 +1008,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(out['model_escape_failed_targets'], [])
         self.assertEqual(out['claude_version'], 'fake-claude 9.9')
         self.assertEqual((out['cleanup']['remaining'], out['cleanup']['errors'], out['cleanup']['base_removed']), ([], [], True))
-        self.assertEqual(list(co.run_dir.parent.glob(cap.TREE_PREFIX + '*')), [])
+        self.assertEqual(list(co.scratch_parent.glob(cap.TREE_PREFIX + '*')), [])
         self.assertEqual(co.context, co.run_dir / 'context')                      # the real context was only swapped out
         self.assertEqual(co.state['turns'][-1]['phase'], 'AUTHOR_PERMISSION_PROBE')
 
@@ -1045,11 +1045,11 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
 
     def test_the_probe_tree_is_fresh_0700_beside_run_dir_and_touches_no_sibling(self):
         co = self.co()
-        sibling_dir, sibling_file = co.run_dir.parent / 'keep-me', co.run_dir.parent / 'keep-me.txt'
+        sibling_dir, sibling_file = co.scratch_parent / 'keep-me', co.scratch_parent / 'keep-me.txt'
         sibling_dir.mkdir()
         (sibling_dir / 'inner').write_text('i')
         sibling_file.write_text('f')
-        stale = co.run_dir.parent / (cap.TREE_PREFIX + 'stale')                # a foreign leftover is not ours to remove
+        stale = co.scratch_parent / (cap.TREE_PREFIX + 'stale')                # a foreign leftover is not ours to remove
         stale.mkdir()
         seen, real_mkdtemp = [], tempfile.mkdtemp
         def spy(*args, **kwargs):
@@ -1059,13 +1059,13 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         with patch.object(rc.tempfile, 'mkdtemp', side_effect=spy):
             out = self.probe(co=co)[1]
         self.assertEqual(out['status'], 'PASS', out)
-        self.assertEqual([(Path(p).parent, mode, names) for p, mode, names in seen], [(co.run_dir.parent.resolve(), 0o700, [])])
+        self.assertEqual([(Path(p).parent, mode, names) for p, mode, names in seen], [(co.scratch_parent.resolve(), 0o700, [])])
         self.assertTrue(Path(seen[0][0]).name.startswith(cap.TREE_PREFIX))
         self.assertFalse(Path(seen[0][0]).exists())
         self.assertEqual((sorted(p.name for p in sibling_dir.iterdir()), sibling_file.read_text(), stale.is_dir()), (['inner'], 'f', True))
 
     def test_the_probe_tree_is_removed_on_every_exit_path(self):
-        def leftovers(co): return [p for p in co.run_dir.parent.glob(cap.TREE_PREFIX + '*')]
+        def leftovers(co): return [p for p in co.scratch_parent.glob(cap.TREE_PREFIX + '*')]
         for name, scenario, patches in (('timeout', None, ('invoke', RuntimeError('author CLI timed out'))),
                                         ('unknown', {'skip': ['bash_abs']}, None),
                                         ('fail', {'escape': ['write_abs']}, None),
@@ -1096,7 +1096,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         try:
             self.assertEqual((out['status'], out['claude_author_status'], out['cleanup']['base_removed']), ('FAIL', 'FAIL', False), out)
         finally:
-            for path in co.run_dir.parent.glob(cap.TREE_PREFIX + '*'):
+            for path in co.scratch_parent.glob(cap.TREE_PREFIX + '*'):
                 shutil.rmtree(path)
 
     def test_a_cli_error_is_a_fail_with_the_reason(self):
@@ -1458,7 +1458,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             with self.subTest(write=name):
                 try: _, out = self.fail_reason({'silent_write': [path]})
                 finally:
-                    for stray in (self.h.run_dir.parent / 'sibling-dropped.txt', Path(f'/tmp/paired-session-author-probe-silent-{os.getpid()}')):
+                    for stray in (self.co().scratch_parent / 'sibling-dropped.txt', Path(f'/tmp/paired-session-author-probe-silent-{os.getpid()}')):
                         stray.unlink(missing_ok=True)
                 self.assertTrue(any(Path(path).name in t for t in out['model_escape_failed_targets']), out)
         _, out = self.fail_reason({'restore_sentinel': True})                                       # modified, then restored: the mtime gives it away
@@ -1612,7 +1612,7 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
             self.assertIn('rmtree-not-symlink-safe', str(out['cleanup']['errors']))
             rmtree.assert_not_called()
         finally:
-            for path in co.run_dir.parent.glob(cap.TREE_PREFIX + '*'): shutil.rmtree(path)
+            for path in co.scratch_parent.glob(cap.TREE_PREFIX + '*'): shutil.rmtree(path)
 
     def test_a_link_row_needs_the_link_to_exist_and_passes_on_an_unchanged_sentinel(self):          # P0-3c F7
         for denied in (['link_symlink'], ['link_hardlink'], ['link_symlink', 'link_hardlink']):
@@ -1653,7 +1653,8 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertEqual(self.probe({'replace_all_false': True})[1]['status'], 'PASS')              # a default-valued replace_all is harmless
 
     def test_documented_residual_a_silent_write_inside_an_existing_sibling_dir_still_passes_but_a_sibling_file_does_not(self):   # P0-3c R1 D2, P0-3d G2
-        shared, keep = self.h.run_dir.parent / 'shared-run', self.h.run_dir.parent / 'keep.txt'
+        probe_parent = self.co().scratch_parent
+        shared, keep = probe_parent / 'shared-run', probe_parent / 'keep.txt'
         shared.mkdir()
         keep.write_text('original-content')
         self.addCleanup(shutil.rmtree, shared, True)

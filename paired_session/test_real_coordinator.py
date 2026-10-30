@@ -675,7 +675,7 @@ class RealCoordinatorTests(unittest.TestCase):
         config = self.test_home / '.codex/config.toml'
         original = config.read_text()
         before = co.author_flags()['codex_config_sha256']
-        for path in (self.run_dir / 'paired-session-author-probe-abc' / 'workspace', self.workspace):
+        for path in (co.scratch_base / 'paired-session-author-probe-abc' / 'workspace', self.workspace):
             with config.open('a') as handle:
                 handle.write('\n[projects.' + json.dumps(str(path)) + ']\ntrust_level = "trusted"\n')
         self.assertEqual(co.author_flags()['codex_config_sha256'], before)
@@ -721,7 +721,7 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertIn('-P', invocation['args'])
         self.assertEqual(denied['copied_policy_files'], ['config.toml'])
         self.assertEqual(denied['source_config_sha256'], denied['copy_config_sha256'])
-        self.assertEqual(Path(invocation['codex_home']).parent, self.run_dir)
+        self.assertEqual(Path(invocation['codex_home']).parent, co.scratch_base)
         self.assertFalse(Path(invocation['codex_home']).exists())
         self.assertEqual(invocation['codex_home_entries'], ['config.toml'])
         self.assertIn('--log-denials', invocation['args'])
@@ -933,6 +933,8 @@ if args and args[0] == "sandbox":
     fs = config.get("permissions." + profile + ".filesystem", "")
     home = Path(os.environ.get("CODEX_HOME", "/nonexistent")).resolve()
     test_root = Path(os.environ.get("FAKE_CODEX_TEST_ROOT", "/nonexistent")).resolve()
+    scratch_home = (home.name.startswith("codex-sandbox-home-") and
+                    home.parent == Path(os.environ.get("TMPDIR", "/nonexistent")).resolve().parent)
     expected_fs = {{':root': 'read', ':tmpdir': 'write',
                    **{{str(Path(root).resolve()): 'write' for root in config.get('sandbox_workspace_write.writable_roots', [])}},
                    ':workspace_roots': {{'.': 'write', '.git': 'read', '.agents': 'read', '.codex': 'read', '.aws': 'read'}}}}
@@ -943,7 +945,7 @@ if args and args[0] == "sandbox":
             config.get("sandbox_workspace_write.network_access") is not False or
             config.get("sandbox_workspace_write.exclude_slash_tmp") is not True or
             config.get("sandbox_workspace_write.exclude_tmpdir_env_var") is not False or
-            test_root not in home.parents or not (home / "config.toml").is_file()):
+            (test_root not in home.parents and not scratch_home) or not (home / "config.toml").is_file()):
         print("error: unsupported synthetic author policy", file=sys.stderr); sys.exit(2)
     target = Path(command[-1]).resolve() if command else None
     cwd = Path(args[args.index("-C") + 1]).resolve() if "-C" in args else Path.cwd().resolve()
@@ -4693,7 +4695,7 @@ sys.exit(result.returncode)
                             for name in ('external_tmpdir_denied', 'slash_tmp_denied')))
         invocations = [json.loads(line) for line in sandbox_log.read_text().splitlines()]
         self.assertEqual(len(invocations), 4)
-        expected_tmpdir = self.run_dir / 'author-tmp'
+        expected_tmpdir = Path(json.loads((self.run_dir / 'state.json').read_text())['scratch_root']) / 'author-tmp'
         for invocation in invocations:
             self.assertIn('--log-denials', invocation['args'])
             self.assertEqual(invocation['tmpdir'], str(expected_tmpdir))
@@ -6578,12 +6580,12 @@ sys.exit(result.returncode)
         self.assertTrue(any('resume' in row['command'] for row in authors))
         for row in authors:
             command = row['command']
-            self.assertEqual(row['environment_overrides']['TMPDIR'], str(self.run_dir / 'author-tmp'))
+            self.assertEqual(row['environment_overrides']['TMPDIR'], str(Path(state['scratch_root']) / 'author-tmp'))
             self.assertIn('--ignore-rules', command)
             self.assertIn('sandbox_mode="workspace-write"', command)
             self.assertIn('approval_policy="never"', command)
             for setting in ('sandbox_workspace_write.writable_roots=' +
-                            json.dumps([str((self.run_dir / 'author-tmp').resolve())]),
+                            json.dumps([str((Path(state['scratch_root']) / 'author-tmp').resolve())]),
                             'sandbox_workspace_write.exclude_tmpdir_env_var=false',
                             'sandbox_workspace_write.exclude_slash_tmp=true'):
                 self.assertIn(setting, command)

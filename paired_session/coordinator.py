@@ -2611,10 +2611,18 @@ class Coordinator:
         self.workspace = Path(args.workspace).expanduser().resolve()
         self.workitem = Path(args.workitem).expanduser().resolve()
         self.run_dir = Path(args.run_dir).expanduser().resolve()
+        if saved_state is None:
+            prepare_run_directory(self.workspace, self.run_dir, create_ignore=args.action == 'run')
         self.global_config_home = Path.home()
         if not Path(codex_home_text := os.environ.get('CODEX_HOME') or str(Path.home() / '.codex')).expanduser().is_absolute(): raise ValueError('CODEX_HOME must be absolute so global Codex config changes can be monitored')
         self.global_codex_home = Path(codex_home_text).expanduser().resolve()
-        self.author_temp_dir = self.run_dir / 'author-tmp'
+        self.scratch_root = (Path(saved_state.get('scratch_root', str(self.run_dir))) if saved_state is not None
+                             else new_scratch_root(self.run_dir))
+        if saved_state is not None and 'scratch_root' in saved_state:
+            self.scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not winplat.check_private_dir(self.scratch_root):
+                raise ValueError('scratch root must be a private directory: ' + str(self.scratch_root))
+        self.author_temp_dir = self.scratch_root / 'author-tmp'
         self._probe_sandbox_commands = None
         self._probe_env_names = None   # FIELD-10: set only while probe_passed() compares with the probe's own env-derived names
         self.rounds = self.run_dir / 'rounds'
@@ -2729,6 +2737,7 @@ class Coordinator:
             self.internal.mkdir(exist_ok=True)
             atomic_text(self.context / 'workitem.md', self.workitem.read_text(encoding='utf-8'))
             self.state = {
+                'scratch_root': str(self.scratch_root),
                 'version': STATE_VERSION, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
                 'workspace': str(self.workspace), 'workitem': str(self.workitem),
                 'config': frozen_config,
@@ -3102,7 +3111,7 @@ class Coordinator:
             flags['ignore_execpolicy_rules'] = True
             flags['codex_plugins_argv'] = list(CODEX_PLUGINS_OFF)
             flags['codex_readonly_profile'] = codex_readonly_profile_args()   # b295-f1: a new digest, so an older probe PASS or cache entry stops matching
-            flags['scratch_tmp'] = str(self.run_dir / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
+            flags['scratch_tmp'] = str(self.scratch_base / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
         return flags
 
     def author_flags(self) -> dict:
@@ -3153,7 +3162,7 @@ class Coordinator:
     def _codex_policy_digest(self) -> Optional[str]:
         try: text = self._codex_config_bytes().decode()
         except (OSError, UnicodeError): return None
-        roots = '|'.join(re.escape(path) for path in dict.fromkeys([str(self.workspace), *_codex_trust_paths(self.workspace)])) + '|' + re.escape(str(self.run_dir)) + r'/paired-session-author-probe-[^"]+/workspace'
+        roots = '|'.join(re.escape(path) for path in dict.fromkeys([str(self.workspace), *_codex_trust_paths(self.workspace)])) + '|' + re.escape(str(self.scratch_base)) + r'/paired-session-author-probe-[^"]+/workspace'
         raw = re.sub(r'(?m)^\[projects\."(?:' + roots + r')"\]\ntrust_level = "trusted"\n', '', text)
         return hashlib.sha256('\n'.join(line for line in raw.splitlines() if line.strip()).encode()).hexdigest()
 
@@ -3349,7 +3358,7 @@ class Coordinator:
             },
         }
 
-    def _claude_os_probe_path(self, role: str = 'probe') -> Path: return self.run_dir.parent / ('.paired-session-os-probe-' + hashlib.sha256((str(self.run_dir) + ('|gate-probe' if role == 'gate-probe' else '')).encode()).hexdigest()[:16])   # G-a K2: the gate probe's OS-only target differs from the reviewer probe's
+    def _claude_os_probe_path(self, role: str = 'probe') -> Path: return self.scratch_parent / ('.paired-session-os-probe-' + hashlib.sha256((str(self.run_dir) + ('|gate-probe' if role == 'gate-probe' else '')).encode()).hexdigest()[:16])   # G-a K2: the gate probe's OS-only target differs from the reviewer probe's
 
     def author_flags_digest(self) -> str:
         raw = json.dumps(self.author_flags(), sort_keys=True, separators=(',', ':')).encode()
@@ -4773,7 +4782,7 @@ class Coordinator:
         before any dispatch, so a change after this check is not silently taken into the next turn's baseline)."""
         verified = {}
         scratch = (receipt.get('environment_overrides') or {}).get('TMPDIR')
-        if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.run_dir / 'role-tmp':
+        if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.scratch_base / 'role-tmp':
             self._drop_scratch(Path(scratch))   # b295-f1: the uncertain turn's child is stopped before it is archived
         if receipt.get('vendor') == 'claude' and receipt.get('global_claude_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
@@ -6178,13 +6187,22 @@ class Coordinator:
                     rollout_stream.close()
                 return
 
+    @property
+    def scratch_base(self) -> Path:
+        # Objects built by older API callers/tests, like old states, retain the original layout.
+        return getattr(self, 'scratch_root', self.run_dir)
+
+    @property
+    def scratch_parent(self) -> Path:
+        return self.scratch_base if self.scratch_base != self.run_dir else self.run_dir.parent
+
     def _scratch_root(self, role: str) -> Optional[Path]:
         """b295-f1 FIELD-1: a fresh 0700 temp root under run_dir/role-tmp for one Codex read-only dispatch; never the workspace, never the
         author's roots (workspace, author-tmp), never shared. Under the run lease one dispatch runs at a time, so a leftover is stale.
         b296-f1b: role-tmp must be a real 0700 directory we own (never a link), and everything is created and removed through it no-follow."""
         if role not in READONLY_SCRATCH_ROLES or self._role_vendor(role) != 'codex':
             return None
-        base = self.run_dir / 'role-tmp'
+        base = self.scratch_base / 'role-tmp'
         try: os.mkdir(base, 0o700)
         except FileExistsError: pass
         name = f"{self.state['sequence'] + 1:03d}-{role}"   # the sequence _invoke_once assigns
@@ -6248,7 +6266,7 @@ class Coordinator:
     @contextmanager
     def _role_tmp_fd(self):
         """b296-f1b: an O_NOFOLLOW handle on run_dir/role-tmp, refused unless it is a real directory owned by us with mode 0700."""
-        base = self.run_dir / 'role-tmp'
+        base = self.scratch_base / 'role-tmp'
         if winplat.IS_WINDOWS:   # WI-WIN W4b: no O_DIRECTORY / O_NOFOLLOW / dir_fd; a real directory (no link, no reparse point)
             # instead of 0700 + uid, wherever the run dir lives (a run dir on another drive works); yields None, not an fd
             try: real = winplat.real_dir(os.lstat(base))
@@ -6270,7 +6288,7 @@ class Coordinator:
     def _drop_scratch(self, root: Path) -> None:
         """Remove one scratch root fd-relative and never following a link: a link inside is removed as a link; a leftover in role-tmp
         that is not a real directory we own is refused (b296-f1b)."""
-        if root.parent != self.run_dir / 'role-tmp':
+        if root.parent != self.scratch_base / 'role-tmp':
             raise RuntimeError('refusing to remove a path outside role-tmp: ' + str(root))
         if not os.path.lexists(root.parent):
             return   # R1 LOW-1: no role-tmp, nothing to remove (a link or another type there is still refused below)
@@ -6441,7 +6459,7 @@ class Coordinator:
             if capability['status'] != 'PASS':
                 raise RuntimeError(codex_capability_guard.refusal(capability, self.global_codex_home))
         if role == 'author' and self._role_vendor(role) == 'codex':
-            self.author_temp_dir.mkdir(parents=True, exist_ok=True)
+            self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
         limit = self.args.max_invocations - self.state.get('q_reserved', 0)
         if self.state['config'].get('review_report'):
@@ -6508,7 +6526,7 @@ class Coordinator:
         vendor_prefix = 'codex_' if receipt['vendor'] == 'codex' else 'claude_'
         receipt['global_' + receipt['vendor'] + '_before'] = {key: value['sha256'] for key, value in vendor_config_before.items() if key.startswith(vendor_prefix)}
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
-        watched = (run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
+        watched = (run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
                    if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR') else None)
         process = job = None
         try:
@@ -6621,7 +6639,7 @@ class Coordinator:
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
-        after_inodes = run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix) if watched is not None else None   # before the coordinator writes again
+        after_inodes = run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp'}, prefix) if watched is not None else None   # before the coordinator writes again
         control_after = git_control_state(snapshot_workspace, control_dirs)[1] if role == 'author' else {}
         control_changed = sorted(k for k in {*control_before, *control_after} if control_before.get(k) != control_after.get(k))
         unreadable = control_before.get('!unreadable') or control_after.get('!unreadable')
@@ -8683,7 +8701,7 @@ class Coordinator:
                    'policy_observed': False, 'cleanup_ok': True, 'stdout': '', 'stderr': ''}
         try:
             source = self._codex_config_bytes()
-            with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.run_dir) as sandbox_home:
+            with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.scratch_base) as sandbox_home:
                 copied = Path(sandbox_home) / 'config.toml'
                 if copied.write_bytes(source) != len(source) or copied.read_bytes() != source:
                     raise OSError('synthetic config copy differs from source')
@@ -8741,7 +8759,7 @@ class Coordinator:
             if self.state.get('config', {}).get('lifecycle_mode') == 'on':
                 self._verify_frozen_role_dispatch()
             # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
-            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.run_dir.parent)).resolve()
+            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.scratch_parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
             for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
             (ws / 'tracked.txt').write_text('probe baseline\n')
@@ -8851,8 +8869,8 @@ class Coordinator:
                     'st_ctime_ns': info.st_ctime_ns, 'st_nlink': info.st_nlink,
                     'listing': sorted(os.listdir(path))}
         try:
-            self.author_temp_dir.mkdir(parents=True, exist_ok=True)
-            with nullcontext(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir)) as base_text:
+            self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with nullcontext(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.scratch_base)) as base_text:
                 base = Path(base_text)
                 workspace = base / 'workspace'
                 workspace.mkdir()
@@ -9097,7 +9115,7 @@ class Coordinator:
         if Path(tempfile.gettempdir()).resolve() not in (Path('/tmp').resolve(), Path('/private/tmp')):
             roots['user_tmp'] = Path(tempfile.gettempdir())
         targets = {label: (root / name, 'printf probe > ' + shlex.quote(str(root / name))) for label, root in roots.items()}
-        targets['role_tmp'] = (self.run_dir / 'role-tmp' / name, f'printf probe > "$TMPDIR/../{name}"')
+        targets['role_tmp'] = (self.scratch_base / 'role-tmp' / name, f'printf probe > "$TMPDIR/../{name}"')
         source = self.run_dir / ('paired-session-link-source-' + tag)
         source.write_text('link source\n')
         targets['hardlink'] = (source, f'ln {shlex.quote(str(source))} "$TMPDIR/paired-session-link-probe"')
@@ -10008,6 +10026,48 @@ def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: 
 CLAUDE_CLI_ALIASES = {'default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan', 'opus[1m]', 'sonnet[1m]'}
 
 
+def prepare_run_directory(workspace: Path, run_dir: Path, create_ignore: bool = False) -> None:
+    """RR1: only the ignored .review-loop/runs subtree may hold in-workspace state."""
+    workspace, run_dir = workspace.resolve(), run_dir.resolve()
+    allowed = workspace / '.review-loop' / 'runs'
+    inside = run_dir == workspace or workspace in run_dir.parents
+    if inside and allowed not in run_dir.parents:
+        raise ValueError('--run-dir must be outside --workspace (or use gitignored .review-loop/runs/)')
+    runs = next((p for p in run_dir.parents if p.name == 'runs' and p.parent.name == '.review-loop'), None)
+    repo = git_work_tree_root(runs) if runs else None
+    if create_ignore and repo is not None:
+        ignore = repo / '.review-loop' / '.gitignore'
+        ignore.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with ignore.open('x', encoding='utf-8', newline='\n') as stream:
+                stream.write('*\n!config.md\n')
+        except FileExistsError:
+            pass
+    if inside or create_ignore and repo is not None:
+        owner = workspace if inside else repo
+        proc = subprocess.run(candidate_tree.git_command('check-ignore', '-q', '--', str(run_dir), cwd=owner),
+                              cwd=owner, env=candidate_tree.git_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise ValueError(f'{run_dir} is not gitignored in {owner}')
+
+
+def new_scratch_root(run_dir: Path) -> Path:
+    """Stable across resume, private, and outside every Git work tree even with a repo-local TMPDIR."""
+    parents = [winplat.temp_root(), Path(tempfile.gettempdir())]
+    if not winplat.IS_WINDOWS:
+        parents.append(Path('/tmp'))
+    parent = next((p.resolve() for p in parents if git_work_tree_root(p) is None), None)
+    if parent is None:
+        raise ValueError('no scratch temp root outside a git work tree')
+    user_root = parent / ('review-loop-' + winplat.user_token())
+    root = user_root / hashlib.sha256(str(run_dir.resolve()).encode()).hexdigest()[:32]
+    for path in (user_root, root):
+        path.mkdir(mode=0o700, exist_ok=True)
+        if not winplat.check_private_dir(path):
+            raise ValueError(f'scratch directory {path} must be private (0700)')
+    return root
+
+
 def git_work_tree_root(path: Path) -> Optional[Path]:
     """FIELD-28: the nearest enclosing git work tree of `path` (a `.git` directory or file), or None. The role TMPDIRs sit
     under the run directory, so a project that refuses scratch space inside a repository falls back to /tmp there."""
@@ -10188,7 +10248,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and not os.environ.get('CODEX_HOME')):   # HYGIENE-1: the 2026-10-06 P0 cause (CODEX_HOME left unset); a warning only
         print('WARNING: CODEX_HOME is unset, so Codex uses the default ~/.codex: concurrent Codex runs on the default home write '
               'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
-    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.run_dir)):   # FIELD-28, a warning only
+    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.scratch_base)):   # FIELD-28, a warning only
         print(f'WARNING: the run directory {co.run_dir} is inside the git repository {repo}; tools and test suites that refuse '
               'scratch space inside a repository may fall back to /tmp, which the Codex read-only sandbox denies. Put the run root '
               'outside any repository.', file=sys.stderr)
@@ -10411,8 +10471,10 @@ def main(argv=None) -> int:
         return 2
     workspace = Path(args.workspace)
     run_dir = Path(args.run_dir)
-    if run_dir == workspace or workspace in run_dir.parents:
-        print('REFUSED: --run-dir must be outside --workspace')
+    try:
+        prepare_run_directory(workspace, run_dir, create_ignore=args.action == 'run' and not restores_run(args))
+    except ValueError as exc:
+        print('REFUSED: ' + str(exc))
         return 2
     if args.action == 'note' and not (run_dir / 'state.json').is_file():
         print('REFUSED: note requires an existing coordinator run')
