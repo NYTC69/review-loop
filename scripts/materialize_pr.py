@@ -4,8 +4,9 @@
 Each head/base records its OID, source and fetch ref for later materialization.
 Pins have exactly oid, source and fetch_ref (null for unnamed commits).
 Resolution is read-only; errors refuse rather than selecting a local diff.
-With --root the pinned head and base are fetched into a self-contained clone under <root>/pr/<UUID>/, verified, and
-checked out detached (paired_session/docs/review-pr-port.md §2.2); --remove deletes only such a clone.
+With --root (optionally followed by an explicit root) the pinned head and base are fetched into a self-contained clone under <root>/pr/<UUID>/, verified, and
+checked out detached. The default root is the main project checkout's .review-loop/ (or the reported state-root fallback).
+Without --root, resolve pins only. See paired_session/docs/review-pr-port.md §2.2; --remove deletes only such a clone.
 """
 from __future__ import annotations
 
@@ -21,6 +22,11 @@ import sys
 import tempfile
 import uuid
 from urllib.parse import urlsplit
+
+try:
+    from scripts.project_paths import default_root, ensure_ignore, project_repo
+except ModuleNotFoundError:  # direct script invocation
+    from project_paths import default_root, ensure_ignore, project_repo
 
 
 class ResolutionError(ValueError):
@@ -284,7 +290,7 @@ def on_branch(dest: Path, oid: str) -> bool:
         return False
 
 
-def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -> dict:
+def materialize(resolution: dict, root: str | Path | None = None, run_id: str | None = None) -> dict:
     """LG2-d2 (§2.2): clone the target into <root>/pr/<UUID>/, fetch the pinned head and base into refs/review/head and
     refs/review/base (each from its own source; by fetch_ref, or by OID when it is null), verify both OIDs, require
     exactly one merge base, and check out the head detached. Every git call keeps the d1 environment protections. On
@@ -296,10 +302,19 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
     run_id = run_id or uuid.uuid4().hex
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise MaterializeError("invalid run id")
+    root = default_root(operator) if root is None else Path(root)
+    repo = project_repo(operator)
+    permitted = repo / ".review-loop" / "pr" if repo is not None else None
     parent = (Path(root).resolve() / "pr").resolve()   # a `pr` symlink is followed before the check below
-    for area in operator_areas(operator):   # §2.2: the operator repository is only read
-        if parent == area or area in parent.parents:
+    for area in operator_areas(operator):   # only the project-local PR subtree may hold clones
+        if (parent == area or area in parent.parents) and parent != permitted:
             raise MaterializeError("--root lies inside the operator repository")
+    if parent == permitted:
+        ensure_ignore(repo)
+        try:
+            command(["git", "check-ignore", "-q", "--", str(parent / run_id)], repo)
+        except ResolutionError as exc:
+            raise MaterializeError("project PR root is not gitignored") from exc
     parent.mkdir(parents=True, exist_ok=True)
     dest = parent / run_id
     dest.mkdir()   # refuses an existing directory; this call made it, so a failure below may delete it whole
@@ -371,7 +386,7 @@ def remove(directory: str | Path) -> str:
 
 
 def resolve_and_materialize(repo: str | Path, value: str, base: str | None, repository: str | None,
-                            root: str | Path) -> dict:
+                            root: str | Path | None = None) -> dict:
     """§2.1: a pin that moved between resolution and fetch is re-resolved once, then refused."""
     for attempt in (1, 2):
         resolution = resolve(repo, value, base, repository)
@@ -393,7 +408,7 @@ def main() -> int:
     parser.add_argument("--repo", default=".")
     parser.add_argument("--repository", "-R")
     parser.add_argument("--base")
-    parser.add_argument("--root", help="materialize under <root>/pr/<UUID>/ (LG2-d2)")
+    parser.add_argument("--root", nargs="?", const="", help="materialize under <root>/pr/<UUID>/; omitted value uses main checkout .review-loop/")
     parser.add_argument("--remove", metavar="DIR", help="delete a clone made by --root (its marker is required)")
     args = parser.parse_args()
     if bool(args.input) == bool(args.remove):
@@ -401,8 +416,8 @@ def main() -> int:
     try:
         if args.remove:
             result = {"removed": remove(args.remove)}
-        elif args.root:
-            result = resolve_and_materialize(args.repo, args.input, args.base, args.repository, args.root)
+        elif args.root is not None:
+            result = resolve_and_materialize(args.repo, args.input, args.base, args.repository, args.root or None)
         else:
             result = resolve(args.repo, args.input, args.base, args.repository)
     except (ResolutionError, OSError) as exc:   # an OSError (a path replaced mid-run) refuses the same way

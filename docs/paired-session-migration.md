@@ -1,7 +1,7 @@
 # Migrating from `/review-loop` to paired-session (v2.10.0 default entry)
 
 ## What paired-session is
-paired-session is a coordinator (`bin/paired-session`) that runs one author and one reviewer through PLAN and EXEC, applies fresh shadow/adversarial checks, and then, with `lifecycle_mode=on`, runs finish, quality polish, docs and security turns before DONE (acceptance pending). It owns isolated run artifacts outside the workspace, invocation limits and a permission probe. See [`paired_session/README.md`](../paired_session/README.md); the entry-switch design is [`paired_session/docs/v2.10-entry-switch.md`](../paired_session/docs/v2.10-entry-switch.md).
+paired-session is a coordinator (`bin/paired-session`) that runs one author and one reviewer through PLAN and EXEC, applies fresh shadow/adversarial checks, and then, with `lifecycle_mode=on`, runs finish, quality polish, docs and security turns before DONE (acceptance pending). It owns gitignored run artifacts under `<repo>/.review-loop/runs/` and external private scratch, invocation limits and a permission probe. See [`paired_session/README.md`](../paired_session/README.md); the entry-switch design is [`paired_session/docs/v2.10-entry-switch.md`](../paired_session/docs/v2.10-entry-switch.md).
 
 ## Status in 3.0.0: runs saved by 2.13.x are refused
 - The saved run format changed (state `version` 2). A run saved by review-loop 2.13.x or earlier is refused by every run command (`resume`, `accept`, `reject`, `note`, `abort`, ...) with one line: start a new run, or finish or abort it with review-loop 2.13.x (for example a pinned copy at `~/paired-runs/review-loop-v2.13.<n>`). `status` still reads it. Accept or abort open runs before upgrading.

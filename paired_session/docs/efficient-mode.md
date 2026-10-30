@@ -1,5 +1,15 @@
 # Efficient safety mode (D-EFF, owner 2026-10-04, amended)
 
+The plugin does not create `CODEX_HOME`. For an isolated home, provision
+`<repo>/.review-loop/codex-home/<lane>/` and select it before starting the session.
+Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
+and take its parent when it ends in `/.git`. Persistent run output defaults to
+`<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo.
+When the main checkout cannot be resolved (not a Git repo or bare repo), the run root
+falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
+Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
+on the workspace while a run is active: it would delete the run.
+
 Owner decision D-EFF, amended:
 > "A类+B类的…这些要求还是要在以后的review-loop里遵守，但是c类的严格沙箱要求，不需要再加固或者花时间开发了"
 
@@ -37,7 +47,8 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
-- **A(b):** the run dir is not writable by any role. The author's TMPDIR, `run_dir/author-tmp`, holds no records.
+- **A(b):** the run dir is not writable by any role. The author's TMPDIR, `<scratch_root>/author-tmp` outside any repo, holds no records
+  (legacy saved runs retain `run_dir/author-tmp`).
 
 **Native Windows exception (v3.3.0, ADR-20 D1).** Claude Code has no Bash sandbox on native Windows, so there
 `_claude_sandbox_settings` sets `sandbox.enabled` and `sandbox.failIfUnavailable` to false; the rest of the settings
@@ -123,9 +134,10 @@ A workspace below the repository top is not a case: the coordinator requires `.g
   file outside the recorded entries, are not detected.
 - The capture is bounded (`IGNORED_LIMIT` entries, `IGNORED_SECONDS`). Past either bound the receipt says `ignored set too large:
   not checked`.
-- A CLI home or cache the CLI writes to inside an ignored workspace path (for example `CODEX_HOME`, `__pycache__`, or a test
+- A CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__` or a test
   runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write) HOLDs every
-  read-only turn, in both modes. Keep such homes and caches outside the workspace.
+  read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/` and `.review-loop/codex-home/`
+  are excluded from workspace scans, so the recommended isolated homes may live there.
 
 **An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The
 unrestored record keeps the pre-turn baseline, and dispatch and accept refuse until the workspace matches it again.

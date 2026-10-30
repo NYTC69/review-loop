@@ -20,7 +20,7 @@ Then display the following guide to the user, replacing `{VERSION}` with the ver
 
 review-loop entry (resolves `entry`, runs the stage A checks)
 │
-└── paired-session coordinator (run directory outside the product worktree)
+└── paired-session coordinator (run directory under <repo>/.review-loop/runs/)
     ├── PLAN   author drafts the plan → independent reviewer → iterate
     ├── EXEC   author implements → reviewer + shadow review → iterate
     ├── GATE   adversarial gate

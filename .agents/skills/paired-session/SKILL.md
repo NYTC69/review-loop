@@ -37,7 +37,7 @@ This file adds only the Codex host rules:
   execution failure: a declined or ungranted outside-sandbox approval: HOLD with
   the reason, on every entry and invocation (nothing falls back).
 - Outside-sandbox execution: the coordinator spawns provider CLIs and writes to
-  `$CODEX_HOME` outside the product workspace; execute each invocation below
+  the selected `$CODEX_HOME`; execute each invocation below
   with the host's full filesystem/network permission, outside the current
   Codex sandbox, and never inside the sandbox.
 - Long-command form: every invocation that can dispatch model turns
@@ -52,10 +52,16 @@ This file adds only the Codex host rules:
   stays ACTIVE; a report run ends in REPORTED. A probe's result is
   `RUN_DIR/permission-probe.json`; end the detached command only with `stop`
   (`paired_session/docs/detach.md`).
-- Run directory: `$CODEX_HOME/state/paired-session/runs/<task id>`, created by
-  the first invocation, which writes the work item there. Resolve `PLUGIN_ROOT`
-  again inside each invocation. Write launcher logs under the run root's
-  `logs/` (`$CODEX_HOME/state/paired-session/logs/`), not next to the run dir.
+- Run directory: default to `<repo>/.review-loop/runs/<UUID>/`, where `<repo>` is the main
+  checkout resolved by `git rev-parse --path-format=absolute --git-common-dir` and its parent
+  when it ends in `/.git`. A lane's output therefore lives in the main checkout.
+  `scripts/project_paths.py` resolves this root and creates `.review-loop/.gitignore`
+  (`*`, `!config.md`) only when missing. Not a Git repo or bare repo: report fallback to
+  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG uses `$HOME/.local/state`).
+  An explicit operator-chosen run dir wins; existing runs resume at their original `--run-dir`, without migration.
+  The plugin does not create `CODEX_HOME`. Write launcher logs under the root's `logs/`.
+  Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x`
+  on the workspace while a run is active: it would delete the run.
   Read a launcher log's last lines only when a polled command ends without its
   final coordinator line (the shared contract's Work item section).
 - Default (efficient): no permission probe; the first invocation below starts
@@ -79,7 +85,10 @@ WORKSPACE='/absolute/path/to/the-selected-dedicated-worktree'
 WORKSPACE="$(cd "$WORKSPACE" && pwd -P)" || stage_a 'selected workspace does not exist'
 test "$(git -C "$WORKSPACE" rev-parse --show-toplevel)" = "$WORKSPACE" || stage_a 'selected workspace is not a Git worktree root'
 TASK_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-RUN_DIR="$CODEX_HOME/state/paired-session/runs/$TASK_ID"
+if [ -z "${RUN_DIR:-}" ]; then
+  RUN_ROOT="$(python3 "$PLUGIN_ROOT/scripts/project_paths.py" "$WORKSPACE")" || stage_a 'cannot resolve the run root'
+  RUN_DIR="$RUN_ROOT/runs/$TASK_ID"
+fi
 WORKITEM="$RUN_DIR/WORKITEM.md"
 mkdir -p "$RUN_DIR" || stage_a 'cannot create the run directory'
 cat > "$WORKITEM" <<'PAIRED_SESSION_WORKITEM' || stage_a 'cannot write the work item'
@@ -147,7 +156,11 @@ $Workspace = 'C:\absolute\path\to\the-selected-dedicated-worktree'
 try { $Workspace = (Resolve-Path -LiteralPath $Workspace).ProviderPath } catch { Stage-A 'selected workspace does not exist' }
 $Top = git -C $Workspace rev-parse --show-toplevel
 if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top) -ne [IO.Path]::GetFullPath($Workspace)) { Stage-A 'selected workspace is not a Git worktree root' }
-$RunDir = Join-Path $CodexHome ('state\paired-session\runs\' + [guid]::NewGuid())
+if (-not $RunDir) {
+  $RunRoot = python -X utf8 (Join-Path $PluginRoot 'scripts\project_paths.py') $Workspace
+  if ($LASTEXITCODE -ne 0) { Stage-A 'cannot resolve the run root' }
+  $RunDir = Join-Path $RunRoot ('runs\' + [guid]::NewGuid())
+}
 $WorkItem = Join-Path $RunDir 'WORKITEM.md'
 try { New-Item -ItemType Directory -Force -Path $RunDir | Out-Null } catch { Stage-A 'cannot create the run directory' }
 $WorkItemText = @'
@@ -173,10 +186,13 @@ Add `--auto-commit false` too when the review-loop entry handed it over.
 
 A review-pr handoff (from the Codex `review-pr` skill, or the user asks paired-session to review a PR or
 ref) follows the shared contract's Review-PR entry.
-Host rules: the run root is `$CODEX_HOME/state/paired-session` (the materializer's `--root`); the
+Resolve the run root from the operator project before switching `WORKSPACE` to the clone.
+Host rules: the run root is the resolved `<repo>/.review-loop/` (or the reported state-root fallback) (the materializer's `--root`); the
 materializer reads through `gh` and the network, so run it as its own invocation outside the sandbox,
 with `PLUGIN_ROOT` resolved as in the first invocation, before the first invocation. In both
-invocations set `WORKSPACE` to the clone it printed (no input: the current worktree) and skip the
+invocations set `WORKSPACE` to the clone it printed (no input: the current worktree). In the first
+invocation replace the `RUN_ROOT` resolver (PowerShell: `$RunRoot`) with the absolute operator-project
+root resolved before materialization, so runs stay beside `pr/` rather than inside the clone. Skip the
 dedicated-worktree question, replace `--test-command "$TEST_COMMAND"` with `--no-test-command` unless
 the user confirmed a test command, and add `--review-only --review-report --auto-commit false`,
 `--base "$BASE"` (the printed `merge_base`; no input: only a base the user named),

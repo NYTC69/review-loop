@@ -146,7 +146,7 @@ and resumes, or aborts.
 ## 5. Safety, modes, resume
 
 - **Categories A and B are unchanged in both modes.** That covers read-only void/restore (modes included), the author
-  and writer git guards, the run dir outside the workspace, the observed test, global-config monitoring, the env deny
+  and writer git guards, the gitignored run dir under `<repo>/.review-loop/runs/`, the observed test, global-config monitoring, the env deny
   list, and CODEX_PLUGINS_OFF with its argv check.
 - **Strict vs efficient.** As today: strict needs the permission probe. OPV records stay bound to trees.
 - **Resume / HOLD.** As today, plus the frozen-value check and the tree-changed HOLD of §2.

@@ -1,5 +1,15 @@
 # Concurrent runs and isolated Codex homes
 
+The plugin does not create `CODEX_HOME`. For an isolated home, provision
+`<repo>/.review-loop/codex-home/<lane>/` and select it before starting the session.
+Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
+and take its parent when it ends in `/.git`. Persistent run output defaults to
+`<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo.
+When the main checkout cannot be resolved (not a Git repo or bare repo), the run root
+falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
+Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
+on the workspace while a run is active: it would delete the run.
+
 Use a separate, absolute `CODEX_HOME` for each concurrently active lane/run.
 Keep each lane's home stable across its permission probe, run and supported
 resume. Do not share that home with another active run or interactive Codex
@@ -36,8 +46,8 @@ Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
 ## Operator preparation, before either lane starts
 
 1. Assign each active lane a distinct worktree, protected run directory and
-   absolute, operator-owned Codex home. Keep the home outside every lane's
-   author-writable workspace and temporary roots, and separate from run artifacts.
+   absolute, operator-owned Codex home. Use `<repo>/.review-loop/codex-home/<lane>/`, separate from run artifacts
+   and temporary roots.
    Avoid symlink aliases that resolve to the same home.
 2. Have the owner provision each home through an explicitly authorized login and
    configuration workflow. Do not copy credentials, tokens or an entire existing
@@ -46,7 +56,7 @@ Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
 3. Select that same home in the environment of the lane's coordinator invocation
    for the existing permission-probe, run and resume workflow. The coordinator
    resolves `CODEX_HOME` at startup and passes it to Codex children (the Codex
-   author sandbox check instead uses a temporary home under the run directory
+   author sandbox check instead uses a temporary home under the external private scratch root
    holding a copy of its `config.toml`). An unset value falls back
    to the shared default home. A relative path is rejected, and when any role
    is Codex a home that is not an existing directory is refused before the
@@ -93,6 +103,13 @@ Source anchors: `Coordinator.__init__`, `probe_passed`, `_probe_cache_key`,
 `../codex_capability_guard.py`.
 
 ## Concurrent permission probes (FIELD-13)
+
+New runs put the Claude author probe tree and OS-denial targets in the per-run
+private scratch root outside every repo. Role TMPDIRs and disposable probe homes
+also live there. Saved runs without `scratch_root` keep their original layout
+on resume. The following FIELD-13 parent-listing description applies to that
+legacy layout; new runs compare the external scratch parent instead. Keep
+launcher logs under `<repo>/.review-loop/logs/`, separate from `runs/`.
 
 The Claude author probe (`_claude_author_probe` in `../coordinator.py`) creates its
 probe tree `paired-session-claude-probe-tree-*` beside the run dir, in the run dir's

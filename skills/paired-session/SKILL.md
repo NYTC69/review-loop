@@ -49,23 +49,23 @@ adds only the Claude Code host rules:
 
 - Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command execution failure:
   unavailable background execution: HOLD with the reason, on every entry (nothing falls back).
-- Run directory: create a UUID; the run directory is
-  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop/runs/<UUID>/`, outside the
-  product worktree and outside `~/.claude` (Claude Code treats paths there as
-  sensitive and denies or prompts for every write). Resolve the run root once
-  with its own Bash call, `printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/review-loop"`,
-  and use the absolute path it prints (if it is not absolute, use
-  `$HOME/.local/state/review-loop`: XDG ignores a relative `XDG_STATE_HOME`).
-  Create the run directory (`mkdir -p`), then write `WORKITEM.md` there. The
-  root is outside the session's working directory, so a restricted permission
-  mode may need the operator to grant it (for example `--add-dir <run root>`).
-  If either step fails or is denied, stop: that is a failed stage A check,
-  reported as `stage A failure: <reason>`; never try another location. Resolve `WORKSPACE` to the intended worktree root and
-  `WORKITEM`/`RUN_DIR` to absolute paths. Claude Code substitutes
-  `${CLAUDE_PLUGIN_ROOT}` in skill content. Define path variables anew in each
-  Bash tool call; shell variables do not persist across separate calls. Pass
-  arguments as an array. Write any launcher log under the run root's `logs/`
-  (`.../review-loop/logs/`), never under `runs/`.
+- Run directory: default to `<repo>/.review-loop/runs/<UUID>/`. Resolve `<repo>`
+  from the project's main checkout using `git rev-parse --path-format=absolute --git-common-dir`
+  and take its parent when it ends in `/.git`; a lane worktree therefore stores runs in the main checkout.
+  Resolve the root once with its own Bash call:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE"`.
+  This creates `.review-loop/.gitignore` (`*`, `!config.md`) only when missing.
+  If not a Git repo or a bare repo, it reports fallback to
+  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG values use `$HOME/.local/state`).
+  An explicit operator-chosen `RUN_DIR` wins; resume existing runs at their original `--run-dir`, without migration.
+  Create a UUID and the run directory (`mkdir -p`), then write `WORKITEM.md` there.
+  If creation or writing fails, stop with `stage A failure: <reason>`; never try another location.
+  Resolve `WORKSPACE`, `WORKITEM` and `RUN_DIR` to absolute paths. Claude Code substitutes
+  `${CLAUDE_PLUGIN_ROOT}` in skill content. Define path variables anew in each Bash tool call;
+  shell variables do not persist across calls. Pass arguments as an array.
+  Write launcher logs under the run root's `logs/` (`.../.review-loop/logs/`), never under `runs/`.
+  Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x`
+  on the workspace while a run is active: it would delete the run.
 - Long-command form: run every command that can dispatch model turns
   (`permission-probe`, `run`, `resume`, `reject --expect`) as its own Bash call
   with `run_in_background: true`; wait for the background task completion
@@ -99,7 +99,7 @@ adds only the Claude Code host rules:
 - Native Windows (Git Bash): efficient only; the coordinator refuses `--strict`, `permission-probe` and `--detach`,
   so a headless session is not supported there (use an interactive session). Git Bash has no `pgrep`: wait for the
   background task notification. Resolve the run root with
-  `cygpath -m "${XDG_STATE_HOME:-$HOME/.local/state}/review-loop"` (it prints a `C:/Users/...` path the Write tool and
+  `cygpath -m "$(python -X utf8 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE")"` (it prints a `C:/Users/...` path the Write tool and
   the coordinator both take; Git Bash's own `/c/...` form is not a Windows path) and use that form for `WORKSPACE`,
   `WORKITEM` and `RUN_DIR` too. Keep the run root and the workspace out of OneDrive-synced folders. Run the
   coordinator through Python (no shebang execution on Windows): in the `run` block below, replace
@@ -140,7 +140,7 @@ Add `--auto-commit false` too when the review-loop entry handed it over.
 A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-pr`) follows the
 shared contract's Review-PR entry. Host rules: `<support-root>` in the shared contract is
 `${CLAUDE_PLUGIN_ROOT}` (for example `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/materialize_pr.py"`; Windows: `python -X utf8`); the run
-root above is the materializer's `--root`; the materializer runs as its own foreground Bash call with
+root above (resolved from the operator project before switching `WORKSPACE` to the clone) is the materializer's `--root`; the materializer runs as its own foreground Bash call with
 `timeout: 600000` (a clone and fetch can outlast the default), before the blocks. In both blocks set
 `WORKSPACE` to the clone it printed (no input: the current worktree), replace
 `--test-command "$TEST_COMMAND"` with `--no-test-command` unless the user confirmed a test command, and

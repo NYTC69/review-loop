@@ -1,5 +1,15 @@
 # review-loop
 
+The plugin does not create `CODEX_HOME`. For an isolated home, provision
+`<repo>/.review-loop/codex-home/<lane>/` and select it before starting the session.
+Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
+and take its parent when it ends in `/.git`. Persistent run output defaults to
+`<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo.
+When the main checkout cannot be resolved (not a Git repo or bare repo), the run root
+falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
+Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
+on the workspace while a run is active: it would delete the run.
+
 A Claude Code and Codex plugin that drives a work item through the paired-session coordinator: an author and an
 independent reviewer plan and implement it, an adversarial gate checks the result, then finish, quality polish, docs
 and security run with lifecycle on, and nothing is delivered until you accept.
@@ -444,7 +454,7 @@ ids, GitHub, Slack, Google and Stripe live tokens), and the marker does not exem
 key-named-literal rules apply only to lines the run adds and to a review-pr post body.
 
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
-directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
+directory under `<repo>/.review-loop/runs/<UUID>/` (gitignored); legacy `.review-loop/sessions/` files are left on disk and never read.
 
 **Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 4 unless set) end in a HOLD;
 `resume --add-rounds N` continues the same run (L100). An eligible advisory-only PLAN/EXEC REVISE
