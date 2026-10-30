@@ -39,7 +39,13 @@
 - W1–W8（含修复轮）及此前的文档提交由 Opus 执行、Codex 审查通过。整个 WI 的 Codex 终审第一轮指出 Windows 管道输出不是 UTF-8；W9 由 Codex 修复，Opus 审查为 REVISE（仅测试问题），随后 Opus 完成 W9 r2 测试修复（f85f329），Codex 整体终审第二轮 APPROVE。
 - CI：windows-latest 上 159 个 Windows 测试通过，其中两条用假 CLI 的端到端 run（完整流程到 ACCEPTED，review-pr 到 REPORTED）使用真实的 CRLF 检出、中文任务和中文 run 目录；同一次 CI（run 40379703851，f85f329）全部 308 个 job 通过，包括 macOS/Linux 全量测试。
 - macOS 真实 run（固定副本 v3.3.0-rc1 = f85f329，产品默认：Codex 作者、Claude 审查、Codex gate）：DONE 后 ACCEPTED，14 次调用，约 23 分钟。
-- Yuan 的 Windows 实机验收：待补。
+- Yuan 的 Windows 实机验收（Windows 11、PowerShell 5.1、Git for Windows 2.53、Python 3.15、Claude CLI 2.1.310、codex-cli 0.164.0）：5 条标准全部满足，完整流程 run ACCEPTED（交付提交 e910fe0），review-pr run REPORTED（找出一条 HIGH），拒绝的功能提示正确。验收中发现四个现场问题，由 W10 修复：删除临时克隆时只读 pack 文件报 WinError 5；Codex 在 Windows 上需要 elevated 沙箱；HOLD 原因不带审查者的说明；Codex 配置被拒时没有修复建议。
+- W10 由 Opus 执行。Codex 周额度用完期间先由 Opus 子代理审查 APPROVE；额度恢复后 Codex 审查 b3fdcb5..f937109 为 REVISE（DOCS、SECURITY 和专项审查者的 HOLD 也要附说明；`CODEX_HOME` 建议只适用于其下的配置），W10 r2（e1a92ed）修复后 Codex APPROVE。CI run 40651013831（e1a92ed）全部 310 个 job 通过，包括 windows-latest。
+- macOS 真实 run（固定副本 v3.3.0-rc3 = e1a92ed，产品默认：Codex 作者、Claude 审查、Codex gate）：DONE 后 ACCEPTED，16 次调用，约 53 分钟；其间 FINISH 两次遇到 Codex "Selected model is at capacity"，自动重试一次后 HOLD，`resume` 后继续完成。
+- Windows 复验（rc3）：`materialize_pr.py --remove` 删除了含只读 pack 文件的旧克隆和两个新克隆，exit 0。去掉 `[windows] sandbox` 设置后的两次 review-pr 都卡在 EXEC 第一回合，直到 2700 秒超时：Codex 审查者在 elevated 沙箱里的 shell 调用一直不返回，审查者回答 HOLD 后 codex 进程也不退出。把设置加回去也一样卡，所以判断是这台机器上的 Codex 沙箱 helper 卡死，重启 Windows 后恢复。
+- W11 由此而来（Yuan 10-29 同意）：Codex 执行（b2e26d3），Codex 审查 APPROVE；Opus 跨厂商审查 REVISE（POSIX 上超过约 16 KB 的 prompt 在 CLI 晚读 stdin 时会被截断；`turn.failed` 被当成完成），W11 r2（e352dea）修复后 Codex 和 Opus 复审都 APPROVE。CI 发现 3 个原有测试的假进程只实现旧接口，W11 r3（f7d226b）只改这 3 个替身、断言未动，Codex APPROVE。CI run 40770941976（f7d226b）全部通过（一个 macOS job 因 GitHub 上传日志超时重跑一次，测试两次都通过）。
+- macOS 真实 run（固定副本 v3.3.0-rc4 = e352dea，产品代码与 f7d226b 相同，产品默认角色）：run daec4f6e DONE 后 ACCEPTED，14 次调用，约 22 分钟，没有触发 W11 的结束进程。
+- Windows 复验（rc4 = f7d226b，重启 Windows 后）：Codex 沙箱探测在 180 秒内正常返回；专用 `CODEX_HOME` 的 `config.toml` 清空（没有 `[windows]` 设置）后，review-pr run 633189c5 约 5 分钟到 `REPORTED`（报告完整，Codex 审查者共 8 个回合，没有 HOLD，没有作者回合），没有一条 "blocked by policy" 或 "refusing to run unsandboxed"；随后 `materialize_pr.py --remove` 删除这次的新克隆，exit 0。
 
 ### v3.2.8：审查历史扫描不再漏遮罩已豁免名称在连字符组合中的出现
 
