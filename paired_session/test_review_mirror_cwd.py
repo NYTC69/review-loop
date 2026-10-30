@@ -19,7 +19,7 @@ class ReviewMirrorCwdTests(unittest.TestCase):
         use_lifecycle_on(self, self)
         co = self.coordinator()
         co.capture_review_baseline()                                 # the first review's mirror (reviews_completed > 0)
-        self.assertTrue((co.internal / 'last-review').exists())
+        self.assertTrue((co.mirror_base / 'last-review').exists())
         (self.workspace / 'tracked.txt').write_text('base\nchanged after the review\n')
         outside = tempfile.mkdtemp()                                 # the system temp dir: not inside any git repository
         self.addCleanup(shutil.rmtree, outside, True)

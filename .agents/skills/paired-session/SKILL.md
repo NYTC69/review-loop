@@ -55,8 +55,10 @@ This file adds only the Codex host rules:
 - Run directory: default to `<repo>/.review-loop/runs/<UUID>/`, where `<repo>` is the main
   checkout resolved by `git rev-parse --path-format=absolute --git-common-dir` and its parent
   when it ends in `/.git`. A lane's output therefore lives in the main checkout.
+  Set `WORKSPACE` in the same Bash call that runs `project_paths.py`. On native Windows
+  PowerShell, set `$Workspace` in the same call that runs `project_paths.py`.
   `scripts/project_paths.py` resolves this root and creates `.review-loop/.gitignore`
-  (`*`, `!config.md`) only when missing. Not a Git repo or bare repo: report fallback to
+  (`*`, `!config.md`) only when missing. Not a Git repo, a bare repo or a submodule/separate-git-dir checkout: report fallback to
   `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG uses `$HOME/.local/state`).
   An explicit operator-chosen run dir wins; existing runs resume at their original `--run-dir`, without migration.
   The plugin does not create `CODEX_HOME`. Write launcher logs under the root's `logs/`.

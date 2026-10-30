@@ -126,7 +126,7 @@ Write `WORKITEM.md` in `<repo>/.review-loop/runs/<UUID>/` with goal, acceptance 
 Resolve `<repo>` with `git rev-parse --path-format=absolute --git-common-dir`, taking its parent
 when it ends in `/.git`: this is the main checkout, including for lane worktrees.
 Use `scripts/project_paths.py <workspace>` to resolve the root and create `.review-loop/.gitignore`
-(`*`, `!config.md`) only when missing. When unresolved (not a Git repo or bare repo), report
+(`*`, `!config.md`) only when missing. When unresolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), report
 fallback to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG uses `$HOME/.local/state`).
 An explicit operator-chosen run dir wins. Resume existing runs at their original `--run-dir`; no migration.
 Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x` on the

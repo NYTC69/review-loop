@@ -52,10 +52,10 @@ adds only the Claude Code host rules:
 - Run directory: default to `<repo>/.review-loop/runs/<UUID>/`. Resolve `<repo>`
   from the project's main checkout using `git rev-parse --path-format=absolute --git-common-dir`
   and take its parent when it ends in `/.git`; a lane worktree therefore stores runs in the main checkout.
-  Resolve the root once with its own Bash call:
+  Resolve the root once with its own Bash call (set `WORKSPACE` in that same Bash call):
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE"`.
   This creates `.review-loop/.gitignore` (`*`, `!config.md`) only when missing.
-  If not a Git repo or a bare repo, it reports fallback to
+  If not a Git repo, a bare repo or a submodule/separate-git-dir checkout, it reports fallback to
   `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG values use `$HOME/.local/state`).
   An explicit operator-chosen `RUN_DIR` wins; resume existing runs at their original `--run-dir`, without migration.
   Create a UUID and the run directory (`mkdir -p`), then write `WORKITEM.md` there.
@@ -98,7 +98,7 @@ adds only the Claude Code host rules:
   probe block first, then the `run` block as a second Bash call.
 - Native Windows (Git Bash): efficient only; the coordinator refuses `--strict`, `permission-probe` and `--detach`,
   so a headless session is not supported there (use an interactive session). Git Bash has no `pgrep`: wait for the
-  background task notification. Resolve the run root with
+  background task notification. Resolve the run root below; set `WORKSPACE` in the same Bash call that runs `project_paths.py`:
   `cygpath -m "$(python -X utf8 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE")"` (it prints a `C:/Users/...` path the Write tool and
   the coordinator both take; Git Bash's own `/c/...` form is not a Windows path) and use that form for `WORKSPACE`,
   `WORKITEM` and `RUN_DIR` too. Keep the run root and the workspace out of OneDrive-synced folders. Run the

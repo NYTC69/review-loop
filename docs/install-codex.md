@@ -5,7 +5,7 @@ The plugin does not create `CODEX_HOME`. For an isolated home, provision
 Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
 and take its parent when it ends in `/.git`. Persistent run output defaults to
 `<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo.
-When the main checkout cannot be resolved (not a Git repo or bare repo), the run root
+When the main checkout cannot be resolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), the run root
 falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
 Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
 on the workspace while a run is active: it would delete the run.

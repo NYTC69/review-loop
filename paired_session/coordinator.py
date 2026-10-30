@@ -2618,7 +2618,8 @@ class Coordinator:
         self.global_codex_home = Path(codex_home_text).expanduser().resolve()
         self.scratch_root = (Path(saved_state.get('scratch_root', str(self.run_dir))) if saved_state is not None
                              else new_scratch_root(self.run_dir))
-        if saved_state is not None and 'scratch_root' in saved_state:
+        if (saved_state is not None and 'scratch_root' in saved_state
+                and saved_state.get('status') not in ('ACCEPTED', 'REPORTED', 'ABORTED', 'CLOSED')):
             self.scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             if not winplat.check_private_dir(self.scratch_root):
                 raise ValueError('scratch root must be a private directory: ' + str(self.scratch_root))
@@ -3669,6 +3670,23 @@ class Coordinator:
                              check=True).stdout
         return sorted(name for name in raw.decode(errors='surrogateescape').split('\0') if name)
 
+    @property
+    def mirror_base(self) -> Path:
+        """Legacy mirrors stay frozen in internal/; new runs keep workspace copies external."""
+        return self.internal if self.scratch_base == self.run_dir else self.scratch_base / 'mirrors'
+
+    def _cleanup_scratch(self) -> None:
+        if self.state.get('scratch_root') and self.scratch_base != self.run_dir:
+            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(self.scratch_base, ignore_errors=True)
+
+    def _missing_review_start_issue(self) -> Optional[str]:
+        record = self.state.get('review_only') or {}
+        mirror = record.get('history_mirror') or record.get('mirror')
+        if self.state.get('scratch_root') and mirror and not Path(mirror).is_dir():
+            return ('FIELD-27 review-start mirror is missing: ' + mirror +
+                    '; restore the original mirror and resume, or abort and start a new run')
+        return None
+
     def _mirror_workspace(self, target: Path) -> None:
         if target.exists():   # W10: copy2 keeps a workspace file's read-only attribute on Windows
             (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(target)
@@ -3705,9 +3723,9 @@ class Coordinator:
         atomic_text(self.context / 'delta.stat', stat + untracked_stat)
         atomic_text(self.context / 'status.txt', self._git(['-c', 'core.quotepath=false', 'status', '--short', '--untracked-files=all']))
         since = self.context / 'delta-since-last-review.patch'
-        baseline = self.internal / 'last-review'
+        baseline = self.mirror_base / 'last-review'
         if self.state.get('reviews_completed', 0) and baseline.exists():
-            current = self.internal / 'current-review'
+            current = self.mirror_base / 'current-review'
             self._mirror_workspace(current)
             proc = candidate_tree.run_bounded(candidate_tree.git_command('-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
                                   cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
@@ -3720,7 +3738,7 @@ class Coordinator:
 
     def capture_review_baseline(self, sequence: Optional[int] = None,
                                 phase: Optional[str] = None) -> None:
-        self._mirror_workspace(self.internal / 'last-review')
+        self._mirror_workspace(self.mirror_base / 'last-review')
         reviewed = self.state.setdefault('reviewed_reviewer_sequences', [])
         if sequence is None or sequence not in reviewed:
             self.state['reviews_completed'] = self.state.get('reviews_completed', 0) + 1
@@ -3902,6 +3920,8 @@ class Coordinator:
         return [f"{row['id']} {row['severity']}" + ('+sec' if row.get('security') else '') for row in self.open_findings()]
 
     def _progress_terminal(self, status: str, reason: str = '') -> None:
+        if status in ('ACCEPTED', 'REPORTED', 'ABORTED'):
+            self._cleanup_scratch()
         reason = ' '.join(reason.split())
         if reason.startswith('implementer: '): reason = reason.split(':')[0] + ': (author text withheld)'
         self.progress('terminal', status=status, reason=brief_reason(reason), invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
@@ -4224,9 +4244,20 @@ class Coordinator:
                                    'review_scope_sha256': self.state['review_only']['review_scope_sha256']}
         spec_path = self.evidence / 'successor-spec.json'; atomic_json(spec_path, spec)
         self._write_scope_change_report(spec_path)
+        if self.state.get('scratch_root') and self.state.get('review_only'):
+            # The successor needs FIELD-27's original user content after this run's scratch is gone.
+            source = self._review_start_root()
+            if source and source.is_dir():
+                history = new_scratch_root(target) / 'mirrors' / 'history-start'
+                history.parent.mkdir(parents=True, exist_ok=True)
+                if history.exists():
+                    (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(history)
+                shutil.copytree(source, history, symlinks=True)
+                self.state['review_only']['history_mirror'] = str(history)
         self.state.update(status='ABORTED', abort_kind='scope-change',
                           successor_spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest())
         self.save(); self.write_comparison(); self.write_open_findings(); self.write_usage()
+        self._cleanup_scratch()
         return command()
 
     def _write_scope_change_report(self, spec_path: Path) -> None:
@@ -5415,7 +5446,7 @@ class Coordinator:
                     if status.startswith(('R', 'C')):
                         new_path = fields.pop(0)
                         if status.startswith('R'): renames[new_path] = old_path
-            mirrors = (str(self.internal / 'last-review'), str(self.internal / 'current-review'))
+            mirrors = (str(self.mirror_base / 'last-review'), str(self.mirror_base / 'current-review'))
             for section in re.split(r'(?m)^(?=diff --git )', content):
                 old = new = None
                 header = section.split('\n@@', 1)[0]
@@ -5892,7 +5923,7 @@ class Coordinator:
         """Freeze the review-only start: the scope (as plan.md), the tree and index under review, a mirror of the tree, EXEC
         round 1 counted as the existing change, and the EXEC reviewer as the first dispatch."""
         atomic_text(self.context / 'plan.md', scope['text'])
-        self._mirror_workspace(mirror := self.internal / 'review-start')
+        self._mirror_workspace(mirror := self.mirror_base / 'review-start')
         index = hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest()
         self.state.update(phase='EXEC', next='reviewer', exec_rounds=REVIEW_ONLY_EXISTING_CHANGE_ROUNDS,
                           base_commit=self.args.review_base, review_only={
@@ -9486,6 +9517,8 @@ class Coordinator:
 
     def drive(self) -> str:
         refuse_removed_options(self.args)
+        if issue := self._missing_review_start_issue():
+            return self.hold(issue)
         # The one entry of every real author dispatch (run, resume, reject): author_turn
         # is reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
@@ -9554,6 +9587,8 @@ class Coordinator:
                              + (f": {self.state.get('hold_reason')}" if self.state['status'] == 'HOLD' else ''))
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state['status'] == 'REPORTED': return 'REPORTED'   # LG2-a3: terminal
+        if issue := self._missing_review_start_issue():
+            return self.hold(issue)
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
                                   bool(self.state.get('uncertain_active') or self.state.get('active')))
         if self.args.acknowledge_codex_trust:
@@ -10354,6 +10389,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
                   if co.state.get('active') or co.state.get('uncertain_active') else '')
         co.hold('aborted by operator' + suffix)
+        co._cleanup_scratch()
         print('HOLD: ' + co.state['hold_reason'])
         return 2
     if args.action == 'run' and co.state['config'].get('lifecycle_mode') == 'off' and co.state['config'].get('auto_commit'):

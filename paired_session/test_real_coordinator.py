@@ -4278,11 +4278,11 @@ sys.exit(result.returncode)
             co = rc.Coordinator(args)
             self.assertIn(str(root / 'support'), co._fresh_scan_run_paths())
             (co.context / 'delta-since-last-review.patch').write_text(
-                f'diff --git a{co.run_dir}/internal/current-review/CLAUDE.md '
-                f'b{co.run_dir}/internal/current-review/CLAUDE.md\n'
+                f'diff --git a{co.mirror_base}/current-review/CLAUDE.md '
+                f'b{co.mirror_base}/current-review/CLAUDE.md\n'
                 f'+++ b{root}/support/docs/CLAUDE.md\n'
-                f'diff --git a{co.run_dir}/internal/current-review/Makefile '
-                f'b{co.run_dir}/internal/current-review/Makefile\n'
+                f'diff --git a{co.mirror_base}/current-review/Makefile '
+                f'b{co.mirror_base}/current-review/Makefile\n'
                 f'+++ b{root}/support/paired_session/Makefile\n'
                 ' context from CLAUDE.md if available\n')
             co.assert_fresh_prompt('shadow', 'Clean prompt')

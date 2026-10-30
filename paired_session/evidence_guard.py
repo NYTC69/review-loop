@@ -12,6 +12,11 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    from paired_session.internal_paths import INTERNAL_WORKSPACE_DIRS
+except ImportError:
+    from internal_paths import INTERNAL_WORKSPACE_DIRS
 from typing import Mapping, Optional
 from urllib.parse import unquote as _unquote
 
@@ -212,7 +217,7 @@ class TurnGuard:
             for root in dict.fromkeys(_canonical(Path(r)) for r in self.ctx.writable_roots):
                 for dirpath, dirs, files in os.walk(root):
                     if Path(dirpath) == root / '.review-loop':
-                        dirs[:] = [name for name in dirs if name not in ('runs', 'codex-home')]
+                        dirs[:] = [name for name in dirs if '.review-loop/' + name not in INTERNAL_WORKSPACE_DIRS]
                     for link in (os.path.join(dirpath, name) for name in dirs + files):
                         if os.path.islink(link): links[Path(link)] = _canonical(Path(link))
             self._aliases = {link for link, target in links.items() if any(target == r or r in target.parents or target in r.parents for r, _ in self.roots)}

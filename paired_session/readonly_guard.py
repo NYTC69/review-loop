@@ -18,6 +18,11 @@ import stat
 import subprocess
 import time
 from pathlib import Path
+
+try:
+    from paired_session.internal_paths import INTERNAL_WORKSPACE_DIRS
+except ImportError:
+    from internal_paths import INTERNAL_WORKSPACE_DIRS
 from typing import Optional
 
 try:
@@ -133,7 +138,6 @@ def _only_cli_created_dir(workspace: Path, before: dict, after: dict) -> bool:
                for path, meta in before.items())
 
 
-INTERNAL_WORKSPACE_DIRS = ('.review-loop/runs', '.review-loop/codex-home')
 
 
 def _internal_entry(name: str) -> bool:

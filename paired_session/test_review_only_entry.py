@@ -217,6 +217,9 @@ class ReviewOnlyEntryTests(unittest.TestCase):
             rc.Coordinator(rc.parser().parse_args([*argv, '--base', 'HEAD']))
         child = rc.Coordinator(rc.parser().parse_args(argv)).state
         record = child['review_only']
+        self.assertFalse(Path(parent_state['scratch_root']).exists())
+        self.assertTrue(Path(record['history_mirror']).is_dir())
+        self.assertEqual((Path(record['history_mirror']) / 'sum_ints.py').read_text(), SUM_INTS)
         self.assertEqual((child['config']['review_only'], child['config']['review_base'], child['base_commit']),
                          (True, parent_state['config']['review_base'], parent_state['config']['review_base']))
         self.assertEqual((child['phase'], child['next'], record['head_at_start']), ('EXEC', 'reviewer', self.git('rev-parse', 'HEAD')))

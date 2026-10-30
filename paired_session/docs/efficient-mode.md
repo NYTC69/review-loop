@@ -5,7 +5,7 @@ The plugin does not create `CODEX_HOME`. For an isolated home, provision
 Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
 and take its parent when it ends in `/.git`. Persistent run output defaults to
 `<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo.
-When the main checkout cannot be resolved (not a Git repo or bare repo), the run root
+When the main checkout cannot be resolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), the run root
 falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
 Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
 on the workspace while a run is active: it would delete the run.
@@ -47,7 +47,7 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
-- **A(b):** the run dir is not writable by any role. The author's TMPDIR, `<scratch_root>/author-tmp` outside any repo, holds no records
+- **A(b):** a Codex author's workspace-write covers `.review-loop/runs/` when the workspace is the main checkout. Under the owner threat model (users and models do not act maliciously), accidental damage is the residual risk; do not run bulk rewrites or `git clean -x` over the workspace during a run. The author's TMPDIR, `<scratch_root>/author-tmp` outside any repo, holds no records
   (legacy saved runs retain `run_dir/author-tmp`).
 
 **Native Windows exception (v3.3.0, ADR-20 D1).** Claude Code has no Bash sandbox on native Windows, so there

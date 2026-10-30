@@ -3,6 +3,11 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
+
+try:
+    from paired_session.internal_paths import INTERNAL_WORKSPACE_DIRS
+except ImportError:
+    from internal_paths import INTERNAL_WORKSPACE_DIRS
 try:
     from paired_session.candidate_tree import GIT_NO_EXEC
     from paired_session import winplat
@@ -52,7 +57,7 @@ def snapshot(workspace):
         raise RuntimeError('submodule gitlink cannot be inventoried')
     paths = {root / os.fsdecode(name) for name in names.split(b'\0') if name
              and not any(os.fsdecode(name).rstrip('/') == prefix or os.fsdecode(name).startswith(prefix + '/')
-                         for prefix in ('.review-loop/runs', '.review-loop/codex-home'))}
+                         for prefix in INTERNAL_WORKSPACE_DIRS)}
     git_dir = Path(os.fsdecode(_git(root, 'rev-parse', '--absolute-git-dir').strip())).resolve()
     common = Path(os.fsdecode(_git(root, 'rev-parse', '--git-common-dir').strip()))
     common = (common if common.is_absolute() else root / common).resolve()

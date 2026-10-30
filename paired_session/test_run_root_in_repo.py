@@ -56,12 +56,16 @@ class RunRootTests(unittest.TestCase):
         run.mkdir(parents=True)
         home = self.workspace / '.review-loop/codex-home'
         home.mkdir()
+        for name in ('pr', 'logs'):
+            (self.workspace / '.review-loop' / name).mkdir()
         sibling = self.workspace / '.review-loop/other'
         sibling.write_text('before')
         recorded = rg.capture(self.workspace, self.root / 'capture')
         before = rc.git_snapshot(self.workspace)[0]
         (run / 'state.json').write_text('{}')
         (home / 'config.toml').write_text('changed')
+        for name in ('pr', 'logs'):
+            (self.workspace / '.review-loop' / name / 'new-child').mkdir()
         self.assertEqual(rg.ignored_changes(self.workspace, recorded), [])
         self.assertEqual(rc.git_snapshot(self.workspace)[0], before)
         sibling.write_text('after, different length')
@@ -69,13 +73,16 @@ class RunRootTests(unittest.TestCase):
         self.assertNotIn('.review-loop', recorded['ignored_meta'])
         from paired_session import author_write_guard
         inventory = author_write_guard.snapshot(self.workspace)
-        self.assertFalse(any('/.review-loop/runs/' in name or '/.review-loop/codex-home/' in name
-                             for name in inventory))
+        self.assertFalse(any('/' + prefix + '/' in name
+                             for name in inventory for prefix in rg.INTERNAL_WORKSPACE_DIRS))
 
     def test_new_run_in_repo_reaches_accepted_with_external_role_scratch(self):
         self.run_dir = self.workspace / '.review-loop/runs/id'
         result = self.run_coordinator('--reviewer-vendor', 'claude', '--gate-vendor', 'codex', '--polish-round', 'off')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        active_state = json.loads((self.run_dir / 'state.json').read_text())
+        scratch = Path(active_state['scratch_root'])
+        self.assertEqual(stat.S_IMODE(scratch.stat().st_mode), 0o700)
         accepted = self.run_operator_action('accept', '--reviewer-vendor', 'claude', '--gate-vendor', 'codex',
                                             '--polish-round', 'off', '--reason', 'RR1 fixture accepted')
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
@@ -84,7 +91,7 @@ class RunRootTests(unittest.TestCase):
         scratch = Path(state['scratch_root'])
         self.addCleanup(shutil.rmtree, scratch, True)
         self.assertIsNone(rc.git_work_tree_root(scratch))
-        self.assertEqual(stat.S_IMODE(scratch.stat().st_mode), 0o700)
+        self.assertFalse(scratch.exists())
         self.assertNotIn('WARNING: the run directory', result.stderr)
         turns = [t for t in state['turns'] if t['role'] == 'gate']
         self.assertTrue(turns)
@@ -96,11 +103,45 @@ class RunRootTests(unittest.TestCase):
             self.assertFalse(Path(env['TMPDIR']).exists())
             trc.assert_codex_readonly_profile(self, turn['command'])
         co = rc.Coordinator(rc.parser().parse_args(self.command('--reviewer-vendor', 'claude', '--gate-vendor', 'codex', '--polish-round', 'off')[2:]))
+        self.assertFalse(scratch.exists())
         self.assertEqual(co.author_temp_dir, scratch / 'author-tmp')
         self.assertIn(str(co.author_temp_dir), co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots'])
         mirror = self.root / 'mirror'
         co._mirror_workspace(mirror)
         self.assertFalse((mirror / '.review-loop/runs').exists())
+
+    def test_external_mirrors_missing_resume_and_no_workspace_copies_in_repo(self):
+        self.run_dir = self.workspace / '.review-loop/runs/mirrors'
+        co = self.coordinator()
+        self.addCleanup(shutil.rmtree, co.scratch_base, True)
+        marker = self.workspace / 'unique-workspace.test.js'
+        marker.write_text('workspace test fixture')
+        co.capture_review_baseline()
+        co._mirror_workspace(co.mirror_base / 'review-start')
+        co.state['review_only'] = {'mirror': str(co.mirror_base / 'review-start')}
+        co.save()
+        marker.write_text('changed workspace test fixture')
+        co.materialize_review_context()
+        self.assertIn('changed workspace test fixture', (co.context / 'delta-since-last-review.patch').read_text())
+        self.assertEqual(list((self.workspace / '.review-loop').rglob(marker.name)), [])
+        shutil.rmtree(co.scratch_base)
+        restored = self.coordinator()
+        restored.materialize_review_context()
+        self.assertFalse((restored.context / 'delta-since-last-review.patch').exists())
+        self.assertEqual(restored.resume(), 'HOLD')
+        self.assertIn('FIELD-27 review-start mirror is missing', restored.state['hold_reason'])
+
+    def test_terminal_cleanup_preserves_legacy_and_removes_new_scratch(self):
+        for legacy in (False, True):
+            self.run_dir = self.root / ('cleanup-legacy' if legacy else 'cleanup-new')
+            with patch.object(rc, 'new_scratch_root', side_effect=(lambda run: run) if legacy else rc.new_scratch_root):
+                co = self.coordinator()
+            if legacy:
+                co.state.pop('scratch_root')
+            for status in ('ACCEPTED', 'REPORTED', 'ABORTED'):
+                co.scratch_base.mkdir(parents=True, exist_ok=True)
+                co._progress_terminal(status)
+                self.assertEqual(co.scratch_base.exists(), legacy)
 
     def test_permission_probe_in_repo_keeps_synthetic_homes_external(self):
         self.run_dir = self.workspace / '.review-loop/runs/permission-probe'
@@ -188,6 +229,7 @@ class RunRootTests(unittest.TestCase):
             restored = rc.Coordinator(rc.parser().parse_args(command[2:]))
             self.assertEqual(restored.author_temp_dir, self.run_dir / 'author-tmp')
             self.assertEqual(restored.scratch_base, self.run_dir)
+            self.assertEqual(restored.mirror_base, self.run_dir / 'internal')
             self.assertEqual(restored.state['role_dispatch_manifest'], frozen)
             self.assertNotIn('scratch_root', restored.state)
             command.append('--skip-probe')
