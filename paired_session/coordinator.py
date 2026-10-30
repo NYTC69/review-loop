@@ -8875,7 +8875,8 @@ class Coordinator:
             # V322-PROBE: verify against the real context before swapping it; _invoke_once skips this Claude probe only.
             if self.state.get('config', {}).get('lifecycle_mode') == 'on':
                 self._verify_frozen_role_dispatch()
-            # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
+            # Outside run_dir: its Edit deny, denyWrite and workspace refusal cover it.
+            # New layouts keep the tree in external scratch, but still watch the shared run parent (FIELD-13).
             base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.scratch_parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
             for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
@@ -8889,7 +8890,7 @@ class Coordinator:
             tmp = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
             if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
             table = cap.steps(base, tmp)
-            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip), None, None, self.state['sequence']
+            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,)), None, None, self.state['sequence']
             self.context = ctx                 # the argv's --add-dir, context deny rules and denyWrite bind to the probe context
             try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
             except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
@@ -8906,9 +8907,9 @@ class Coordinator:
                     except OSError: pass
                     time.sleep(0.2)
             elif result: raise RuntimeError('author probe process group is unverifiable')
-            first = cap.listing(base, base.parent, skip)
+            first = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,))
             time.sleep(cap.SETTLE_SECONDS * timeout_scale.env_factor())
-            second = cap.listing(base, base.parent, skip)
+            second = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,))
             rows = []
             if result:
                 argv = self.state['turns'][-1]['command']
@@ -8932,7 +8933,7 @@ class Coordinator:
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
-            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == base.parent})   # FIELD-8: may be an operator file (a launcher log)
+            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == self.run_dir.resolve().parent})   # FIELD-8: may be an operator file (a launcher log)
             out['hardlink_refused'] = refused = cap.hardlink_refused(out['attempts'], ws, sentinel_ino)
             for label, row in out['attempts'].items():
                 if refused and 'hardlink' in label and label != 'link_hardlink': row['not_applicable'] = 'link denied'     # raw outcome kept

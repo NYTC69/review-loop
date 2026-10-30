@@ -5,6 +5,17 @@ implementation differs from this design. Owner decisions are in §8. The operato
 view is
 [`concurrent-runs.md`, "Concurrent permission probes"](concurrent-runs.md#concurrent-permission-probes-field-13).
 
+WI-RUNROOT / RR6 layout update: new runs keep the probe tree under the external
+`scratch_parent`, rather than beside the run directory. All three listings still
+watch the real `run_dir.parent` (including `.review-loop/runs/` for repository
+runs), as well as the scratch parent, without descending into sibling directories
+or recording their directory mtimes. The probe's own tree is walked fully and the
+active run directory is skipped. The parent lock still serializes sibling run
+creation; it never excuses a listing difference. `changed_beside_run_dir` names
+only changed entries directly beside the real run directory, so operator launcher
+log hints retain their meaning. Legacy layouts watch their single shared parent.
+This preserves the existing bounded checks; it adds no adversarial boundary model.
+
 ## 1. Problem
 
 The Claude author probe (`_claude_author_probe` in `../coordinator.py`) judges

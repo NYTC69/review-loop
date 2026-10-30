@@ -290,7 +290,7 @@ class ProbeUnderTheLockTests(unittest.TestCase):
                 lock.release(); lock.path.unlink(missing_ok=True)
 
     def test_escapes_still_fail_and_a_clean_probe_passes_while_the_lock_is_held(self):
-        for scenario, status in (({}, 'PASS'), ({'escape': ['write_abs']}, 'FAIL'), ({'silent_write': ['{parent}/dropped.txt']}, 'FAIL')):
+        for scenario, status in (({}, 'PASS'), ({'escape': ['write_abs']}, 'FAIL'), ({'silent_write': [str(self.h.run_dir.parent / 'dropped.txt')]}, 'FAIL')):
             with self.subTest(scenario=scenario):
                 co = self.co()
                 lock = self.held(co)
