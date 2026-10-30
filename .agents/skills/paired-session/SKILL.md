@@ -60,7 +60,7 @@ This file adds only the Codex host rules:
   `scripts/project_paths.py` resolves this root and creates `.review-loop/.gitignore`
   (`*`, `!config.md`) only when missing. Not a Git repo, a bare repo or a submodule/separate-git-dir checkout: report fallback to
   `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG uses `$HOME/.local/state`).
-  An explicit operator-chosen run dir wins; existing runs resume at their original `--run-dir`, without migration.
+  An explicit operator-chosen run dir replaces the RUN_DIR assignment below; existing runs resume at their original `--run-dir`, without migration.
   The plugin does not create `CODEX_HOME`. Write launcher logs under the root's `logs/`.
   Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x`
   on the workspace while a run is active: it would delete the run.
@@ -87,10 +87,8 @@ WORKSPACE='/absolute/path/to/the-selected-dedicated-worktree'
 WORKSPACE="$(cd "$WORKSPACE" && pwd -P)" || stage_a 'selected workspace does not exist'
 test "$(git -C "$WORKSPACE" rev-parse --show-toplevel)" = "$WORKSPACE" || stage_a 'selected workspace is not a Git worktree root'
 TASK_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-if [ -z "${RUN_DIR:-}" ]; then
-  RUN_ROOT="$(python3 "$PLUGIN_ROOT/scripts/project_paths.py" "$WORKSPACE")" || stage_a 'cannot resolve the run root'
-  RUN_DIR="$RUN_ROOT/runs/$TASK_ID"
-fi
+RUN_ROOT="$(python3 "$PLUGIN_ROOT/scripts/project_paths.py" "$WORKSPACE")" || stage_a 'cannot resolve the run root'
+RUN_DIR="$RUN_ROOT/runs/$TASK_ID"
 WORKITEM="$RUN_DIR/WORKITEM.md"
 mkdir -p "$RUN_DIR" || stage_a 'cannot create the run directory'
 cat > "$WORKITEM" <<'PAIRED_SESSION_WORKITEM' || stage_a 'cannot write the work item'

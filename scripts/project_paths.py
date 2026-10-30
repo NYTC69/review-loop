@@ -16,7 +16,11 @@ def project_repo(workspace):
         bare, common_path = result.stdout.strip().split('\n', 1)
         common = Path(common_path)
         if bare == 'false' and common.is_absolute() and common.name == '.git':
-            return common.parent
+            parent = subprocess.run(
+                ['git', '-C', str(common.parent), 'rev-parse', '--is-inside-work-tree'],
+                capture_output=True, text=True, check=True)
+            if parent.stdout.strip() == 'true':
+                return common.parent
     except (OSError, ValueError, subprocess.CalledProcessError):
         pass
     return None
@@ -41,7 +45,7 @@ def default_root(workspace):
     if not state.is_absolute():
         state = Path.home() / '.local/state'
     root = state / 'review-loop'
-    print('NOTE: main project checkout unavailable (not a Git repo or bare repo); '
+    print('NOTE: main project checkout unavailable (not a Git repo, a bare repo or a submodule/separate-git-dir checkout); '
           'falling back to ' + str(root), file=sys.stderr)
     return root
 

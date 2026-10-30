@@ -3,6 +3,36 @@
   "description": "Static contract assertions for the review-loop workflow",
   "assertions": [
     {
+      "id": "run_root_js_jest_exclusions",
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "add `<rootDir>/.review-loop/` to Jest `testPathIgnorePatterns` and `modulePathIgnorePatterns`"
+    },
+    {
+      "id": "run_root_js_vitest_exclusions",
+      "kind": "contains",
+      "path": "README.md",
+      "needle": "`.review-loop/**` to Vitest `exclude`"
+    },
+    {
+      "id": "run_root_all_internal_exclusions",
+      "kind": "contains",
+      "path": "paired_session/docs/efficient-mode.md",
+      "needle": "`.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`"
+    },
+    {
+      "id": "run_root_fallback_checkout_kinds",
+      "kind": "contains",
+      "path": "paired_session/README.md",
+      "needle": "not a Git repo, a bare repo or a submodule/separate-git-dir checkout"
+    },
+    {
+      "id": "run_root_partial_scratch_restore",
+      "kind": "contains",
+      "path": "paired_session/docs/concurrent-runs.md",
+      "needle": "After reboot or partial scratch cleanup, a fresh coordinator therefore restores review comparisons."
+    },
+    {
       "id": "claude_wrapper_exists",
       "kind": "exists",
       "path": "skills/review-loop/SKILL.md"

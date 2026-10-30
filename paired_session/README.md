@@ -214,8 +214,8 @@ Use a dedicated Git worktree for fresh product work; review-only runs use the
 worktree that holds the existing change. Default persistent output is
 `<repo>/.review-loop/runs/<UUID>/` (gitignored). Resolve `<repo>` using
 `git rev-parse --path-format=absolute --git-common-dir` and its parent when it
-ends in `/.git`; lane worktrees therefore use the main checkout. When unresolved
-(not a Git repo or bare repo), report fallback to
+ends in `/.git` and the parent is a work tree; lane worktrees therefore use the main checkout. When unresolved
+(not a Git repo, a bare repo or a submodule/separate-git-dir checkout), report fallback to
 `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop`. An explicit run directory wins;
 existing runs resume at their original `--run-dir`, without migration.
 Scratch lives in a private per-run root outside any repo (FIELD-28 only warns for

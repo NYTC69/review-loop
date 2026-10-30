@@ -1,16 +1,6 @@
 # Efficient safety mode (D-EFF, owner 2026-10-04, amended)
 
-The plugin does not create `CODEX_HOME`. For an isolated home, provision
-`<repo>/.review-loop/codex-home/<lane>/` and select it before starting the session.
-Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
-and take its parent when it ends in `/.git`. Persistent run output defaults to
-`<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo. New-layout review baselines persist as
-`internal/{last-review,review-start,history-start}.tar` archives and are extracted into
-external `scratch_root/mirrors/` on demand; legacy runs retain their expanded internal mirrors.
-When the main checkout cannot be resolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), the run root
-falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
-Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
-on the workspace while a run is active: it would delete the run.
+For CODEX_HOME provisioning, run roots and fallback rules, see the [project overview](../../README.md).
 
 Owner decision D-EFF, amended:
 > "A类+B类的…这些要求还是要在以后的review-loop里遵守，但是c类的严格沙箱要求，不需要再加固或者花时间开发了"
@@ -138,7 +128,7 @@ A workspace below the repository top is not a case: the coordinator requires `.g
   not checked`.
 - A CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__` or a test
   runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write) HOLDs every
-  read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/` and `.review-loop/codex-home/`
+  read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
   are excluded from workspace scans, so the recommended isolated homes may live there.
 
 **An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The

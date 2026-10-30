@@ -22,6 +22,11 @@ class RootFixture(unittest.TestCase):
         self.repo = self.root / 'project'
         self.repo.mkdir()
 
+    def git_run(self, argv, **kwargs):
+        if '--is-inside-work-tree' in argv:
+            return subprocess.CompletedProcess(argv, 0, 'true\n')
+        return self.git_result()
+
     def git_result(self, bare=False):
         return subprocess.CompletedProcess([], 0, ('true' if bare else 'false') + '\n' +
                                            str(self.repo / '.git') + '\n')
@@ -29,15 +34,15 @@ class RootFixture(unittest.TestCase):
 
 class ProjectPathsTests(RootFixture):
     def test_main_checkout_and_lane_use_same_root_and_create_ignore_once(self):
-        with patch.object(pp.subprocess, 'run', return_value=self.git_result()) as run:
+        with patch.object(pp.subprocess, 'run', side_effect=self.git_run) as run:
             for workspace in (self.repo, self.root / 'lane'):
                 self.assertEqual(pp.default_root(workspace), self.repo / '.review-loop')
-                self.assertEqual(run.call_args[0][0], ['git', '-C', str(workspace), 'rev-parse',
+                self.assertEqual(run.call_args_list[-2][0][0], ['git', '-C', str(workspace), 'rev-parse',
                     '--is-bare-repository', '--path-format=absolute', '--git-common-dir'])
         ignore = self.repo / '.review-loop/.gitignore'
         self.assertEqual(ignore.read_bytes(), b'*\n!config.md\n')
         ignore.write_text('custom\n')
-        with patch.object(pp.subprocess, 'run', return_value=self.git_result()):
+        with patch.object(pp.subprocess, 'run', side_effect=self.git_run):
             pp.default_root(self.repo)
         self.assertEqual(ignore.read_text(), 'custom\n')
         self.assertFalse((self.repo / '.review-loop/codex-home').exists())
@@ -58,7 +63,7 @@ class ProjectPathsTests(RootFixture):
         self.assertFalse((self.repo / '.review-loop').exists())
 
     def test_root_script_prints_absolute_root(self):
-        with patch.object(pp.subprocess, 'run', return_value=self.git_result()), \
+        with patch.object(pp.subprocess, 'run', side_effect=self.git_run), \
                 patch.object(sys, 'argv', ['project_paths.py', str(self.root / 'lane')]), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             pp.main()
@@ -86,7 +91,7 @@ class MaterializeDefaultsTests(RootFixture):
                 return 'a' * 40
             return ''
 
-        with patch.object(pp.subprocess, 'run', return_value=self.git_result()), \
+        with patch.object(pp.subprocess, 'run', side_effect=self.git_run), \
                 patch.object(mp, 'operator_areas', return_value={self.repo, self.repo / '.git'}), \
                 patch.object(mp, 'git_step', side_effect=step), \
                 patch.object(mp, 'command', side_effect=command):
@@ -172,6 +177,23 @@ class RealGitDefaultsTests(RootFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(path.exists())
         self.assertFalse((lane / '.review-loop').exists())
+
+    def test_bare_dotgit_with_worktree_uses_fallback(self):
+        common = self.repo / '.git'
+        self.git(self.repo, 'init', '-q', '--bare', str(common))
+        # Create a commit without a checkout or index.
+        tree = self.git(self.repo, '--git-dir', str(common), 'mktree')
+        oid = subprocess.check_output(
+            ['git', '--git-dir', str(common), '-c', 'user.name=Test',
+             '-c', 'user.email=test@example.invalid', 'commit-tree', tree, '-m', 'fixture'],
+            text=True).strip()
+        lane = self.repo / 'main'
+        self.git(self.repo, '--git-dir', str(common), 'worktree', 'add', '-q', '--detach', str(lane), oid)
+        with patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root / 'state')}), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(pp.default_root(lane), self.root / 'state/review-loop')
+        self.assertIn('falling back', err.getvalue())
+        self.assertFalse((self.repo / '.review-loop').exists())
 
     def test_real_bare_repository_uses_fallback(self):
         bare = self.root / 'bare.git'

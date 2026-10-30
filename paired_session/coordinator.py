@@ -2607,6 +2607,7 @@ class Coordinator:
         if not 1 <= getattr(args, 'timeout', DEFAULT_TIMEOUT_SECONDS) <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any state exists
             raise ValueError(TIMEOUT_RANGE_ERROR)
         self.args = args
+        self._extracted_mirrors = set()
         self._fake_lifecycle = False   # V4: the fake lifecycle was removed; test_worktree_lifecycle still reads the flag
         self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
@@ -3691,7 +3692,9 @@ class Coordinator:
                 os.unlink(temporary)
 
     def _extract_mirror(self, archive: Path, target: Path) -> Path:
-        if target.is_dir():
+        # Scratch cleaners or interrupted captures can leave an incomplete tree.
+        # Trust only mirrors extracted by this coordinator, never a prior process.
+        if target.name in self._extracted_mirrors and target.is_dir():
             return target
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=target.name + '.', dir=target.parent))
@@ -3724,7 +3727,10 @@ class Coordinator:
                         if any('/'.join(parts[:i]) in links for i in range(1, len(parts))):
                             raise ValueError('baseline archive writes through a symlink: ' + member.name)
                     bundle.extractall(temporary, members=members)
+            if target.exists():
+                (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(target)
             os.replace(temporary, target)
+            self._extracted_mirrors.add(target.name)
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
         return target
@@ -3743,6 +3749,7 @@ class Coordinator:
             return target
         archive = self.internal / (name + '.tar')
         self._archive_mirror(target, archive)
+        self._extracted_mirrors.discard(name)
         return archive
 
     def _cleanup_scratch(self) -> None:

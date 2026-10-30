@@ -1,9 +1,13 @@
 # review-loop
 
+A Claude Code and Codex plugin that drives a work item through the paired-session coordinator: an author and an
+independent reviewer plan and implement it, an adversarial gate checks the result, then finish, quality polish, docs
+and security run with lifecycle on, and nothing is delivered until you accept.
+
 The plugin does not create `CODEX_HOME`. For an isolated home, provision
 `<repo>/.review-loop/codex-home/<lane>/` and select it before starting the session.
 Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
-and take its parent when it ends in `/.git`. Persistent run output defaults to
+and take its parent when it ends in `/.git` and its parent is a work tree. Persistent run output defaults to
 `<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo. New-layout review baselines persist as
 `internal/{last-review,review-start,history-start}.tar` archives and are extracted into
 external `scratch_root/mirrors/` on demand; legacy runs retain their expanded internal mirrors.
@@ -12,9 +16,9 @@ falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
 Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
 on the workspace while a run is active: it would delete the run.
 
-A Claude Code and Codex plugin that drives a work item through the paired-session coordinator: an author and an
-independent reviewer plan and implement it, an adversarial gate checks the result, then finish, quality polish, docs
-and security run with lifecycle on, and nothing is delivered until you accept.
+For JS/TS projects, exclude retained review-pr checkouts under `.review-loop/pr/` from test discovery:
+add `<rootDir>/.review-loop/` to Jest `testPathIgnorePatterns` and `modulePathIgnorePatterns`,
+and `.review-loop/**` to Vitest `exclude` (relative to its project root). These clones are full checkouts.
 
 ## Quick Start
 

@@ -135,6 +135,38 @@ class RunRootTests(unittest.TestCase):
         self.assertEqual(restored.resume(), 'HOLD')
         self.assertIn('FIELD-27 review-start mirror is missing', restored.state['hold_reason'])
 
+    def test_partial_mirrors_are_restored_once_per_coordinator_and_capture_invalidates(self):
+        self.run_dir = self.workspace / '.review-loop/runs/partial'
+        co = self.coordinator()
+        self.addCleanup(shutil.rmtree, co.scratch_base, True)
+        marker = self.workspace / 'unchanged.txt'
+        marker.write_text('unchanged workspace content')
+        co.capture_review_baseline()
+        archive = co._capture_baseline('review-start')
+        co.state['review_only'] = {'mirror': str(archive)}
+        co.save()
+        expected = co._review_start_paths()
+        co._baseline('last-review')
+        for name in ('last-review', 'review-start'):
+            (co.mirror_base / name / marker.name).unlink()
+        # Includes a partial tree left by an interrupted capture: the intact archive wins.
+        (co.mirror_base / 'last-review/partial-only').write_text('incomplete capture')
+        restored = self.coordinator()
+        with patch.object(rc.tarfile, 'open', wraps=rc.tarfile.open) as opened:
+            restored.materialize_review_context()
+            self.assertEqual((restored.context / 'delta-since-last-review.patch').read_text(), '')
+            self.assertEqual(restored._review_start_paths(), expected)
+            restored.materialize_review_context()
+            self.assertEqual(restored._review_start_paths(), expected)
+            self.assertEqual(opened.call_count, 2)
+        self.assertFalse((restored.mirror_base / 'last-review/partial-only').exists())
+        marker.write_text('new baseline')
+        restored.capture_review_baseline()
+        with patch.object(rc.tarfile, 'open', wraps=rc.tarfile.open) as opened:
+            self.assertEqual((restored._baseline('last-review') / marker.name).read_text(), 'new baseline')
+            restored._baseline('last-review')
+            self.assertEqual(opened.call_count, 1)
+
     def test_baseline_archive_roundtrip_and_path_hygiene(self):
         import io
         import tarfile
