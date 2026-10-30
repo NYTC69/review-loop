@@ -117,8 +117,8 @@ class RunRootTests(unittest.TestCase):
         marker = self.workspace / 'unique-workspace.test.js'
         marker.write_text('workspace test fixture')
         co.capture_review_baseline()
-        co._mirror_workspace(co.mirror_base / 'review-start')
-        co.state['review_only'] = {'mirror': str(co.mirror_base / 'review-start')}
+        archive = co._capture_baseline('review-start')
+        co.state['review_only'] = {'mirror': str(archive)}
         co.save()
         marker.write_text('changed workspace test fixture')
         co.materialize_review_context()
@@ -127,9 +127,52 @@ class RunRootTests(unittest.TestCase):
         shutil.rmtree(co.scratch_base)
         restored = self.coordinator()
         restored.materialize_review_context()
-        self.assertFalse((restored.context / 'delta-since-last-review.patch').exists())
+        self.assertIn('changed workspace test fixture', (restored.context / 'delta-since-last-review.patch').read_text())
+        self.assertIsNone(restored._missing_review_start_issue())
+        self.assertEqual((restored._review_start_root() / marker.name).read_text(), 'workspace test fixture')
+        self.assertEqual(list((self.workspace / '.review-loop').rglob(marker.name)), [])
+        archive.unlink()
         self.assertEqual(restored.resume(), 'HOLD')
         self.assertIn('FIELD-27 review-start mirror is missing', restored.state['hold_reason'])
+
+    def test_baseline_archive_roundtrip_and_path_hygiene(self):
+        import io
+        import tarfile
+        co = self.coordinator()
+        self.addCleanup(shutil.rmtree, co.scratch_base, True)
+        (self.workspace / 'empty').touch()
+        executable = self.workspace / 'executable'
+        executable.write_bytes(b'#!/bin/sh\n')
+        executable.chmod(0o755)
+        (self.workspace / 'link').symlink_to('/outside/target')
+        archive = co._capture_baseline('last-review')
+        shutil.rmtree(co.scratch_base)
+        root = co._baseline('last-review')
+        self.assertEqual((root / 'empty').read_bytes(), b'')
+        self.assertEqual(stat.S_IMODE((root / 'executable').stat().st_mode), 0o755)
+        self.assertEqual(os.readlink(root / 'link'), '/outside/target')
+        for name in ('/absolute', '../escape'):
+            with self.subTest(name=name):
+                with tarfile.open(archive, 'w') as bundle:
+                    member = tarfile.TarInfo(name)
+                    member.size = 1
+                    bundle.addfile(member, io.BytesIO(b'x'))
+                shutil.rmtree(root, ignore_errors=True)
+                with self.assertRaisesRegex(ValueError, 'unsafe baseline archive member'):
+                    co._baseline('last-review')
+
+    def test_legacy_baselines_remain_expanded(self):
+        with patch.object(rc, 'new_scratch_root', side_effect=lambda run: run):
+            co = self.coordinator()
+        co.state.pop('scratch_root', None)
+        for name in ('last-review', 'review-start'):
+            root = co._capture_baseline(name)
+            self.assertEqual(root, co.internal / name)
+            self.assertTrue(root.is_dir())
+            self.assertFalse((co.internal / (name + '.tar')).exists())
+        co.state['review_only'] = {'mirror': str(root)}
+        self.assertIsNone(co._missing_review_start_issue())
+        self.assertEqual(co._review_start_root(), root)
 
     def test_terminal_cleanup_preserves_legacy_and_removes_new_scratch(self):
         for legacy in (False, True):

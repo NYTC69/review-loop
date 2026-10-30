@@ -105,7 +105,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         for needle in ('No plan was drafted or approved; review the change itself', f'Review base: {head}',
                        'Create sum_ints; reject booleans.', 'M\ttracked.txt\n', 'untracked: sum_ints.py'):
             self.assertIn(needle, scope)   # Q7: everything the run will review is listed
-        mirror = Path(record['mirror'])
+        mirror = co._review_start_root()
         self.assertEqual(((mirror / 'sum_ints.py').read_text(), (mirror / 'tracked.txt').read_text()), (SUM_INTS, 'base\nedited\n'))
         long = 'a/' + 'deeply-nested-directory-name/' * 6 + 'file-with-a-long-name.txt'   # --stat would shorten it
         (self.workspace / long).parent.mkdir(parents=True)
@@ -125,7 +125,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
     # --- test 3: the tree before the first review --------------------------------------------------------------------------
     def test_a_tree_change_before_the_first_review_holds_until_restored(self):
         self.change()
-        mirror = Path(rc.Coordinator(self.args()).state['review_only']['mirror'])
+        mirror = rc.Coordinator(self.args())._review_start_root()
         (self.workspace / 'sum_ints.py').write_text(SUM_INTS + '# drifted\n')
         held = self.run_operator_action('resume', '--review-only')
         self.assertIn('the tree changed before the first review; restore it from', held.stdout, held.stdout + held.stderr)
@@ -174,6 +174,23 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: review_only'):
             rc.Coordinator(self.args(action='resume'))
 
+    def test_review_only_resume_recovers_after_scratch_loss(self):
+        self.change()
+        self.run_dir = self.workspace / '.review-loop/runs/reboot'
+        co = rc.Coordinator(self.args())
+        co.capture_review_baseline()
+        co.save()
+        shutil.rmtree(co.scratch_base)
+        restored = rc.Coordinator(self.args(action='resume'))
+        self.assertIsNone(restored._missing_review_start_issue())
+        self.assertEqual((restored._review_start_root() / 'sum_ints.py').read_text(), SUM_INTS)
+        restored.materialize_review_context()
+        self.assertTrue((restored.context / 'delta-since-last-review.patch').is_file())
+        self.assertEqual(list((self.workspace / '.review-loop').rglob('sum_ints.py')), [])
+        # Exercise resume's FIELD-27 precheck while keeping this recovery test local.
+        with mock.patch.object(restored, 'drive', return_value='RECOVERED'):
+            self.assertEqual(restored.resume(), 'RECOVERED')
+
     # --- LG1-a2, test 4: a base below HEAD -----------------------------------------------------------------------------------
     def test_a_base_below_head_reviews_the_committed_part_too(self):
         (self.workspace / 'committed.py').write_text('VALUE = 1\n')
@@ -215,17 +232,49 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         argv = [a for a in self.command('--config', option('--config'), '--supersedes', str(parent_dir))[2:]]
         with self.assertRaisesRegex(ValueError, "keeps its parent's entry and base"):
             rc.Coordinator(rc.parser().parse_args([*argv, '--base', 'HEAD']))
-        child = rc.Coordinator(rc.parser().parse_args(argv)).state
+        successor = rc.Coordinator(rc.parser().parse_args(argv))
+        child = successor.state
         record = child['review_only']
         self.assertFalse(Path(parent_state['scratch_root']).exists())
-        self.assertTrue(Path(record['history_mirror']).is_dir())
-        self.assertEqual((Path(record['history_mirror']) / 'sum_ints.py').read_text(), SUM_INTS)
+        self.assertTrue(Path(record['history_mirror']).is_file())
+        self.assertEqual((successor._review_start_root() / 'sum_ints.py').read_text(), SUM_INTS)
         self.assertEqual((child['config']['review_only'], child['config']['review_base'], child['base_commit']),
                          (True, parent_state['config']['review_base'], parent_state['config']['review_base']))
         self.assertEqual((child['phase'], child['next'], record['head_at_start']), ('EXEC', 'reviewer', self.git('rev-parse', 'HEAD')))
         self.assertEqual(record['parent_review_scope_sha256'], parent_state['review_only']['review_scope_sha256'])
         self.assertNotEqual(record['review_scope_sha256'], record['parent_review_scope_sha256'])   # its own scope
         self.assertIn('Also reject floats.', (self.run_dir / 'context' / 'plan.md').read_text())
+
+    def test_legacy_scope_change_successor_archives_inherited_baseline(self):
+        self.change()
+        parent_dir = self.run_dir
+        with mock.patch.object(rc, 'new_scratch_root', side_effect=lambda run: run):
+            parent = rc.Coordinator(self.args())
+        parent.state.pop('scratch_root', None)
+        parent.save()
+        original = parent.internal / 'review-start'
+        self.assertTrue(original.is_dir())
+        # Fixes made after creation must not replace the original FIELD-27 content.
+        (self.workspace / 'sum_ints.py').write_text(SUM_INTS + '# later fix\n')
+        parent.args.action = 'note'
+        start = parent.scope_change('Also reject floats.', None).split('Start: ', 1)[1].split()
+        option = lambda name: start[start.index(name) + 1]
+        self.run_dir, self.workitem = Path(option('--run-dir')), Path(option('--workitem'))
+        argv = self.command('--config', option('--config'), '--supersedes', str(parent_dir))[2:]
+        successor = rc.Coordinator(rc.parser().parse_args(argv))
+        self.addCleanup(shutil.rmtree, successor.scratch_base, True)
+        archive = Path(successor.state['review_only']['history_mirror'])
+        self.assertEqual(archive, successor.internal / 'history-start.tar')
+        self.assertTrue(archive.is_file())
+        self.assertTrue(original.is_dir())
+        self.assertEqual((original / 'sum_ints.py').read_text(), SUM_INTS)
+        self.assertFalse((parent.internal / 'review-start.tar').exists())
+        shutil.rmtree(successor.scratch_base)
+        restored = rc.Coordinator(rc.parser().parse_args(['resume', *argv[1:]]))
+        self.assertIsNone(restored._missing_review_start_issue())
+        self.assertEqual((restored._review_start_root() / 'sum_ints.py').read_text(), SUM_INTS)
+        with mock.patch.object(restored, 'drive', return_value='RECOVERED'):
+            self.assertEqual(restored.resume(), 'RECOVERED')
 
     # --- LG1-b, test 2: no role is told about an approved plan -----------------------------------------------------------------
     def prompts(self, role):

@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 import traceback
@@ -3675,6 +3676,75 @@ class Coordinator:
         """Legacy mirrors stay frozen in internal/; new runs keep workspace copies external."""
         return self.internal if self.scratch_base == self.run_dir else self.scratch_base / 'mirrors'
 
+    def _archive_mirror(self, source: Path, archive: Path) -> None:
+        """Publish a persistent baseline without a walkable workspace tree in the repo."""
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=archive.name + '.', dir=archive.parent)
+        os.close(fd)
+        try:
+            with tarfile.open(temporary, 'w', dereference=False) as bundle:
+                for child in sorted(source.iterdir()):
+                    bundle.add(child, arcname=child.name)
+            os.replace(temporary, archive)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _extract_mirror(self, archive: Path, target: Path) -> Path:
+        if target.is_dir():
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=target.name + '.', dir=target.parent))
+        try:
+            with tarfile.open(archive, 'r:') as bundle:
+                members = bundle.getmembers()
+                for member in members:
+                    if Path(member.name).is_absolute() or '..' in member.name.replace('\\', '/').split('/'):
+                        raise ValueError('unsafe baseline archive member: ' + member.name)
+                    # Mirrors contain only directories, regular files and symlinks.
+                    if not (member.isdir() or member.isfile() or member.issym()):
+                        raise ValueError('unsupported baseline archive member: ' + member.name)
+                if hasattr(tarfile, 'data_filter'):
+                    # data_filter normally strips mode bits; copy2 mirror semantics retain them.
+                    def mirror_filter(member, destination):
+                        checked = copy.copy(member)
+                        if checked.issym():
+                            # Preserve workspace link text, including outside targets; links are leaves.
+                            checked.linkname = '.'
+                        filtered = tarfile.data_filter(checked, destination)
+                        if filtered is not None:
+                            filtered.mode = member.mode
+                            filtered.linkname = member.linkname
+                        return filtered
+                    bundle.extractall(temporary, members=members, filter=mirror_filter)
+                else:  # Python 3.9: reject writes through symlink parents, allow symlink leaves.
+                    links = {m.name.rstrip('/') for m in members if m.issym()}
+                    for member in members:
+                        parts = member.name.split('/')
+                        if any('/'.join(parts[:i]) in links for i in range(1, len(parts))):
+                            raise ValueError('baseline archive writes through a symlink: ' + member.name)
+                    bundle.extractall(temporary, members=members)
+            os.replace(temporary, target)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+        return target
+
+    def _baseline(self, name: str) -> Path:
+        target = self.mirror_base / name
+        archive = self.internal / (name + '.tar')
+        if self.mirror_base != self.internal and archive.is_file():
+            return self._extract_mirror(archive, target)
+        return target
+
+    def _capture_baseline(self, name: str) -> Path:
+        target = self.mirror_base / name
+        self._mirror_workspace(target)
+        if self.mirror_base == self.internal:
+            return target
+        archive = self.internal / (name + '.tar')
+        self._archive_mirror(target, archive)
+        return archive
+
     def _cleanup_scratch(self) -> None:
         if self.state.get('scratch_root') and self.scratch_base != self.run_dir:
             (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(self.scratch_base, ignore_errors=True)
@@ -3682,7 +3752,7 @@ class Coordinator:
     def _missing_review_start_issue(self) -> Optional[str]:
         record = self.state.get('review_only') or {}
         mirror = record.get('history_mirror') or record.get('mirror')
-        if self.state.get('scratch_root') and mirror and not Path(mirror).is_dir():
+        if self.state.get('scratch_root') and mirror and not Path(mirror).is_file():
             return ('FIELD-27 review-start mirror is missing: ' + mirror +
                     '; restore the original mirror and resume, or abort and start a new run')
         return None
@@ -3723,7 +3793,7 @@ class Coordinator:
         atomic_text(self.context / 'delta.stat', stat + untracked_stat)
         atomic_text(self.context / 'status.txt', self._git(['-c', 'core.quotepath=false', 'status', '--short', '--untracked-files=all']))
         since = self.context / 'delta-since-last-review.patch'
-        baseline = self.mirror_base / 'last-review'
+        baseline = self._baseline('last-review')
         if self.state.get('reviews_completed', 0) and baseline.exists():
             current = self.mirror_base / 'current-review'
             self._mirror_workspace(current)
@@ -3738,7 +3808,7 @@ class Coordinator:
 
     def capture_review_baseline(self, sequence: Optional[int] = None,
                                 phase: Optional[str] = None) -> None:
-        self._mirror_workspace(self.mirror_base / 'last-review')
+        self._capture_baseline('last-review')
         reviewed = self.state.setdefault('reviewed_reviewer_sequences', [])
         if sequence is None or sequence not in reviewed:
             self.state['reviews_completed'] = self.state.get('reviews_completed', 0) + 1
@@ -4248,11 +4318,8 @@ class Coordinator:
             # The successor needs FIELD-27's original user content after this run's scratch is gone.
             source = self._review_start_root()
             if source and source.is_dir():
-                history = new_scratch_root(target) / 'mirrors' / 'history-start'
-                history.parent.mkdir(parents=True, exist_ok=True)
-                if history.exists():
-                    (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(history)
-                shutil.copytree(source, history, symlinks=True)
+                history = target / 'internal' / 'history-start.tar'
+                self._archive_mirror(source, history)
                 self.state['review_only']['history_mirror'] = str(history)
         self.state.update(status='ABORTED', abort_kind='scope-change',
                           successor_spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest())
@@ -5553,7 +5620,12 @@ class Coordinator:
         """The review-only creation mirror whose content is user code (a scope-change successor keeps its parent's)."""
         record = self.state.get('review_only') or {}
         mirror = record.get('history_mirror') or record.get('mirror')
-        return Path(mirror) if mirror else None
+        if not mirror:
+            return None
+        path = Path(mirror)
+        if self.mirror_base != self.internal and path.suffix == '.tar':
+            return self._extract_mirror(path, self.mirror_base / path.stem) if path.is_file() else None
+        return path
 
     def _review_start_paths(self) -> set:
         """FIELD-27: the paths in the creation mirror (empty for an ordinary run or a missing mirror)."""
@@ -5923,7 +5995,7 @@ class Coordinator:
         """Freeze the review-only start: the scope (as plan.md), the tree and index under review, a mirror of the tree, EXEC
         round 1 counted as the existing change, and the EXEC reviewer as the first dispatch."""
         atomic_text(self.context / 'plan.md', scope['text'])
-        self._mirror_workspace(mirror := self.mirror_base / 'review-start')
+        mirror = self._capture_baseline('review-start')
         index = hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest()
         self.state.update(phase='EXEC', next='reviewer', exec_rounds=REVIEW_ONLY_EXISTING_CHANGE_ROUNDS,
                           base_commit=self.args.review_base, review_only={
@@ -5952,7 +6024,14 @@ class Coordinator:
             record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text(encoding='utf-8')).get('review_only') or {}
         except (OSError, ValueError, AttributeError):
             return None
-        return record.get('history_mirror') or record.get('mirror')
+        mirror = record.get('history_mirror') or record.get('mirror')
+        if mirror and self.mirror_base != self.internal and Path(mirror).is_dir():
+            # A legacy parent keeps its expanded tree. The new-layout successor
+            # owns a persistent archive so later scratch cleanup cannot lose it.
+            archive = self.internal / 'history-start.tar'
+            self._archive_mirror(Path(mirror), archive)
+            return str(archive)
+        return mirror
 
     def _review_only_start_issue(self) -> Optional[str]:
         """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""

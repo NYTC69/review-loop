@@ -6,9 +6,17 @@ Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolut
 and take its parent when it ends in `/.git`. Persistent run output defaults to
 `<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo.
 On macOS scratch lives under `/private/tmp/review-loop-<user>/<run-hash>/` (the resolved `/tmp`),
-including workspace mirrors. New-layout scratch is removed on ACCEPTED, REPORTED or abort;
-legacy runs keep their original paths. A missing last-review mirror omits the optional delta;
-a missing review-start mirror gives an explicit FIELD-27 HOLD (restore it or start a new run).
+including extracted workspace mirrors. New-layout persistent baselines are atomic, uncompressed
+`internal/last-review.tar`, `internal/review-start.tar` and (for scope-change handover)
+`internal/history-start.tar` archives. They preserve file modes, empty files and symlinks without
+a walkable source tree in the repo. When needed, missing scratch copies are extracted into
+`<scratch_root>/mirrors/<name>`; `current-review` stays transient. Reboot cleanup of scratch
+therefore preserves review comparisons. New-layout scratch is removed on ACCEPTED, REPORTED
+or abort; legacy runs keep their original `internal/<mirror>` trees. A missing last-review
+archive omits the optional delta; a missing review-start/history-start archive gives the
+existing FIELD-27 HOLD (restore it or start a new run). A new-layout scope-change successor
+archives an inherited legacy baseline into its own `internal/history-start.tar`, preserving
+the legacy parent's original tree.
 When the main checkout cannot be resolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), the run root
 falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
 Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
