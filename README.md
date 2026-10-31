@@ -15,6 +15,7 @@ When the main checkout cannot be resolved (not a Git repo, a bare repo or a subm
 falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
 Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
 on the workspace while a run is active: it would delete the run.
+A Claude author works with this in-repo run dir too: its Edit/Write deny rules and its Bash sandbox `denyWrite` cover the run dir.
 
 For JS/TS projects, exclude retained review-pr checkouts under `.review-loop/pr/` from test discovery:
 add `<rootDir>/.review-loop/` to Jest `testPathIgnorePatterns` and `modulePathIgnorePatterns`,

@@ -1125,6 +1125,15 @@ class ClaudeAuthorProbeTests(unittest.TestCase):
         self.assertTrue(co._claude_probe_rules_match(out))
         self.assertFalse(Path(pw).is_relative_to(co.run_dir))                        # beside run_dir: its deny would block the control
 
+    def test_a_probe_with_the_in_repo_run_dir_passes_and_binds_the_real_rules(self):   # CA1 (v3.4.1)
+        self.h.run_dir = self.h.workspace / '.review-loop' / 'runs' / 'probe'
+        co, out = self.probe(co=self.co())
+        self.assertEqual(out['status'], 'PASS', out)
+        self.assertFalse(Path(out['rules']['probe_workspace']).is_relative_to(self.h.workspace.resolve()))
+        self.assertTrue(co._claude_probe_rules_match(out))
+        self.write_report(co, out)
+        self.assertEqual(co.probe_passed(), (True, ''))
+
     def test_probe_passed_needs_a_claude_author_probe_pass_with_this_runs_rules(self):
         co, out = self.probe()
         self.write_report(co, out)

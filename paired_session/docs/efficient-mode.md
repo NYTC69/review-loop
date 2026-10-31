@@ -39,7 +39,7 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
-- **A(b):** a Codex author's workspace-write covers `.review-loop/runs/` when the workspace is the main checkout. Under the owner threat model (users and models do not act maliciously), accidental damage is the residual risk; do not run bulk rewrites or `git clean -x` over the workspace during a run. The author's TMPDIR, `<scratch_root>/author-tmp` outside any repo, holds no records
+- **A(b):** a Codex author's workspace-write covers `.review-loop/runs/` when the workspace is the main checkout. A Claude author is admitted with the same in-repo run dir (v3.4.1): the settings deny `Edit(//<run dir>/**)` and the Bash `denyWrite` on the run dir override its workspace allow, so its own run stays protected; other runs' dirs there do not. Under the owner threat model (users and models do not act maliciously), accidental damage is the residual risk; do not run bulk rewrites or `git clean -x` over the workspace during a run. The author's TMPDIR, `<scratch_root>/author-tmp` outside any repo, holds no records
   (legacy saved runs retain `run_dir/author-tmp`).
 
 **Native Windows exception (v3.3.0, ADR-20 D1).** Claude Code has no Bash sandbox on native Windows, so there
