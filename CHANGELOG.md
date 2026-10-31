@@ -8,7 +8,7 @@
 - 已有的 run 原地继续：在 v3.3.x 及更早版本上开始的 run 仍用原来的 run 目录和内部布局（展开的内部镜像、run 目录里的 role-tmp），不迁移。
 - 明确给出的 `--run-dir` 仍然优先。新默认只影响没有指定 run 目录的新 run。
 - 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
-- run 进行中不要在工作区里跑 `git clean -x`，它会删掉 run 目录。
+- run 进行中不要在工作区里跑 `git clean -x`，也不要对整个工作区做批量改写：工作区是主 checkout 时，run 目录就在其中（Codex 作者的 workspace-write 也覆盖 `.review-loop/runs/`）。
 - JS/TS 项目：保留的 review-pr 克隆是完整 checkout，放在 `.review-loop/pr/` 下；请在 Jest 的 `testPathIgnorePatterns`、`modulePathIgnorePatterns` 里加 `<rootDir>/.review-loop/`，在 Vitest 的 `exclude` 里加 `.review-loop/**`。
 
 **新的默认位置**
@@ -16,7 +16,7 @@
 - 持久的 run 输出：`<repo>/.review-loop/runs/<UUID>/`。没有 `.review-loop/.gitignore` 时，coordinator 创建它，内容只有 `*` 和 `!config.md`；已有的文件不动。run 根目录在工作区里但没被 git 忽略时，在写 state 之前拒绝。
 - review-pr 克隆：`materialize_pr.py` 的默认根改为 `<repo>/.review-loop/pr/`（只允许这个子目录，并要求它被忽略）；pins 解析、克隆标记、旧根目录的删除和 W10 的只读文件重试都不变。
 - Codex 的独立 `CODEX_HOME`：文档建议放在 `<repo>/.review-loop/codex-home/<lane>/`，由操作者自己准备和登录。
-- 临时文件放在 repo 外：角色的 TMPDIR/TMP/TEMP、作者临时目录、permission-probe 树、合成的 Codex home 和解压出来的审查镜像，都放在每个 run 自己的私有 scratch 根 `/tmp/review-loop-<uid>/<hash>/` 下（Windows 用用户名）。run 进入 ACCEPTED、REPORTED 或 abort 时删除。FIELD-28 的警告只在实际 scratch 位于 Git work tree 里时才出现，所以仓库内的新 run 不会再报它。
+- 临时文件放在 repo 外：作者的临时目录（`TMPDIR`，Windows 上还有 `TMP`、`TEMP`）、Codex 只读角色的临时目录、permission-probe 树、合成的 Codex home 和解压出来的审查镜像，都放在每个 run 自己的私有 scratch 根下：macOS 是 `/tmp/review-loop-<uid>/<hash>/`，Windows 在用户的系统临时目录下（用用户名代替 uid）。run 进入 ACCEPTED、REPORTED 或 abort 时删除。FIELD-28 的警告只在实际 scratch 位于 Git work tree 里时才出现，所以仓库内的新 run 不会再报它。
 - 审查基线：新布局的 last-review、review-start、history-start 基线以 tar 归档原子写在 run 目录的 `internal/` 下，需要时解压到 scratch 的 `mirrors/`；scratch 被清掉（例如重启）也能从归档恢复。每个 coordinator 进程第一次读取时重新解压，不信任残缺的解压目录。归档拒绝绝对路径和 `..` 成员。scope 变更时，基线归档交给后继 run。
 - 排除：`runs`、`codex-home`、`pr`、`logs` 这四个内部目录不计入被忽略文件的捕获和比较、作者的离线清单和证据 symlink 扫描，所以同一仓库里并行的 run、克隆和日志不会让只读回合误判。
 - permission-probe（FIELD-13 / FIELD-8）：probe 树挪到外部 scratch 后，probe 仍同时监视 scratch 父目录和真实 run 目录的父目录，所以同级 lane 的 run 目录仍要等 probe 锁，run 目录旁边被改动的 operator 文件（例如启动日志）仍按原来的方式提示。

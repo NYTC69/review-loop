@@ -114,7 +114,7 @@ New runs put the Claude author probe tree and OS-denial targets in the per-run
 private scratch root outside every repo. Role TMPDIRs and disposable probe homes
 also live there. Saved runs without `scratch_root` keep their original layout
 on resume. The following FIELD-13 parent-listing description applies to that
-legacy layout; new runs compare the external scratch parent instead. Keep
+legacy layout; new runs compare the external scratch parent as well as the real run directory's parent. Keep
 launcher logs under `<repo>/.review-loop/logs/`, separate from `runs/`.
 
 The Claude author probe (`_claude_author_probe` in `../coordinator.py`) creates its
